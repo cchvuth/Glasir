@@ -1,0 +1,44 @@
+//! Right-hand inspector: what the graph selection shows. `commit` (commit
+//! details and files), `wip` (staging lists + commit box). File rows live here.
+
+mod commit;
+mod wip;
+
+use crate::git::Change;
+use crate::repo::{Action, RepoTab, Sel};
+use crate::theme;
+use egui::{RichText, Sense, Ui};
+
+impl RepoTab {
+    pub fn details(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        match self.sel.clone() {
+            Some(Sel::Wip) => self.wip_panel(ui, acts),
+            Some(Sel::Commit(_)) => self.commit_panel(ui, acts),
+            None => {
+                ui.centered_and_justified(|ui| ui.label(RichText::new("Select a commit").color(theme::dim(ui))));
+            }
+        }
+    }
+}
+
+/// A file row: colored status letter, file name, dimmed directory.
+pub fn file_row(ui: &mut Ui, c: &Change) -> egui::Response {
+    let (dir, file) = c.path.rsplit_once('/').map_or(("", c.path.as_str()), |(d, f)| (d, f));
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 8.0, theme::hover(ui));
+    }
+    let p = ui.painter().with_clip_rect(rect);
+    let y = rect.center().y;
+    let code = if c.code == '?' { 'A' } else { c.code };
+    p.text(egui::pos2(rect.left() + 6.0, y), egui::Align2::LEFT_CENTER, code, egui::FontId::monospace(12.0), theme::change_color(c.code));
+    let r = p.text(egui::pos2(rect.left() + 22.0, y), egui::Align2::LEFT_CENTER, file, egui::FontId::proportional(13.0), theme::text(ui));
+    if !dir.is_empty() {
+        p.text(egui::pos2(r.right() + 6.0, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::proportional(11.5), theme::dim(ui));
+    }
+    resp.on_hover_text(match &c.old_path {
+        Some(o) => format!("{o} → {}", c.path),
+        None => c.path.clone(),
+    })
+}

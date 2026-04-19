@@ -1,0 +1,101 @@
+//! One-click ways out of common failures (diverged pull, rejected push),
+//! offered as a `Choice`.
+
+use super::action::Choice;
+use super::data::RepoData;
+use super::op::Op;
+
+/// When `op` failed with `err` in a way that has a one-click fix, the choices to offer.
+pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> {
+    use super::op::{PullMode, pull_op};
+    let args = op.cmds.first()?;
+    let has = |a: &str| args.iter().any(|x| x == a);
+    let pulls = || {
+        let mut merge = pull_op(PullMode::Merge);
+        merge.label = "Pull (merge)".into();
+        vec![("Pull (rebase)".to_owned(), pull_op(PullMode::Rebase)), ("Pull (merge)".to_owned(), merge)]
+    };
+    match args.first()?.as_str() {
+        "pull" if has("--ff-only") && err.contains("Not possible to fast-forward") => Some(Choice {
+            title: "Branches have diverged".into(),
+            text: "Your branch and its upstream both have new commits, so a fast-forward isn't possible. Combine them by rebasing your commits on top, or with a merge commit.".into(),
+            ops: pulls(),
+        }),
+        // Only the toolbar push (current branch, `--progress`): pulling fixes nothing for another branch.
+        "push" if err.contains("[rejected]") && has("--progress") && !args.iter().any(|a| a.starts_with("--force")) => {
+            let mut ops = pulls();
+            // A force push leases on the remote commits we've seen: only possible once they're fetched.
+            let text = if err.contains("(fetch first)") {
+                ops.push(("Fetch".to_owned(), super::op::fetch_op()));
+                "The remote branch has commits you haven't fetched. Pull them in first, then push again — or fetch to see them, and push again to get the option to replace them."
+            } else {
+                ops.extend(d.and_then(|d| d.push_op(true)).map(|o| ("Force push…".to_owned(), o)));
+                "The remote branch has commits that aren't in yours. Pull them in first, then push again — or force push to replace them."
+            };
+            Some(Choice { title: "Push rejected".into(), text: text.into(), ops })
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git;
+    use crate::repo::data::load_all;
+    use crate::repo::op::exec;
+    use crate::repo::testutil::{commit, identity, scratch, sh};
+
+    #[test]
+    fn push_pull_and_lease_against_bare_remote() {
+        let root = scratch("net");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        for c in ["a", "b"] {
+            sh(&root, &["clone", "-q", "remote.git", c]);
+            identity(&root.join(c));
+        }
+        let (a, b) = (root.join("a"), root.join("b"));
+        commit(&a, "f.txt", "one\n");
+
+        // --progress output is streamed while the push runs.
+        let push = load_all(&a, 100).unwrap().push_op(false).unwrap();
+        let cancel = git::Cancel::default();
+        cancel.scope(|| exec(&a, &push)).unwrap();
+        assert!(!cancel.progress().is_empty());
+        let log = git::LOG.lock().unwrap().iter().rev().find(|l| l.cwd == a && l.args[0] == "push").unwrap().stderr.clone();
+        assert!(log.contains("Writing objects: 100%") && !log.contains('\r'), "{log:?}");
+
+        // Diverge: b pushes, a commits locally.
+        sh(&b, &["pull", "-q"]);
+        commit(&b, "b.txt", "b1\n");
+        sh(&b, &["push", "-q"]);
+        commit(&a, "a.txt", "a1\n");
+
+        // A plain push is rejected. Unfetched remote commits: a lease can't name them yet, so fetch first.
+        let labels = |c: Choice| c.ops.into_iter().map(|o| o.0).collect::<Vec<_>>();
+        let rejected = || {
+            let d = load_all(&a, 100).unwrap();
+            let err = exec(&a, &d.push_op(false).unwrap()).unwrap_err();
+            let c = offer(&d.push_op(false).unwrap(), &err, Some(&d)).expect("rejected push offers a way out");
+            (d, labels(c))
+        };
+        assert_eq!(rejected().1, ["Pull (rebase)", "Pull (merge)", "Fetch"]);
+
+        let ff = crate::repo::op::pull_op(crate::repo::op::PullMode::FfOnly);
+        let err = exec(&a, &ff).unwrap_err();
+        let c = offer(&ff, &err, None).expect("diverged pull offers rebase/merge");
+        assert_eq!(labels(c), ["Pull (rebase)", "Pull (merge)"]);
+
+        // Fetched now: offer pull, or a force push leased on what we've seen.
+        let (d, l) = rejected();
+        assert_eq!(l, ["Pull (rebase)", "Pull (merge)", "Force push…"]);
+        let force = d.push_op(true).unwrap();
+        let seen = sh(&a, &["rev-parse", "origin/main"]);
+        assert!(force.cmds[0].contains(&format!("--force-with-lease=refs/heads/main:{}", seen.trim())));
+        assert!(force.confirm.as_ref().unwrap().contains("\n$ git push --progress --force-with-lease="));
+
+        exec(&a, &force).unwrap();
+        assert_eq!(sh(&root.join("remote.git"), &["rev-parse", "main"]), sh(&a, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

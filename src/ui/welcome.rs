@@ -1,0 +1,156 @@
+//! The welcome / new-tab page (open, clone, init, recent repositories) and the
+//! clone dialog.
+
+use super::app::App;
+use crate::git;
+use crate::repo::Task;
+use crate::theme::{self, icon};
+use egui::{Button, Frame, Id, RichText, TextEdit, Ui};
+use std::path::{Path, PathBuf};
+
+#[derive(Default)]
+pub(super) struct CloneDlg {
+    url: String,
+    dir: String,
+    task: Option<Task<git::Res<PathBuf>>>,
+    cancel: git::Cancel,
+    error: Option<String>,
+}
+
+impl App {
+    /// Opens the clone dialog, defaulting to the last clone folder (or home).
+    pub(super) fn open_clone(&mut self) {
+        self.clone = Some(CloneDlg {
+            dir: self.s.clone_dir.clone().or_else(home).map(|p| p.display().to_string()).unwrap_or_default(),
+            ..Default::default()
+        });
+    }
+
+    pub(super) fn welcome(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
+        egui::CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(70.0);
+                ui.label(RichText::new("Glasir").size(44.0).strong());
+                ui.label(RichText::new("A fast, free and open-source Git client").color(theme::dim(ui)));
+                ui.add_space(24.0);
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - 420.0).max(0.0) / 2.0);
+                    if ui.add(Button::new(format!("{}  Open repository…", icon::FOLDER_OPEN)).min_size(egui::vec2(130.0, 34.0))).clicked() {
+                        self.pick_and_open(&ctx);
+                    }
+                    if ui.add(Button::new(format!("{}  Clone…", icon::DOWNLOAD_SIMPLE)).min_size(egui::vec2(130.0, 34.0))).clicked() {
+                        self.open_clone();
+                    }
+                    if ui.add(Button::new(format!("{}  Init…", icon::PLUS_CIRCLE)).min_size(egui::vec2(130.0, 34.0))).clicked()
+                        && let Some(p) = rfd::FileDialog::new().set_title("Initialize repository in…").pick_folder()
+                    {
+                        match git::run(&p, &["init"]) {
+                            Ok(_) => self.open(&ctx, &p),
+                            Err(e) => self.toast(&ctx, e, true),
+                        }
+                    }
+                });
+                ui.add_space(30.0);
+                if !self.s.recent.is_empty() {
+                    ui.label(RichText::new("RECENT").small().strong().color(theme::dim(ui)));
+                    ui.add_space(4.0);
+                    let mut open = None;
+                    let mut forget = None;
+                    for p in &self.s.recent {
+                        let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        let r = ui.add(Button::new(RichText::new(name).strong()).frame(false)).on_hover_text(p.display().to_string());
+                        if r.clicked() {
+                            open = Some(p.clone());
+                        }
+                        r.context_menu(|ui| {
+                            if ui.button("Remove from recent").clicked() {
+                                forget = Some(p.clone());
+                            }
+                        });
+                        ui.label(RichText::new(p.display().to_string()).small().color(theme::dim(ui)));
+                        ui.add_space(4.0);
+                    }
+                    if let Some(p) = open {
+                        self.open(&ctx, &p);
+                    }
+                    if let Some(p) = forget {
+                        self.s.recent.retain(|r| *r != p);
+                    }
+                }
+            });
+        });
+    }
+
+    pub(super) fn clone_dialog(&mut self, ctx: &egui::Context) {
+        let Some(c) = &mut self.clone else { return };
+        if let Some(res) = Task::poll(&mut c.task) {
+            match res {
+                Ok(p) => {
+                    self.s.clone_dir = p.parent().map(Path::to_path_buf);
+                    self.clone = None;
+                    self.open(ctx, &p);
+                    return;
+                }
+                Err(e) => c.error = (e != git::CANCELLED).then_some(e),
+            }
+        }
+        let mut close = false;
+        egui::Modal::new(Id::new("clone")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.heading("Clone a repository");
+            ui.add_space(6.0);
+            ui.label("Repository URL (HTTPS or SSH — github.com or GitHub Enterprise)");
+            ui.add(TextEdit::singleline(&mut c.url).hint_text("https://github.example.com/org/repo.git").desired_width(f32::INFINITY));
+            ui.label("Clone into");
+            ui.horizontal(|ui| {
+                ui.add(TextEdit::singleline(&mut c.dir).desired_width(360.0));
+                if ui.button("Browse…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().pick_folder()
+                {
+                    c.dir = p.display().to_string();
+                }
+            });
+            let name = c.url.trim().trim_end_matches(['/', '\\']).trim_end_matches(".git").rsplit(['/', '\\', ':']).next().unwrap_or("").to_owned();
+            let dest = Path::new(c.dir.trim()).join(&name);
+            if !name.is_empty() {
+                ui.label(RichText::new(format!("→ {}", dest.display())).small().color(theme::dim(ui)));
+            }
+            if let Some(e) = &c.error {
+                ui.colored_label(theme::DEL, e);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if c.task.is_some() {
+                    ui.spinner();
+                    theme::progress(ui, "Cloning…", Some(c.cancel.progress()).filter(|p| !p.is_empty()));
+                    if ui.button("Cancel").clicked() {
+                        c.cancel.cancel();
+                    }
+                } else {
+                    if ui.add_enabled(!name.is_empty(), Button::new("Clone")).clicked() {
+                        let (url, parent, d2) = (c.url.trim().to_owned(), PathBuf::from(c.dir.trim()), dest.clone());
+                        c.error = None;
+                        c.cancel = git::Cancel::default();
+                        let cancel = c.cancel.clone();
+                        c.task = Some(Task::spawn(ctx, move || {
+                            std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+                            cancel.scope(|| git::run(&parent, &["clone", "--progress", "--", &url, &d2.to_string_lossy()])).map(|_| d2)
+                        }));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                }
+            });
+        });
+        if close {
+            self.clone = None;
+        }
+    }
+
+}
+
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+}
