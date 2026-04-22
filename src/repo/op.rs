@@ -1,14 +1,34 @@
 //! Git mutations: the `Op` builder, running ops off the UI thread, finishing
-//! them (toasts, reloads) and common op builders (push/pull/fetch/commit).
+//! them (toasts, undo entries, reloads) and common op builders (push/pull/fetch/commit).
 
 use super::action::{Action, Msg};
 use super::data::RepoData;
 use super::offer::offer;
+use super::undo::{UndoEntry, UndoKind, save_worktree, Saved};
 use super::task::Task;
 use super::RepoTab;
-use crate::git::{self, Ref, RefKind, Res};
+use crate::git::{self, Ref, RefKind, Res, Snapshot};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Whether an op can be undone, and the `git reset` mode that undoes it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Undo {
+    No,
+    /// Commits: the undone changes stay staged.
+    Soft,
+    /// Everything else (checkout, pull...): `reset --keep`.
+    Keep,
+}
+
+impl Undo {
+    pub(super) fn mode(self) -> &'static str {
+        match self {
+            Undo::Soft => "--soft",
+            _ => "--keep",
+        }
+    }
+}
 
 /// One or more git commands run in sequence on a background thread.
 #[derive(Clone, Debug)]
@@ -17,8 +37,20 @@ pub struct Op {
     pub cmds: Vec<Vec<String>>,
     pub input: Option<String>,
     pub confirm: Option<String>,
+    pub undo: Undo,
     /// Staging-type op: no toast, refresh status only.
     pub light: bool,
+    /// Discards: back up what will be lost first, so the discard can be undone.
+    pub backup: Option<Backup>,
+}
+
+/// What a discard is about to destroy.
+#[derive(Clone, Debug)]
+pub enum Backup {
+    /// These paths (tracked or untracked).
+    Paths(Vec<String>),
+    /// Every uncommitted change, including untracked files.
+    All,
 }
 
 impl Op {
@@ -28,8 +60,15 @@ impl Op {
             cmds: vec![args.iter().map(|s| s.to_string()).collect()],
             input: None,
             confirm: None,
+            undo: Undo::No,
             light: false,
+            backup: None,
         }
+    }
+    /// Make a discard undoable.
+    pub fn backup(mut self, b: Backup) -> Self {
+        self.backup = Some(b);
+        self
     }
     pub fn then(mut self, args: &[&str]) -> Self {
         self.cmds.push(args.iter().map(|s| s.to_string()).collect());
@@ -37,6 +76,10 @@ impl Op {
     }
     pub fn confirm(mut self, text: impl Into<String>) -> Self {
         self.confirm = Some(text.into());
+        self
+    }
+    pub fn undo(mut self, u: Undo) -> Self {
+        self.undo = u;
         self
     }
     pub fn light(mut self) -> Self {
@@ -47,6 +90,11 @@ impl Op {
         self.input = Some(s);
         self
     }
+}
+
+pub(super) enum Done {
+    Op(Op, Res<String>, Option<(Snapshot, Snapshot)>, Option<Saved>),
+    Undo(bool, Res<()>),
 }
 
 /// Runs an op's commands in order, stopping at the first failure.
@@ -75,7 +123,7 @@ pub fn pull_op(mode: PullMode) -> Op {
         PullMode::FfOnly => ("Pull (fast-forward only)", "--ff-only"),
         PullMode::Rebase => ("Pull (rebase)", "--rebase"),
     };
-    Op::new(label, &["pull", flag, "--autostash", "--progress"])
+    Op::new(label, &["pull", flag, "--autostash", "--progress"]).undo(Undo::Keep)
 }
 
 pub fn fetch_op() -> Op {
@@ -87,16 +135,16 @@ pub fn fetch_op() -> Op {
 pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
     match r.kind {
         RefKind::Local if r.head => None,
-        RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]))),
+        RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
             let local = r.remote_branch();
             Some(Action::Git(if d.local(local).is_some() {
-                Op::new(format!("Checkout {local}"), &["checkout", local, "--"])
+                Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep)
             } else {
-                Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.name])
+                Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.name]).undo(Undo::Keep)
             }))
         }
-        RefKind::Tag => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--detach", &r.full]))),
+        RefKind::Tag => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--detach", &r.full]).undo(Undo::Keep))),
     }
 }
 
@@ -118,35 +166,66 @@ impl RepoTab {
         self.running = Some((
             label,
             Task::spawn(ctx, move || {
+                let saved = match op.backup.as_ref().map(|b| save_worktree(&dir, b)) {
+                    Some(Err(e)) => return Done::Op(op, Err(e), None, None),
+                    s => s.and_then(Result::ok),
+                };
+                let before = (op.undo != Undo::No).then(|| git::snapshot(&dir).ok()).flatten();
                 let out = cancel.scope(|| exec(&dir, &op));
-                (op, out)
+                // Even a partly failed op may have moved refs: always offer undo.
+                let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
+                Done::Op(op, out, snaps, saved)
             }),
         ));
     }
 
     /// Finishes the running op once its thread is done.
     pub(super) fn poll_op(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
-        let Some((op, res)) = self.running.as_mut().and_then(|(_, t)| t.0.try_recv().ok()) else { return };
+        let Some(done) = self.running.as_mut().and_then(|(_, t)| t.0.try_recv().ok()) else { return };
         self.running = None;
         self.cancel = None;
-        match &res {
-            Ok(out) if !op.light => {
-                let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                msgs.push(Msg { text: format!("{} ✔ {}", op.label, first), error: false });
+        match done {
+            Done::Op(op, res, snaps, saved) => {
+                match &res {
+                    Ok(out) if !op.light => {
+                        let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                        msgs.push(Msg { text: format!("{} ✔ {}", op.label, first), error: false });
+                    }
+                    Ok(_) => {}
+                    Err(e) if e == git::CANCELLED => msgs.push(Msg { text: format!("{} cancelled", op.label), error: false }),
+                    Err(e) => match offer(&op, e, self.data.as_ref()) {
+                        Some(c) => self.choice = Some(c),
+                        None => msgs.push(Msg { text: format!("{} failed:\n{e}", op.label), error: true }),
+                    },
+                }
+                if res.is_ok() && op.label.starts_with("Commit") {
+                    self.summary.clear();
+                    self.body.clear();
+                    self.amend = false;
+                }
+                if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
+                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo } });
+                    self.redo.clear();
+                }
+                if let Some(saved) = saved.filter(|s| s.stash.is_some() || !s.files.is_empty()) {
+                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Discard(saved) });
+                    self.redo.clear();
+                }
+                self.reload(ctx, !op.light);
             }
-            Ok(_) => {}
-            Err(e) if e == git::CANCELLED => msgs.push(Msg { text: format!("{} cancelled", op.label), error: false }),
-            Err(e) => match offer(&op, e, self.data.as_ref()) {
-                Some(c) => self.choice = Some(c),
-                None => msgs.push(Msg { text: format!("{} failed:\n{e}", op.label), error: true }),
-            },
+            Done::Undo(was_undo, res) => {
+                let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
+                match res {
+                    Ok(()) => to.extend(from.pop().filter(|e| matches!(e.kind, UndoKind::Refs { .. }))),
+                    Err(e) => {
+                        // Ref history is unreliable now, but discarded work must stay recoverable.
+                        from.retain(|e| matches!(e.kind, UndoKind::Discard(_)));
+                        msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
+                    }
+                }
+                self.reload(ctx, true);
+            }
         }
-        if res.is_ok() && op.label.starts_with("Commit") {
-            self.summary.clear();
-            self.body.clear();
-            self.amend = false;
-        }
-        self.reload(ctx, !op.light);
     }
 
     /// Op that commits the message in the editor.
@@ -160,7 +239,7 @@ impl RepoTab {
         if self.amend {
             args.push("--amend");
         }
-        Op::new(if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg)
+        Op::new(if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft)
     }
 
     pub fn push_op(&self, force: bool) -> Option<Op> {

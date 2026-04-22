@@ -33,6 +33,8 @@ pub enum Action {
     Reveal(String),
     Jump(String),
     Error(String),
+    Undo,
+    Redo,
     Reload,
     Cancel,
 }

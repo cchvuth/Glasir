@@ -7,6 +7,7 @@ mod log;
 mod model;
 mod read;
 mod runner;
+mod snapshot;
 
 pub type Res<T> = Result<T, String>;
 
@@ -17,3 +18,4 @@ pub use log::{LOG, Logged};
 pub use model::{Change, Commit, CommitInfo, Ref, RefKind, Status};
 pub use read::{commit_info, git_dir, log, refs, remotes, status};
 pub use runner::{CANCELLED, Cancel, progress_label, run, run_input};
+pub use snapshot::{Snapshot, restore, snapshot};

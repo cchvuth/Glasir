@@ -1,10 +1,10 @@
-//! Per-repo toolbar: repo / branch status, fetch-pull-push,
+//! Per-repo toolbar: repo / branch status, undo-redo, fetch-pull-push,
 //! branch, progress and cancel.
 
-use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, fetch_op, pull_op};
+use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, pull_op};
 use crate::theme::{self, icon};
 use crate::ui::settings::Settings;
-use egui::{Align, Layout, RichText, Ui};
+use egui::{Align, Button, Layout, RichText, Ui};
 
 pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Action>) {
     ui.horizontal(|ui| {
@@ -31,6 +31,16 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
         });
         let busy = t.busy().is_some();
         ui.add_enabled_ui(!busy && t.data.is_some(), |ui| {
+            theme::group(ui, |ui| {
+                let undo = ui.add_enabled(t.undo_label().is_some(), Button::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
+                if undo.on_hover_text(t.undo_label().map_or("Nothing to undo".into(), |l| format!("Undo {l} (⌘Z)"))).clicked() {
+                    acts.push(Action::Undo);
+                }
+                let redo = ui.add_enabled(t.redo_label().is_some(), Button::new(format!("{} Redo", icon::ARROW_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
+                if redo.on_hover_text(t.redo_label().map_or("Nothing to redo".into(), |l| format!("Redo {l} (⇧⌘Z)"))).clicked() {
+                    acts.push(Action::Redo);
+                }
+            });
             theme::group(ui, |ui| toolbar_remote(ui, t, s, acts));
             theme::group(ui, |ui| toolbar_local(ui, acts));
         });
@@ -95,7 +105,7 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                 acts.push(Action::Prompt(Prompt {
                     title: "New branch from HEAD".into(),
                     value: String::new(),
-                    op: Op::new("Create branch", &["checkout", "-b", "{}"]),
+                    op: Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep),
                 }));
             }
         }

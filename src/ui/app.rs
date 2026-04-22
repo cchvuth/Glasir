@@ -82,6 +82,7 @@ impl App {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        let typing = ctx.memory(|m| m.focused().is_some());
         let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
         let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
         if cmd && pressed(Key::O) {
@@ -111,6 +112,12 @@ impl App {
         }
         if fetch {
             act = Some(Action::Git(fetch_op()));
+        }
+        if !typing && cmd && pressed(Key::Z) {
+            act = Some(if shift { Action::Redo } else { Action::Undo });
+        }
+        if !typing && cmd && pressed(Key::Y) {
+            act = Some(Action::Redo);
         }
         if cmd && shift && pressed(Key::S) {
             act = Some(Action::Git(Op::new("Stage all", &["add", "-A"]).light()));

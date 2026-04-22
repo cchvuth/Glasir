@@ -94,7 +94,7 @@ impl RepoTab {
                             } else {
                                 Op::new("Discard", &["--literal-pathspecs", "checkout", "--", &c.path])
                             };
-                            acts.push(Action::Git(o.light().confirm(format!("Discard changes to {}?", c.path))));
+                            acts.push(Action::Git(o.light().backup(crate::repo::Backup::Paths(vec![c.path.clone()])).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))));
                         }
                         if c.code == '?' && ui.button("Add to .gitignore").clicked() {
                             match crate::repo::files::append_gitignore(&self.dir, &c.path) {

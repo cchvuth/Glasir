@@ -7,6 +7,7 @@
 //! - `op`: `Op` builder, running/finishing ops, shared op builders
 //!   (push/pull/fetch/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
+//! - `undo`: undo/redo and discard backups
 //! - `files`: reveal in file manager, append to .gitignore
 
 mod action;
@@ -17,16 +18,19 @@ mod op;
 mod task;
 #[cfg(test)]
 mod testutil;
+mod undo;
 
 pub use action::{Action, Choice, Msg, Prompt, Sel};
 pub use data::RepoData;
 pub use files::reveal;
-pub use op::{Op, PullMode, branch_checkout, fetch_op, pull_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op};
 pub use task::Task;
 
 use crate::git::{self, CommitInfo, Res};
 use data::load_all;
+use op::Done;
 use std::path::PathBuf;
+use undo::UndoEntry;
 
 pub struct RepoTab {
     pub dir: PathBuf,
@@ -39,9 +43,11 @@ pub struct RepoTab {
     pub sel: Option<Sel>,
     pub info: Option<Res<CommitInfo>>,
     info_task: Option<Task<Res<CommitInfo>>>,
-    running: Option<(String, Task<(Op, Res<String>)>)>,
-    /// Stops the running op's git command.
+    running: Option<(String, Task<Done>)>,
+    /// Stops the running op's git command (not set for undo/redo).
     cancel: Option<git::Cancel>,
+    undo: Vec<UndoEntry>,
+    redo: Vec<UndoEntry>,
     pub summary: String,
     pub body: String,
     pub amend: bool,
@@ -71,6 +77,8 @@ impl RepoTab {
             info_task: None,
             running: None,
             cancel: None,
+            undo: vec![],
+            redo: vec![],
             summary: String::new(),
             body: String::new(),
             amend: false,
@@ -174,6 +182,8 @@ impl RepoTab {
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
+            Action::Undo => self.undo_redo(ctx, true),
+            Action::Redo => self.undo_redo(ctx, false),
             Action::Reload => self.reload(ctx, true),
             Action::Cancel => {
                 if let Some(c) = &self.cancel {

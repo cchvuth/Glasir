@@ -1,7 +1,7 @@
 //! Context menus of the graph rows (commit, WIP).
 
 use crate::git::{Commit, Ref, RefKind};
-use crate::repo::{Action, Op, RepoData, branch_checkout};
+use crate::repo::{Action, Op, RepoData, Undo, branch_checkout};
 use egui::Ui;
 
 /// Double-click: check out the best branch at this commit.
@@ -22,7 +22,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
         }
     }
     if ui.button("Checkout this commit (detached)").clicked() {
-        acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &c.id])));
+        acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &c.id]).undo(Undo::Keep)));
     }
     ui.separator();
     if ui.button("Copy commit SHA").clicked() {
@@ -38,7 +38,8 @@ pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {
         acts.push(Action::Git(
             Op::new("Discard all", &["reset", "--hard", "-q"])
                 .then(&["clean", "-fdq"])
-                .confirm("Discard ALL uncommitted changes, including untracked files?"),
+                .backup(crate::repo::Backup::All)
+                .confirm("Discard ALL uncommitted changes, including untracked files? (Undo with ⌘Z.)"),
         ));
     }
 }
