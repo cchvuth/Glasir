@@ -115,6 +115,12 @@ pub fn hover(ui: &Ui) -> Color32 {
 pub fn tag(ui: &Ui) -> Color32 {
     if dark(ui) { Color32::from_rgb(0x5a, 0x63, 0x73) } else { Color32::from_rgb(0x8a, 0x93, 0xa3) }
 }
+pub fn added_bg(ui: &Ui) -> Color32 {
+    if dark(ui) { Color32::from_rgba_unmultiplied(0x34, 0xc7, 0x59, 34) } else { Color32::from_rgba_unmultiplied(0x34, 0xc7, 0x59, 40) }
+}
+pub fn removed_bg(ui: &Ui) -> Color32 {
+    if dark(ui) { Color32::from_rgba_unmultiplied(0xff, 0x45, 0x3a, 34) } else { Color32::from_rgba_unmultiplied(0xff, 0x45, 0x3a, 36) }
+}
 
 
 fn system_fonts() -> Vec<(&'static str, &'static [&'static str], FontFamily)> {

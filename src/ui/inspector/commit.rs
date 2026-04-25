@@ -1,7 +1,7 @@
 //! Inspector for a commit: message, author and the changed files.
 
 use super::file_row;
-use crate::repo::{Action, RepoTab};
+use crate::repo::{Action, DiffSrc, RepoTab};
 use crate::theme;
 use crate::ui::format::initials;
 use egui::{Color32, RichText, ScrollArea, Sense, Ui};
@@ -19,6 +19,7 @@ impl RepoTab {
                 return;
             }
         };
+        let open = self.diff.as_ref().map(|d| d.src.clone());
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -60,7 +61,12 @@ impl RepoTab {
             let n = info.files.len();
             ui.label(RichText::new(format!("{n} changed file{}", if n == 1 { "" } else { "s" })).small().strong());
             for c in &info.files {
-                file_row(ui, c).context_menu(|ui| {
+                let src = DiffSrc::Commit { id: info.id.clone(), parent: info.parents.first().cloned(), change: c.clone() };
+                let resp = file_row(ui, c, open.as_ref() == Some(&src));
+                if resp.clicked() {
+                    acts.push(Action::Diff(src));
+                }
+                resp.context_menu(|ui| {
                     if ui.button("Copy path").clicked() {
                         acts.push(Action::Copy(c.path.clone()));
                     }

@@ -4,12 +4,14 @@
 //!
 //! Window shell: `app` (App, frame loop, shortcuts), `titlebar`, `toolbar`,
 //! `welcome` (+ clone), `settings`, `toasts`, `command_log`, `screenshot` (dev harness).
-//! A repo tab: `repo_view` (layout) with `sidebar/`, `graph_view/`, `inspector/`;
+//! A repo tab: `repo_view` (layout) with `sidebar/`, `graph_view/`, `inspector/`
+//! and the center-pane view `diff_view`;
 //! its modals are in `dialogs`; `format` holds
 //! shared text formatters (dates, initials). Reusable widgets live in `theme::glass`.
 
 mod app;
 mod command_log;
+mod diff_view;
 mod dialogs;
 mod format;
 mod graph_view;

@@ -1,13 +1,14 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 //! Glasir entry point: login-env import, askpass dispatch, eframe launch.
-//! Layers, lowest first: `git` (CLI access), `graph` (pure
+//! Layers, lowest first: `git` (CLI access), `graph` / `highlight` (pure
 //! algorithms), `repo` (per-repo state and operations), then `theme` and
 //! `ui` (all drawing). Lower layers never import higher ones.
 
 mod askpass;
 mod git;
 mod graph;
+mod highlight;
 mod repo;
 mod theme;
 mod ui;

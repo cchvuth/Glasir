@@ -1,9 +1,10 @@
 //! One repository tab: toolbar on top, sidebar left, inspector right and the
-//! center pane (graph), then the tab's dialogs. Collected `Action`s are applied
+//! center pane (graph, or the diff
+//! that replaces it), then the tab's dialogs. Collected `Action`s are applied
 //! to the `RepoTab` at the end of the frame.
 
 use super::settings::Settings;
-use super::{dialogs, graph_view, sidebar, toolbar::toolbar};
+use super::{diff_view, dialogs, graph_view, sidebar, toolbar::toolbar};
 use crate::repo::RepoTab;
 use crate::theme;
 use egui::{Frame, Margin, Ui};
@@ -33,7 +34,12 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
         egui::CentralPanel::default()
             .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 2, bottom: 12 }))
             .show(ui, |ui| {
-                theme::card(ui, 205, |ui| graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &mut t.scroll_to, &mut acts))
+                theme::card(ui, 205, |ui| {
+                    match &mut t.diff {
+                        Some(ds) => diff_view::show(ui, ds, &mut s.split_diff, &mut acts),
+                        None => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &mut t.scroll_to, &mut acts),
+                    }
+                })
             });
     }
 

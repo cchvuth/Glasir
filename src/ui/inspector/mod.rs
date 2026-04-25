@@ -22,11 +22,13 @@ impl RepoTab {
 }
 
 /// A file row: colored status letter, file name, dimmed directory.
-pub fn file_row(ui: &mut Ui, c: &Change) -> egui::Response {
+pub fn file_row(ui: &mut Ui, c: &Change, selected: bool) -> egui::Response {
     let (dir, file) = c.path.rsplit_once('/').map_or(("", c.path.as_str()), |(d, f)| (d, f));
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::click());
-    if resp.hovered() {
+    if selected {
+        ui.painter().rect_filled(rect, 8.0, theme::selection(ui));
+    } else if resp.hovered() {
         ui.painter().rect_filled(rect, 8.0, theme::hover(ui));
     }
     let p = ui.painter().with_clip_rect(rect);

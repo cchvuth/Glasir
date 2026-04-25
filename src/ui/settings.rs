@@ -16,6 +16,7 @@ pub struct Settings {
     pub light: bool,
     pub max_commits: usize,
     pub pull: PullMode,
+    pub split_diff: bool,
     pub clone_dir: Option<PathBuf>,
 }
 
@@ -28,6 +29,7 @@ impl Default for Settings {
             light: false,
             max_commits: 50_000,
             pull: PullMode::Merge,
+            split_diff: false,
             clone_dir: None,
         }
     }

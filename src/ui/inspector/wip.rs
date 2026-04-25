@@ -2,7 +2,7 @@
 //! the commit box.
 
 use super::file_row;
-use crate::repo::{Action, Op, RepoTab};
+use crate::repo::{Action, DiffSrc, Op, RepoTab};
 use crate::theme;
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
@@ -10,6 +10,7 @@ impl RepoTab {
     pub(super) fn wip_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let Some(d) = &self.data else { return };
         let s = &d.status;
+        let open = self.diff.as_ref().map(|d| d.src.clone());
         let busy = self.busy().is_some();
 
         let mut commit = false;
@@ -50,7 +51,7 @@ impl RepoTab {
                 if !s.conflicted.is_empty() {
                     ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
                     for c in &s.conflicted {
-                        let resp = file_row(ui, c);
+                        let resp = file_row(ui, c, false);
                         resp.context_menu(|ui| {
                             if ui.button("Mark resolved").clicked() {
                                 acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", &c.path]).light()));
@@ -80,7 +81,11 @@ impl RepoTab {
                     });
                 });
                 for c in &s.unstaged {
-                    let resp = file_row(ui, c);
+                    let src = DiffSrc::Worktree { change: c.clone(), staged: false };
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src));
+                    if resp.clicked() {
+                        acts.push(Action::Diff(src));
+                    }
                     if resp.double_clicked() {
                         acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", &c.path]).light()));
                     }
@@ -120,7 +125,11 @@ impl RepoTab {
                     });
                 });
                 for c in &s.staged {
-                    let resp = file_row(ui, c);
+                    let src = DiffSrc::Worktree { change: c.clone(), staged: true };
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src));
+                    if resp.clicked() {
+                        acts.push(Action::Diff(src));
+                    }
                     if resp.double_clicked() {
                         acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", &c.path]).light()));
                     }

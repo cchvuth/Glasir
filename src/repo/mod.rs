@@ -3,15 +3,16 @@
 //!
 //! - `task`: `Task<T>` background values
 //! - `data`: `RepoData` and `load_all`
-//! - `action`: `Action`, `Sel`, `Prompt`, `Choice`, `Msg`
+//! - `action`: `Action`, `Sel`, `DiffSrc`, `Prompt`, `Choice`, `Msg`
 //! - `op`: `Op` builder, running/finishing ops, shared op builders
 //!   (push/pull/fetch/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
-//! - `files`: reveal in file manager, append to .gitignore
+//! - `diff`, `files`: one concern each
 
 mod action;
 mod data;
+mod diff;
 pub mod files;
 mod offer;
 mod op;
@@ -20,8 +21,9 @@ mod task;
 mod testutil;
 mod undo;
 
-pub use action::{Action, Choice, Msg, Prompt, Sel};
+pub use action::{Action, Choice, DiffSrc, Msg, Prompt, Sel};
 pub use data::RepoData;
+pub use diff::DiffState;
 pub use files::reveal;
 pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op};
 pub use task::Task;
@@ -43,6 +45,7 @@ pub struct RepoTab {
     pub sel: Option<Sel>,
     pub info: Option<Res<CommitInfo>>,
     info_task: Option<Task<Res<CommitInfo>>>,
+    pub diff: Option<DiffState>,
     running: Option<(String, Task<Done>)>,
     /// Stops the running op's git command (not set for undo/redo).
     cancel: Option<git::Cancel>,
@@ -75,6 +78,7 @@ impl RepoTab {
             sel: None,
             info: None,
             info_task: None,
+            diff: None,
             running: None,
             cancel: None,
             undo: vec![],
@@ -153,6 +157,7 @@ impl RepoTab {
         if let Some(r) = Task::poll(&mut self.info_task) {
             self.info = Some(r);
         }
+        self.poll_diff();
         self.poll_op(ctx, msgs);
     }
 
@@ -173,6 +178,8 @@ impl RepoTab {
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::Select(s) => self.select(ctx, s),
+            Action::Diff(src) => self.open_diff(ctx, src),
+            Action::CloseDiff => self.diff = None,
             Action::Git(op) => self.run(ctx, op),
             Action::Prompt(p) => self.prompt = Some(p),
             Action::Copy(s) => ctx.copy_text(s),

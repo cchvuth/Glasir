@@ -226,6 +226,7 @@ impl RepoTab {
                 self.reload(ctx, true);
             }
         }
+        self.refresh_diff(ctx);
     }
 
     /// Op that commits the message in the editor.

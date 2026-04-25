@@ -1,9 +1,10 @@
 //! Dev/CI harness: `GLASIR_SCREENSHOT=out.bmp` saves a screenshot once the repo
 //! is loaded, then exits. `GLASIR_SCREENSHOT_VIEW` opens a view first (settings,
-//! dialogs...); extend the switch when a new view needs
+//! dialogs, diffs...); extend the switch when a new view needs
 //! visual verification.
 
 use super::app::App;
+use crate::git;
 use crate::repo::{Op, PullMode, pull_op};
 
 impl App {
@@ -48,6 +49,12 @@ impl App {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         let args: Vec<&str> = q[4..].split(' ').collect();
                         t.apply(&ctx.clone(), crate::repo::Action::Git(Op::new(args[0], &args)));
+                    }
+                }
+                Ok(q) if q.starts_with("diff:") => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        let change = git::Change { path: q[5..].into(), old_path: None, code: 'M' };
+                        t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: false }));
                     }
                 }
                 _ => {}
