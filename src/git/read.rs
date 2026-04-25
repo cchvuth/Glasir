@@ -66,6 +66,7 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
                 name: name.into(),
                 full: f[0].into(),
                 target: if f[2].is_empty() { f[1] } else { f[2] }.into(),
+                upstream: f[3].into(),
                 ahead: num("ahead "),
                 behind: num("behind "),
                 gone: f[4] == "gone",

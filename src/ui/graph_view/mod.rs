@@ -220,6 +220,16 @@ pub fn show(
                     if pill_resp.double_clicked() {
                         acts.extend(branch_checkout(d, rf));
                     }
+                    // Right-clicking a pill gives that ref's own menu (all refs here when several).
+                    pill_resp.context_menu(|ui| {
+                        if ids.len() == 1 {
+                            crate::ui::sidebar::ref_menus::ref_menu(ui, d, rf, acts);
+                        } else {
+                            for &i in ids {
+                                ui.menu_button(ref_label(&d.refs[i]), |ui| crate::ui::sidebar::ref_menus::ref_menu(ui, d, &d.refs[i], acts));
+                            }
+                        }
+                    });
                 }
 
                 let ty = y(r);

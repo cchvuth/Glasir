@@ -27,6 +27,7 @@ pub struct Ref {
     pub full: String,
     /// Peeled commit id.
     pub target: String,
+    pub upstream: String,
     pub ahead: u32,
     pub behind: u32,
     pub gone: bool,

@@ -1,9 +1,13 @@
 //! Left sidebar: filter box, local / remote branches, and tags.
+//! `ref_menus` holds the right-click menus of refs (shared with the graph pills).
+
+pub mod ref_menus;
 
 use crate::git::RefKind;
 use crate::repo::{Action, RepoData, branch_checkout};
 use crate::theme::icon;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
+use ref_menus::ref_menu;
 
 fn matches(filter: &str, name: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
@@ -45,6 +49,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 if resp.double_clicked() {
                     acts.extend(branch_checkout(d, r));
                 }
+                resp.context_menu(|ui| ref_menu(ui, d, r, acts));
             }
         });
         let mut remotes: Vec<&str> = d.remotes.iter().map(|r| r.0.as_str()).collect();
@@ -61,7 +66,8 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                         if resp.double_clicked() {
                             acts.extend(branch_checkout(d, r));
                         }
-                            }
+                        resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+                    }
                 });
             }
         });
@@ -73,6 +79,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
                 }
+                resp.context_menu(|ui| ref_menu(ui, d, r, acts));
             }
         });
     });

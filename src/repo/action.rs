@@ -37,6 +37,8 @@ pub struct Prompt {
     pub title: String,
     pub value: String,
     pub op: Op,
+    /// Optional second field (e.g. a tag message), substituted for `{2}`.
+    pub second: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -47,6 +49,7 @@ pub enum Action {
     Git(Op),
     Prompt(Prompt),
     Copy(String),
+    Url(String),
     Reveal(String),
     Jump(String),
     Error(String),
@@ -54,6 +57,14 @@ pub enum Action {
     Redo,
     Reload,
     Cancel,
+}
+
+pub fn op(label: impl Into<String>, args: &[&str]) -> Action {
+    Action::Git(Op::new(label, args))
+}
+
+pub fn prompt(title: impl Into<String>, value: impl Into<String>, op: Op) -> Action {
+    Action::Prompt(Prompt { title: title.into(), value: value.into(), op, second: None })
 }
 
 pub struct Msg {

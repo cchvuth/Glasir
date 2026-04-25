@@ -21,7 +21,7 @@ mod task;
 mod testutil;
 mod undo;
 
-pub use action::{Action, Choice, DiffSrc, Msg, Prompt, Sel};
+pub use action::{Action, Choice, DiffSrc, Msg, Prompt, Sel, op, prompt};
 pub use data::RepoData;
 pub use diff::DiffState;
 pub use files::reveal;
@@ -183,6 +183,9 @@ impl RepoTab {
             Action::Git(op) => self.run(ctx, op),
             Action::Prompt(p) => self.prompt = Some(p),
             Action::Copy(s) => ctx.copy_text(s),
+            Action::Url(u) => {
+                let _ = open::that_detached(u);
+            }
             Action::Reveal(p) => reveal(&self.dir.join(p)),
             Action::Jump(id) => {
                 self.scroll_to = self.data.as_ref().and_then(|d| d.row_of.get(&id).copied());

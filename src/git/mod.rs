@@ -9,6 +9,7 @@ mod model;
 mod read;
 mod runner;
 mod snapshot;
+mod url;
 
 pub type Res<T> = Result<T, String>;
 
@@ -23,3 +24,4 @@ pub use model::{Change, Commit, CommitInfo, Ref, RefKind, Status};
 pub use read::{commit_info, git_dir, log, refs, remotes, status};
 pub use runner::{CANCELLED, Cancel, progress_label, run, run_input, run_raw};
 pub use snapshot::{Snapshot, restore, snapshot};
+pub use url::{url_path, web_url};

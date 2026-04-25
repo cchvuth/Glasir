@@ -15,9 +15,10 @@ use std::path::Path;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Undo {
     No,
-    /// Commits: the undone changes stay staged.
+    /// Commits and soft resets: the undone changes stay staged.
     Soft,
-    /// Everything else (checkout, pull...): `reset --keep`.
+    Mixed,
+    /// Everything else (checkout, merge, rebase, branch ops...): `reset --keep`.
     Keep,
 }
 
@@ -25,6 +26,7 @@ impl Undo {
     pub(super) fn mode(self) -> &'static str {
         match self {
             Undo::Soft => "--soft",
+            Undo::Mixed => "--mixed",
             _ => "--keep",
         }
     }

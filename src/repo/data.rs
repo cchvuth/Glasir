@@ -40,6 +40,21 @@ impl RepoData {
         self.refs.iter().find(|r| r.kind == RefKind::Local && r.name == name)
     }
 
+    /// Web URL of the main remote (github.com or GitHub Enterprise).
+    pub fn web(&self) -> Option<String> {
+        let r = self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first())?;
+        git::web_url(&r.1)
+    }
+
+    pub fn web_of(&self, remote: &str) -> Option<String> {
+        self.remotes.iter().find(|r| r.0 == remote).and_then(|r| git::web_url(&r.1)).or_else(|| self.web())
+    }
+
+    pub fn default_branch(&self) -> String {
+        let has = |n: &str| self.refs.iter().any(|r| r.kind == RefKind::Remote && r.name == n);
+        ["origin/main", "origin/master"].into_iter().find(|n| has(n)).map(|n| n[7..].to_owned()).unwrap_or_else(|| "main".into())
+    }
+
     pub(super) fn build(
         log: Arc<Vec<Commit>>,
         refs: Arc<Vec<Ref>>,
@@ -113,4 +128,3 @@ pub(super) fn load_all(dir: &Path, limit: usize) -> Res<RepoData> {
     });
     Ok(RepoData::build(Arc::new(log?), Arc::new(refs?), Arc::new(remotes), git_dir, status?))
 }
-

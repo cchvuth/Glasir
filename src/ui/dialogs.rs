@@ -5,16 +5,22 @@ use crate::repo::{Action, RepoTab};
 use crate::theme::{self, icon};
 use egui::{Button, Frame, Id, Key, RichText, TextEdit, vec2};
 
-/// Asks for a value (`Action::Prompt`), then runs its op with `{}` filled in.
+/// Asks for a value (`Action::Prompt`), then runs its op with `{}` / `{2}` filled in.
 pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let Some(p) = &mut t.prompt else { return };
     let mut done = None;
     egui::Modal::new(Id::new("prompt")).show(ctx, |ui| {
         ui.set_width(360.0);
         ui.heading(&p.title);
-        ui.add(TextEdit::singleline(&mut p.value).desired_width(f32::INFINITY)).request_focus();
+        let first = ui.add(TextEdit::singleline(&mut p.value).desired_width(f32::INFINITY));
+        if let Some((hint, v2)) = &mut p.second {
+            ui.add(TextEdit::multiline(v2).hint_text(hint.as_str()).desired_rows(3).desired_width(f32::INFINITY));
+        } else {
+            first.request_focus();
+        }
         ui.horizontal(|ui| {
-            if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(Key::Enter)) {
+            let enter = ui.input(|i| i.key_pressed(Key::Enter) && (p.second.is_none() || i.modifiers.command));
+            if ui.button("OK").clicked() || enter {
                 done = Some(true);
             }
             if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -27,8 +33,9 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         let v = p.value.trim();
         if ok && !v.is_empty() {
             let mut op = p.op;
+            let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
             for a in op.cmds.iter_mut().flatten() {
-                *a = a.replace("{}", v);
+                *a = a.replace("{}", v).replace("{2}", &v2);
             }
             acts.push(Action::Git(op));
         }

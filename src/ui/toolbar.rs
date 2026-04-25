@@ -58,6 +58,11 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                 if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
                     acts.push(Action::Reload);
                 }
+                if let Some(web) = t.data.as_ref().and_then(|d| d.web())
+                    && theme::pill(ui, icon::GLOBE).on_hover_text(format!("Open {web}")).clicked()
+                {
+                    acts.push(Action::Url(web));
+                }
             });
         });
     });
@@ -106,6 +111,7 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                     title: "New branch from HEAD".into(),
                     value: String::new(),
                     op: Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep),
+                second: None,
                 }));
             }
         }
