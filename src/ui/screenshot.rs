@@ -57,6 +57,12 @@ impl App {
                         t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: false }));
                     }
                 }
+                Ok(q) if q.starts_with("drop:") => {
+                    let mut it = q[5..].splitn(2, ':');
+                    if let (Some(src), Some(dst), Some(t)) = (it.next(), it.next(), self.tabs.get_mut(self.active)) {
+                        t.drop_menu = Some((src.into(), dst.into(), egui::pos2(600.0, 300.0)));
+                    }
+                }
                 _ => {}
             }
         }

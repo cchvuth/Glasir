@@ -5,7 +5,7 @@
 use super::settings::Settings;
 use super::toasts::Toast;
 use super::welcome::CloneDlg;
-use super::{command_log, repo_view};
+use super::{command_log, graph_view, repo_view};
 use crate::git;
 use crate::repo::{Action, Msg, Op, RepoTab, Task, fetch_op};
 use crate::theme::{self, icon};
@@ -194,6 +194,7 @@ impl eframe::App for App {
         self.settings_dialog(&ctx);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
+        graph_view::dnd::preview(&ctx);
     }
 
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {

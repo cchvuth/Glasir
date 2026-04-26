@@ -61,6 +61,8 @@ pub struct RepoTab {
     pub max_commits: usize,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
+    /// Pending drag-and-drop menu: (source branch, target branch, where).
+    pub drop_menu: Option<(String, String, egui::Pos2)>,
     /// A failed op offering fixes (diverged pull, rejected push).
     pub choice: Option<Choice>,
 }
@@ -92,6 +94,7 @@ impl RepoTab {
             scroll_to: None,
             max_commits,
             notes: vec![],
+            drop_menu: None,
             choice: None,
         };
         t.reload(ctx, true);
@@ -192,6 +195,10 @@ impl RepoTab {
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
+            Action::DropBranch { src, dst } => {
+                let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
+                self.drop_menu = Some((src, dst, at));
+            }
             Action::Undo => self.undo_redo(ctx, true),
             Action::Redo => self.undo_redo(ctx, false),
             Action::Reload => self.reload(ctx, true),

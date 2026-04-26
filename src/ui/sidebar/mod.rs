@@ -6,6 +6,7 @@ pub mod ref_menus;
 use crate::git::RefKind;
 use crate::repo::{Action, RepoData, branch_checkout};
 use crate::theme::icon;
+use crate::ui::graph_view::dnd::branch_dnd;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use ref_menus::ref_menu;
 
@@ -42,6 +43,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                     rt = rt.strong();
                 }
                 let resp = ui.add(egui::Button::selectable(r.head, rt).frame_when_inactive(false));
+                branch_dnd(ui, &resp, &r.name, acts);
                 let resp = if r.gone { resp.on_hover_text("Upstream branch is gone") } else { resp };
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
@@ -60,6 +62,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 egui::CollapsingHeader::new(rem).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
                     for r in remote_refs.iter().copied().filter(|r| r.remote() == rem) {
                         let resp = ui.add(egui::Button::selectable(false, r.remote_branch()).frame_when_inactive(false));
+                        branch_dnd(ui, &resp, &r.name, acts);
                         if resp.clicked() {
                             acts.push(Action::Jump(r.target.clone()));
                         }

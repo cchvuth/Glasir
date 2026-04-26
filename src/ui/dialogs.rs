@@ -1,9 +1,11 @@
-//! Per-repo modal dialogs: value prompt, confirmation and failed-op
-//! choices. Each reads its request from the `RepoTab` and pushes the resulting `Action`s.
+//! Per-repo modal dialogs and popups: value prompt, confirmation,
+//! failed-op choices and the branch drop menu. Each reads its
+//! request from the `RepoTab` and pushes the resulting `Action`s.
 
-use crate::repo::{Action, RepoTab};
+use crate::git;
+use crate::repo::{Action, Op, RepoTab, Undo};
 use crate::theme::{self, icon};
-use egui::{Button, Frame, Id, Key, RichText, TextEdit, vec2};
+use egui::{Button, Frame, Id, Key, RichText, TextEdit, Ui, vec2};
 
 /// Asks for a value (`Action::Prompt`), then runs its op with `{}` / `{2}` filled in.
 pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
@@ -105,5 +107,50 @@ pub(super) fn choice_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     });
     if close {
         t.choice = None;
+    }
+}
+
+/// The menu shown after dropping one branch onto another.
+pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
+    let Some((src, dst, at)) = t.drop_menu.clone() else { return };
+    let Some(d) = &t.data else { return };
+    let head = d.status.branch.clone().unwrap_or_default();
+    let dst_ref = d.refs.iter().find(|r| r.name == dst).map(|r| (r.kind, r.remote().to_owned(), r.remote_branch().to_owned()));
+    let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
+    let area = egui::Area::new(Id::new("drop_menu")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
+        Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(260.0);
+            ui.label(RichText::new(format!("{src}  {}  {dst}", icon::ARROW_RIGHT)).strong());
+            ui.separator();
+            let mut pick = |ui: &mut Ui, label: String, a: Action| {
+                if ui.button(label).clicked() {
+                    acts.push(a);
+                    close = true;
+                }
+            };
+            // Merging needs a local target branch (checking out a remote ref would detach HEAD).
+            if dst == head || matches!(dst_ref, Some((git::RefKind::Local, ..))) {
+                let merge = if dst == head {
+                    Op::new(format!("Merge {src}"), &["merge", "--no-edit", &src])
+                } else {
+                    Op::new(format!("Merge {src} into {dst}"), &["checkout", &dst, "--"]).then(&["merge", "--no-edit", &src])
+                };
+                pick(ui, format!("{} Merge {src} into {dst}", icon::GIT_MERGE), Action::Git(merge.undo(Undo::Keep)));
+            }
+            if matches!(dst_ref, Some((git::RefKind::Remote, ..))) && d.local(&src).is_some() {
+                let (_, remote, branch) = dst_ref.clone().unwrap();
+                let push = Op::new(format!("Push {src}"), &["push", &remote, &format!("{src}:{branch}")]);
+                pick(ui, format!("{} Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
+            }
+            let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", &dst, &src]).undo(Undo::Keep);
+            pick(ui, format!("{} Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    let outside = ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer();
+    if close || outside {
+        t.drop_menu = None;
     }
 }

@@ -2,14 +2,17 @@
 //! Only visible rows are laid out and painted, so 100k+ commits scroll smoothly.
 //!
 //! `mod.rs` paints the table and handles row clicks/keys; `menus` the
-//! commit/WIP context menus, `format` dates and initials.
+//! commit/WIP context menus, `dnd` branch drag-and-drop, `format`
+//! dates and initials.
 
+pub mod dnd;
 pub mod menus;
 
 use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
 use crate::repo::{Action, RepoData, Sel, branch_checkout};
 use crate::theme::{self, icon};
+use dnd::BranchDrag;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use crate::ui::format::{initials, relative_time};
 use menus::{checkout_action, commit_menu, wip_menu};
@@ -126,6 +129,17 @@ pub fn show(
                 {
                     acts.extend(checkout_action(d, c));
                 }
+                // Dropping a branch onto a row targets that row's branch.
+                if let Some(dst) = commit.and_then(|c| d.refs_at.get(&c.id)).and_then(|v| v.iter().map(|&i| &d.refs[i]).find(|r| r.kind != RefKind::Tag)) {
+                    if resp.dnd_hover_payload::<BranchDrag>().is_some_and(|p| p.0 != dst.name) {
+                        ui.painter().rect_stroke(rect.shrink2(vec2(2.0, 1.5)), 9.0, Stroke::new(2.0, theme::accent()), egui::StrokeKind::Inside);
+                    }
+                    if let Some(p) = resp.dnd_release_payload::<BranchDrag>()
+                        && p.0 != dst.name
+                    {
+                        acts.push(Action::DropBranch { src: p.0.clone(), dst: dst.name.clone() });
+                    }
+                }
                 resp.context_menu(|ui| match commit {
                     Some(c) => commit_menu(ui, d, c, acts),
                     None => wip_menu(ui, acts),
@@ -213,7 +227,10 @@ pub fn show(
                     }
                     let tip_rect = Rect::from_min_max(pill.min, pos2(pill.right() + extra, pill.bottom()));
                     let names: Vec<String> = ids.iter().map(|&i| ref_label(&d.refs[i])).collect();
-                    let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click()).on_hover_text(names.join("\n"));
+                    let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag()).on_hover_text(names.join("\n"));
+                    if rf.kind != RefKind::Tag {
+                        pill_resp.dnd_set_drag_payload(BranchDrag(rf.name.clone()));
+                    }
                     if pill_resp.clicked() {
                         acts.extend(commit.map(|c| Action::Select(Sel::Commit(c.id.clone()))));
                     }

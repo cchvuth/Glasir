@@ -45,6 +45,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
 
     dialogs::prompt_dialog(t, &ctx, &mut acts);
     dialogs::confirm_dialog(t, &ctx, &mut acts);
+    dialogs::drop_menu(t, &ctx, &mut acts);
     dialogs::choice_dialog(t, &ctx, &mut acts);
     for a in acts {
         t.apply(&ctx, a);

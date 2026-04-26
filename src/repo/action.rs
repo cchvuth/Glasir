@@ -52,6 +52,8 @@ pub enum Action {
     Url(String),
     Reveal(String),
     Jump(String),
+    /// A branch was dropped onto another: offer merge / rebase / push.
+    DropBranch { src: String, dst: String },
     Error(String),
     Undo,
     Redo,
