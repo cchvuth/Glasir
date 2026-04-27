@@ -1,7 +1,7 @@
 //! Per-repo toolbar: repo / branch status, undo-redo, fetch-pull-push,
-//! branch, progress and cancel.
+//! branch-stash-pop, progress and cancel.
 
-use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, pull_op};
+use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pull_op, stash_op};
 use crate::theme::{self, icon};
 use crate::ui::settings::Settings;
 use egui::{Align, Button, Layout, RichText, Ui};
@@ -113,6 +113,18 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                     op: Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep),
                 second: None,
                 }));
+            }
+            if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).clicked() {
+                acts.push(Action::Git(stash_op()));
+            }
+            ui.menu_button(icon::CARET_DOWN, |ui| {
+                if ui.button("Stash staged changes only").clicked() {
+                    acts.push(op("Stash staged", &["stash", "push", "--staged"]));
+                    ui.close();
+                }
+            });
+            if theme::pill(ui, format!("{} Pop", icon::TRAY_ARROW_UP)).clicked() {
+                acts.push(op("Pop stash", &["stash", "pop"]));
             }
         }
     }

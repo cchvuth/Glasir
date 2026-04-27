@@ -1,7 +1,8 @@
-//! Left sidebar: filter box, local / remote branches, and tags.
+//! Left sidebar: filter box, local / remote branches, tags and stashes.
 //! `ref_menus` holds the right-click menus of refs (shared with the graph pills).
 
 pub mod ref_menus;
+pub mod stashes;
 
 use crate::git::RefKind;
 use crate::repo::{Action, RepoData, branch_checkout};
@@ -85,5 +86,6 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 resp.context_menu(|ui| ref_menu(ui, d, r, acts));
             }
         });
+        stashes::list(ui, d, f, acts);
     });
 }

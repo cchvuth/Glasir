@@ -18,7 +18,8 @@ pub(super) struct Saved {
 }
 
 pub(super) enum UndoKind {
-    Refs { before: Snapshot, after: Snapshot, mode: Undo },
+    /// `autostash`: the op carried uncommitted changes along; undo/redo carries them back.
+    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String> },
     Discard(Saved),
 }
 
@@ -79,12 +80,17 @@ fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
     Ok(())
 }
 
-/// Undo/redo: move refs from `expect` back to `target`.
-fn move_refs(dir: &Path, expect: &Snapshot, target: &Snapshot, mode: &str) -> Res<()> {
+/// Undo/redo: move refs from `expect` back to `target`, carrying uncommitted
+/// changes along when the op did (`autostash`).
+pub(super) fn move_refs(dir: &Path, expect: &Snapshot, target: &Snapshot, mode: &str, autostash: Option<&str>) -> Res<()> {
     if git::snapshot(dir)? != *expect {
         return Err("The repository changed outside Glasir since this action; undo history cleared.".into());
     }
-    git::restore(dir, target, mode)
+    let restore = || git::restore(dir, target, mode).map(|_| String::new());
+    match autostash {
+        Some(msg) => git::with_autostash(dir, msg, restore).map(drop),
+        None => restore().map(drop),
+    }
 }
 
 impl RepoTab {
@@ -104,10 +110,10 @@ impl RepoTab {
         let dir = self.dir.clone();
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         let job: Box<dyn FnOnce() -> Res<()> + Send> = match &e.kind {
-            UndoKind::Refs { before, after, mode } => {
+            UndoKind::Refs { before, after, mode, autostash } => {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
-                let mode = mode.mode();
-                Box::new(move || move_refs(&dir, &expect, &target, mode))
+                let (mode, autostash) = (mode.mode(), autostash.clone());
+                Box::new(move || move_refs(&dir, &expect, &target, mode, autostash.as_deref()))
             }
             // Restoring discarded work has no meaningful redo.
             UndoKind::Discard(_) if !undo => return,

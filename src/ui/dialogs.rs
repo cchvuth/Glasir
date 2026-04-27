@@ -82,7 +82,7 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
     }
 }
 
-/// A failed op's one-click fixes (pull when diverged...).
+/// A failed op's one-click fixes (stash and switch, pull when diverged...).
 pub(super) fn choice_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let Some(c) = &t.choice else { return };
     let mut close = false;

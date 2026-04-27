@@ -2,7 +2,7 @@
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
 use crate::git::{Commit, Ref, RefKind};
-use crate::repo::{Action, Op, Prompt, RepoData, Undo, branch_checkout, prompt};
+use crate::repo::{Action, Op, Prompt, RepoData, Undo, branch_checkout, prompt, stash_op};
 use egui::Ui;
 
 /// Double-click: check out the best branch at this commit.
@@ -115,6 +115,9 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
 }
 
 pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {
+    if ui.button("Stash all changes").clicked() {
+        acts.push(Action::Git(stash_op()));
+    }
     if ui.button("Discard all changes").clicked() {
         acts.push(Action::Git(
             Op::new("Discard all", &["reset", "--hard", "-q"])

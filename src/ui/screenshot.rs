@@ -5,7 +5,7 @@
 
 use super::app::App;
 use crate::git;
-use crate::repo::{Op, PullMode, pull_op};
+use crate::repo::{Action, Op, PullMode, Undo, pull_op};
 
 impl App {
     pub(super) fn screenshot(&mut self, ctx: &egui::Context) {
@@ -24,7 +24,13 @@ impl App {
                     }
                 }
                 Ok("log") => self.show_log = true,
-                // Network dialogs and badges: `pull-ff`, `push-rejected`, `force-push`.
+                // Network dialogs and badges: `checkout:<branch>`, `pull-ff`, `push-rejected`, `force-push`.
+                Ok(q) if q.starts_with("checkout:") => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        let b = &q["checkout:".len()..];
+                        t.apply(&ctx.clone(), crate::repo::Action::Git(Op::new(format!("Checkout {b}"), &["checkout", b, "--"]).undo(Undo::Keep)));
+                    }
+                }
                 Ok("pull-ff") => {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         t.apply(&ctx.clone(), crate::repo::Action::Git(pull_op(PullMode::FfOnly)));
@@ -61,6 +67,13 @@ impl App {
                     let mut it = q[5..].splitn(2, ':');
                     if let (Some(src), Some(dst), Some(t)) = (it.next(), it.next(), self.tabs.get_mut(self.active)) {
                         t.drop_menu = Some((src.into(), dst.into(), egui::pos2(600.0, 300.0)));
+                    }
+                }
+                Ok("stash") => {
+                    if let Some(t) = self.tabs.get_mut(self.active)
+                        && let Some(id) = t.data.as_ref().and_then(|d| d.stashes.first()).map(|s| s.id.clone())
+                    {
+                        t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(id)));
                     }
                 }
                 _ => {}

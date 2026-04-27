@@ -1,7 +1,7 @@
-//! Read-only queries (log, refs, status, remotes, commit details)
+//! Read-only queries (log, refs, status, stashes, remotes, commit details)
 //! and the parsers for their output.
 
-use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Status, run};
+use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, Status, run};
 use std::path::{Path, PathBuf};
 
 pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s";
@@ -127,6 +127,22 @@ pub fn status(dir: &Path) -> Res<Status> {
     run(dir, &["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]).map(|o| parse_status(&o))
 }
 
+pub fn stashes(dir: &Path) -> Res<Vec<Stash>> {
+    let out = run(dir, &["stash", "list", "-z", "--format=%H%x1f%P%x1f%gd%x1f%gs"])?;
+    Ok(out
+        .split('\0')
+        .filter_map(|r| {
+            let f: Vec<&str> = r.trim_start_matches('\n').splitn(4, '\x1f').collect();
+            (f.len() == 4).then(|| Stash {
+                id: f[0].into(),
+                base: f[1].split(' ').next().unwrap_or("").into(),
+                name: f[2].into(),
+                message: f[3].into(),
+            })
+        })
+        .collect())
+}
+
 pub fn git_dir(dir: &Path) -> Res<PathBuf> {
     Ok(PathBuf::from(run(dir, &["rev-parse", "--absolute-git-dir"])?.trim()))
 }
@@ -187,7 +203,17 @@ pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {
         committer_date: f[7].into(),
         message: f[8].trim_end().into(),
         files,
+        untracked: vec![],
     })
+}
+
+/// `commit_info` for a stash, plus the untracked files it saved (`<stash>^3`).
+pub fn stash_info(dir: &Path, id: &str) -> Res<CommitInfo> {
+    let mut info = commit_info(dir, id)?;
+    if info.parents.len() > 2 {
+        info.untracked = parse_name_status(&run(dir, &["diff-tree", "-r", "-z", "--no-commit-id", "--name-status", "--root", &info.parents[2]])?);
+    }
+    Ok(info)
 }
 
 #[cfg(test)]

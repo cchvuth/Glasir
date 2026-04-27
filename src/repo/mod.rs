@@ -5,7 +5,7 @@
 //! - `data`: `RepoData` and `load_all`
 //! - `action`: `Action`, `Sel`, `DiffSrc`, `Prompt`, `Choice`, `Msg`
 //! - `op`: `Op` builder, running/finishing ops, shared op builders
-//!   (push/pull/fetch/commit, `branch_checkout`)
+//!   (push/pull/fetch/stash/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
 //! - `diff`, `files`: one concern each
@@ -25,7 +25,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, Prompt, Sel, op, prompt};
 pub use data::RepoData;
 pub use diff::DiffState;
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op, stash_op};
 pub use task::Task;
 
 use crate::git::{self, CommitInfo, Res};
@@ -63,7 +63,7 @@ pub struct RepoTab {
     pub notes: Vec<Msg>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
-    /// A failed op offering fixes (diverged pull, rejected push).
+    /// A failed op offering fixes (autostash, diverged pull, rejected push).
     pub choice: Option<Choice>,
 }
 
@@ -124,10 +124,10 @@ impl RepoTab {
         let dir = self.dir.clone();
         let limit = self.max_commits;
         let cached = self.data.as_ref().filter(|_| !full).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.remotes.clone(), d.git_dir.clone())
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone())
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, rm, gd)) => Ok(RepoData::build(log, refs, rm, gd, git::status(&dir)?)),
+            Some((log, refs, st, rm, gd)) => Ok(RepoData::build(log, refs, st, rm, gd, git::status(&dir)?)),
             None => load_all(&dir, limit),
         }));
     }
@@ -170,7 +170,9 @@ impl RepoTab {
             match sel.clone() {
                 Sel::Commit(id) => {
                     self.info = None;
-                    self.info_task = Some(Task::spawn(ctx, move || git::commit_info(&dir, &id)));
+                    let stash = self.data.as_ref().is_some_and(|d| d.stashes.iter().any(|s| s.id == id));
+                    self.info_task =
+                        Some(Task::spawn(ctx, move || if stash { git::stash_info(&dir, &id) } else { git::commit_info(&dir, &id) }));
                 }
                 Sel::Wip => {}
             }

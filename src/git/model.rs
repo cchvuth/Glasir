@@ -1,4 +1,4 @@
-//! Plain data parsed from git output: commits, refs, status and
+//! Plain data parsed from git output: commits, refs, status, stashes and
 //! commit details.
 
 #[derive(Clone, Debug, Default)]
@@ -75,6 +75,15 @@ impl Status {
 }
 
 #[derive(Clone, Debug)]
+pub struct Stash {
+    pub id: String,
+    /// The commit the stash was made on (its first parent).
+    pub base: String,
+    pub name: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct CommitInfo {
     pub id: String,
     pub parents: Vec<String>,
@@ -85,4 +94,6 @@ pub struct CommitInfo {
     pub committer_date: String,
     pub message: String,
     pub files: Vec<Change>,
+    /// A stash's untracked files (its third parent), shown after `files`.
+    pub untracked: Vec<Change>,
 }

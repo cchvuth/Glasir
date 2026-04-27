@@ -17,6 +17,20 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, 
 use crate::ui::format::{initials, relative_time};
 use menus::{checkout_action, commit_menu, wip_menu};
 
+/// Closed outline of a rounded rect (for dashed borders).
+fn rounded(b: Rect, r: f32) -> Vec<Pos2> {
+    let (l, t, rt, bt) = (b.left(), b.top(), b.right(), b.bottom());
+    let mut p = vec![pos2(l + r, t), pos2(rt - r, t)];
+    corner(&mut p, pos2(rt - r, t), pos2(rt, t), pos2(rt, t + r));
+    p.push(pos2(rt, bt - r));
+    corner(&mut p, pos2(rt, bt - r), pos2(rt, bt), pos2(rt - r, bt));
+    p.push(pos2(l + r, bt));
+    corner(&mut p, pos2(l + r, bt), pos2(l, bt), pos2(l, bt - r));
+    p.push(pos2(l, t + r));
+    corner(&mut p, pos2(l, t + r), pos2(l, t), pos2(l + r, t));
+    p
+}
+
 pub const ROW: f32 = 28.0;
 pub const LANE: f32 = 20.0;
 const DATE_W: f32 = 116.0;
@@ -201,6 +215,7 @@ pub fn show(
                     }
                 }
 
+                let mut stash_x = left + 6.0;
                 let ids = commit.and_then(|cm| d.refs_at.get(&cm.id));
                 if let Some(ids) = ids.filter(|v| !v.is_empty()) {
                     let rf = &d.refs[ids[0]];
@@ -227,6 +242,7 @@ pub fn show(
                     }
                     let tip_rect = Rect::from_min_max(pill.min, pos2(pill.right() + extra, pill.bottom()));
                     let names: Vec<String> = ids.iter().map(|&i| ref_label(&d.refs[i])).collect();
+                    stash_x = tip_rect.right() + 4.0;
                     let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag()).on_hover_text(names.join("\n"));
                     if rf.kind != RefKind::Tag {
                         pill_resp.dnd_set_drag_payload(BranchDrag(rf.name.clone()));
@@ -247,6 +263,29 @@ pub fn show(
                             }
                         }
                     });
+                }
+
+                // Stashes made on this commit: dashed capsules after the pills.
+                for &i in commit.and_then(|cm| d.stash_at.get(&cm.id)).map_or(&[][..], |v| v) {
+                    let st = &d.stashes[i];
+                    let b = Rect::from_min_size(pos2(stash_x, y(r) - 9.0), vec2(26.0, 18.0));
+                    if b.right() > x_graph - 4.0 {
+                        break;
+                    }
+                    if stash_x == left + 6.0 {
+                        let dash = [pos2(b.right(), y(r)), pos2(c.x - 9.0, y(r))];
+                        painter.extend(Shape::dashed_line(&dash, Stroke::new(1.2, col.gamma_multiply(0.6)), 3.0, 3.0));
+                    }
+                    stash_x = b.right() + 4.0;
+                    let on = matches!(sel, Some(Sel::Commit(id)) if *id == st.id);
+                    painter.rect_filled(b, 9.0, if on { theme::accent().gamma_multiply(0.45) } else { theme::bg(ui) });
+                    painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, theme::dim(ui)), 3.0, 2.0));
+                    painter.text(b.center(), Align2::CENTER_CENTER, icon::ARCHIVE, FontId::proportional(12.0), text);
+                    let resp = ui.interact(b, ui.id().with(("stash", i)), Sense::click()).on_hover_text(format!("{}  ·  stash on this commit\n{}", st.name, st.message));
+                    if resp.clicked() {
+                        acts.push(Action::Select(Sel::Commit(st.id.clone())));
+                    }
+                    resp.context_menu(|ui| crate::ui::sidebar::stashes::stash_menu(ui, st, acts));
                 }
 
                 let ty = y(r);

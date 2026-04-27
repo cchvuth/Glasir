@@ -44,6 +44,8 @@ pub struct Op {
     pub light: bool,
     /// Discards: back up what will be lost first, so the discard can be undone.
     pub backup: Option<Backup>,
+    /// Stash uncommitted changes with this message first, reapply them after.
+    pub autostash: Option<String>,
 }
 
 /// What a discard is about to destroy.
@@ -65,6 +67,7 @@ impl Op {
             undo: Undo::No,
             light: false,
             backup: None,
+            autostash: None,
         }
     }
     /// Make a discard undoable.
@@ -101,15 +104,21 @@ pub(super) enum Done {
 
 /// Runs an op's commands in order, stopping at the first failure.
 pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
-    let mut out = Ok(String::new());
-    for args in &op.cmds {
-        let a: Vec<&str> = args.iter().map(String::as_str).collect();
-        out = git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes));
-        if out.is_err() {
-            break;
+    let all = || {
+        let mut out = Ok(String::new());
+        for args in &op.cmds {
+            let a: Vec<&str> = args.iter().map(String::as_str).collect();
+            out = git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes));
+            if out.is_err() {
+                break;
+            }
         }
+        out
+    };
+    match &op.autostash {
+        Some(msg) => git::with_autostash(dir, msg, all),
+        None => all(),
     }
-    out
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
@@ -130,6 +139,11 @@ pub fn pull_op(mode: PullMode) -> Op {
 
 pub fn fetch_op() -> Op {
     Op::new("Fetch", &["fetch", "--all", "--prune", "--progress"])
+}
+
+/// Stash everything, untracked files included (toolbar, WIP menu).
+pub fn stash_op() -> Op {
+    Op::new("Stash", &["stash", "push", "--include-untracked"])
 }
 
 /// Check out a ref: local branch, remote branch (its local twin or a new
@@ -206,7 +220,7 @@ impl RepoTab {
                     self.amend = false;
                 }
                 if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
-                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo } });
+                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo, autostash: op.autostash.clone() } });
                     self.redo.clear();
                 }
                 if let Some(saved) = saved.filter(|s| s.stash.is_some() || !s.files.is_empty()) {

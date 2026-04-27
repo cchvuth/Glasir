@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub struct RepoData {
     pub log: Arc<Vec<Commit>>,
     pub refs: Arc<Vec<Ref>>,
+    pub stashes: Arc<Vec<git::Stash>>,
     pub remotes: Arc<Vec<(String, String)>>,
     pub git_dir: PathBuf,
     pub status: Status,
@@ -20,6 +21,8 @@ pub struct RepoData {
     pub row_of: HashMap<String, usize>,
     /// Commit id -> indices into `refs`, most important first.
     pub refs_at: HashMap<String, Vec<usize>>,
+    /// Base commit id -> indices into `stashes`.
+    pub stash_at: HashMap<String, Vec<usize>>,
 }
 
 pub fn is_trunk(name: &str) -> bool {
@@ -58,6 +61,7 @@ impl RepoData {
     pub(super) fn build(
         log: Arc<Vec<Commit>>,
         refs: Arc<Vec<Ref>>,
+        stashes: Arc<Vec<git::Stash>>,
         remotes: Arc<Vec<(String, String)>>,
         git_dir: PathBuf,
         status: Status,
@@ -96,9 +100,14 @@ impl RepoData {
             row_of.insert(String::new(), 0);
         }
         let graph = Graph::layout(&parents, &prio);
+        let mut stash_at: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, s) in stashes.iter().enumerate() {
+            stash_at.entry(s.base.clone()).or_default().push(i);
+        }
         Self {
             log,
             refs,
+            stashes,
             remotes,
             git_dir,
             status,
@@ -106,13 +115,14 @@ impl RepoData {
             graph,
             row_of,
             refs_at,
+            stash_at,
         }
     }
 }
 
 pub(super) fn load_all(dir: &Path, limit: usize) -> Res<RepoData> {
     let git_dir = git::git_dir(dir)?;
-    let (status, refs, log, remotes) = std::thread::scope(|s| {
+    let (status, refs, log, stashes, remotes) = std::thread::scope(|s| {
         let st = s.spawn(|| git::status(dir));
         let rf = s.spawn(|| git::refs(dir));
         let lg = s.spawn(|| {
@@ -123,8 +133,51 @@ pub(super) fn load_all(dir: &Path, limit: usize) -> Res<RepoData> {
                 _ => Err(e),
             })
         });
+        let sh = s.spawn(|| git::stashes(dir).unwrap_or_default());
         let rm = s.spawn(|| git::remotes(dir).unwrap_or_default());
-        (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), rm.join().unwrap())
+        (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
     });
-    Ok(RepoData::build(Arc::new(log?), Arc::new(refs?), Arc::new(remotes), git_dir, status?))
+    Ok(RepoData::build(Arc::new(log?), Arc::new(refs?), Arc::new(stashes), Arc::new(remotes), git_dir, status?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::Change;
+    use crate::repo::op::{Op, exec};
+    use crate::repo::testutil::{commit, identity, scratch, sh};
+
+    #[test]
+    fn stash_node_and_apply_one_file() {
+        let dir = scratch("stashnode");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        commit(&dir, "b.txt", "two\n");
+        let base = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::write(dir.join("a.txt"), "stashed a\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "stashed b\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "untracked\n").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-u", "-m", "wip"]);
+        commit(&dir, "c.txt", "later\n");
+
+        let d = load_all(&dir, 100).unwrap();
+        let st = &d.stashes[0];
+        assert_eq!(st.base, base);
+        assert_eq!(d.stash_at[&base], [0]);
+        let info = git::stash_info(&dir, &st.id).unwrap();
+        let paths = |v: &[Change]| v.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+        assert_eq!(paths(&info.files), ["a.txt", "b.txt"]);
+        assert_eq!(paths(&info.untracked), ["new.txt"]);
+
+        // Apply one tracked file and the untracked one; the rest of the tree and the stash stay put.
+        let apply = |src: &str, path: &str| exec(&dir, &Op::new("Apply", &["--literal-pathspecs", "restore", "--source", src, "--worktree", "--", path])).unwrap();
+        apply(&st.id, "a.txt");
+        apply(&format!("{}^3", st.id), "new.txt");
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+        assert_eq!((read("a.txt").as_str(), read("b.txt").as_str(), read("new.txt").as_str()), ("stashed a\n", "two\n", "untracked\n"));
+        assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]), "");
+        assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -1,5 +1,5 @@
-//! One-click ways out of common failures (diverged pull, rejected push),
-//! offered as a `Choice`.
+//! One-click ways out of common failures (blocked checkout, diverged pull,
+//! rejected push), offered as a `Choice`.
 
 use super::action::Choice;
 use super::data::RepoData;
@@ -16,6 +16,21 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
         vec![("Pull (rebase)".to_owned(), pull_op(PullMode::Rebase)), ("Pull (merge)".to_owned(), merge)]
     };
     match args.first()?.as_str() {
+        "checkout" if err.contains("would be overwritten by checkout") => {
+            let target = op.label.strip_prefix("Checkout ").unwrap_or(&op.label);
+            let files: Vec<String> = err.lines().filter(|l| l.starts_with('\t')).map(|l| format!("  •  {}", l.trim())).collect();
+            let mut o = op.clone();
+            o.label = format!("{} (autostash)", op.label);
+            o.autostash = Some(format!("autostash before switching to {target}"));
+            Some(Choice {
+                title: "Uncommitted changes in the way".into(),
+                text: format!(
+                    "Switching to {target} would overwrite your uncommitted changes in:\n{}\n\nGlasir can stash them, switch, and reapply them there.",
+                    files.join("\n")
+                ),
+                ops: vec![("Stash, switch and reapply".into(), o)],
+            })
+        }
         "pull" if has("--ff-only") && err.contains("Not possible to fast-forward") => Some(Choice {
             title: "Branches have diverged".into(),
             text: "Your branch and its upstream both have new commits, so a fast-forward isn't possible. Combine them by rebasing your commits on top, or with a merge commit.".into(),
@@ -43,8 +58,9 @@ mod tests {
     use super::*;
     use crate::git;
     use crate::repo::data::load_all;
-    use crate::repo::op::exec;
+    use crate::repo::op::{Undo, exec};
     use crate::repo::testutil::{commit, identity, scratch, sh};
+    use crate::repo::undo::move_refs;
 
     #[test]
     fn push_pull_and_lease_against_bare_remote() {
@@ -97,5 +113,63 @@ mod tests {
         exec(&a, &force).unwrap();
         assert_eq!(sh(&root.join("remote.git"), &["rev-parse", "main"]), sh(&a, &["rev-parse", "HEAD"]));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn checkout_autostash() {
+        let dir = scratch("autostash");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "1\n2\n3\n4\n5\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "a.txt", "1 feat\n2\n3\n4\n5\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+        let stashes = || sh(&dir, &["stash", "list"]).lines().count();
+        let checkout = |b: &str| Op::new(format!("Checkout {b}"), &["checkout", b, "--"]).undo(Undo::Keep);
+        let autostash = |b: &str| {
+            let op = checkout(b);
+            let err = exec(&dir, &op).unwrap_err();
+            let c = offer(&op, &err, None).expect("blocked checkout offers autostash");
+            assert!(c.text.contains("a.txt"), "{}", c.text);
+            c.ops.into_iter().next().unwrap().1
+        };
+
+        // A dirty file the target branch touches carries over cleanly, staged and untracked files too.
+        std::fs::write(dir.join("a.txt"), "1\n2\n3\n4\n5 mine\n").unwrap();
+        std::fs::write(dir.join("staged.txt"), "s\n").unwrap();
+        sh(&dir, &["add", "staged.txt"]);
+        std::fs::write(dir.join("new.txt"), "n\n").unwrap();
+        let op = autostash("feat");
+        let before = git::snapshot(&dir).unwrap();
+        exec(&dir, &op).unwrap();
+        let after = git::snapshot(&dir).unwrap();
+        let carried = |branch: &str, a: &str| {
+            assert_eq!(sh(&dir, &["branch", "--show-current"]).trim(), branch);
+            assert_eq!(read("a.txt"), a);
+            assert_eq!(read("new.txt"), "n\n");
+            assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "staged.txt");
+            assert_eq!(stashes(), 0);
+        };
+        carried("feat", "1 feat\n2\n3\n4\n5 mine\n");
+
+        // Undo and redo carry the changes back and forth too.
+        let msg = op.autostash.as_deref();
+        move_refs(&dir, &after, &before, Undo::Keep.mode(), msg).unwrap();
+        carried("main", "1\n2\n3\n4\n5 mine\n");
+        move_refs(&dir, &before, &after, Undo::Keep.mode(), msg).unwrap();
+        carried("feat", "1 feat\n2\n3\n4\n5 mine\n");
+
+        // Conflicting: markers in the file, and the stash is kept.
+        sh(&dir, &["stash", "push", "-q", "-u"]);
+        sh(&dir, &["stash", "drop", "-q"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("a.txt"), "1 main\n2\n3\n4\n5\n").unwrap();
+        let err = exec(&dir, &autostash("feat")).unwrap_err();
+        assert!(err.contains("kept in the stash"), "{err}");
+        assert_eq!(sh(&dir, &["branch", "--show-current"]).trim(), "feat");
+        assert!(read("a.txt").contains("<<<<<<<"));
+        assert_eq!(stashes(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
