@@ -3,6 +3,7 @@
 
 use crate::git::{Commit, Ref, RefKind};
 use crate::repo::{Action, Op, Prompt, RepoData, Undo, branch_checkout, prompt, stash_op};
+use crate::theme::{self, icon};
 use egui::Ui;
 
 /// Double-click: check out the best branch at this commit.
@@ -23,6 +24,9 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, acts: &mut Vec<A
     }
     if ui.button(format!("Rebase {head} onto {target}")).clicked() {
         acts.push(Action::Git(Op::new(format!("Rebase onto {target}"), &["rebase", target]).undo(Undo::Keep)));
+    }
+    if ui.button(format!("Interactive rebase {head} onto {target}…")).clicked() {
+        acts.push(Action::Rebase { base: target.into(), label: target.into() });
     }
 }
 
@@ -71,6 +75,36 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
         if ui.button("Cherry-pick commit").clicked() {
             acts.push(Action::Git(Op::new(format!("Cherry-pick {short}"), &pick).undo(Undo::Keep)));
         }
+    }
+    if d.status.branch.is_some() && !is_head && ui.button("Edit history after this commit (interactive rebase)…").clicked() {
+        acts.push(Action::Rebase { base: c.id.clone(), label: short.into() });
+    }
+    if d.status.branch.is_some() && c.parents.len() == 1 {
+        ui.menu_button(format!("{} Rewrite this commit", icon::PENCIL_SIMPLE), |ui| {
+            let staged = !d.status.staged.is_empty();
+            if ui
+                .add_enabled(staged, egui::Button::new("Amend staged changes into this commit"))
+                .on_disabled_hover_text("Stage some changes first")
+                .clicked()
+            {
+                acts.push(Action::AmendInto(c.id.clone()));
+                ui.close();
+            }
+            if ui.button("Edit message…").clicked() {
+                // Placeholder op: RepoTab::run turns the new summary into a reword (keeping the body).
+                let op = Op::new(format!("Reword {short}"), &["__reword__", &c.id, "{}"]);
+                acts.push(prompt(format!("New message for {short}"), c.summary.clone(), op));
+                ui.close();
+            }
+            if ui.button("Squash into parent").clicked() {
+                acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Squash, message: None });
+                ui.close();
+            }
+            if ui.button(egui::RichText::new("Drop commit").color(theme::DEL)).clicked() {
+                acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Drop, message: None });
+                ui.close();
+            }
+        });
     }
     let mut revert = vec!["revert", "--no-edit"];
     if c.parents.len() > 1 {

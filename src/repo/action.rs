@@ -52,8 +52,13 @@ pub enum Action {
     Url(String),
     Reveal(String),
     Jump(String),
+    /// Open the interactive rebase editor for commits after `base`.
+    Rebase { base: String, label: String },
     /// A branch was dropped onto another: offer merge / rebase / push.
     DropBranch { src: String, dst: String },
+    /// Rewrite one commit on the current branch: reword / squash / drop.
+    Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
+    AmendInto(String),
     Error(String),
     Undo,
     Redo,

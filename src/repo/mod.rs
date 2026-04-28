@@ -9,6 +9,7 @@
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
 //! - `diff`, `files`: one concern each
+//! - `rebase`: interactive-rebase engine (todo `Editor`, quick/amend_into)
 
 mod action;
 mod data;
@@ -16,6 +17,7 @@ mod diff;
 pub mod files;
 mod offer;
 mod op;
+pub mod rebase;
 mod task;
 #[cfg(test)]
 mod testutil;
@@ -61,6 +63,7 @@ pub struct RepoTab {
     pub max_commits: usize,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
+    pub rebase: Option<crate::repo::rebase::Editor>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
     /// A failed op offering fixes (autostash, diverged pull, rejected push).
@@ -94,6 +97,7 @@ impl RepoTab {
             scroll_to: None,
             max_commits,
             notes: vec![],
+            rebase: None,
             drop_menu: None,
             choice: None,
         };
@@ -197,10 +201,31 @@ impl RepoTab {
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
+            Action::AmendInto(commit) => {
+                let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
+                match crate::repo::rebase::amend_into(&self.dir, &commit, is_head) {
+                    Ok(op) => self.run(ctx, op),
+                    Err(e) => self.notes.push(Msg { text: e, error: true }),
+                }
+            }
+            Action::Rewrite { commit, act, message } => {
+                let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
+                match crate::repo::rebase::quick(&self.dir, &git_dir, &commit, act, message) {
+                    Ok(op) => self.run(ctx, op),
+                    Err(e) => self.notes.push(Msg { text: e, error: true }),
+                }
+            }
             Action::DropBranch { src, dst } => {
                 let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
                 self.drop_menu = Some((src, dst, at));
             }
+            Action::Rebase { base, label } => match crate::repo::rebase::Editor::load(&self.dir, &base, &label) {
+                Ok(ed) => {
+                    self.diff = None;
+                    self.rebase = Some(ed);
+                }
+                Err(e) => self.notes.push(Msg { text: e, error: true }),
+            },
             Action::Undo => self.undo_redo(ctx, true),
             Action::Redo => self.undo_redo(ctx, false),
             Action::Reload => self.reload(ctx, true),

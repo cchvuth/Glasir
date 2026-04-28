@@ -144,6 +144,9 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             }
             let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", &dst, &src]).undo(Undo::Keep);
             pick(ui, format!("{} Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
+            if src == head {
+                pick(ui, format!("{} Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst.clone(), label: dst.clone() });
+            }
             if ui.button("Cancel").clicked() {
                 close = true;
             }

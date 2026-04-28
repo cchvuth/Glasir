@@ -167,6 +167,18 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
 impl RepoTab {
     /// Runs `op` (after a confirmation dialog if it asks for one).
     pub fn run(&mut self, ctx: &egui::Context, op: Op) {
+        if let [cmd, commit, msg] = op.cmds[0].as_slice()
+            && cmd == "__reword__"
+        {
+            let old = git::run(&self.dir, &["log", "-1", "--format=%B", commit]).unwrap_or_default();
+            let body = old.trim_end().split_once('\n').map(|(_, b)| b.trim_start_matches('\n').to_owned()).unwrap_or_default();
+            let message = if body.is_empty() { msg.clone() } else { format!("{msg}\n\n{body}") };
+            if self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str()) {
+                let op = Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft);
+                return self.run(ctx, op);
+            }
+            return self.apply(ctx, Action::Rewrite { commit: commit.clone(), act: crate::repo::rebase::Act::Reword, message: Some(message) });
+        }
         if op.confirm.is_some() {
             self.confirm = Some(op);
             return;
