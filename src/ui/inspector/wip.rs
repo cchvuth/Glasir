@@ -1,8 +1,9 @@
-//! Inspector for the WIP row: conflicted / unstaged / staged file lists and
-//! the commit box.
+//! Inspector for the WIP row: operation-in-progress banner, conflicted /
+//! unstaged / staged file lists and the commit box.
 
 use super::file_row;
-use crate::repo::{Action, DiffSrc, Op, RepoTab};
+use crate::git::State;
+use crate::repo::{Action, DiffSrc, Op, RepoTab, op};
 use crate::theme;
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
@@ -12,6 +13,32 @@ impl RepoTab {
         let s = &d.status;
         let open = self.diff.as_ref().map(|d| d.src.clone());
         let busy = self.busy().is_some();
+
+        if d.state != State::Clean {
+            let (what, cmd) = match d.state {
+                State::Merging => ("Merge", "merge"),
+                State::Rebasing => ("Rebase", "rebase"),
+                State::CherryPicking => ("Cherry-pick", "cherry-pick"),
+                State::Reverting => ("Revert", "revert"),
+                _ => ("Bisect", "bisect"),
+            };
+            egui::Frame::new().fill(theme::MOD.gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
+                ui.label(RichText::new(format!("{what} in progress")).strong());
+                if !s.conflicted.is_empty() {
+                    ui.label(format!("{} conflicted file(s) — resolve, then continue.", s.conflicted.len()));
+                }
+                ui.horizontal(|ui| {
+                    if cmd != "bisect" && ui.button("Continue").clicked() {
+                        acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"])));
+                    }
+                    let abort = if cmd == "bisect" { vec!["bisect", "reset"] } else { vec![cmd, "--abort"] };
+                    if ui.button("Abort").clicked() {
+                        acts.push(op(format!("Abort {cmd}"), &abort));
+                    }
+                });
+            });
+            ui.add_space(6.0);
+        }
 
         let mut commit = false;
         egui::Panel::bottom("commit_box").frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
@@ -51,7 +78,7 @@ impl RepoTab {
                 if !s.conflicted.is_empty() {
                     ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
                     for c in &s.conflicted {
-                        let resp = file_row(ui, c, false);
+                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path));
                         resp.context_menu(|ui| {
                             if ui.button("Mark resolved").clicked() {
                                 acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", &c.path]).light()));
@@ -69,6 +96,9 @@ impl RepoTab {
                                 acts.push(Action::Git(Op::new("Restore conflict", &["--literal-pathspecs", "checkout", "-m", "--", &c.path]).light()));
                             }
                         });
+                        if resp.clicked() {
+                            acts.push(Action::MergeEditor(c.path.clone()));
+                        }
                     }
                     ui.add_space(6.0);
                 }

@@ -83,6 +83,16 @@ pub struct Stash {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Clean,
+    Merging,
+    Rebasing,
+    CherryPicking,
+    Reverting,
+    Bisecting,
+}
+
 #[derive(Clone, Debug)]
 pub struct CommitInfo {
     pub id: String,

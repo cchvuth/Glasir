@@ -14,6 +14,7 @@ pub struct RepoData {
     pub remotes: Arc<Vec<(String, String)>>,
     pub git_dir: PathBuf,
     pub status: Status,
+    pub state: git::State,
     /// Row 0 is the uncommitted-changes pseudo commit.
     pub wip: bool,
     pub graph: Graph,
@@ -100,6 +101,7 @@ impl RepoData {
             row_of.insert(String::new(), 0);
         }
         let graph = Graph::layout(&parents, &prio);
+        let state = git::state(&git_dir);
         let mut stash_at: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, s) in stashes.iter().enumerate() {
             stash_at.entry(s.base.clone()).or_default().push(i);
@@ -111,6 +113,7 @@ impl RepoData {
             remotes,
             git_dir,
             status,
+            state,
             wip,
             graph,
             row_of,

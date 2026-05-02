@@ -1,8 +1,9 @@
-//! Read-only queries (log, refs, status, stashes, remotes, commit details)
-//! and the parsers for their output.
+//! Read-only queries (log, refs, status, stashes, remotes, commit details,
+//! conflict prediction) and the parsers for their output.
 
-use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, Status, run};
+use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, State, Status, cmd, run};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s";
 const DATE_FORMAT: &str = "--date=format-local:%Y-%m-%d %H:%M";
@@ -147,6 +148,23 @@ pub fn git_dir(dir: &Path) -> Res<PathBuf> {
     Ok(PathBuf::from(run(dir, &["rev-parse", "--absolute-git-dir"])?.trim()))
 }
 
+pub fn state(git_dir: &Path) -> State {
+    let has = |f: &str| git_dir.join(f).exists();
+    if has("rebase-merge") || has("rebase-apply") {
+        State::Rebasing
+    } else if has("MERGE_HEAD") {
+        State::Merging
+    } else if has("CHERRY_PICK_HEAD") {
+        State::CherryPicking
+    } else if has("REVERT_HEAD") {
+        State::Reverting
+    } else if has("BISECT_LOG") {
+        State::Bisecting
+    } else {
+        State::Clean
+    }
+}
+
 /// `(name, fetch url)` for each remote, with `insteadOf` rewrites applied.
 pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
     let out = run(dir, &["remote", "-v"]).unwrap_or_default();
@@ -214,6 +232,22 @@ pub fn stash_info(dir: &Path, id: &str) -> Res<CommitInfo> {
         info.untracked = parse_name_status(&run(dir, &["diff-tree", "-r", "-z", "--no-commit-id", "--name-status", "--root", &info.parents[2]])?);
     }
     Ok(info)
+}
+
+/// Files that would conflict if `other` were merged into HEAD, via an in-memory
+/// `merge-tree` (git ≥ 2.38). `None` when it can't be determined.
+pub fn predict_conflicts(dir: &Path, other: &str) -> Option<Vec<String>> {
+    let out = cmd(dir)
+        .args(["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "HEAD", other])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    match out.status.code() {
+        Some(0) => Some(vec![]),
+        Some(1) => Some(String::from_utf8_lossy(&out.stdout).split('\0').skip(1).filter(|s| !s.is_empty()).map(String::from).collect()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -54,6 +54,8 @@ pub enum Action {
     Jump(String),
     /// Open the interactive rebase editor for commits after `base`.
     Rebase { base: String, label: String },
+    /// Open the 3-way merge editor for a conflicted file.
+    MergeEditor(String),
     /// A branch was dropped onto another: offer merge / rebase / push.
     DropBranch { src: String, dst: String },
     /// Rewrite one commit on the current branch: reword / squash / drop.

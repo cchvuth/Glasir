@@ -1,5 +1,5 @@
 //! Per-repo toolbar: repo / branch status, undo-redo, fetch-pull-push,
-//! branch-stash-pop, progress and cancel.
+//! branch-stash-pop, conflict chip, progress and cancel.
 
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pull_op, stash_op};
 use crate::theme::{self, icon};
@@ -44,6 +44,12 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             theme::group(ui, |ui| toolbar_remote(ui, t, s, acts));
             theme::group(ui, |ui| toolbar_local(ui, acts));
         });
+        if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
+            let chip = RichText::new(format!("{} {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
+                .color(theme::MOD);
+            theme::group(ui, |ui| ui.label(chip))
+                .on_hover_text(format!("Merging {target} now would conflict in:\n{}", files.join("\n")));
+        }
         if let Some(label) = t.busy() {
             ui.spinner();
             theme::progress(ui, &format!("{label}…"), t.progress());

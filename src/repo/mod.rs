@@ -8,13 +8,17 @@
 //!   (push/pull/fetch/stash/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
-//! - `diff`, `files`: one concern each
+//! - `diff`, `conflicts`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/amend_into)
+//! - `merge_editor`: state behind the merge editor (drawn by the same-named
+//!   `ui` file)
 
 mod action;
+mod conflicts;
 mod data;
 mod diff;
 pub mod files;
+pub mod merge_editor;
 mod offer;
 mod op;
 pub mod rebase;
@@ -64,8 +68,12 @@ pub struct RepoTab {
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
     pub rebase: Option<crate::repo::rebase::Editor>,
+    pub merge: Option<merge_editor::Editor>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
+    /// Predicted conflicts with the target branch: (target, files).
+    pub conflicts: Option<(String, Vec<String>)>,
+    conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
     /// A failed op offering fixes (autostash, diverged pull, rejected push).
     pub choice: Option<Choice>,
 }
@@ -98,7 +106,10 @@ impl RepoTab {
             max_commits,
             notes: vec![],
             rebase: None,
+            merge: None,
             drop_menu: None,
+            conflicts: None,
+            conflict_task: None,
             choice: None,
         };
         t.reload(ctx, true);
@@ -145,6 +156,10 @@ impl RepoTab {
                     }
                     let first = self.data.is_none();
                     let head = d.status.head.clone();
+                    // Resolved or aborted elsewhere: the editor's markers are stale.
+                    if self.merge.as_ref().is_some_and(|m| !d.status.conflicted.iter().any(|c| c.path == m.path)) {
+                        self.merge = None;
+                    }
                     self.data = Some(d);
                     if self.sel.is_none() {
                         match (self.data.as_ref().is_some_and(|d| d.wip), head) {
@@ -159,7 +174,12 @@ impl RepoTab {
             }
             if let Some(full) = self.queued.take() {
                 self.reload(ctx, full);
+            } else {
+                self.check_conflicts(ctx);
             }
+        }
+        if let Some(c) = Task::poll(&mut self.conflict_task) {
+            self.conflicts = c;
         }
         if let Some(r) = Task::poll(&mut self.info_task) {
             self.info = Some(r);
@@ -187,7 +207,14 @@ impl RepoTab {
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::Select(s) => self.select(ctx, s),
-            Action::Diff(src) => self.open_diff(ctx, src),
+            Action::Diff(src) => {
+                self.merge = None;
+                self.open_diff(ctx, src)
+            }
+            Action::MergeEditor(path) => {
+                (self.diff, self.rebase) = (None, None);
+                self.merge = Some(merge_editor::Editor::open(ctx, &self.dir, &path));
+            }
             Action::CloseDiff => self.diff = None,
             Action::Git(op) => self.run(ctx, op),
             Action::Prompt(p) => self.prompt = Some(p),
@@ -221,7 +248,7 @@ impl RepoTab {
             }
             Action::Rebase { base, label } => match crate::repo::rebase::Editor::load(&self.dir, &base, &label) {
                 Ok(ed) => {
-                    self.diff = None;
+                    (self.diff, self.merge) = (None, None);
                     self.rebase = Some(ed);
                 }
                 Err(e) => self.notes.push(Msg { text: e, error: true }),
