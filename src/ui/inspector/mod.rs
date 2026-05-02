@@ -1,7 +1,9 @@
 //! Right-hand inspector: what the graph selection shows. `commit` (commit
-//! details and files), `wip` (staging lists + commit box). File rows live here.
+//! details and files), `wip` (staging lists + commit box), `multi`
+//! (several selected commits). File rows live here.
 
 mod commit;
+mod multi;
 mod wip;
 
 use crate::git::Change;
@@ -11,6 +13,9 @@ use egui::{RichText, Sense, Ui};
 
 impl RepoTab {
     pub fn details(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        if self.multi.len() > 1 {
+            return self.multi_panel(ui, acts);
+        }
         match self.sel.clone() {
             Some(Sel::Wip) => self.wip_panel(ui, acts),
             Some(Sel::Commit(_)) => self.commit_panel(ui, acts),

@@ -2,7 +2,7 @@
 //! Only visible rows are laid out and painted, so 100k+ commits scroll smoothly.
 //!
 //! `mod.rs` paints the table and handles row clicks/keys; `menus` the
-//! commit/WIP context menus, `dnd` branch drag-and-drop, `format`
+//! commit/WIP/multi-select context menus, `dnd` branch drag-and-drop, `format`
 //! dates and initials.
 
 pub mod dnd;
@@ -15,7 +15,7 @@ use crate::theme::{self, icon};
 use dnd::BranchDrag;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use crate::ui::format::{initials, relative_time};
-use menus::{checkout_action, commit_menu, wip_menu};
+use menus::{checkout_action, commit_menu, multi_menu, wip_menu};
 
 /// Closed outline of a rounded rect (for dashed borders).
 fn rounded(b: Rect, r: f32) -> Vec<Pos2> {
@@ -58,6 +58,7 @@ pub fn show(
     ui: &mut Ui,
     d: &RepoData,
     sel: &Option<Sel>,
+    multi: &[String],
     scroll_to: &mut Option<usize>,
     acts: &mut Vec<Action>,
 ) {
@@ -129,14 +130,19 @@ pub fn show(
                 let resp = ui.interact(rect, ui.id().with(("row", r)), Sense::click());
                 let pill = rect.shrink2(vec2(2.0, 1.5));
                 let commit = d.commit(r);
-                if Some(r) == sel_row {
+                let in_multi = commit.is_some_and(|c| multi.contains(&c.id));
+                if Some(r) == sel_row || in_multi {
                     ui.painter().rect_filled(pill, 9.0, theme::selection(ui));
                 } else if resp.hovered() {
                     hovered = Some(r);
                     ui.painter().rect_filled(pill, 9.0, theme::hover(ui));
                 }
                 if resp.clicked() {
-                    acts.push(Action::Select(commit.map_or(Sel::Wip, |c| Sel::Commit(c.id.clone()))));
+                    let (cmd, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+                    match commit {
+                        Some(c) if cmd || shift => acts.push(Action::Multi(multi_select(d, sel_row, multi, r, &c.id, shift))),
+                        _ => acts.push(Action::Select(commit.map_or(Sel::Wip, |c| Sel::Commit(c.id.clone())))),
+                    }
                 }
                 if resp.double_clicked()
                     && let Some(c) = commit
@@ -155,6 +161,7 @@ pub fn show(
                     }
                 }
                 resp.context_menu(|ui| match commit {
+                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, multi, acts),
                     Some(c) => commit_menu(ui, d, c, acts),
                     None => wip_menu(ui, acts),
                 });
@@ -318,6 +325,22 @@ pub fn show(
             }
         });
     });
+}
+
+/// New multi-selection after a ⌘-click (toggle) or ⇧-click (range from the current row).
+fn multi_select(d: &RepoData, sel_row: Option<usize>, multi: &[String], row: usize, id: &str, shift: bool) -> Vec<String> {
+    let mut set: Vec<String> = if multi.is_empty() { sel_row.and_then(|r| d.commit(r)).map(|c| c.id.clone()).into_iter().collect() } else { multi.to_vec() };
+    if shift {
+        let from = sel_row.unwrap_or(row);
+        let (a, b) = (from.min(row), from.max(row));
+        set = (a..=b).filter_map(|r| d.commit(r)).map(|c| c.id.clone()).collect();
+    } else if let Some(i) = set.iter().position(|x| x == id) {
+        set.remove(i);
+    } else {
+        set.push(id.to_owned());
+    }
+    set.sort_by_key(|x| d.row_of.get(x).copied().unwrap_or(usize::MAX)); // newest first
+    set
 }
 
 fn keyboard_nav(ui: &Ui, d: &RepoData, sel_row: Option<usize>, scroll_to: &mut Option<usize>, acts: &mut Vec<Action>) {

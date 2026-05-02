@@ -9,7 +9,7 @@
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
 //! - `diff`, `conflicts`, `files`: one concern each
-//! - `rebase`: interactive-rebase engine (todo `Editor`, quick/amend_into)
+//! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `merge_editor`: state behind the merge editor (drawn by the same-named
 //!   `ui` file)
 
@@ -27,7 +27,7 @@ mod task;
 mod testutil;
 mod undo;
 
-pub use action::{Action, Choice, DiffSrc, Msg, Prompt, Sel, op, prompt};
+pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt};
 pub use data::RepoData;
 pub use diff::DiffState;
 pub use files::reveal;
@@ -67,6 +67,8 @@ pub struct RepoTab {
     pub max_commits: usize,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
+    /// Extra selected commits (⌘/⇧-click), newest first; empty = single selection.
+    pub multi: Vec<String>,
     pub rebase: Option<crate::repo::rebase::Editor>,
     pub merge: Option<merge_editor::Editor>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
@@ -105,6 +107,7 @@ impl RepoTab {
             scroll_to: None,
             max_commits,
             notes: vec![],
+            multi: vec![],
             rebase: None,
             merge: None,
             drop_menu: None,
@@ -189,6 +192,7 @@ impl RepoTab {
     }
 
     pub fn select(&mut self, ctx: &egui::Context, sel: Sel) {
+        self.multi.clear();
         if self.sel.as_ref() != Some(&sel) {
             let dir = self.dir.clone();
             match sel.clone() {
@@ -228,6 +232,13 @@ impl RepoTab {
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
+            Action::Multi(ids) => {
+                if let Some(last) = ids.last().cloned() {
+                    self.select(ctx, Sel::Commit(last));
+                }
+                self.multi = if ids.len() > 1 { ids } else { vec![] };
+            }
+            Action::MultiOp(kind, ids) => self.multi_op(ctx, kind, ids),
             Action::AmendInto(commit) => {
                 let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
                 match crate::repo::rebase::amend_into(&self.dir, &commit, is_head) {

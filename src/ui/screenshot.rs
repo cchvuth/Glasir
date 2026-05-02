@@ -57,6 +57,15 @@ impl App {
                         t.apply(&ctx.clone(), crate::repo::Action::Git(Op::new(args[0], &args)));
                     }
                 }
+                Ok(q) if q.starts_with("multi:") => {
+                    if let Some(t) = self.tabs.get_mut(self.active)
+                        && let Some(d) = &t.data
+                    {
+                        let n: usize = q[6..].parse().unwrap_or(2);
+                        let ids: Vec<String> = (0..d.rows()).filter_map(|r| d.commit(r)).take(n).map(|c| c.id.clone()).collect();
+                        t.apply(&ctx.clone(), crate::repo::Action::Multi(ids));
+                    }
+                }
                 Ok(q) if q.starts_with("diff:") => {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         let change = git::Change { path: q[5..].into(), old_path: None, code: 'M' };

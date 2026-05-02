@@ -1,7 +1,7 @@
 //! Git mutations: the `Op` builder, running ops off the UI thread, finishing
 //! them (toasts, undo entries, reloads) and common op builders (push/pull/fetch/commit).
 
-use super::action::{Action, Msg};
+use super::action::{Action, Msg, MultiOp};
 use super::data::RepoData;
 use super::offer::offer;
 use super::undo::{UndoEntry, UndoKind, save_worktree, Saved};
@@ -255,6 +255,37 @@ impl RepoTab {
             }
         }
         self.refresh_diff(ctx);
+    }
+
+    pub(super) fn multi_op(&mut self, ctx: &egui::Context, kind: MultiOp, ids: Vec<String>) {
+        let Some(d) = &self.data else { return };
+        if ids.iter().any(|id| d.row_of.get(id).and_then(|&r| d.commit(r)).is_some_and(|c| c.parents.len() > 1)) {
+            return self.notes.push(Msg { text: "Merge commits can't be part of a multi-commit action.".into(), error: true });
+        }
+        let git_dir = d.git_dir.clone();
+        let n = ids.len();
+        let op = match kind {
+            MultiOp::CherryPick => {
+                let mut args = vec!["cherry-pick"];
+                args.extend(ids.iter().rev().map(String::as_str)); // oldest first
+                Ok(Op::new(format!("Cherry-pick {n} commits"), &args).undo(Undo::Keep))
+            }
+            MultiOp::Revert => {
+                let mut args = vec!["revert", "--no-edit"];
+                args.extend(ids.iter().map(String::as_str)); // newest first
+                Ok(Op::new(format!("Revert {n} commits"), &args).undo(Undo::Keep))
+            }
+            MultiOp::Squash => crate::repo::rebase::multi(&self.dir, &git_dir, &ids, crate::repo::rebase::Act::Squash),
+            MultiOp::Drop => crate::repo::rebase::multi(&self.dir, &git_dir, &ids, crate::repo::rebase::Act::Drop)
+                .map(|o| o.confirm(format!("Drop {n} commits from the current branch? (Undo with ⌘Z.)"))),
+        };
+        match op {
+            Ok(op) => {
+                self.multi.clear();
+                self.run(ctx, op)
+            }
+            Err(e) => self.notes.push(Msg { text: e, error: true }),
+        }
     }
 
     /// Op that commits the message in the editor.

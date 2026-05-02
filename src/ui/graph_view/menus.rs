@@ -1,11 +1,30 @@
-//! Context menus of the graph rows (commit, WIP) and the
+//! Context menus of the graph rows (commit, WIP, multi-selection) and the
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
 use crate::git::{Commit, Ref, RefKind};
-use crate::repo::{Action, Op, Prompt, RepoData, Undo, branch_checkout, prompt, stash_op};
+use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Undo, branch_checkout, prompt, stash_op};
 use crate::theme::{self, icon};
 use egui::Ui;
 
+pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) {
+    let n = multi.len();
+    for (kind, label) in [
+        (MultiOp::CherryPick, format!("Cherry-pick {n} commits")),
+        (MultiOp::Squash, format!("Squash {n} commits into one")),
+        (MultiOp::Revert, format!("Revert {n} commits")),
+    ] {
+        if ui.button(label).clicked() {
+            acts.push(Action::MultiOp(kind, multi.to_vec()));
+        }
+    }
+    if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::DEL)).clicked() {
+        acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
+    }
+    ui.separator();
+    if ui.button("Copy SHAs").clicked() {
+        acts.push(Action::Copy(multi.join("\n")));
+    }
+}
 /// Double-click: check out the best branch at this commit.
 pub(super) fn checkout_action(d: &RepoData, c: &Commit) -> Option<Action> {
     let refs = d.refs_at.get(&c.id)?;

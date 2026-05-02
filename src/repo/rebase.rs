@@ -1,7 +1,7 @@
 //! Interactive rebase engine. Builds a todo list ([`Editor`]) and hands it to
 //! git's own `rebase -i` (via `sequence.editor`) as an [`Op`], so conflicts,
 //! --continue/--abort and hooks behave exactly like on the command line; plus
-//! one-shot rewrites (quick, amend_into). The window is `crate::ui::rebase_editor`.
+//! one-shot rewrites (quick, multi, amend_into). The window is `crate::ui::rebase_editor`.
 
 use crate::git::{self, Res};
 use super::{Op, Undo};
@@ -118,6 +118,44 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
         Act::Drop => format!("Drop {short}"),
         _ => op.label,
     };
+    Ok(op)
+}
+
+/// Squash or drop several commits of the current branch in one rebase.
+/// Squash needs a contiguous run; everything melds into the oldest selected.
+pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {
+    // Base = parent of the oldest selected commit (the one furthest from HEAD).
+    let mut oldest = None;
+    for id in ids {
+        let n: usize = git::run(dir, &["rev-list", "--count", &format!("{id}..HEAD")])?.trim().parse().unwrap_or(0);
+        if oldest.as_ref().is_none_or(|(m, _)| n > *m) {
+            oldest = Some((n, id.clone()));
+        }
+    }
+    let (_, oldest) = oldest.ok_or("Nothing selected.")?;
+    let parent = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{oldest}^")])
+        .map_err(|_| "The root commit can't be rewritten this way.".to_string())?;
+    let mut ed = Editor::load(dir, parent.trim(), &oldest[..oldest.len().min(7)])?;
+    let e = &mut ed;
+    let pos: Vec<usize> = ids
+        .iter()
+        .map(|id| e.items.iter().position(|i| &i.id == id).ok_or_else(|| format!("{} is not on the current branch.", &id[..id.len().min(7)])))
+        .collect::<Res<_>>()?;
+    if act == Act::Squash {
+        let (lo, hi) = (*pos.iter().min().unwrap(), *pos.iter().max().unwrap());
+        if hi - lo + 1 != pos.len() {
+            return Err("Select consecutive commits to squash them.".into());
+        }
+        for i in lo..hi {
+            e.items[i].act = Act::Squash; // newest..second-oldest meld into the oldest (at hi)
+        }
+    } else {
+        for &i in &pos {
+            e.items[i].act = act;
+        }
+    }
+    let mut op = e.op(git_dir)?;
+    op.label = format!("{} {} commits", if act == Act::Squash { "Squash" } else { "Drop" }, ids.len());
     Ok(op)
 }
 
@@ -264,6 +302,27 @@ mod tests {
         run_op(&dir, &quick(&dir, &gd, &c2, Act::Drop, None).unwrap());
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c3", "c1"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multi_squash_drop_and_errors() {
+        let (dir, g) = repo("multi");
+        let gd = git::git_dir(&dir).unwrap();
+        let ids: Vec<String> = g(&["rev-list", "HEAD"]).lines().map(String::from).collect(); // c3, c2, c1
+        // Squash c3+c2 (consecutive) into c2.
+        run_op(&dir, &multi(&dir, &gd, &ids[..2], Act::Squash).unwrap());
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c2", "c1"]);
+        assert!(g(&["log", "-1", "--format=%B"]).contains("c3")); // messages combined
+        assert!(dir.join("c").exists());
+        // Non-consecutive squash is refused.
+        let (dir2, g2) = repo("multi2");
+        let ids2: Vec<String> = g2(&["rev-list", "HEAD"]).lines().map(String::from).collect();
+        assert!(multi(&dir2, &git::git_dir(&dir2).unwrap(), &[ids2[0].clone(), ids2[2].clone()], Act::Squash).is_err());
+        // Drop two of three.
+        run_op(&dir2, &multi(&dir2, &git::git_dir(&dir2).unwrap(), &ids2[..2], Act::Drop).unwrap());
+        assert_eq!(g2(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]

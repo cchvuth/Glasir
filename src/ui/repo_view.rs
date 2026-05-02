@@ -50,7 +50,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                     }
                     match &mut t.diff {
                         Some(ds) => diff_view::show(ui, ds, &mut s.split_diff, &mut acts),
-                        None => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &mut t.scroll_to, &mut acts),
+                        None => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut acts),
                     }
                 })
             });

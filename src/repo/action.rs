@@ -10,6 +10,14 @@ pub enum Sel {
     Commit(String),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MultiOp {
+    CherryPick,
+    Revert,
+    Squash,
+    Drop,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum DiffSrc {
     Worktree { change: Change, staged: bool },
@@ -61,6 +69,9 @@ pub enum Action {
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
     AmendInto(String),
+    /// Replace the multi-selection (commit ids, graph order: newest first).
+    Multi(Vec<String>),
+    MultiOp(MultiOp, Vec<String>),
     Error(String),
     Undo,
     Redo,
