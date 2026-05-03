@@ -107,6 +107,20 @@ impl Graph {
         g
     }
 
+    /// Rows reachable from row `tip` by parent links (`tip` included).
+    /// One pass: edges are stored in `from` order and parents sit below children.
+    pub fn reachable(&self, tip: usize) -> Vec<bool> {
+        let mut seen = vec![false; self.nodes.len()];
+        seen[tip] = true;
+        let start = self.edges.partition_point(|e| (e.from as usize) < tip);
+        for e in &self.edges[start..] {
+            if seen[e.from as usize] && e.to != NONE {
+                seen[e.to as usize] = true;
+            }
+        }
+        seen
+    }
+
     /// Every edge touching `rows` (plus neighbours in the same chunks), each once.
     pub fn edges_in(&self, rows: Range<usize>) -> impl Iterator<Item = &Edge> {
         let (k0, k1) = (rows.start / CHUNK, rows.end.div_ceil(CHUNK).min(self.chunks.len()));
@@ -153,6 +167,15 @@ mod tests {
         // 0: newer feature tip, 1: HEAD tip; both have parent 2.
         let g = Graph::layout(&[vec![2], vec![2], vec![]], &[5, 0, 5]);
         assert_eq!(cols(&g), [0, 1, 1]); // base continues HEAD's lane, feature bends in
+    }
+
+    #[test]
+    fn reachable_follows_both_parents() {
+        // 0: merge(1, 2)  1: main  2: feature  3: base  4: unrelated tip  5: its parent (not loaded)
+        let g = Graph::layout(&[vec![1, 2], vec![3], vec![3], vec![], vec![NONE]], &[5; 5]);
+        assert_eq!(g.reachable(0), [true, true, true, true, false]);
+        assert_eq!(g.reachable(2), [false, false, true, true, false]);
+        assert_eq!(g.reachable(4), [false, false, false, false, true]);
     }
 
     #[test]

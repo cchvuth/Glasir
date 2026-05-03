@@ -1,11 +1,12 @@
 //! Dev/CI harness: `GLASIR_SCREENSHOT=out.bmp` saves a screenshot once the repo
 //! is loaded, then exits. `GLASIR_SCREENSHOT_VIEW` opens a view first (settings,
-//! dialogs, diffs...); extend the switch when a new view needs
+//! dialogs, diffs, search...); extend the switch when a new view needs
 //! visual verification.
 
 use super::app::App;
 use crate::git;
-use crate::repo::{Action, Op, PullMode, Undo, pull_op};
+use crate::repo::{Action, Op, PullMode, Search, Undo, pull_op};
+use egui::Id;
 
 impl App {
     pub(super) fn screenshot(&mut self, ctx: &egui::Context) {
@@ -77,10 +78,37 @@ impl App {
                         t.apply(&ctx.clone(), crate::repo::Action::MergeEditor(q[6..].into()));
                     }
                 }
+                Ok(q) if q.starts_with("search:") => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        let mut s = Search::open();
+                        s.query = q["search:".len()..].into();
+                        t.search = Some(s);
+                    }
+                }
                 Ok(q) if q.starts_with("drop:") => {
                     let mut it = q[5..].splitn(2, ':');
                     if let (Some(src), Some(dst), Some(t)) = (it.next(), it.next(), self.tabs.get_mut(self.active)) {
                         t.drop_menu = Some((src.into(), dst.into(), egui::pos2(600.0, 300.0)));
+                    }
+                }
+                // Graph views: `hover:<ref name>`, `view:fp`, `view:hide:<full ref>`, `view:solo:<full ref>`, `stash`.
+                Ok(q) if q.starts_with("hover:") => {
+                    if let Some(r) = self.tabs.get(self.active).and_then(|t| t.data.as_ref()).and_then(|d| d.refs.iter().find(|r| r.name == q[6..])) {
+                        // The state `graph_view::hover_ref` records, pinned as hovered long ago and still.
+                        ctx.data_mut(|m| m.insert_temp(Id::new("ref_hover"), (r.target.clone(), f64::NEG_INFINITY, u64::MAX - 1)));
+                    }
+                }
+                Ok(q) if q.starts_with("view:") => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        let mut v = t.view.clone();
+                        match q[5..].split_once(':') {
+                            Some(("hide", r)) => v.hidden = vec![r.into()],
+                            Some(("solo", r)) => v.solo = vec![r.into()],
+                            _ => v.first_parent = true,
+                        }
+                        if v != t.view {
+                            t.apply(&ctx.clone(), Action::View(v));
+                        }
                     }
                 }
                 Ok("stash") => {

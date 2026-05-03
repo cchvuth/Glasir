@@ -1,8 +1,9 @@
 //! Right-click menus of refs (sidebar rows and graph pills): local branch,
-//! remote branch and tag menus.
+//! remote branch and tag menus plus graph hide/solo toggles.
 
 use crate::git::RefKind;
 use crate::repo::{Action, Op, RepoData, Undo, branch_checkout, op, prompt};
+use crate::theme::icon;
 use crate::ui::graph_view::menus::integrate_items;
 use egui::Ui;
 
@@ -11,6 +12,29 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
         RefKind::Local => local_menu(ui, d, r, acts),
         RefKind::Remote => remote_menu(ui, d, r, acts),
         RefKind::Tag => tag_menu(ui, d, r, acts),
+    }
+    ui.separator();
+    let toggle = |list: fn(&mut crate::repo::View) -> &mut Vec<String>| {
+        let mut v = d.view.clone();
+        let l = list(&mut v);
+        match l.iter().position(|x| *x == r.full) {
+            Some(i) => _ = l.remove(i),
+            None => l.push(r.full.clone()),
+        }
+        Action::View(v)
+    };
+    // HEAD is always in the graph, so hiding the checked-out branch would do nothing.
+    if d.view.solo.is_empty() && !r.head {
+        let hidden = d.view.hidden.contains(&r.full);
+        let label = if hidden { format!("{} Show in graph", icon::EYE) } else { format!("{} Hide from graph", icon::EYE_SLASH) };
+        if ui.button(label).clicked() {
+            acts.push(toggle(|v| &mut v.hidden));
+        }
+    }
+    let solo = d.view.solo.contains(&r.full);
+    let label = if solo { format!("{} Unsolo", icon::CROSSHAIR) } else { format!("{} Solo (show only soloed refs)", icon::CROSSHAIR) };
+    if ui.button(label).clicked() {
+        acts.push(toggle(|v| &mut v.solo));
     }
 }
 

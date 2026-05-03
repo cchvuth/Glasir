@@ -6,13 +6,32 @@ pub mod stashes;
 
 use crate::git::RefKind;
 use crate::repo::{Action, RepoData, branch_checkout};
-use crate::theme::icon;
+use crate::theme::{self, icon};
 use crate::ui::graph_view::dnd::branch_dnd;
+use crate::ui::graph_view::hover::hover_ref;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use ref_menus::ref_menu;
 
 fn matches(filter: &str, name: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
+}
+
+/// Hidden refs are dimmed with an eye-slash, soloed ones orange.
+fn view_style(ui: &Ui, d: &RepoData, r: &crate::git::Ref, text: RichText) -> RichText {
+    if d.view.solo.contains(&r.full) {
+        text.color(theme::MOD)
+    } else if !d.view.shows(&r.full) {
+        RichText::new(format!("{}  {}", text.text(), icon::EYE_SLASH)).color(theme::dim(ui))
+    } else {
+        text
+    }
+}
+
+/// A thin line between the pinned default/long-lived branches and the rest.
+fn pinned_separator(ui: &mut Ui, d: &RepoData, i: usize, names: &[&str]) {
+    if i > 0 && d.branch_rank(names[i - 1]) < 2 && d.branch_rank(names[i]) == 2 {
+        ui.separator();
+    }
 }
 
 fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
@@ -28,9 +47,11 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
     ui.add_space(4.0);
     let f = filter.as_str();
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-        let locals: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Local && matches(f, &r.name)).collect();
+        let mut locals: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Local && matches(f, &r.name)).collect();
+        locals.sort_by_key(|r| d.branch_rank(&r.name)); // stable: A–Z within each group
         section(ui, "LOCAL", locals.len(), |ui| {
-            for r in locals {
+            for (i, r) in locals.iter().copied().enumerate() {
+                pinned_separator(ui, d, i, &locals.iter().map(|r| r.name.as_str()).collect::<Vec<_>>());
                 let glyph = if r.head { icon::CHECK } else { icon::GIT_BRANCH };
                 let mut text = format!("{glyph} {}", r.name);
                 if r.ahead > 0 {
@@ -43,8 +64,9 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 if r.head {
                     rt = rt.strong();
                 }
-                let resp = ui.add(egui::Button::selectable(r.head, rt).frame_when_inactive(false));
+                let resp = ui.add(egui::Button::selectable(r.head, view_style(ui, d, r, rt)).frame_when_inactive(false));
                 branch_dnd(ui, &resp, &r.name, acts);
+                hover_ref(ui, &resp, &r.target);
                 let resp = if r.gone { resp.on_hover_text("Upstream branch is gone") } else { resp };
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
@@ -61,9 +83,15 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
         section(ui, "REMOTE", remote_refs.len(), |ui| {
             for rem in remotes {
                 egui::CollapsingHeader::new(rem).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
-                    for r in remote_refs.iter().copied().filter(|r| r.remote() == rem) {
-                        let resp = ui.add(egui::Button::selectable(false, r.remote_branch()).frame_when_inactive(false));
+                    let mut list: Vec<_> = remote_refs.iter().copied().filter(|r| r.remote() == rem).collect();
+                    list.sort_by_key(|r| d.branch_rank(r.remote_branch()));
+                    let names: Vec<&str> = list.iter().map(|r| r.remote_branch()).collect();
+                    for (i, r) in list.iter().copied().enumerate() {
+                        pinned_separator(ui, d, i, &names);
+                        let text = view_style(ui, d, r, RichText::new(r.remote_branch()));
+                        let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false));
                         branch_dnd(ui, &resp, &r.name, acts);
+                        hover_ref(ui, &resp, &r.target);
                         if resp.clicked() {
                             acts.push(Action::Jump(r.target.clone()));
                         }
@@ -79,7 +107,8 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
         tags.sort_by_key(|r| std::cmp::Reverse(r.date));
         section(ui, "TAGS", tags.len(), |ui| {
             for r in tags {
-                let resp = ui.add(egui::Button::selectable(false, &r.name).frame_when_inactive(false));
+                let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(&r.name))).frame_when_inactive(false));
+                hover_ref(ui, &resp, &r.target);
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
                 }

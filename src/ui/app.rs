@@ -7,7 +7,7 @@ use super::toasts::Toast;
 use super::welcome::CloneDlg;
 use super::{command_log, graph_view, repo_view};
 use crate::git;
-use crate::repo::{Action, Msg, Op, RepoTab, Task, fetch_op};
+use crate::repo::{Action, Msg, Op, RepoTab, Search, Task, fetch_op};
 use crate::theme::{self, icon};
 use egui::{Frame, Key, Margin, RichText, Ui};
 use std::path::{Path, PathBuf};
@@ -33,6 +33,10 @@ impl App {
     pub fn new(cc: &eframe::CreationContext, open: Option<PathBuf>) -> Self {
         let s: Settings = cc.storage.and_then(|st| eframe::get_value(st, "settings")).unwrap_or_default();
         theme::install_fonts(&cc.egui_ctx);
+        let mut s = s;
+        if s.max_commits == 50_000 {
+            s.max_commits = crate::repo::PAGE;
+        }
         theme::apply(&cc.egui_ctx, s.light);
         let shot = std::env::var("GLASIR_SCREENSHOT").ok().map(|p| (p, 0));
         let mut app =
@@ -69,7 +73,7 @@ impl App {
                 self.active = match self.tabs.iter().position(|t| t.dir == top) {
                     Some(i) => i,
                     None => {
-                        self.tabs.push(RepoTab::new(ctx, top.clone(), self.s.max_commits));
+                        self.tabs.push(RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default()));
                         self.tabs.len() - 1
                     }
                 };
@@ -118,6 +122,10 @@ impl App {
         }
         if !typing && cmd && pressed(Key::Y) {
             act = Some(Action::Redo);
+        }
+        if cmd && pressed(Key::F) {
+            t.diff = None;
+            t.search = Some(Search::open());
         }
         if cmd && shift && pressed(Key::S) {
             act = Some(Action::Git(Op::new("Stage all", &["add", "-A"]).light()));

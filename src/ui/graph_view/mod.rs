@@ -1,20 +1,25 @@
 //! The commit graph table: refs | graph | message | author | date.
 //! Only visible rows are laid out and painted, so 100k+ commits scroll smoothly.
 //!
-//! `mod.rs` paints the table and handles row clicks/keys; `menus` the
-//! commit/WIP/multi-select context menus, `dnd` branch drag-and-drop, `format`
+//! `mod.rs` paints the table and handles row clicks/keys; `search` is the ⌘F bar,
+//! `minimap` the rail at the right, `menus` the commit/WIP/multi-select context
+//! menus, `dnd` branch drag-and-drop, `hover` the ref-hover highlight, `empty`
 //! dates and initials.
 
 pub mod dnd;
+pub mod hover;
 pub mod menus;
+mod minimap;
+mod search;
 
 use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
-use crate::repo::{Action, RepoData, Sel, branch_checkout};
+use crate::repo::{Action, RepoData, Search, Sel, View, branch_checkout};
 use crate::theme::{self, icon};
 use dnd::BranchDrag;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use crate::ui::format::{initials, relative_time};
+use hover::{hover_ref, hovered_ref};
 use menus::{checkout_action, commit_menu, multi_menu, wip_menu};
 
 /// Closed outline of a rounded rect (for dashed borders).
@@ -34,6 +39,7 @@ fn rounded(b: Rect, r: f32) -> Vec<Pos2> {
 pub const ROW: f32 = 28.0;
 pub const LANE: f32 = 20.0;
 const DATE_W: f32 = 116.0;
+const RAIL_W: f32 = 10.0;
 /// The message column never gets narrower than this; the graph gives way first.
 const MSG_MIN: f32 = 220.0;
 
@@ -60,6 +66,7 @@ pub fn show(
     sel: &Option<Sel>,
     multi: &[String],
     scroll_to: &mut Option<usize>,
+    search: &mut Option<Search>,
     acts: &mut Vec<Action>,
 ) {
     let sel_row = match sel {
@@ -67,12 +74,39 @@ pub fn show(
         Some(Sel::Commit(id)) => d.row_of.get(id).copied(),
         _ => None,
     };
+    if let Some(s) = search
+        && search::search_bar(ui, s, d, scroll_to, acts)
+    {
+        *search = None;
+    }
+    let search = search.as_ref();
     keyboard_nav(ui, d, sel_row, scroll_to, acts);
+    let v = &d.view;
+    if v.filtered() || v.first_parent {
+        ui.horizontal(|ui| {
+            let shown = d.refs.iter().filter(|r| v.shows(&r.full)).count();
+            let mut what = vec![];
+            if v.filtered() {
+                what.push(format!("Viewing {shown} of {} refs", d.refs.len()));
+            }
+            if v.first_parent {
+                what.push("first-parent only".to_owned());
+            }
+            ui.label(egui::RichText::new(format!("{}  {}", icon::FUNNEL, what.join("  ·  "))).small().color(theme::MOD));
+            if ui.link(egui::RichText::new("Show all").small()).clicked() {
+                acts.push(Action::View(View::default()));
+            }
+        });
+    }
+    // Hovering a ref fades what it can't reach; ⌘F fades non-matches.
+    let reach = hovered_ref(ui).and_then(|t| d.row_of.get(&t).copied()).map(|r| d.reachable(r));
+    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || reach.as_ref().is_some_and(|v| !v[r]);
 
     // Column widths: [refs, graph]; graph 0 = fit lanes (up to 12). Drag the header to resize.
     let cols_id = egui::Id::new("graph_cols");
     let [refs_w, graph_w] = ui.data_mut(|m| *m.get_persisted_mut_or(cols_id, [160.0f32, 0.0]));
-    let full = ui.available_rect_before_wrap();
+    let mut full = ui.available_rect_before_wrap();
+    full.max.x -= RAIL_W + 2.0;
     let author_w = if full.width() > 1000.0 { 130.0 } else { 0.0 };
     let graph_w = if graph_w > 0.0 { graph_w } else { d.graph.width.clamp(1, 10) as f32 * LANE + 12.0 };
     let graph_w = graph_w.min(full.width() - refs_w - author_w - DATE_W - MSG_MIN).max(2.0 * LANE + 12.0);
@@ -89,6 +123,19 @@ pub fn show(
         if (t != "AUTHOR" || author_w > 0.0) && (t != "GRAPH" || graph_w > 84.0) {
             p.text(pos2(x + 8.0, hdr.center().y), Align2::LEFT_CENTER, t, hf.clone(), dim);
         }
+    }
+    let fp = Rect::from_center_size(pos2(x_msg - 16.0, hdr.center().y), vec2(22.0, 20.0));
+    let fp_resp = ui.interact(fp, cols_id.with("first_parent"), Sense::click()).on_hover_text(if v.first_parent {
+        "First-parent only (on): click to show merged-in commits again"
+    } else {
+        "First-parent only: follow each branch's mainline and hide merged-in commits"
+    });
+    if v.first_parent || fp_resp.hovered() {
+        p.rect_filled(fp, 10.0, if v.first_parent { theme::accent().gamma_multiply(0.45) } else { theme::hover(ui) });
+    }
+    p.text(fp.center(), Align2::CENTER_CENTER, icon::GIT_COMMIT, FontId::proportional(13.0), if v.first_parent { theme::text(ui) } else { dim });
+    if fp_resp.clicked() {
+        acts.push(Action::View(View { first_parent: !v.first_parent, ..v.clone() }));
     }
     for (i, x) in [x_graph, x_msg].into_iter().enumerate() {
         let handle = Rect::from_center_size(pos2(x, hdr.center().y), vec2(8.0, hdr.height()));
@@ -109,6 +156,7 @@ pub fn show(
 
     let n = d.rows();
     let body = Rect::from_min_max(ui.cursor().min, pos2(full.right(), full.bottom()));
+    let mut visible = 0..0;
     ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         egui::ScrollArea::vertical().id_salt(("graph", &d.git_dir)).auto_shrink(false).show_rows(ui, ROW, n, |ui, range| {
@@ -116,6 +164,7 @@ pub fn show(
             let y = |r: usize| top + r as f32 * ROW + ROW / 2.0;
             let x = |c: u16| x_graph + 8.0 + c as f32 * LANE + LANE / 2.0;
             let left = full.left();
+            visible = range.clone();
 
             if let Some(r) = scroll_to.take() {
                 let rect = Rect::from_min_size(pos2(left, top + r as f32 * ROW), vec2(1.0, ROW));
@@ -188,7 +237,8 @@ pub fn show(
                 } else {
                     pts.push(pos2(xl, y2));
                 }
-                let stroke = Stroke::new(2.0, theme::lane(e.color));
+                let col = theme::lane(e.color);
+                let stroke = Stroke::new(2.0, if dims(e.from as usize) { col.gamma_multiply(0.3) } else { col });
                 if d.wip && e.from == 0 {
                     gp.extend(Shape::dashed_line(&pts, stroke, 4.0, 3.0));
                 } else {
@@ -203,7 +253,8 @@ pub fn show(
             for r in range {
                 let node = d.graph.nodes[r];
                 let c = pos2(x(node.col), y(r));
-                let col = theme::lane(node.color);
+                let faded = dims(r);
+                let col = if faded { theme::lane(node.color).gamma_multiply(0.3) } else { theme::lane(node.color) };
                 let commit = d.commit(r);
                 match commit {
                     None => {
@@ -216,9 +267,10 @@ pub fn show(
                         if head_id == Some(cm.id.as_str()) {
                             gp.circle_stroke(c, 11.5, Stroke::new(2.0, col));
                         }
-                        gp.circle_filled(c, 9.0, theme::avatar(&cm.email));
+                        let a = if faded { 0.3 } else { 1.0 };
+                        gp.circle_filled(c, 9.0, theme::avatar(&cm.email).gamma_multiply(a));
                         gp.circle_stroke(c, 9.0, Stroke::new(1.5, col));
-                        gp.text(c, Align2::CENTER_CENTER, initials(&cm.author), FontId::proportional(9.0), Color32::WHITE);
+                        gp.text(c, Align2::CENTER_CENTER, initials(&cm.author), FontId::proportional(9.0), Color32::WHITE.gamma_multiply(a));
                     }
                 }
 
@@ -229,7 +281,8 @@ pub fn show(
                     let more = ids.len() - 1;
                     let label = ref_label(rf);
                     let font = FontId::proportional(12.0);
-                    let g = painter.layout_no_wrap(label, font.clone(), Color32::WHITE);
+                    let label_col = if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
+                    let g = painter.layout_no_wrap(label, font.clone(), label_col);
                     let extra = if more > 0 { 26.0 } else { 0.0 };
                     let w = (g.size().x + 14.0).min(refs_w - 16.0 - extra).max(10.0);
                     let pill = Rect::from_min_size(pos2(left + 6.0, y(r) - 10.0), vec2(w, 20.0));
@@ -237,11 +290,12 @@ pub fn show(
                     let fill = match rf.kind {
                         RefKind::Local => col.gamma_multiply(0.85),
                         RefKind::Remote => col.gamma_multiply(0.4),
+                        RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
                         RefKind::Tag => theme::tag(ui),
                     };
                     painter.rect_filled(pill, 10.0, fill);
                     painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
-                    painter.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0, y(r) - g.size().y / 2.0), g, Color32::WHITE);
+                    painter.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0, y(r) - g.size().y / 2.0), g, label_col);
                     if more > 0 {
                         let b = Rect::from_min_size(pos2(pill.right() + 4.0, y(r) - 9.0), vec2(22.0, 18.0));
                         painter.rect_filled(b, 9.0, theme::faint(ui));
@@ -251,6 +305,7 @@ pub fn show(
                     let names: Vec<String> = ids.iter().map(|&i| ref_label(&d.refs[i])).collect();
                     stash_x = tip_rect.right() + 4.0;
                     let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag()).on_hover_text(names.join("\n"));
+                    hover_ref(ui, &pill_resp, &rf.target);
                     if rf.kind != RefKind::Tag {
                         pill_resp.dnd_set_drag_payload(BranchDrag(rf.name.clone()));
                     }
@@ -286,8 +341,8 @@ pub fn show(
                     stash_x = b.right() + 4.0;
                     let on = matches!(sel, Some(Sel::Commit(id)) if *id == st.id);
                     painter.rect_filled(b, 9.0, if on { theme::accent().gamma_multiply(0.45) } else { theme::bg(ui) });
-                    painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, theme::dim(ui)), 3.0, 2.0));
-                    painter.text(b.center(), Align2::CENTER_CENTER, icon::ARCHIVE, FontId::proportional(12.0), text);
+                    painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, if faded { theme::dim(ui).gamma_multiply(0.4) } else { theme::dim(ui) }), 3.0, 2.0));
+                    painter.text(b.center(), Align2::CENTER_CENTER, icon::ARCHIVE, FontId::proportional(12.0), if faded { theme::dim(ui) } else { text });
                     let resp = ui.interact(b, ui.id().with(("stash", i)), Sense::click()).on_hover_text(format!("{}  ·  stash on this commit\n{}", st.name, st.message));
                     if resp.clicked() {
                         acts.push(Action::Select(Sel::Commit(st.id.clone())));
@@ -310,6 +365,7 @@ pub fn show(
                         );
                     }
                     Some(cm) => {
+                        let text = if faded { text.gamma_multiply(0.35) } else { text };
                         painter.with_clip_rect(msg_clip).text(pos2(x_msg + 8.0, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
                         let small = FontId::proportional(12.0);
                         painter.with_clip_rect(Rect::from_x_y_ranges(x_author..=(x_date - 8.0).max(x_author), msg_clip.y_range())).text(
@@ -325,6 +381,15 @@ pub fn show(
             }
         });
     });
+    if d.truncated && visible.end >= n {
+        let btn = Rect::from_center_size(pos2(body.center().x, body.bottom() - 26.0), vec2(230.0, 32.0));
+        let label = format!("{}  Load {} more commits", theme::icon::ARROW_DOWN, crate::repo::PAGE);
+        if ui.put(btn, egui::Button::new(label).corner_radius(255).fill(theme::accent().gamma_multiply(0.85))).clicked() {
+            acts.push(Action::LoadMore);
+        }
+    }
+    let rail = Rect::from_x_y_ranges(full.right() + 2.0..=full.right() + 2.0 + RAIL_W, body.top() + 2.0..=body.bottom() - 2.0);
+    minimap::minimap(ui, rail, d, sel_row, search, visible, scroll_to, acts);
 }
 
 /// New multi-selection after a ⌘-click (toggle) or ⇧-click (range from the current row).

@@ -57,7 +57,7 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
 mod tests {
     use super::*;
     use crate::git;
-    use crate::repo::data::load_all;
+    use crate::repo::data::{View, load_all};
     use crate::repo::op::{Undo, exec};
     use crate::repo::testutil::{commit, identity, scratch, sh};
     use crate::repo::undo::move_refs;
@@ -74,7 +74,7 @@ mod tests {
         commit(&a, "f.txt", "one\n");
 
         // --progress output is streamed while the push runs.
-        let push = load_all(&a, 100).unwrap().push_op(false).unwrap();
+        let push = load_all(&a, 100, View::default()).unwrap().push_op(false).unwrap();
         let cancel = git::Cancel::default();
         cancel.scope(|| exec(&a, &push)).unwrap();
         assert!(!cancel.progress().is_empty());
@@ -90,7 +90,7 @@ mod tests {
         // A plain push is rejected. Unfetched remote commits: a lease can't name them yet, so fetch first.
         let labels = |c: Choice| c.ops.into_iter().map(|o| o.0).collect::<Vec<_>>();
         let rejected = || {
-            let d = load_all(&a, 100).unwrap();
+            let d = load_all(&a, 100, View::default()).unwrap();
             let err = exec(&a, &d.push_op(false).unwrap()).unwrap_err();
             let c = offer(&d.push_op(false).unwrap(), &err, Some(&d)).expect("rejected push offers a way out");
             (d, labels(c))

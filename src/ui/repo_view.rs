@@ -5,7 +5,7 @@
 
 use super::settings::Settings;
 use super::{diff_view, dialogs, graph_view, merge_editor, rebase_editor, sidebar, toolbar::toolbar};
-use crate::repo::RepoTab;
+use crate::repo::{Action, RepoTab};
 use crate::theme;
 use egui::{Frame, Margin, Ui};
 
@@ -50,7 +50,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                     }
                     match &mut t.diff {
                         Some(ds) => diff_view::show(ui, ds, &mut s.split_diff, &mut acts),
-                        None => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut acts),
+                        None => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &mut acts),
                     }
                 })
             });
@@ -61,6 +61,13 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     dialogs::drop_menu(t, &ctx, &mut acts);
     dialogs::choice_dialog(t, &ctx, &mut acts);
     for a in acts {
+        if let Action::View(v) = &a {
+            if *v == Default::default() {
+                s.views.remove(&t.dir);
+            } else {
+                s.views.insert(t.dir.clone(), v.clone());
+            }
+        }
         t.apply(&ctx, a);
     }
 }

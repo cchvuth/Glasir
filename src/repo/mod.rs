@@ -2,7 +2,7 @@
 //! `apply` dispatch for the `Action`s the UI emits. No drawing lives here.
 //!
 //! - `task`: `Task<T>` background values
-//! - `data`: `RepoData` and `load_all`
+//! - `data`: `RepoData`/`View` and `load_all`
 //! - `action`: `Action`, `Sel`, `DiffSrc`, `Prompt`, `Choice`, `Msg`
 //! - `op`: `Op` builder, running/finishing ops, shared op builders
 //!   (push/pull/fetch/stash/commit, `branch_checkout`)
@@ -10,8 +10,8 @@
 //! - `undo`: undo/redo and discard backups
 //! - `diff`, `conflicts`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
-//! - `merge_editor`: state behind the merge editor (drawn by the same-named
-//!   `ui` file)
+//! - `search`, `merge_editor`: state behind the graph search bar and the merge
+//!   editor (drawn by the same-named `ui` files)
 
 mod action;
 mod conflicts;
@@ -22,16 +22,18 @@ pub mod merge_editor;
 mod offer;
 mod op;
 pub mod rebase;
+mod search;
 mod task;
 #[cfg(test)]
 mod testutil;
 mod undo;
 
 pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt};
-pub use data::RepoData;
+pub use data::{RepoData, View};
 pub use diff::DiffState;
 pub use files::reveal;
 pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op, stash_op};
+pub use search::Search;
 pub use task::Task;
 
 use crate::git::{self, CommitInfo, Res};
@@ -39,6 +41,8 @@ use data::load_all;
 use op::Done;
 use std::path::PathBuf;
 use undo::UndoEntry;
+
+pub const PAGE: usize = 1000;
 
 pub struct RepoTab {
     pub dir: PathBuf,
@@ -65,8 +69,11 @@ pub struct RepoTab {
     pub confirm: Option<Op>,
     pub scroll_to: Option<usize>,
     pub max_commits: usize,
+    /// Graph filter; the app persists it per repo.
+    pub view: View,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
+    pub search: Option<Search>,
     /// Extra selected commits (⌘/⇧-click), newest first; empty = single selection.
     pub multi: Vec<String>,
     pub rebase: Option<crate::repo::rebase::Editor>,
@@ -81,7 +88,7 @@ pub struct RepoTab {
 }
 
 impl RepoTab {
-    pub fn new(ctx: &egui::Context, dir: PathBuf, max_commits: usize) -> Self {
+    pub fn new(ctx: &egui::Context, dir: PathBuf, max_commits: usize, view: View) -> Self {
         let name = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
         let mut t = RepoTab {
             dir,
@@ -106,7 +113,9 @@ impl RepoTab {
             confirm: None,
             scroll_to: None,
             max_commits,
+            view,
             notes: vec![],
+            search: None,
             multi: vec![],
             rebase: None,
             merge: None,
@@ -140,13 +149,13 @@ impl RepoTab {
             return;
         }
         let dir = self.dir.clone();
-        let limit = self.max_commits;
-        let cached = self.data.as_ref().filter(|_| !full).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone())
+        let (limit, view) = (self.max_commits, self.view.clone());
+        let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone())
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd)) => Ok(RepoData::build(log, refs, st, rm, gd, git::status(&dir)?)),
-            None => load_all(&dir, limit),
+            Some((log, refs, st, rm, gd, oh)) => Ok(RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view)),
+            None => load_all(&dir, limit, view),
         }));
     }
 
@@ -239,6 +248,10 @@ impl RepoTab {
                 self.multi = if ids.len() > 1 { ids } else { vec![] };
             }
             Action::MultiOp(kind, ids) => self.multi_op(ctx, kind, ids),
+            Action::View(v) => {
+                self.view = v;
+                self.reload(ctx, true);
+            }
             Action::AmendInto(commit) => {
                 let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
                 match crate::repo::rebase::amend_into(&self.dir, &commit, is_head) {
@@ -267,6 +280,10 @@ impl RepoTab {
             Action::Undo => self.undo_redo(ctx, true),
             Action::Redo => self.undo_redo(ctx, false),
             Action::Reload => self.reload(ctx, true),
+            Action::LoadMore => {
+                self.max_commits += crate::repo::PAGE;
+                self.reload(ctx, true);
+            }
             Action::Cancel => {
                 if let Some(c) = &self.cancel {
                     c.cancel();

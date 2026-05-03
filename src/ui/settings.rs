@@ -18,6 +18,8 @@ pub struct Settings {
     pub pull: PullMode,
     pub split_diff: bool,
     pub clone_dir: Option<PathBuf>,
+    /// Graph filter (hidden / soloed refs, first-parent) per repo path.
+    pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
 }
 
 impl Default for Settings {
@@ -27,10 +29,11 @@ impl Default for Settings {
             open: vec![],
             active: 0,
             light: false,
-            max_commits: 50_000,
+            max_commits: crate::repo::PAGE,
             pull: PullMode::Merge,
             split_diff: false,
             clone_dir: None,
+            views: Default::default(),
         }
     }
 }

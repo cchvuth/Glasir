@@ -1,6 +1,7 @@
 //! What the UI emits: `Action`s (applied by `RepoTab::apply` after the frame),
 //! selections, prompts, failure choices and toast messages.
 
+use super::data::View;
 use super::op::Op;
 use crate::git::Change;
 
@@ -51,6 +52,7 @@ pub struct Prompt {
 
 #[derive(Clone, Debug)]
 pub enum Action {
+    LoadMore,
     Select(Sel),
     Diff(DiffSrc),
     CloseDiff,
@@ -69,6 +71,8 @@ pub enum Action {
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
     AmendInto(String),
+    /// Change the graph filter (hide / solo / first-parent) and reload.
+    View(View),
     /// Replace the multi-selection (commit ids, graph order: newest first).
     Multi(Vec<String>),
     MultiOp(MultiOp, Vec<String>),
