@@ -2,7 +2,7 @@
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
 use crate::git::{Commit, Ref, RefKind};
-use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Undo, branch_checkout, prompt, stash_op};
+use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_checkout, prompt, stash_op};
 use crate::theme::{self, icon};
 use egui::Ui;
 
@@ -21,6 +21,9 @@ pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) 
         acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
     }
     ui.separator();
+    if ui.button("Compare oldest ↔ newest").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: format!("{}^", multi[n - 1]), to: multi[0].clone(), three_dot: false }));
+    }
     if ui.button("Copy SHAs").clicked() {
         acts.push(Action::Copy(multi.join("\n")));
     }
@@ -156,6 +159,9 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     }
     if ui.button("Copy commit message").clicked() {
         acts.push(Action::Copy(c.summary.clone()));
+    }
+    if !is_head && ui.button("Compare with HEAD").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: "HEAD".into(), three_dot: false }));
     }
     if let Some(web) = d.web() {
         if ui.button("Open commit on remote").clicked() {

@@ -5,6 +5,7 @@
 
 use super::app::App;
 use crate::git;
+use crate::repo::history::Mode;
 use crate::repo::{Action, Op, PullMode, Search, Undo, pull_op};
 use egui::Id;
 
@@ -83,6 +84,13 @@ impl App {
                         let mut s = Search::open();
                         s.query = q["search:".len()..].into();
                         t.search = Some(s);
+                    }
+                }
+                Ok(q) if q.starts_with("blame:") || q.starts_with("history:") => {
+                    let (mode, path) = q.split_once(':').unwrap();
+                    let mode = if mode == "blame" { Mode::Blame } else { Mode::History };
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.apply(&ctx.clone(), crate::repo::Action::FileView(path.into(), mode));
                     }
                 }
                 Ok(q) if q.starts_with("drop:") => {

@@ -1,14 +1,15 @@
-//! Right-hand inspector: what the graph selection shows. `commit` (commit
-//! details and files), `wip` (staging lists + commit box), `multi`
-//! (several selected commits). File rows live here.
+//! Right-hand inspector: what the graph selection shows. `commit` (commit or
+//! compare details and files), `wip` (staging lists + commit box), `multi`
+//! (several selected commits). File rows and their shared menu entries live here.
 
 mod commit;
 mod multi;
 mod wip;
 
 use crate::git::Change;
+use crate::repo::history::Mode;
 use crate::repo::{Action, RepoTab, Sel};
-use crate::theme;
+use crate::theme::{self, icon};
 use egui::{RichText, Sense, Ui};
 
 impl RepoTab {
@@ -18,11 +19,21 @@ impl RepoTab {
         }
         match self.sel.clone() {
             Some(Sel::Wip) => self.wip_panel(ui, acts),
-            Some(Sel::Commit(_)) => self.commit_panel(ui, acts),
+            Some(Sel::Commit(_) | Sel::Compare { .. }) => self.commit_panel(ui, acts),
             None => {
                 ui.centered_and_justified(|ui| ui.label(RichText::new("Select a commit").color(theme::dim(ui))));
             }
         }
+    }
+}
+
+/// History/Blame entries shared by every file context menu.
+pub fn file_items(ui: &mut Ui, path: &str, acts: &mut Vec<Action>) {
+    if ui.button(format!("{} File history", icon::CLOCK_COUNTER_CLOCKWISE)).clicked() {
+        acts.push(Action::FileView(path.into(), Mode::History));
+    }
+    if ui.button(format!("{} Blame", icon::USER_LIST)).clicked() {
+        acts.push(Action::FileView(path.into(), Mode::Blame));
     }
 }
 

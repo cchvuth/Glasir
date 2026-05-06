@@ -2,7 +2,7 @@
 //! remote branch and tag menus plus graph hide/solo toggles.
 
 use crate::git::RefKind;
-use crate::repo::{Action, Op, RepoData, Undo, branch_checkout, op, prompt};
+use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, op, prompt};
 use crate::theme::icon;
 use crate::ui::graph_view::menus::integrate_items;
 use egui::Ui;
@@ -38,6 +38,14 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
     }
 }
 
+/// Compare with the checked-out branch.
+fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
+    let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
+    if ui.button(format!("{} Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
+        acts.push(Action::Select(Sel::Compare { from: head, to: name.into(), three_dot: true }));
+    }
+}
+
 /// `r` is the branch (local or remote-tracking) whose PR / web pages these open.
 fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     let (remote, branch) = match r.kind {
@@ -70,6 +78,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
             acts.push(Action::Git(Op::new(format!("Pull {name}"), &["fetch", remote, &format!("{rb}:{name}")]).undo(Undo::Keep)));
         }
         integrate_items(ui, d, name, acts);
+        compare_items(ui, d, name, acts);
     }
     ui.separator();
     if let Some(remote) = d.remotes.first().map(|r| r.0.clone()) {
@@ -119,6 +128,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
         acts.extend(branch_checkout(d, r));
     }
     integrate_items(ui, d, &r.name, acts);
+    compare_items(ui, d, &r.name, acts);
     ui.separator();
     if ui.button(format!("Delete {} from {}", r.remote_branch(), r.remote())).clicked() {
         acts.push(Action::Git(

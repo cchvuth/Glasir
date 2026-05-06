@@ -9,6 +9,8 @@ use crate::git::Change;
 pub enum Sel {
     Wip,
     Commit(String),
+    /// Changes from `from` to `to` (merge-base based when `three_dot`).
+    Compare { from: String, to: String, three_dot: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,6 +68,7 @@ pub enum Action {
     Rebase { base: String, label: String },
     /// Open the 3-way merge editor for a conflicted file.
     MergeEditor(String),
+    FileView(String, super::history::Mode),
     /// A branch was dropped onto another: offer merge / rebase / push.
     DropBranch { src: String, dst: String },
     /// Rewrite one commit on the current branch: reword / squash / drop.

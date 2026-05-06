@@ -1,13 +1,14 @@
 //! One repository tab: toolbar on top, sidebar left, inspector right and the
-//! center pane (graph, or the diff / merge editor / rebase editor
+//! center pane (graph, or the diff / merge editor / history / rebase editor
 //! that replaces it), then the tab's dialogs. Collected `Action`s are applied
 //! to the `RepoTab` at the end of the frame.
 
 use super::settings::Settings;
-use super::{diff_view, dialogs, graph_view, merge_editor, rebase_editor, sidebar, toolbar::toolbar};
+use super::{diff_view, dialogs, graph_view, history, merge_editor, rebase_editor, sidebar, toolbar::toolbar};
+use crate::repo::history::Mode;
 use crate::repo::{Action, RepoTab};
 use crate::theme;
-use egui::{Frame, Margin, Ui};
+use egui::{Frame, Margin, Ui, UiBuilder};
 
 pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let ctx = ui.ctx().clone();
@@ -38,6 +39,27 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                     if let Some(ed) = &mut t.merge {
                         if merge_editor::show(ui, ed, &mut acts) {
                             t.merge = None;
+                        }
+                        return;
+                    }
+                    if let Some(fv) = &mut t.file_view {
+                        let mut close = false;
+                        if fv.mode == Mode::History && t.diff.is_some() {
+                            // History list beside the selected revision's diff.
+                            let r = ui.max_rect();
+                            let split = (r.width() * 0.38).clamp(280.0, 460.0);
+                            let left = egui::Rect::from_min_max(r.min, egui::pos2(r.left() + split, r.bottom()));
+                            let right = egui::Rect::from_min_max(egui::pos2(r.left() + split + 12.0, r.top()), r.max);
+                            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| close = history::show(ui, fv, &mut acts));
+                            ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
+                                diff_view::show(ui, t.diff.as_mut().unwrap(), &mut s.split_diff, &mut acts)
+                            });
+                        } else {
+                            close = history::show(ui, fv, &mut acts);
+                        }
+                        if close {
+                            t.file_view = None;
+                            t.diff = None;
                         }
                         return;
                     }

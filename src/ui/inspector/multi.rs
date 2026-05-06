@@ -1,6 +1,6 @@
 //! Inspector for several selected commits: bulk cherry-pick / squash / revert / drop.
 
-use crate::repo::{Action, MultiOp, RepoTab};
+use crate::repo::{Action, MultiOp, RepoTab, Sel};
 use crate::theme::{self, icon};
 use egui::{RichText, ScrollArea, Ui};
 
@@ -25,6 +25,10 @@ impl RepoTab {
             }
         });
         ui.horizontal_wrapped(|ui| {
+            if ui.button(format!("{} Compare oldest ↔ newest", icon::GIT_DIFF)).clicked() {
+                let (newest, oldest) = (ids[0].clone(), ids[ids.len() - 1].clone());
+                acts.push(Action::Select(Sel::Compare { from: format!("{oldest}^"), to: newest, three_dot: false }));
+            }
             if ui.button(format!("{} Copy SHAs", icon::COPY)).clicked() {
                 acts.push(Action::Copy(ids.join("\n")));
             }

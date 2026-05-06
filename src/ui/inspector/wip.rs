@@ -1,7 +1,7 @@
 //! Inspector for the WIP row: operation-in-progress banner, conflicted /
 //! unstaged / staged file lists and the commit box.
 
-use super::file_row;
+use super::{file_items, file_row};
 use crate::git::State;
 use crate::repo::{Action, DiffSrc, Op, RepoTab, op};
 use crate::theme;
@@ -140,6 +140,9 @@ impl RepoTab {
                         if ui.button("Show in file manager").clicked() {
                             acts.push(Action::Reveal(c.path.clone()));
                         }
+                        if c.code != '?' {
+                            file_items(ui, &c.path, acts);
+                        }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));
                         }
@@ -166,6 +169,9 @@ impl RepoTab {
                     resp.context_menu(|ui| {
                         if ui.button("Unstage").clicked() {
                             acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", &c.path]).light()));
+                        }
+                        if c.code != 'A' {
+                            file_items(ui, &c.path, acts);
                         }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));

@@ -10,14 +10,15 @@
 //! - `undo`: undo/redo and discard backups
 //! - `diff`, `conflicts`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
-//! - `search`, `merge_editor`: state behind the graph search bar and the merge
-//!   editor (drawn by the same-named `ui` files)
+//! - `search`, `history`, `merge_editor`: state behind the graph search bar, the
+//!   file history/blame view and the merge editor (drawn by the same-named `ui` files)
 
 mod action;
 mod conflicts;
 mod data;
 mod diff;
 pub mod files;
+pub mod history;
 pub mod merge_editor;
 mod offer;
 mod op;
@@ -78,6 +79,7 @@ pub struct RepoTab {
     pub multi: Vec<String>,
     pub rebase: Option<crate::repo::rebase::Editor>,
     pub merge: Option<merge_editor::Editor>,
+    pub file_view: Option<history::FileView>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
     /// Predicted conflicts with the target branch: (target, files).
@@ -119,6 +121,7 @@ impl RepoTab {
             multi: vec![],
             rebase: None,
             merge: None,
+            file_view: None,
             drop_menu: None,
             conflicts: None,
             conflict_task: None,
@@ -211,6 +214,12 @@ impl RepoTab {
                     self.info_task =
                         Some(Task::spawn(ctx, move || if stash { git::stash_info(&dir, &id) } else { git::commit_info(&dir, &id) }));
                 }
+                Sel::Compare { from, to, three_dot } => {
+                    self.info = None;
+                    self.diff = None;
+                    let label = format!("{to} compared with {from}");
+                    self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
+                }
                 Sel::Wip => {}
             }
         }
@@ -225,7 +234,7 @@ impl RepoTab {
                 self.open_diff(ctx, src)
             }
             Action::MergeEditor(path) => {
-                (self.diff, self.rebase) = (None, None);
+                (self.diff, self.file_view, self.rebase) = (None, None, None);
                 self.merge = Some(merge_editor::Editor::open(ctx, &self.dir, &path));
             }
             Action::CloseDiff => self.diff = None,
@@ -269,6 +278,10 @@ impl RepoTab {
             Action::DropBranch { src, dst } => {
                 let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
                 self.drop_menu = Some((src, dst, at));
+            }
+            Action::FileView(path, mode) => {
+                (self.diff, self.merge) = (None, None);
+                self.file_view = Some(history::FileView::open(ctx, &self.dir, &path, mode));
             }
             Action::Rebase { base, label } => match crate::repo::rebase::Editor::load(&self.dir, &base, &label) {
                 Ok(ed) => {

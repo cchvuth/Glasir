@@ -93,7 +93,7 @@ pub enum State {
     Bisecting,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct CommitInfo {
     pub id: String,
     pub parents: Vec<String>,

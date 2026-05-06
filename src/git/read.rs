@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 pub const LOG_FORMAT: &str = "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s";
-const DATE_FORMAT: &str = "--date=format-local:%Y-%m-%d %H:%M";
+pub const DATE_FORMAT: &str = "--date=format-local:%Y-%m-%d %H:%M";
 
 pub fn parse_log(out: &str) -> Vec<Commit> {
     out.split('\0')
@@ -250,6 +250,16 @@ pub fn predict_conflicts(dir: &Path, other: &str) -> Option<Vec<String>> {
     }
 }
 
+/// Files changed from `from` to `to`, shaped like a commit so the inspector can
+/// show it. `three_dot`: compare against their merge base (what a PR would show).
+pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &str) -> Res<CommitInfo> {
+    let base = if three_dot { run(dir, &["merge-base", from, to])? } else { run(dir, &["rev-parse", from])? };
+    let base = base.trim().to_owned();
+    let to_id = run(dir, &["rev-parse", to])?.trim().to_owned();
+    let files = parse_name_status(&run(dir, &["diff-tree", "-r", "-z", "--name-status", "-M", &base, &to_id])?);
+    Ok(CommitInfo { id: to_id, parents: vec![base], message: label.into(), files, ..Default::default() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +278,30 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         assert_eq!(s.staged[1].old_path.as_deref(), Some("old.rs"));
         assert_eq!(s.unstaged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["x.rs", "new file.txt"]);
         assert_eq!(s.conflicted[0].path, "conf.rs");
+    }
+
+    #[test]
+    fn compare_info_lists_branch_changes() {
+        let dir = std::env::temp_dir().join(format!("glasir-compare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "T"]);
+        g(&["config", "commit.gpgsign", "false"]);
+        for (n, f) in [("c1", "a"), ("c2", "b"), ("c3", "c")] {
+            std::fs::write(dir.join(f), format!("{n}\n")).unwrap();
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", n]);
+        }
+        g(&["checkout", "-q", "-b", "feat", "HEAD~1"]);
+        std::fs::write(dir.join("f"), "x\n").unwrap();
+        g(&["add", "f"]);
+        g(&["commit", "-q", "-m", "feat"]);
+        let info = compare_info(&dir, "main", "feat", true, "label").unwrap();
+        // Only feat's own change, not main's c3 (merge-base comparison).
+        assert_eq!(info.files.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["f"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

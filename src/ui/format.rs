@@ -1,4 +1,4 @@
-//! Small text formatters shared by the graph and inspector views.
+//! Small text formatters shared by the graph, inspector and history views.
 
 pub fn initials(name: &str) -> String {
     let mut w = name.split_whitespace().filter_map(|w| w.chars().next());

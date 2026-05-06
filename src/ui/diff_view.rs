@@ -128,6 +128,14 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
             ui.selectable_value(split, true, "Split");
             ui.selectable_value(split, false, "Unified");
             ui.separator();
+            if change.code != '?' && change.code != 'A' {
+                if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
+                    acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));
+                }
+                if theme::pill(ui, icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("File history").clicked() {
+                    acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::History));
+                }
+            }
             if worktree {
                 let path = change.path.as_str();
                 if staged {

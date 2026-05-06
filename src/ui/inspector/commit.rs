@@ -1,13 +1,18 @@
-//! Inspector for a commit or stash: message, author and the changed files.
+//! Inspector for a commit, stash or compare range: message, author and the
+//! changed files.
 
-use super::file_row;
-use crate::repo::{Action, DiffSrc, Op, RepoTab};
+use super::{file_items, file_row};
+use crate::repo::{Action, DiffSrc, Op, RepoTab, Sel};
 use crate::theme::{self, icon};
 use crate::ui::format::initials;
 use egui::{Color32, RichText, ScrollArea, Sense, Ui};
 
 impl RepoTab {
     pub(super) fn commit_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        let compare = match &self.sel {
+            Some(Sel::Compare { from, to, .. }) => Some((from.clone(), to.clone())),
+            _ => None,
+        };
         let Some(info) = &self.info else {
             ui.centered_and_justified(|ui| ui.spinner());
             return;
@@ -23,12 +28,12 @@ impl RepoTab {
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("commit").color(theme::dim(ui)));
+                ui.label(RichText::new(if compare.is_some() { "to" } else { "commit" }).color(theme::dim(ui)));
                 if ui.link(RichText::new(&info.id[..info.id.len().min(10)]).monospace()).on_hover_text("Copy full SHA").clicked() {
                     acts.push(Action::Copy(info.id.clone()));
                 }
                 if !info.parents.is_empty() {
-                    ui.label(RichText::new("parent").color(theme::dim(ui)));
+                    ui.label(RichText::new(if compare.is_some() { "base" } else { "parent" }).color(theme::dim(ui)));
                     for p in &info.parents {
                         if ui.link(RichText::new(&p[..p.len().min(7)]).monospace()).clicked() {
                             acts.push(Action::Jump(p.clone()));
@@ -44,7 +49,7 @@ impl RepoTab {
                 ui.label(body.trim());
             }
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
+            if compare.is_none() { ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), Sense::hover());
                 ui.painter().circle_filled(rect.center(), 15.0, theme::avatar(&info.email));
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials(&info.author), egui::FontId::proportional(12.0), Color32::WHITE);
@@ -55,7 +60,7 @@ impl RepoTab {
                         ui.label(RichText::new(format!("committed by {} {}", info.committer, info.committer_date)).small().color(theme::dim(ui)));
                     }
                 });
-            });
+            }); }
             ui.add_space(8.0);
             ui.separator();
             let n = info.files.len() + info.untracked.len();
@@ -86,6 +91,7 @@ impl RepoTab {
                         }
                         acts.push(Action::Git(o));
                     }
+                    file_items(ui, &c.path, acts);
                     if ui.button("Copy path").clicked() {
                         acts.push(Action::Copy(c.path.clone()));
                     }

@@ -23,7 +23,7 @@ pub use env::check_git;
 pub use log::{LOG, Logged};
 pub use model::{Change, Commit, CommitInfo, Ref, RefKind, Stash, State, Status};
 pub use network::with_autostash;
-pub use read::{commit_info, git_dir, log, predict_conflicts, refs, remotes, stash_info, stashes, state, status};
+pub use read::{DATE_FORMAT, commit_info, compare_info, git_dir, log, predict_conflicts, refs, remotes, stash_info, stashes, state, status};
 pub use runner::{CANCELLED, Cancel, cmd, progress_label, run, run_input, run_raw};
 pub use snapshot::{Snapshot, restore, snapshot};
 pub use url::{url_path, web_url};
