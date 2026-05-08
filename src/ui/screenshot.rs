@@ -126,6 +126,9 @@ impl App {
                         t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(id)));
                     }
                 }
+                Ok(q) if q.starts_with("palette") => {
+                    self.palette = Some(super::palette::Palette { query: q.trim_start_matches("palette").trim_start_matches(':').into(), ..Default::default() })
+                }
                 _ => {}
             }
         }

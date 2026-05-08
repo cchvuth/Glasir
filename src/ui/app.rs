@@ -2,10 +2,10 @@
 //! frame loop, global shortcuts and window setup. Each screen area lives in
 //! its own `ui` module; this file only wires them together.
 
-use super::settings::Settings;
+use super::settings::{Settings, toggle_theme};
 use super::toasts::Toast;
 use super::welcome::CloneDlg;
-use super::{command_log, graph_view, repo_view};
+use super::{command_log, graph_view, palette, repo_view};
 use crate::git;
 use crate::repo::{Action, Msg, Op, RepoTab, Search, Task, fetch_op};
 use crate::theme::{self, icon};
@@ -22,6 +22,7 @@ pub struct App {
     pub(super) toasts: Vec<Toast>,
     pub(super) clone: Option<CloneDlg>,
     pub(super) settings: bool,
+    pub(super) palette: Option<palette::Palette>,
     /// Git missing or too old: what to install (dismissable banner).
     pub(super) git_warn: Option<String>,
     pub(super) git_check: Option<Task<Option<String>>>,
@@ -47,6 +48,7 @@ impl App {
             toasts: vec![],
             clone: None,
             settings: false,
+            palette: None,
             git_warn: None,
             git_check: Some(Task::spawn(&cc.egui_ctx, git::check_git)),
             show_log: false,
@@ -99,6 +101,9 @@ impl App {
             self.show_log = !self.show_log;
         }
         let fetch = cmd && !shift && pressed(Key::L);
+        if cmd && (pressed(Key::P) || pressed(Key::K)) {
+            self.palette = Some(Default::default());
+        }
         if cmd && pressed(Key::T) {
             self.active = self.tabs.len();
         }
@@ -143,6 +148,28 @@ impl App {
             self.open(ctx, &p);
         }
     }
+
+    fn command_palette(&mut self, ctx: &egui::Context) {
+        let Some(p) = &mut self.palette else { return };
+        let items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull);
+        let Some(choice) = palette::show(ctx, p, items) else { return };
+        self.palette = None;
+        match choice {
+            None => {}
+            Some(palette::Cmd::Tab(a)) => {
+                if let Some(t) = self.tabs.get_mut(self.active) {
+                    t.apply(ctx, a);
+                }
+            }
+            Some(palette::Cmd::Open(p)) => self.open(ctx, &p),
+            Some(palette::Cmd::PickOpen) => self.pick_and_open(ctx),
+            Some(palette::Cmd::Clone) => self.open_clone(),
+            Some(palette::Cmd::Settings) => self.open_settings(),
+            Some(palette::Cmd::CommandLog) => self.show_log = !self.show_log,
+            Some(palette::Cmd::Theme) => toggle_theme(&mut self.s, ctx),
+        }
+    }
+
 }
 
 impl eframe::App for App {
@@ -200,6 +227,7 @@ impl eframe::App for App {
         }
         self.clone_dialog(&ctx);
         self.settings_dialog(&ctx);
+        self.command_palette(&ctx);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
         graph_view::dnd::preview(&ctx);

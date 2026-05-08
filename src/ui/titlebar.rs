@@ -1,5 +1,5 @@
 //! Title bar: the repo tabs (drag to move the window, double-click to zoom)
-//! and the global buttons on the right (theme, command log, settings).
+//! and the global buttons on the right (theme, palette, command log, settings).
 
 use super::app::App;
 use super::settings::toggle_theme;
@@ -58,6 +58,9 @@ impl App {
                 }
                 if theme::pill(ui, icon::TERMINAL_WINDOW).on_hover_text("Command log (⇧⌘L)").clicked() {
                     self.show_log = !self.show_log;
+                }
+                if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).clicked() {
+                    self.palette = Some(Default::default());
                 }
                 let glyph = if !self.s.light { icon::SUN } else { icon::MOON };
                 if theme::pill(ui, glyph).on_hover_text("Switch light / dark").clicked() {

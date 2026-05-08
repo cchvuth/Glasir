@@ -141,7 +141,7 @@ pub fn fetch_op() -> Op {
     Op::new("Fetch", &["fetch", "--all", "--prune", "--progress"])
 }
 
-/// Stash everything, untracked files included (toolbar, WIP menu).
+/// Stash everything, untracked files included (toolbar, WIP menu, palette).
 pub fn stash_op() -> Op {
     Op::new("Stash", &["stash", "push", "--include-untracked"])
 }
