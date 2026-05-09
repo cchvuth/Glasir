@@ -26,7 +26,7 @@ impl App {
                     }
                 }
                 Ok("log") => self.show_log = true,
-                // Network dialogs and badges: `checkout:<branch>`, `pull-ff`, `push-rejected`, `force-push`.
+                // Network dialogs and badges: `checkout:<branch>`, `pull-ff`, `push-rejected`, `force-push`, `fetch-failed`.
                 Ok(q) if q.starts_with("checkout:") => {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         let b = &q["checkout:".len()..];
@@ -50,6 +50,11 @@ impl App {
                         && let Some(o) = t.push_op(true)
                     {
                         t.apply(&ctx.clone(), crate::repo::Action::Git(o));
+                    }
+                }
+                Ok("fetch-failed") => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.fetch_failed = Some("git@github.example.com: Permission denied (publickey).\nfatal: Could not read from remote repository.".into());
                     }
                 }
                 // Run an op, e.g. `git:fetch --all` (to see the running/cancel state).
@@ -77,6 +82,11 @@ impl App {
                 Ok(q) if q.starts_with("merge:") => {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         t.apply(&ctx.clone(), crate::repo::Action::MergeEditor(q[6..].into()));
+                    }
+                }
+                Ok("cleanup") => {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.apply(&ctx.clone(), crate::repo::Action::Cleanup);
                     }
                 }
                 Ok(q) if q.starts_with("search:") => {

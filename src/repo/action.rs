@@ -71,6 +71,7 @@ pub enum Action {
     FileView(String, super::history::Mode),
     /// A branch was dropped onto another: offer merge / rebase / push.
     DropBranch { src: String, dst: String },
+    Cleanup,
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
     AmendInto(String),

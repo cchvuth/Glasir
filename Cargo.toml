@@ -9,6 +9,7 @@ license = "MIT"
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
 egui-phosphor = "0.14.0"
+notify = "8"
 open = "5.4.4"
 rfd = "0.17.2"
 serde = { version = "1", features = ["derive"] }

@@ -1,7 +1,60 @@
-//! Remote-facing helpers: running an op with local changes auto-stashed.
+//! Remote-facing helpers: the never-prompting background fetch, classifying
+//! its failures, and running an op with local changes auto-stashed.
 
-use super::{Cancel, Res, run};
+use super::log::shell_quote;
+use super::runner::exec;
+use super::{Cancel, Res, cmd, run};
 use std::path::Path;
+
+/// The user's ssh command made to fail instead of asking (plink takes `-batch`).
+fn batch_ssh(ssh: &str, variant: &str) -> String {
+    match variant {
+        "plink" | "putty" | "tortoiseplink" => format!("{ssh} -batch"),
+        "simple" => ssh.to_owned(),
+        "ssh" => format!("{ssh} -o BatchMode=yes -o ConnectTimeout=15"),
+        _ if ssh.to_lowercase().contains("plink") => format!("{ssh} -batch"),
+        _ => format!("{ssh} -o BatchMode=yes -o ConnectTimeout=15"),
+    }
+}
+
+/// `fetch --all --prune --no-tags` for background refreshes. It can never prompt (no askpass,
+/// no terminal, ssh in batch mode), so missing credentials fail fast instead of
+/// hanging or popping up a window.
+pub fn fetch_quiet(dir: &Path) -> Res<String> {
+    let cfg = |k: &str| run(dir, &["config", "--get", k]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
+    // git's own precedence: GIT_SSH_COMMAND > core.sshCommand > GIT_SSH.
+    let ssh = env("GIT_SSH_COMMAND").or_else(|| cfg("core.sshCommand")).or_else(|| env("GIT_SSH").map(|p| shell_quote(&p)));
+    let variant = env("GIT_SSH_VARIANT").or_else(|| cfg("ssh.variant")).unwrap_or_default();
+    let mut c = cmd(dir);
+    for k in ["GIT_ASKPASS", "SSH_ASKPASS", "GLASIR_ASKPASS", "GIT_SSH"] {
+        c.env_remove(k);
+    }
+    c.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_SSH_COMMAND", batch_ssh(ssh.as_deref().unwrap_or("ssh"), &variant));
+    // Remote-tracking refs only: tags are local refs that undo snapshots, so a background
+    // fetch adding or pruning one would invalidate the undo history. A manual Fetch gets them.
+    let args = ["-c", "credential.interactive=false", "-c", "core.askPass=", "fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"];
+    exec(c, dir, &args, None).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Badge text for a failed background fetch.
+pub fn fetch_failure(err: &str) -> &'static str {
+    let e = err.to_lowercase();
+    let auth = [
+        "terminal prompts disabled",
+        "could not read username",
+        "permission denied",
+        "host key verification failed",
+        "authentication failed",
+        "saml",
+        "returned error: 401",
+        "returned error: 403",
+    ];
+    if auth.iter().any(|k| e.contains(k)) { "Sign in required" } else { "Fetch failed" }
+}
 
 /// Runs `f` with all uncommitted changes (untracked too) stashed, then reapplies them.
 /// If they conflict with the new state, the conflict markers stay and so does the stash.
@@ -33,6 +86,16 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use crate::git::CANCELLED;
+
+    #[test]
+    fn background_fetch_never_prompts() {
+        assert_eq!(batch_ssh("ssh", ""), "ssh -o BatchMode=yes -o ConnectTimeout=15");
+        assert_eq!(batch_ssh("'C:/PuTTY/plink.exe'", ""), "'C:/PuTTY/plink.exe' -batch");
+        assert_eq!(batch_ssh("ssh -i key", "plink"), "ssh -i key -batch");
+        assert_eq!(fetch_failure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "Sign in required");
+        assert_eq!(fetch_failure("git@github.com: Permission denied (publickey)."), "Sign in required");
+        assert_eq!(fetch_failure("ssh: Could not resolve hostname x: nodename nor servname provided"), "Fetch failed");
+    }
 
     /// A cancelled autostash op still gives the stashed changes back.
     #[cfg(unix)]

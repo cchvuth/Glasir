@@ -110,6 +110,19 @@ mod tests {
         assert!(force.cmds[0].contains(&format!("--force-with-lease=refs/heads/main:{}", seen.trim())));
         assert!(force.confirm.as_ref().unwrap().contains("\n$ git push --progress --force-with-lease="));
 
+        // Someone pushes again and a background fetch picks it up: the lease must not be defeated.
+        // The fetch leaves tags alone, so it can't invalidate the undo history.
+        commit(&b, "b.txt", "b2\n");
+        sh(&b, &["tag", "v9"]);
+        sh(&b, &["push", "-q", "origin", "main", "v9"]);
+        let refs = git::snapshot(&a).unwrap();
+        git::fetch_quiet(&a).unwrap();
+        assert_eq!(git::snapshot(&a).unwrap(), refs);
+        let err = exec(&a, &force).unwrap_err();
+        assert!(err.contains("stale info"), "{err}");
+
+        // With the fresh state shown, the force push goes through.
+        let force = load_all(&a, 100, View::default()).unwrap().push_op(true).unwrap();
         exec(&a, &force).unwrap();
         assert_eq!(sh(&root.join("remote.git"), &["rev-parse", "main"]), sh(&a, &["rev-parse", "HEAD"]));
         let _ = std::fs::remove_dir_all(&root);

@@ -1,5 +1,5 @@
-//! Per-repo modal dialogs and popups: value prompt, confirmation,
-//! failed-op choices and the branch drop menu. Each reads its
+//! Per-repo modal dialogs and popups: value prompt, confirmation, branch
+//! cleanup, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
 use crate::git;
@@ -79,6 +79,46 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
             op.confirm = None;
             acts.push(Action::Git(op));
         }
+    }
+}
+
+pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
+    let Some(list) = &mut t.cleanup else { return };
+    let mut close = false;
+    egui::Modal::new(Id::new("cleanup")).show(ctx, |ui| {
+        ui.set_width(480.0);
+        ui.heading(format!("{} Clean up branches", icon::BROOM));
+        if list.is_empty() {
+            ui.label(RichText::new("Nothing to clean up — no merged or orphaned local branches.").color(theme::dim(ui)));
+        } else {
+            ui.label(RichText::new("Local branches you probably don't need anymore. Deleting is undoable (⌘Z).").small().color(theme::dim(ui)));
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (name, why, on) in list.iter_mut() {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(on, RichText::new(name.as_str()).strong());
+                        ui.label(RichText::new(why.as_str()).small().color(theme::dim(ui)));
+                    });
+                }
+            });
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let names: Vec<&str> = list.iter().filter(|c| c.2).map(|c| c.0.as_str()).collect();
+            let label = format!("Delete {} branch{}", names.len(), if names.len() == 1 { "" } else { "es" });
+            if theme::primary(ui, !names.is_empty(), &label, 170.0).clicked() {
+                let mut args = vec!["branch", "-D"];
+                args.extend(names);
+                acts.push(Action::Git(Op::new("Clean up branches", &args).undo(Undo::Keep)));
+                close = true;
+            }
+            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                close = true;
+            }
+        });
+    });
+    if close {
+        t.cleanup = None;
     }
 }
 

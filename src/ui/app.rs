@@ -189,6 +189,10 @@ impl eframe::App for App {
         {
             t.reload(&ctx, true);
         }
+        let every = if self.shot.is_some() { 0 } else { self.s.auto_fetch };
+        for (i, t) in self.tabs.iter_mut().enumerate() {
+            t.auto_fetch(&ctx, every, i == self.active && focused && !self.focused);
+        }
         self.focused = focused;
         self.shortcuts(&ctx);
 

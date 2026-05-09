@@ -8,15 +8,17 @@
 //!   (push/pull/fetch/stash/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
-//! - `diff`, `conflicts`, `files`: one concern each
+//! - `diff`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`: state behind the graph search bar, the
 //!   file history/blame view and the merge editor (drawn by the same-named `ui` files)
 
 mod action;
+mod cleanup;
 mod conflicts;
 mod data;
 mod diff;
+mod fetch;
 pub mod files;
 pub mod history;
 pub mod merge_editor;
@@ -28,6 +30,7 @@ mod task;
 #[cfg(test)]
 mod testutil;
 mod undo;
+mod watch;
 
 pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt};
 pub use data::{RepoData, View};
@@ -41,6 +44,7 @@ use crate::git::{self, CommitInfo, Res};
 use data::load_all;
 use op::Done;
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use undo::UndoEntry;
 
 pub const PAGE: usize = 1000;
@@ -74,6 +78,8 @@ pub struct RepoTab {
     pub view: View,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
+    watcher: Option<(notify::RecommendedWatcher, Receiver<bool>)>,
+    watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<bool>)>>>,
     pub search: Option<Search>,
     /// Extra selected commits (⌘/⇧-click), newest first; empty = single selection.
     pub multi: Vec<String>,
@@ -82,11 +88,20 @@ pub struct RepoTab {
     pub file_view: Option<history::FileView>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
+    /// Branch cleanup candidates: (name, reason, selected).
+    pub cleanup: Option<Vec<(String, String, bool)>>,
     /// Predicted conflicts with the target branch: (target, files).
     pub conflicts: Option<(String, Vec<String>)>,
     conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
     /// A failed op offering fixes (autostash, diverged pull, rejected push).
     pub choice: Option<Choice>,
+    bg_fetch: Option<Task<Res<String>>>,
+    /// `ctx` time of the last background fetch.
+    last_fetch: f64,
+    /// Why the last background fetch failed.
+    pub fetch_failed: Option<String>,
+    /// Debounced filesystem change: (needs full reload, time of last event).
+    changed: Option<(bool, f64)>,
 }
 
 impl RepoTab {
@@ -117,16 +132,26 @@ impl RepoTab {
             max_commits,
             view,
             notes: vec![],
+            watcher: None,
+            watcher_task: None,
+            changed: None,
             search: None,
             multi: vec![],
             rebase: None,
             merge: None,
             file_view: None,
             drop_menu: None,
+            cleanup: None,
             conflicts: None,
             conflict_task: None,
             choice: None,
+            bg_fetch: None,
+            last_fetch: f64::NEG_INFINITY,
+            fetch_failed: None,
         };
+        // Registering watches walks the whole tree (inotify): keep it off the UI thread.
+        let (c, d) = (ctx.clone(), t.dir.clone());
+        t.watcher_task = Some(Task::spawn(ctx, move || watch::watch(&c, &d)));
         t.reload(ctx, true);
         t
     }
@@ -163,6 +188,26 @@ impl RepoTab {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
+        if let Some(w) = Task::poll(&mut self.watcher_task) {
+            if w.is_none() {
+                msgs.push(Msg { text: "Live refresh is off for this repo (file watching unavailable); changes show on focus or F5.".into(), error: false });
+            }
+            self.watcher = w;
+        }
+        if let Some((_, rx)) = &self.watcher {
+            let now = ctx.input(|i| i.time);
+            for full in rx.try_iter() {
+                self.changed = Some((self.changed.is_some_and(|c| c.0) || full, now));
+            }
+            if let Some((full, at)) = self.changed
+                && now - at > 0.4
+                && self.load.is_none()
+                && self.running.is_none()
+            {
+                self.changed = None;
+                self.reload(ctx, full);
+            }
+        }
         if let Some(res) = Task::poll(&mut self.load) {
             match res {
                 Ok(d) => {
@@ -250,6 +295,7 @@ impl RepoTab {
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
+            Action::Cleanup => self.open_cleanup(),
             Action::Multi(ids) => {
                 if let Some(last) = ids.last().cloned() {
                     self.select(ctx, Sel::Commit(last));

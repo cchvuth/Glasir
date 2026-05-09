@@ -43,7 +43,12 @@ fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
 
 pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Action>) {
     ui.add_space(4.0);
-    ui.add(TextEdit::singleline(filter).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(f32::INFINITY));
+    ui.horizontal(|ui| {
+        ui.add(TextEdit::singleline(filter).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width() - 36.0));
+        if theme::pill(ui, icon::BROOM).on_hover_text("Clean up merged & gone branches").clicked() {
+            acts.push(Action::Cleanup);
+        }
+    });
     ui.add_space(4.0);
     let f = filter.as_str();
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {

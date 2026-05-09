@@ -226,6 +226,9 @@ impl RepoTab {
                         None => msgs.push(Msg { text: format!("{} failed:\n{e}", op.label), error: true }),
                     },
                 }
+                if res.is_ok() && matches!(op.cmds[0][0].as_str(), "fetch" | "pull") {
+                    self.fetch_failed = None;
+                }
                 if res.is_ok() && op.label.starts_with("Commit") {
                     self.summary.clear();
                     self.body.clear();

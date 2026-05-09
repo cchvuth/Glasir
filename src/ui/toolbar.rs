@@ -1,6 +1,7 @@
 //! Per-repo toolbar: repo / branch status, undo-redo, fetch-pull-push,
-//! branch-stash-pop, conflict chip, progress and cancel.
+//! branch-stash-pop, conflict and fetch-failure chips, progress and cancel.
 
+use crate::git;
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pull_op, stash_op};
 use crate::theme::{self, icon};
 use crate::ui::settings::Settings;
@@ -49,6 +50,13 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                 .color(theme::MOD);
             theme::group(ui, |ui| ui.label(chip))
                 .on_hover_text(format!("Merging {target} now would conflict in:\n{}", files.join("\n")));
+        }
+        if let Some(e) = &t.fetch_failed {
+            let chip = RichText::new(format!("{} {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::MOD);
+            let r = theme::group(ui, |ui| theme::pill(ui, chip)).on_hover_text(format!("Background fetch failed:\n{}\n\nClick to fetch now (asks for credentials if needed).", e.trim()));
+            if r.clicked() && !busy {
+                acts.push(Action::Git(fetch_op()));
+            }
         }
         if let Some(label) = t.busy() {
             ui.spinner();

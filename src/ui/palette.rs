@@ -101,6 +101,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
             v.push(item(icon::ARROW_CLOCKWISE, format!("Redo {l}"), "⇧⌘Z", Cmd::Tab(Action::Redo)));
         }
         v.push(item(icon::ARROWS_CLOCKWISE, "Refresh", "F5", Cmd::Tab(Action::Reload)));
+        v.push(item(icon::BROOM, "Clean up merged & gone branches…", "", Cmd::Tab(Action::Cleanup)));
         if let Some(web) = d.web() {
             v.push(item(icon::GLOBE, "Open repository on remote", web.clone(), Cmd::Tab(Action::Url(web.clone()))));
             if let Some(b) = &d.status.branch {

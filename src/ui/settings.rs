@@ -1,9 +1,9 @@
-//! Persisted `Settings` and the Settings dialog (theme, pull mode).
+//! Persisted `Settings` and the Settings dialog (theme, auto-fetch, pull mode).
 
 use super::app::App;
 use crate::repo::PullMode;
 use crate::theme;
-use egui::{Id, Key};
+use egui::{Id, Key, RichText};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -18,6 +18,8 @@ pub struct Settings {
     pub pull: PullMode,
     pub split_diff: bool,
     pub clone_dir: Option<PathBuf>,
+    /// Background fetch interval in minutes; 0 = off.
+    pub auto_fetch: u32,
     /// Graph filter (hidden / soloed refs, first-parent) per repo path.
     pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
 }
@@ -33,6 +35,7 @@ impl Default for Settings {
             pull: PullMode::Merge,
             split_diff: false,
             clone_dir: None,
+            auto_fetch: 10,
             views: Default::default(),
         }
     }
@@ -66,6 +69,12 @@ impl App {
                 if ui.add(egui::DragValue::new(&mut s.max_commits).range(1000..=2_000_000).speed(1000)).changed() {
                     reload = true;
                 }
+                ui.end_row();
+                ui.label("Auto-fetch");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut s.auto_fetch).range(0..=120).suffix(" min"));
+                    ui.label(RichText::new("every N minutes and on focus · 0 = off").small().color(theme::dim(ui)));
+                });
                 ui.end_row();
                 ui.label("Default pull");
                 ui.horizontal(|ui| {
