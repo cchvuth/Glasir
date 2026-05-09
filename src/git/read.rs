@@ -1,7 +1,7 @@
 //! Read-only queries (log, refs, status, stashes, remotes, commit details,
-//! conflict prediction) and the parsers for their output.
+//! worktrees, conflict prediction) and the parsers for their output.
 
-use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, State, Status, cmd, run};
+use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, State, Status, Worktree, cmd, run};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -39,7 +39,7 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
         dir,
         &[
             "for-each-ref",
-            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(symref)%1f%(creatordate:unix)",
+            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(symref)%1f%(creatordate:unix)%1f%(worktreepath)",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
@@ -73,6 +73,7 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
                 gone: f[4] == "gone",
                 head: f[5] == "*",
                 date: f[7].parse().unwrap_or(0),
+                worktree: f.get(8).filter(|w| f[5] != "*" && !w.is_empty()).map(|w| w.to_string()),
             })
         })
         .collect())
@@ -234,6 +235,39 @@ pub fn stash_info(dir: &Path, id: &str) -> Res<CommitInfo> {
     Ok(info)
 }
 
+pub fn parse_worktrees(out: &str) -> Vec<Worktree> {
+    out.split("\0\0")
+        .filter_map(|rec| {
+            let mut w = Worktree::default();
+            for line in rec.split('\0') {
+                let (k, v) = line.split_once(' ').unwrap_or((line, ""));
+                match k {
+                    "worktree" => w.path = v.into(),
+                    "HEAD" => w.head = v.into(),
+                    "branch" => w.branch = Some(v.strip_prefix("refs/heads/").unwrap_or(v).into()),
+                    "locked" => w.locked = Some(v.into()),
+                    "prunable" => w.prunable = true,
+                    "bare" => w.bare = true,
+                    _ => {}
+                }
+            }
+            (!w.path.is_empty()).then_some(w)
+        })
+        .collect()
+}
+
+/// All worktrees of the repository, with their change counts.
+pub fn worktrees(dir: &Path) -> Res<Vec<Worktree>> {
+    let mut list = parse_worktrees(&run(dir, &["worktree", "list", "--porcelain", "-z"])?);
+    if list.len() > 1 {
+        for w in list.iter_mut().filter(|w| !w.prunable && !w.bare) {
+            let st = run(Path::new(&w.path), &["status", "--porcelain=v2", "-z", "--untracked-files=normal"]).unwrap_or_default();
+            w.changes = st.split('\0').filter(|r| matches!(r.get(..2), Some("1 " | "2 " | "u " | "? "))).count();
+        }
+    }
+    Ok(list)
+}
+
 /// Files that would conflict if `other` were merged into HEAD, via an in-memory
 /// `merge-tree` (git ≥ 2.38). `None` when it can't be determined.
 pub fn predict_conflicts(dir: &Path, other: &str) -> Option<Vec<String>> {
@@ -263,6 +297,16 @@ pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_porcelain() {
+        let out = "worktree /r\0HEAD aaa\0branch refs/heads/main\0\0worktree /r-det\0HEAD bbb\0detached\0locked on usb\0\0worktree /gone\0HEAD ccc\0branch refs/heads/f/x\0prunable gitdir file points to non-existent location\0\0";
+        let w = parse_worktrees(out);
+        assert_eq!(w.len(), 3);
+        assert_eq!((w[0].path.as_str(), w[0].branch.as_deref()), ("/r", Some("main")));
+        assert_eq!((w[1].branch.as_deref(), w[1].locked.as_deref()), (None, Some("on usb")));
+        assert_eq!((w[2].branch.as_deref(), w[2].prunable), (Some("f/x"), true));
+    }
 
     #[test]
     fn status_v2() {

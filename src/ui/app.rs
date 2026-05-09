@@ -180,6 +180,10 @@ impl eframe::App for App {
             t.poll(&ctx, &mut msgs);
             msgs.append(&mut t.notes);
         }
+        let opens: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| t.open_tab.take()).collect();
+        for p in opens {
+            self.open(&ctx, &p);
+        }
         for m in msgs {
             self.toast(&ctx, m.text, m.error);
         }

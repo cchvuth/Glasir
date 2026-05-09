@@ -87,6 +87,15 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
             acts.push(op(format!("Push {name}"), &["push", "-u", &remote, name]));
         }
     }
+    if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {
+        let path = d.worktree_path(name);
+        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", name]).then_open("{}")));
+    }
+    if let Some(p) = &r.worktree
+        && ui.button(format!("{} Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
+    {
+        acts.push(Action::OpenTab(p.clone()));
+    }
     if ui.button("Create branch from here…").clicked() {
         acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", name]).undo(Undo::Keep)));
     }
@@ -129,6 +138,14 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
     }
     integrate_items(ui, d, &r.name, acts);
     compare_items(ui, d, &r.name, acts);
+    let local = r.remote_branch().to_owned();
+    if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
+        acts.push(prompt(
+            format!("Worktree folder for {local}"),
+            d.worktree_path(&local),
+            Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.name]).then_open("{}"),
+        ));
+    }
     ui.separator();
     if ui.button(format!("Delete {} from {}", r.remote_branch(), r.remote())).clicked() {
         acts.push(Action::Git(

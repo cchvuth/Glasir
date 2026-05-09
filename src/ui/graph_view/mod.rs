@@ -54,6 +54,7 @@ fn corner(pts: &mut Vec<Pos2>, a: Pos2, c: Pos2, b: Pos2) {
 fn ref_label(r: &Ref) -> String {
     match r.kind {
         RefKind::Local if r.head => format!("{} {}", icon::CHECK, r.name),
+        RefKind::Local if r.worktree.is_some() => format!("{} {}", icon::TREE_STRUCTURE, r.name),
         RefKind::Local => format!("{} {}", icon::GIT_BRANCH, r.name),
         RefKind::Remote => format!("{} {}", icon::CLOUD, r.name),
         RefKind::Tag => format!("{} {}", icon::TAG, r.name),

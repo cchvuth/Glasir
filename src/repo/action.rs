@@ -75,6 +75,7 @@ pub enum Action {
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
     AmendInto(String),
+    OpenTab(String),
     /// Change the graph filter (hide / solo / first-parent) and reload.
     View(View),
     /// Replace the multi-selection (commit ids, graph order: newest first).

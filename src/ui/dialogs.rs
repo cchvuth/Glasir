@@ -36,7 +36,7 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         if ok && !v.is_empty() {
             let mut op = p.op;
             let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
-            for a in op.cmds.iter_mut().flatten() {
+            for a in op.cmds.iter_mut().flatten().chain(op.then_open.as_mut()) {
                 *a = a.replace("{}", v).replace("{2}", &v2);
             }
             acts.push(Action::Git(op));

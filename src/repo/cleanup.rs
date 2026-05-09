@@ -14,7 +14,7 @@ impl RepoTab {
         let list: Vec<(String, String, bool)> = d
             .refs
             .iter()
-            .filter(|r| r.kind == RefKind::Local && !r.head && !is_trunk(&r.name))
+            .filter(|r| r.kind == RefKind::Local && !r.head && r.worktree.is_none() && !is_trunk(&r.name))
             .filter_map(|r| {
                 if merged.contains(r.name.as_str()) {
                     Some((r.name.clone(), format!("merged into {base}"), true))

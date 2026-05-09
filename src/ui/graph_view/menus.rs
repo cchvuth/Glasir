@@ -73,6 +73,13 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
             Op::new("Create branch", &["checkout", "-b", "{}", &c.id]).undo(Undo::Keep),
         ));
     }
+    if ui.button("Create worktree here (new branch)…").clicked() {
+        acts.push(prompt(
+            format!("New branch and worktree at {short}"),
+            "",
+            Op::new("Create worktree", &["worktree", "add", "-b", "{}", &d.worktree_path("{}"), &c.id]).then_open(d.worktree_path("{}")),
+        ));
+    }
     if ui.button("Create tag here…").clicked() {
         acts.push(prompt(format!("New tag at {short}"), "", Op::new("Create tag", &["tag", "{}", &c.id]).undo(Undo::Keep)));
     }

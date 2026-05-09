@@ -78,6 +78,8 @@ pub struct RepoTab {
     pub view: View,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
+    /// A repository the app should open in a new tab.
+    pub open_tab: Option<PathBuf>,
     watcher: Option<(notify::RecommendedWatcher, Receiver<bool>)>,
     watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<bool>)>>>,
     pub search: Option<Search>,
@@ -132,6 +134,7 @@ impl RepoTab {
             max_commits,
             view,
             notes: vec![],
+            open_tab: None,
             watcher: None,
             watcher_task: None,
             changed: None,
@@ -179,10 +182,14 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone())
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), d.worktrees.clone())
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh)) => Ok(RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view)),
+            Some((log, refs, st, rm, gd, oh, wt)) => {
+                let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
+                d.worktrees = wt;
+                Ok(d)
+            }
             None => load_all(&dir, limit, view),
         }));
     }
@@ -307,6 +314,7 @@ impl RepoTab {
                 self.view = v;
                 self.reload(ctx, true);
             }
+            Action::OpenTab(p) => self.open_tab = Some(PathBuf::from(p)),
             Action::AmendInto(commit) => {
                 let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
                 match crate::repo::rebase::amend_into(&self.dir, &commit, is_head) {

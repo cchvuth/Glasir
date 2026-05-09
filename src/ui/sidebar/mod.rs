@@ -1,8 +1,9 @@
-//! Left sidebar: filter box, local / remote branches, tags and stashes.
+//! Left sidebar: filter box, local / remote branches, tags, worktrees and stashes.
 //! `ref_menus` holds the right-click menus of refs (shared with the graph pills).
 
 pub mod ref_menus;
 pub mod stashes;
+mod worktrees;
 
 use crate::git::RefKind;
 use crate::repo::{Action, RepoData, branch_checkout};
@@ -57,7 +58,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
         section(ui, "LOCAL", locals.len(), |ui| {
             for (i, r) in locals.iter().copied().enumerate() {
                 pinned_separator(ui, d, i, &locals.iter().map(|r| r.name.as_str()).collect::<Vec<_>>());
-                let glyph = if r.head { icon::CHECK } else { icon::GIT_BRANCH };
+                let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
                 let mut text = format!("{glyph} {}", r.name);
                 if r.ahead > 0 {
                     text += &format!("  ↑{}", r.ahead);
@@ -120,6 +121,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 resp.context_menu(|ui| ref_menu(ui, d, r, acts));
             }
         });
+        worktrees::list(ui, d, f, acts);
         stashes::list(ui, d, f, acts);
     });
 }

@@ -11,6 +11,7 @@ pub struct RepoData {
     pub log: Arc<Vec<Commit>>,
     pub refs: Arc<Vec<Ref>>,
     pub stashes: Arc<Vec<git::Stash>>,
+    pub worktrees: Arc<Vec<git::Worktree>>,
     pub remotes: Arc<Vec<(String, String)>>,
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
@@ -95,6 +96,14 @@ impl RepoData {
     pub fn web(&self) -> Option<String> {
         let r = self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first())?;
         git::web_url(&r.1)
+    }
+
+    /// Default folder for a new worktree: `<parent>/<repo>.worktrees/<name>`.
+    pub fn worktree_path(&self, name: &str) -> String {
+        let main = self.worktrees.first().map(|w| PathBuf::from(&w.path)).or_else(|| self.git_dir.parent().map(Path::to_path_buf)).unwrap_or_default();
+        let repo = main.file_name().map_or("repo".into(), |n| n.to_string_lossy().into_owned());
+        let dir = main.parent().unwrap_or(&main).join(format!("{repo}.worktrees")).join(name);
+        dir.to_string_lossy().into_owned()
     }
 
     pub fn web_of(&self, remote: &str) -> Option<String> {
@@ -185,6 +194,7 @@ impl RepoData {
             log,
             refs,
             stashes,
+            worktrees: Default::default(),
             remotes,
             git_dir,
             origin_head,
@@ -216,17 +226,19 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
                 _ => Err(e),
             })
         });
-        let sh = s.spawn(|| git::stashes(dir).unwrap_or_default());
+        let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
         let rm = s.spawn(|| git::remotes(dir).unwrap_or_default());
         (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
     });
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
+    let (stashes, worktrees) = stashes;
     let log = log?;
     let truncated = log.len() >= limit;
     let mut d = RepoData::build(Arc::new(log), Arc::new(refs?), Arc::new(stashes), Arc::new(remotes), git_dir, origin_head, status?, view);
     d.truncated = truncated;
+    d.worktrees = Arc::new(worktrees);
     Ok(d)
 }
 

@@ -1,5 +1,5 @@
-//! Plain data parsed from git output: commits, refs, status, stashes and
-//! commit details.
+//! Plain data parsed from git output: commits, refs, status, stashes,
+//! commit details and worktrees.
 
 #[derive(Clone, Debug, Default)]
 pub struct Commit {
@@ -32,6 +32,8 @@ pub struct Ref {
     pub behind: u32,
     pub gone: bool,
     pub head: bool,
+    /// Path of the other (linked) worktree this branch is checked out in.
+    pub worktree: Option<String>,
     /// Unix time the ref's object was created (tag date / commit date).
     pub date: i64,
 }
@@ -106,4 +108,18 @@ pub struct CommitInfo {
     pub files: Vec<Change>,
     /// A stash's untracked files (its third parent), shown after `files`.
     pub untracked: Vec<Change>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Worktree {
+    pub path: String,
+    pub head: String,
+    /// Short branch name, `None` when detached.
+    pub branch: Option<String>,
+    /// Lock reason (possibly empty) when locked.
+    pub locked: Option<String>,
+    pub prunable: bool,
+    pub bare: bool,
+    /// Uncommitted changes (0 when unknown).
+    pub changes: usize,
 }

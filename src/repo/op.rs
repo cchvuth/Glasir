@@ -9,7 +9,7 @@ use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Whether an op can be undone, and the `git reset` mode that undoes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,6 +44,8 @@ pub struct Op {
     pub light: bool,
     /// Discards: back up what will be lost first, so the discard can be undone.
     pub backup: Option<Backup>,
+    /// Open this path in a new tab when the op succeeds (e.g. a new worktree).
+    pub then_open: Option<String>,
     /// Stash uncommitted changes with this message first, reapply them after.
     pub autostash: Option<String>,
 }
@@ -67,8 +69,13 @@ impl Op {
             undo: Undo::No,
             light: false,
             backup: None,
+            then_open: None,
             autostash: None,
         }
+    }
+    pub fn then_open(mut self, path: impl Into<String>) -> Self {
+        self.then_open = Some(path.into());
+        self
     }
     /// Make a discard undoable.
     pub fn backup(mut self, b: Backup) -> Self {
@@ -147,10 +154,13 @@ pub fn stash_op() -> Op {
 }
 
 /// Check out a ref: local branch, remote branch (its local twin or a new
-/// tracking branch), or a tag (detached).
+/// tracking branch), or a tag (detached). A branch checked out in another
+/// worktree opens that worktree instead.
 pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
     match r.kind {
         RefKind::Local if r.head => None,
+        // Checked out in another worktree: git refuses a second checkout, so open that one.
+        RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::OpenTab),
         RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
             let local = r.remote_branch();
@@ -228,6 +238,9 @@ impl RepoTab {
                 }
                 if res.is_ok() && matches!(op.cmds[0][0].as_str(), "fetch" | "pull") {
                     self.fetch_failed = None;
+                }
+                if let (Ok(_), Some(p)) = (&res, &op.then_open) {
+                    self.open_tab = Some(PathBuf::from(p));
                 }
                 if res.is_ok() && op.label.starts_with("Commit") {
                     self.summary.clear();
