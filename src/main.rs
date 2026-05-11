@@ -1,10 +1,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 //! Glasir entry point: login-env import, askpass dispatch, eframe launch.
-//! Layers, lowest first: `git` (CLI access), `graph` / `highlight` (pure
-//! algorithms), `repo` (per-repo state and operations, incl. the rebase
-//! engine), then `theme` and `ui` (all drawing). Lower layers never import higher ones.
+//! Layers (lowest first): `git`, `graph`/`highlight`, `ai`, `repo`, `theme`, `ui`.
 
+mod ai;
 mod askpass;
 mod git;
 mod graph;
@@ -21,7 +20,7 @@ fn main() -> eframe::Result {
     if std::env::var_os("GLASIR_ASKPASS").is_some() {
         return askpass::run(arg.unwrap_or_default());
     }
-    // Settings and open tabs lived under the former name.
+    // Settings, open tabs and the fallback token lived under the former name.
     if let (Some(new), Some(old)) = (eframe::storage_dir("Glasir"), eframe::storage_dir("Cuttle"))
         && !new.exists()
         && old.exists()

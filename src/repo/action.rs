@@ -3,6 +3,7 @@
 
 use super::data::View;
 use super::op::Op;
+use crate::ai;
 use crate::git::Change;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +65,8 @@ pub enum Action {
     Url(String),
     Reveal(String),
     Jump(String),
+    /// Ask Claude (streams into `RepoTab::ai`).
+    Ai(ai::Purpose),
     /// Open the interactive rebase editor for commits after `base`.
     Rebase { base: String, label: String },
     /// Open the 3-way merge editor for a conflicted file.

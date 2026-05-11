@@ -1,7 +1,8 @@
-//! Per-repo modal dialogs and popups: value prompt, confirmation, branch
-//! cleanup, failed-op choices and the branch drop menu. Each reads its
+//! Per-repo modal dialogs and popups: value prompt, confirmation, AI result,
+//! branch cleanup, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
+use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, RepoTab, Undo};
 use crate::theme::{self, icon};
@@ -79,6 +80,96 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
             op.confirm = None;
             acts.push(Action::Git(op));
         }
+    }
+}
+
+/// Modal for AI results that need a decision (pull request text, conflict resolution).
+pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
+    let Some(job) = &t.ai else { return };
+    let inline_compare = matches!(t.sel, Some(crate::repo::Sel::Compare { .. }));
+    let modal = match &job.purpose {
+        ai::Purpose::PullRequest { .. } => true,
+        // From the merge editor, the answer fills its output pane instead.
+        ai::Purpose::Resolve(p) => t.merge.as_ref().is_none_or(|m| m.path != *p),
+        ai::Purpose::ExplainRange { .. } => !inline_compare,
+        _ => false,
+    };
+    if !modal {
+        return;
+    }
+    let mut close = false;
+    egui::Modal::new(Id::new("ai_dialog")).show(ctx, |ui| {
+        ui.set_width(720.0);
+        ui.horizontal(|ui| {
+            ui.heading(format!("{} {}", icon::SPARKLE, job.purpose.title()));
+            if job.running() {
+                ui.spinner();
+            }
+        });
+        ui.add_space(4.0);
+        if let Some(Err(e)) = &job.done {
+            ui.colored_label(theme::DEL, e);
+        }
+        egui::ScrollArea::vertical().max_height(460.0).auto_shrink([false, true]).show(ui, |ui| {
+            let mut text = job.text.as_str();
+            let font = if matches!(job.purpose, ai::Purpose::Resolve(_)) { egui::TextStyle::Monospace } else { egui::TextStyle::Body };
+            ui.add(TextEdit::multiline(&mut text).font(font).desired_width(f32::INFINITY));
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let ready = job.done == Some(Ok(())) && !job.text.trim().is_empty();
+            match &job.purpose {
+                ai::Purpose::PullRequest { branch, base } => {
+                    let (title, body) = job.text.trim().split_once('\n').unwrap_or((job.text.trim(), ""));
+                    if let Some(web) = t.data.as_ref().and_then(|d| d.web())
+                        && ui.add_enabled(ready, Button::new(format!("{} Open pull request page", icon::GIT_PULL_REQUEST))).clicked()
+                    {
+                        let strip = |b: &str| b.split_once('/').filter(|(r, _)| *r == "origin").map_or(b.to_owned(), |(_, n)| n.to_owned());
+                        let mut url = format!(
+                            "{web}/compare/{}...{}?expand=1&title={}",
+                            git::url_path(&strip(base)),
+                            git::url_path(&strip(branch)),
+                            git::url_encode(title.trim())
+                        );
+                        let body = git::url_encode(body.trim());
+                        if body.len() < 6000 {
+                            url += &format!("&body={body}");
+                        } else {
+                            acts.push(Action::Copy(job.text.clone()));
+                        }
+                        acts.push(Action::Url(url));
+                    }
+                    if ui.add_enabled(ready, Button::new(format!("{} Copy", icon::COPY))).clicked() {
+                        acts.push(Action::Copy(job.text.trim().to_owned()));
+                    }
+                }
+                ai::Purpose::Resolve(path) => {
+                    if ui.add_enabled(ready, Button::new(format!("{} Apply & mark resolved", icon::CHECK))).clicked() {
+                        let mut content = job.text.clone();
+                        if !content.ends_with('\n') {
+                            content.push('\n');
+                        }
+                        let target = t.dir.join(path);
+                        let regular = std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file());
+                        match if regular { std::fs::write(&target, content) } else { Err(std::io::Error::other("not a regular file")) } {
+                            Ok(()) => acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", path]).light())),
+                            Err(e) => acts.push(Action::Error(format!("Could not write {path}: {e}"))),
+                        }
+                        close = true;
+                    }
+                }
+                _ => {}
+            }
+            if !job.running() && ui.button(format!("{} Regenerate", icon::ARROWS_CLOCKWISE)).clicked() {
+                acts.push(Action::Ai(job.purpose.clone()));
+            }
+            if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                close = true;
+            }
+        });
+    });
+    if close {
+        t.ai = None;
     }
 }
 

@@ -2,9 +2,10 @@
 //! unstaged / staged file lists and the commit box.
 
 use super::{file_items, file_row};
+use crate::ai::Purpose;
 use crate::git::State;
 use crate::repo::{Action, DiffSrc, Op, RepoTab, op};
-use crate::theme;
+use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
 impl RepoTab {
@@ -40,9 +41,25 @@ impl RepoTab {
             ui.add_space(6.0);
         }
 
+        let generating = self.ai_busy() == Some(&Purpose::CommitMessage);
         let mut commit = false;
         egui::Panel::bottom("commit_box").frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
-            ui.label(RichText::new("Commit").small().strong());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Commit").small().strong());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if generating {
+                        ui.spinner();
+                        ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
+                    } else if ui
+                        .add_enabled(!s.staged.is_empty(), egui::Button::new(format!("{} AI message", icon::SPARKLE)).small())
+                        .on_hover_text("Write the commit message from the staged changes with Claude")
+                        .on_disabled_hover_text("Stage changes first")
+                        .clicked()
+                    {
+                        acts.push(Action::Ai(Purpose::CommitMessage));
+                    }
+                });
+            });
             ui.horizontal(|ui| {
                 let n = self.summary.chars().count();
                 ui.add(TextEdit::singleline(&mut self.summary).hint_text("Summary").desired_width(ui.available_width() - 30.0));
@@ -80,6 +97,9 @@ impl RepoTab {
                     for c in &s.conflicted {
                         let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path));
                         resp.context_menu(|ui| {
+                            if ui.button(format!("{} Resolve with AI…", icon::SPARKLE)).clicked() {
+                                acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
+                            }
                             if ui.button("Mark resolved").clicked() {
                                 acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", &c.path]).light()));
                             }

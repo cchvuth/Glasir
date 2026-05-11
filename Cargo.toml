@@ -2,18 +2,28 @@
 name = "glasir"
 version = "0.1.0"
 edition = "2024"
-description = "A fast, free and open-source Git client with a modern commit graph"
+description = "A fast, free and open-source Git client with a modern commit graph and Claude-powered helpers"
 license = "MIT"
 
 [dependencies]
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
 egui-phosphor = "0.14.0"
+keyring = "4.2.0"
 notify = "8"
 open = "5.4.4"
 rfd = "0.17.2"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
+
+# OS TLS stacks (and OS trust stores, so corporate CAs work) on Windows/macOS;
+# rustls + the platform verifier on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+ureq = { version = "3.4.2", features = ["platform-verifier"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ureq = { version = "3.4.2", default-features = false, features = ["native-tls", "gzip"] }
 
 [profile.release]
 lto = "thin"

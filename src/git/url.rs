@@ -1,5 +1,5 @@
 //! Web URLs: hosting page of a remote (github.com / GitHub Enterprise) and
-//! percent-encoding for paths.
+//! percent-encoding for paths and query strings.
 
 /// `git@ghe.corp:org/repo.git` / `https://user@ghe.corp/org/repo` / `ssh://git@ghe.corp:22/org/repo`
 /// -> `https://ghe.corp/org/repo`
@@ -33,6 +33,16 @@ pub fn url_path(s: &str) -> String {
         .collect()
 }
 
+/// `https://…?k=v` query-string encoding.
+pub fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +58,10 @@ mod tests {
         ] {
             assert_eq!(web_url(i).as_deref(), Some(o), "{i}");
         }
+    }
+
+    #[test]
+    fn encodes_urls() {
+        assert_eq!(url_encode("Fix: a&b é"), "Fix%3A%20a%26b%20%C3%A9");
     }
 }

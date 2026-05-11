@@ -1,6 +1,7 @@
 //! Right-click menus of refs (sidebar rows and graph pills): local branch,
 //! remote branch and tag menus plus graph hide/solo toggles.
 
+use crate::ai::Purpose;
 use crate::git::RefKind;
 use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, op, prompt};
 use crate::theme::icon;
@@ -38,11 +39,13 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
     }
 }
 
-/// Compare with the checked-out branch.
 fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
     let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
     if ui.button(format!("{} Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
-        acts.push(Action::Select(Sel::Compare { from: head, to: name.into(), three_dot: true }));
+        acts.push(Action::Select(Sel::Compare { from: head.clone(), to: name.into(), three_dot: true }));
+    }
+    if ui.button(format!("{} Explain changes vs {head} with AI", icon::SPARKLE)).clicked() {
+        acts.push(Action::Ai(Purpose::ExplainRange { from: head, to: name.into() }));
     }
 }
 
@@ -52,8 +55,13 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
         RefKind::Remote => (r.remote().to_owned(), r.remote_branch().to_owned()),
         _ => (r.upstream.split('/').next().filter(|s| !s.is_empty()).unwrap_or("origin").to_owned(), r.name.clone()),
     };
-    let Some(web) = d.web_of(&remote) else { return };
     ui.separator();
+    if ui.button(format!("{} Write pull request with AI…", icon::SPARKLE)).clicked() {
+        let def = d.default_branch();
+        let base = if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def };
+        acts.push(Action::Ai(Purpose::PullRequest { branch: r.name.clone(), base }));
+    }
+    let Some(web) = d.web_of(&remote) else { return };
     let enc = crate::git::url_path;
     if ui.button("Create pull request…").on_hover_text("Opens the compare page on GitHub / GitHub Enterprise").clicked() {
         acts.push(Action::Url(format!("{web}/compare/{}...{}?expand=1", enc(&d.default_branch()), enc(&branch))));

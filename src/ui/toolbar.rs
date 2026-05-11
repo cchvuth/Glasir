@@ -1,6 +1,7 @@
 //! Per-repo toolbar: repo / branch status, undo-redo, fetch-pull-push,
 //! branch-stash-pop, conflict and fetch-failure chips, progress and cancel.
 
+use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pull_op, stash_op};
 use crate::theme::{self, icon};
@@ -132,6 +133,10 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                 acts.push(Action::Git(stash_op()));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
+                if ui.button(format!("{} Stash with AI message", icon::SPARKLE)).clicked() {
+                    acts.push(Action::Ai(ai::Purpose::StashMessage));
+                    ui.close();
+                }
                 if ui.button("Stash staged changes only").clicked() {
                     acts.push(op("Stash staged", &["stash", "push", "--staged"]));
                     ui.close();

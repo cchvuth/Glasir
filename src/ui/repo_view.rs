@@ -13,6 +13,7 @@ use egui::{Frame, Margin, Ui, UiBuilder};
 pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let ctx = ui.ctx().clone();
     let mut acts = vec![];
+    t.ai_cfg.clone_from(&s.ai);
     egui::Panel::top("toolbar")
         .frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 4, bottom: 8 }))
         .show(ui, |ui| toolbar(ui, t, s, &mut acts));
@@ -37,7 +38,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .show(ui, |ui| {
                 theme::card(ui, 205, |ui| {
                     if let Some(ed) = &mut t.merge {
-                        if merge_editor::show(ui, ed, &mut acts) {
+                        if merge_editor::show(ui, ed, t.ai.as_ref(), &mut acts) {
                             t.merge = None;
                         }
                         return;
@@ -80,6 +81,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
 
     dialogs::prompt_dialog(t, &ctx, &mut acts);
     dialogs::confirm_dialog(t, &ctx, &mut acts);
+    dialogs::ai_dialog(t, &ctx, &mut acts);
     dialogs::drop_menu(t, &ctx, &mut acts);
     dialogs::cleanup_dialog(t, &ctx, &mut acts);
     dialogs::choice_dialog(t, &ctx, &mut acts);

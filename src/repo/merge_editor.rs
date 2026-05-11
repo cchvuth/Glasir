@@ -326,6 +326,15 @@ impl Editor {
         }
     }
 
+    /// Replace the output (e.g. with Claude's resolution).
+    pub fn fill(&mut self, text: &str) {
+        self.output = text.to_owned();
+        if !self.output.ends_with('\n') {
+            self.output.push('\n');
+        }
+        self.reparse();
+    }
+
     pub(crate) fn reparse(&mut self) {
         self.chunks = parse(&self.output, self.data.as_ref().map_or(7, |d| d.size));
         let orig = self.data.as_ref().map_or(&[][..], |d| &d.orig[..]);
@@ -499,6 +508,8 @@ mod tests {
         ed.output = ed.output.replacen("two x", "two y", 1); // hand edit inside the block
         ed.reparse();
         assert_eq!(ed.orig_of, [None]);
+        ed.fill("resolved by Claude");
+        assert_eq!((ed.output.as_str(), ed.orig_of.len()), ("resolved by Claude\n", 0));
 
         // Edits made elsewhere since loading are never overwritten; symlinks are refused.
         std::fs::write(dir.join("f.txt"), "changed\n").unwrap();

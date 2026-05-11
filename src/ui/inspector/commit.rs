@@ -1,7 +1,8 @@
-//! Inspector for a commit, stash or compare range: message, author and the
-//! changed files.
+//! Inspector for a commit, stash or compare range: message, author, AI
+//! explanation and the changed files.
 
 use super::{file_items, file_row};
+use crate::ai::Purpose;
 use crate::repo::{Action, DiffSrc, Op, RepoTab, Sel};
 use crate::theme::{self, icon};
 use crate::ui::format::initials;
@@ -47,6 +48,32 @@ impl RepoTab {
             if !body.trim().is_empty() {
                 ui.add_space(4.0);
                 ui.label(body.trim());
+            }
+            ui.add_space(6.0);
+            let explain = match &compare {
+                Some((from, to)) => Purpose::ExplainRange { from: from.clone(), to: to.clone() },
+                None => Purpose::Explain(info.id.clone()),
+            };
+            match self.ai.as_ref().filter(|j| j.purpose == explain) {
+                Some(job) => {
+                    egui::Frame::new().fill(theme::faint(ui)).inner_margin(8.0).corner_radius(6.0).show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{} Claude", icon::SPARKLE)).small().strong());
+                            if job.running() {
+                                ui.spinner();
+                            }
+                        });
+                        if !job.text.is_empty() {
+                            ui.label(job.text.trim());
+                        }
+                    });
+                }
+                None => {
+                    let label = if compare.is_some() { "Explain these changes" } else { "Explain this commit" };
+                    if ui.small_button(format!("{} {label}", icon::SPARKLE)).clicked() {
+                        acts.push(Action::Ai(explain));
+                    }
+                }
             }
             ui.add_space(8.0);
             if compare.is_none() { ui.horizontal(|ui| {

@@ -8,12 +8,13 @@
 //!   (push/pull/fetch/stash/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
-//! - `diff`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
+//! - `diff`, `ai_job`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`: state behind the graph search bar, the
 //!   file history/blame view and the merge editor (drawn by the same-named `ui` files)
 
 mod action;
+mod ai_job;
 mod cleanup;
 mod conflicts;
 mod data;
@@ -40,6 +41,7 @@ pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op, sta
 pub use search::Search;
 pub use task::Task;
 
+use crate::ai;
 use crate::git::{self, CommitInfo, Res};
 use data::load_all;
 use op::Done;
@@ -76,6 +78,10 @@ pub struct RepoTab {
     pub max_commits: usize,
     /// Graph filter; the app persists it per repo.
     pub view: View,
+    pub ai: Option<ai::Job>,
+    /// The commit message being replaced by an AI suggestion, restored on failure.
+    ai_draft: Option<(String, String)>,
+    pub ai_cfg: ai::Config,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
     /// A repository the app should open in a new tab.
@@ -133,6 +139,9 @@ impl RepoTab {
             scroll_to: None,
             max_commits,
             view,
+            ai: None,
+            ai_draft: None,
+            ai_cfg: ai::Config::default(),
             notes: vec![],
             open_tab: None,
             watcher: None,
@@ -251,6 +260,7 @@ impl RepoTab {
         if let Some(r) = Task::poll(&mut self.info_task) {
             self.info = Some(r);
         }
+        self.poll_ai(ctx, msgs);
         self.poll_diff();
         self.poll_op(ctx, msgs);
     }
@@ -301,6 +311,7 @@ impl RepoTab {
                 self.scroll_to = self.data.as_ref().and_then(|d| d.row_of.get(&id).copied());
                 self.select(ctx, Sel::Commit(id));
             }
+            Action::Ai(p) => self.start_ai(ctx, p),
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
             Action::Cleanup => self.open_cleanup(),
             Action::Multi(ids) => {

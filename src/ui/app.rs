@@ -2,7 +2,7 @@
 //! frame loop, global shortcuts and window setup. Each screen area lives in
 //! its own `ui` module; this file only wires them together.
 
-use super::settings::{Settings, toggle_theme};
+use super::settings::{Settings, SettingsDlg, toggle_theme};
 use super::toasts::Toast;
 use super::welcome::CloneDlg;
 use super::{command_log, graph_view, palette, repo_view};
@@ -21,7 +21,7 @@ pub struct App {
     pub(super) s: Settings,
     pub(super) toasts: Vec<Toast>,
     pub(super) clone: Option<CloneDlg>,
-    pub(super) settings: bool,
+    pub(super) settings: Option<SettingsDlg>,
     pub(super) palette: Option<palette::Palette>,
     /// Git missing or too old: what to install (dismissable banner).
     pub(super) git_warn: Option<String>,
@@ -47,7 +47,7 @@ impl App {
             active: 0,
             toasts: vec![],
             clone: None,
-            settings: false,
+            settings: None,
             palette: None,
             git_warn: None,
             git_check: Some(Task::spawn(&cc.egui_ctx, git::check_git)),

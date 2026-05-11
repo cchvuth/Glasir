@@ -2,6 +2,7 @@
 //! output below. It works on the working file's conflict markers, so hand edits to the output stay
 //! the source of truth. State and parsing live in `crate::repo::merge_editor`.
 
+use crate::ai;
 use crate::repo::merge_editor::{Chunk, Editor, Row, Take, conflicts, parse, parts, rebuild, save, stage, whole_ops};
 use crate::repo::{Action, Task};
 use crate::theme::{self, icon};
@@ -16,7 +17,7 @@ fn tint(c: Color32, strong: bool) -> Color32 {
 }
 
 /// Returns true when the editor should close.
-pub fn show(ui: &mut Ui, ed: &mut Editor, acts: &mut Vec<Action>) -> bool {
+pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<Action>) -> bool {
     if let Some(d) = Task::poll(&mut ed.task) {
         ed.output = String::from_utf8_lossy(&d.original).into_owned();
         ed.data = Some(d);
@@ -33,6 +34,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, acts: &mut Vec<Action>) -> bool {
     }
     let mut close = false;
     let mut auto = false;
+    let thinking = ai.is_some_and(|j| j.running() && j.purpose == ai::Purpose::Resolve(ed.path.clone()));
     ui.horizontal(|ui| {
         if theme::pill(ui, icon::X).on_hover_text("Close without saving (the conflict markers stay)").clicked() {
             close = true;
@@ -42,6 +44,12 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, acts: &mut Vec<Action>) -> bool {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ed.data.as_ref().is_none_or(|d| d.whole.is_some()) {
                 return;
+            }
+            if thinking {
+                ui.label(RichText::new("Claude is resolving…").small().color(theme::dim(ui)));
+                ui.spinner();
+            } else if theme::pill(ui, format!("{} Resolve with AI", icon::SPARKLE)).on_hover_text("Let Claude write the output; review it, then save").clicked() {
+                acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
             let n = conflicts(&ed.chunks).filter(|c| c.trivial()).count();
             let b = ui.add_enabled(n > 0, egui::Button::new(format!("{} Auto-resolve trivial ({n})", icon::MAGIC_WAND)).frame_when_inactive(false).corner_radius(255));
@@ -215,7 +223,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, acts: &mut Vec<Action>) -> bool {
         .show(ui, |ui| {
             area.show(ui, |ui| {
                 let te = TextEdit::multiline(&mut ed.output).code_editor().frame(egui::Frame::NONE).min_size(ui.available_size()).layouter(&mut layouter);
-                ui.add(te).changed()
+                ui.add_enabled(!thinking, te).changed()
             })
             .inner
         })
@@ -225,7 +233,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, acts: &mut Vec<Action>) -> bool {
     ui.horizontal(|ui| {
         let saving = ed.saving.is_some();
         let label = if saving { "Saving…".to_owned() } else { format!("{} Save & mark resolved", icon::CHECK) };
-        let r = theme::primary(ui, m == 0 && !saving, &label, 200.0);
+        let r = theme::primary(ui, m == 0 && !saving && !thinking, &label, 200.0);
         let r = r.on_disabled_hover_text(format!("Resolve the {m} remaining conflict(s) first, or close without saving"));
         if r.clicked() {
             let (dir, path, original, out) = (ed.dir.clone(), ed.path.clone(), d.original.clone(), ed.output.clone());
