@@ -2,7 +2,7 @@
 //! frame loop, global shortcuts and window setup. Each screen area lives in
 //! its own `ui` module; this file only wires them together.
 
-use super::settings::{Settings, SettingsDlg, toggle_theme};
+use super::settings::{Settings, SettingsDlg, toggle_flavor};
 use super::toasts::Toast;
 use super::welcome::CloneDlg;
 use super::{command_log, graph_view, palette, repo_view};
@@ -28,18 +28,28 @@ pub struct App {
     pub(super) git_check: Option<Task<Option<String>>>,
     pub(super) show_log: bool,
     pub(super) focused: bool,
+    /// The OS draws glass behind the window, so the canvas stays translucent.
+    pub(super) glass_backdrop: bool,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext, open: Option<PathBuf>) -> Self {
         let s: Settings = cc.storage.and_then(|st| eframe::get_value(st, "settings")).unwrap_or_default();
         theme::install_fonts(&cc.egui_ctx);
+        theme::set_transparency(s.transparency);
         let mut s = s;
         if s.max_commits == 50_000 {
             s.max_commits = crate::repo::PAGE;
         }
-        theme::apply(&cc.egui_ctx, s.light);
+        if std::mem::take(&mut s.light) && s.flavor == theme::Flavor::Midnight {
+            s.flavor = theme::Flavor::Daylight;
+        }
+        theme::apply(&cc.egui_ctx, s.flavor);
         let shot = std::env::var("GLASIR_SCREENSHOT").ok().map(|p| (p, 0));
+        #[cfg(target_os = "macos")]
+        let glass_backdrop = s.native_glass && native_glass(cc);
+        #[cfg(not(target_os = "macos"))]
+        let glass_backdrop = false;
         let mut app =
             App {
             shot,
@@ -53,6 +63,7 @@ impl App {
             git_check: Some(Task::spawn(&cc.egui_ctx, git::check_git)),
             show_log: false,
             focused: true,
+            glass_backdrop,
             s,
         };
         let active = app.s.active;
@@ -166,10 +177,39 @@ impl App {
             Some(palette::Cmd::Clone) => self.open_clone(),
             Some(palette::Cmd::Settings) => self.open_settings(),
             Some(palette::Cmd::CommandLog) => self.show_log = !self.show_log,
-            Some(palette::Cmd::Theme) => toggle_theme(&mut self.s, ctx),
+            Some(palette::Cmd::Theme) => toggle_flavor(&mut self.s, ctx),
         }
     }
 
+}
+
+/// macOS 26+: put an NSGlassEffectView *behind* egui. window-vibrancy adds it as a
+/// subview, which AppKit composites above the Metal layer egui draws into, so
+/// we push its layer back with a negative zPosition.
+#[cfg(target_os = "macos")]
+fn native_glass(cc: &eframe::CreationContext) -> bool {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use window_vibrancy::{LiquidGlassOptions, NSGlassEffectViewStyle, apply_liquid_glass};
+    if apply_liquid_glass(cc, LiquidGlassOptions::new(NSGlassEffectViewStyle::Regular)).is_err() {
+        return false;
+    }
+    let Ok(h) = cc.window_handle() else { return false };
+    let RawWindowHandle::AppKit(h) = h.as_raw() else { return false };
+    let view = h.ns_view.as_ptr().cast::<objc2::runtime::AnyObject>();
+    // SAFETY: plain AppKit/CoreAnimation getters and setters on the main thread.
+    unsafe {
+        let subviews: *mut objc2::runtime::AnyObject = objc2::msg_send![view, subviews];
+        let n: usize = objc2::msg_send![subviews, count];
+        for i in 0..n {
+            let sv: *mut objc2::runtime::AnyObject = objc2::msg_send![subviews, objectAtIndex: i];
+            let _: () = objc2::msg_send![sv, setWantsLayer: true];
+            let layer: *mut objc2::runtime::AnyObject = objc2::msg_send![sv, layer];
+            if !layer.is_null() {
+                let _: () = objc2::msg_send![layer, setZPosition: -1.0f64];
+            }
+        }
+    }
+    true
 }
 
 impl eframe::App for App {
@@ -200,7 +240,7 @@ impl eframe::App for App {
         self.focused = focused;
         self.shortcuts(&ctx);
 
-        theme::canvas(ui.painter(), ui.max_rect());
+        theme::canvas(ui.painter(), ui.max_rect(), self.glass_backdrop);
         let left = if cfg!(target_os = "macos") { 84 } else { 12 };
         egui::Panel::top("tabs")
             .frame(Frame::NONE.inner_margin(Margin { left, right: 12, top: 7, bottom: 4 }))

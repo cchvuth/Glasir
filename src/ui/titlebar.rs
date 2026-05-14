@@ -2,7 +2,7 @@
 //! and the global buttons on the right (theme, palette, command log, settings).
 
 use super::app::App;
-use super::settings::toggle_theme;
+use super::settings::toggle_flavor;
 use crate::theme::{self, icon};
 use egui::{Align, Id, Layout, RichText, Sense, Ui, ViewportCommand};
 
@@ -62,9 +62,9 @@ impl App {
                 if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).clicked() {
                     self.palette = Some(Default::default());
                 }
-                let glyph = if !self.s.light { icon::SUN } else { icon::MOON };
+                let glyph = if self.s.flavor.dark() { icon::SUN } else { icon::MOON };
                 if theme::pill(ui, glyph).on_hover_text("Switch light / dark").clicked() {
-                    toggle_theme(&mut self.s, ui.ctx());
+                    toggle_flavor(&mut self.s, ui.ctx());
                 }
             });
         });

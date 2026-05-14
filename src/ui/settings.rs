@@ -1,11 +1,12 @@
-//! Persisted `Settings` and the Settings dialog (theme, auto-fetch, pull mode, Claude token / model).
+//! Persisted `Settings` and the Settings dialog (theme flavour swatches, glass,
+//! auto-fetch, pull mode, Claude token / model).
 
 use super::app::App;
 use crate::ai;
 use crate::git;
 use crate::repo::{PullMode, Task};
 use crate::theme::{self, icon};
-use egui::{Button, Id, Key, RichText, TextEdit};
+use egui::{Align2, Button, Id, Key, RichText, Sense, TextEdit, Ui, vec2};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -15,12 +16,22 @@ pub struct Settings {
     pub recent: Vec<PathBuf>,
     pub open: Vec<PathBuf>,
     pub active: usize,
-    pub light: bool,
+    pub flavor: theme::Flavor,
+    /// Last-used flavour of each kind, for the title-bar sun/moon toggle.
+    pub last_dark: theme::Flavor,
+    pub last_light: theme::Flavor,
+    /// Pre-flavour setting (`light: true`), read once to migrate to Daylight.
+    #[serde(skip_serializing)]
+    pub(super) light: bool,
     pub max_commits: usize,
     pub pull: PullMode,
     pub split_diff: bool,
     pub clone_dir: Option<PathBuf>,
     pub ai: ai::Config,
+    /// macOS 26+: real Liquid Glass (NSGlassEffectView) behind the window.
+    pub native_glass: bool,
+    /// Liquid Glass transparency, 0.0 (solid) ..= 1.0 (clearest).
+    pub transparency: f32,
     /// Background fetch interval in minutes; 0 = off.
     pub auto_fetch: u32,
     /// Graph filter (hidden / soloed refs, first-parent) per repo path.
@@ -33,12 +44,17 @@ impl Default for Settings {
             recent: vec![],
             open: vec![],
             active: 0,
+            flavor: theme::Flavor::Midnight,
+            last_dark: theme::Flavor::Midnight,
+            last_light: theme::Flavor::Daylight,
             light: false,
             max_commits: crate::repo::PAGE,
             pull: PullMode::Merge,
             split_diff: false,
             clone_dir: None,
             ai: ai::Config::default(),
+            native_glass: false,
+            transparency: 0.25,
             auto_fetch: 10,
             views: Default::default(),
         }
@@ -75,9 +91,15 @@ impl App {
             ui.add_space(6.0);
             egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
                 ui.label("Theme");
-                ui.horizontal(|ui| {
-                    if ui.radio_value(&mut s.light, false, "Dark").changed() | ui.radio_value(&mut s.light, true, "Light").changed() {
-                        theme::apply(ui.ctx(), s.light);
+                ui.vertical(|ui| {
+                    for row in [theme::Flavor::DARK, theme::Flavor::LIGHT] {
+                        ui.horizontal(|ui| {
+                            for f in row {
+                                if flavor_swatch(ui, f, s.flavor == f).clicked() {
+                                    set_flavor(s, ui.ctx(), f);
+                                }
+                            }
+                        });
                     }
                 });
                 ui.end_row();
@@ -86,6 +108,22 @@ impl App {
                     reload = true;
                 }
                 ui.end_row();
+                ui.label("Glass transparency");
+                ui.horizontal(|ui| {
+                    let r = theme::slider(ui, &mut s.transparency);
+                    ui.label(RichText::new(format!("{:.0}%", s.transparency * 100.0)).small().color(theme::dim(ui)));
+                    if r.changed() {
+                        theme::set_transparency(s.transparency);
+                    }
+                })
+                .response
+                .on_hover_text("How much of the backdrop shows through glass panels. Higher is clearer.");
+                ui.end_row();
+                if cfg!(target_os = "macos") {
+                    ui.label("Window glass");
+                    ui.checkbox(&mut s.native_glass, "Native Liquid Glass backdrop (experimental, macOS 26+, restart)");
+                    ui.end_row();
+                }
                 ui.label("Auto-fetch");
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut s.auto_fetch).range(0..=120).suffix(" min"));
@@ -202,7 +240,35 @@ impl App {
 
 }
 
-pub(super) fn toggle_theme(s: &mut Settings, ctx: &egui::Context) {
-    s.light = !s.light;
-    theme::apply(ctx, s.light);
+fn set_flavor(s: &mut Settings, ctx: &egui::Context, f: theme::Flavor) {
+    s.flavor = f;
+    if f.dark() {
+        s.last_dark = f;
+    } else {
+        s.last_light = f;
+    }
+    theme::apply(ctx, f);
+}
+
+pub(super) fn toggle_flavor(s: &mut Settings, ctx: &egui::Context) {
+    let f = if s.flavor.dark() { s.last_light } else { s.last_dark };
+    set_flavor(s, ctx, f);
+}
+
+/// A clickable mini-preview of a flavour: its backdrop, a glass card and the accent.
+fn flavor_swatch(ui: &mut Ui, f: theme::Flavor, selected: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(86.0, 62.0), Sense::click());
+    let p = ui.painter().with_clip_rect(rect);
+    let r = rect.shrink(2.0);
+    p.rect_filled(r, 10.0, f.palette().base);
+    theme::canvas_of(&p.with_clip_rect(r.shrink(1.0)), r, false, f);
+    let [gr, gg, gb] = f.palette().glass;
+    let card = egui::Rect::from_min_size(r.min + vec2(8.0, 8.0), vec2(r.width() - 16.0, 22.0));
+    p.rect_filled(card, 7.0, egui::Color32::from_rgba_unmultiplied(gr, gg, gb, 200));
+    p.circle_filled(card.left_center() + vec2(11.0, 0.0), 5.0, f.palette().accent);
+    let text = if f.dark() { egui::Color32::from_white_alpha(210) } else { egui::Color32::from_black_alpha(190) };
+    p.text(r.center_bottom() - vec2(0.0, 13.0), Align2::CENTER_CENTER, f.name(), egui::FontId::proportional(11.5), text);
+    let ring = if selected { egui::Stroke::new(2.5, f.palette().accent) } else { egui::Stroke::new(1.0, theme::faint(ui)) };
+    p.rect_stroke(r, 10.0, ring, egui::StrokeKind::Outside);
+    resp.on_hover_text(if f.dark() { "Dark flavour" } else { "Light flavour" })
 }

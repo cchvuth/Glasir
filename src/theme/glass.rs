@@ -1,8 +1,8 @@
 //! Glass widgets: the lit canvas behind everything, glass panels and cards,
-//! capsule groups and pills, the primary button and the progress caption.
-//! Reusable widgets live here.
+//! capsule groups and pills, the primary button, the transparency slider and
+//! the progress caption. Reusable widgets live here.
 
-use super::{Palette, accent, dark, dim, palette};
+use super::{Flavor, Palette, accent, dark, dim, flavor};
 use egui::epaint::{Mesh, Shadow};
 use egui::{Color32, CornerRadius, Painter, Pos2, Rect, RichText, Shape, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
@@ -19,10 +19,18 @@ fn radial(mesh: &mut Mesh, c: Pos2, r: f32, col: Color32) {
     }
 }
 
-/// The lit backdrop the glass floats on.
-pub fn canvas(p: &Painter, rect: Rect) {
-    let Palette { base, blobs, .. } = palette();
-    p.rect_filled(rect, 0.0, base);
+/// The lit backdrop the glass floats on. Over a native glass backdrop only a
+/// translucent tint is painted so the desktop shows through.
+pub fn canvas(p: &Painter, rect: Rect, backdrop: bool) {
+    canvas_of(p, rect, backdrop, flavor());
+}
+
+/// Paints a flavour's backdrop (also used for the swatches in Settings).
+pub fn canvas_of(p: &Painter, rect: Rect, backdrop: bool, f: Flavor) {
+    let Palette { base, blobs, .. } = f.palette();
+    // Over the native glass backdrop the canvas itself becomes see-through too.
+    let canvas_alpha = if backdrop { 0.55 * (1.0 - transparency()) } else { 1.0 };
+    p.rect_filled(rect, 0.0, base.gamma_multiply(canvas_alpha));
     let mut mesh = Mesh::default();
     let s = rect.width().max(rect.height());
     for ((x, y), r, [cr, cg, cb, ca]) in blobs {
@@ -31,9 +39,26 @@ pub fn canvas(p: &Painter, rect: Rect) {
     p.add(mesh);
 }
 
+/// User-chosen glass transparency, 0.0 (solid) ..= 1.0 (clearest), as f32 bits.
+static TRANSPARENCY: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn set_transparency(t: f32) {
+    TRANSPARENCY.store(t.clamp(0.0, 1.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+}
+
+fn transparency() -> f32 {
+    f32::from_bits(TRANSPARENCY.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// Scale a glass alpha by the transparency setting; never below 15% so text stays legible.
+fn see_through(alpha: u8) -> u8 {
+    (alpha as f32 * (1.0 - 0.85 * transparency())).round() as u8
+}
+
 /// Glass panel: soft shadow, translucent body, specular sheen, lit rim.
 /// `opacity` 0..=255 controls how much of the canvas shows through.
 pub fn glass_shapes(rect: Rect, radius: f32, dark: bool, opacity: u8) -> Vec<Shape> {
+    let opacity = see_through(opacity);
     let cr = CornerRadius::same(radius.min(255.0) as u8);
     let mut v = vec![];
     v.push(
@@ -41,7 +66,7 @@ pub fn glass_shapes(rect: Rect, radius: f32, dark: bool, opacity: u8) -> Vec<Sha
             .as_shape(rect, cr)
             .into(),
     );
-    let [r, g, b] = palette().glass;
+    let [r, g, b] = flavor().palette().glass;
     let fill = Color32::from_rgba_unmultiplied(r, g, b, opacity);
     v.push(Shape::rect_filled(rect, cr, fill));
     // Specular sheen: brightest at the top centre, fading down and to the sides.
@@ -98,6 +123,20 @@ pub fn group<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// Frameless capsule button for use inside a `group`.
 pub fn pill(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
     ui.add(egui::Button::new(text).frame_when_inactive(false).corner_radius(255))
+}
+
+/// 0..=1 slider with a solid macOS-style knob (egui's knob shares the
+/// translucent widget fill with the rail).
+pub fn slider(ui: &mut Ui, value: &mut f32) -> egui::Response {
+    let r = ui.add(egui::Slider::new(value, 0.0..=1.0).show_value(false).trailing_fill(true));
+    let rect = r.rect;
+    let hr = rect.height() / 2.5;
+    let x = egui::lerp((rect.left() + hr)..=(rect.right() - hr), value.clamp(0.0, 1.0));
+    let c = pos2(x, rect.center().y);
+    let p = ui.painter();
+    p.circle_filled(c + vec2(0.0, 1.0), hr + 1.0, Color32::from_black_alpha(60));
+    p.circle(c, hr, Color32::WHITE, Stroke::new(0.5, Color32::from_black_alpha(40)));
+    r
 }
 
 /// Accent-tinted primary action.

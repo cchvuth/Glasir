@@ -1,12 +1,13 @@
 //! Dev/CI harness: `GLASIR_SCREENSHOT=out.bmp` saves a screenshot once the repo
 //! is loaded, then exits. `GLASIR_SCREENSHOT_VIEW` opens a view first (settings,
-//! dialogs, diffs, search...); extend the switch when a new view needs
+//! a flavour, dialogs, diffs, search...); extend the switch when a new view needs
 //! visual verification.
 
 use super::app::App;
 use crate::git;
 use crate::repo::history::Mode;
 use crate::repo::{Action, Op, PullMode, Search, Undo, pull_op};
+use crate::theme;
 use egui::Id;
 
 impl App {
@@ -23,6 +24,12 @@ impl App {
                 Ok("bottom") => {
                     if let Some(t) = self.tabs.get_mut(self.active) {
                         t.scroll_to = t.data.as_ref().map(|d| d.rows().saturating_sub(1));
+                    }
+                }
+                Ok(q) if q.starts_with("flavor:") => {
+                    let f = [theme::Flavor::DARK, theme::Flavor::LIGHT].concat().into_iter().find(|f| f.name().eq_ignore_ascii_case(&q[7..]));
+                    if let Some(f) = f {
+                        theme::apply(ctx, f);
                     }
                 }
                 Ok("log") => self.show_log = true,

@@ -2,12 +2,12 @@
 //! cards with specular rims, capsule controls and concentric radii, in dark and
 //! light. Uses the platform UI font (SF Pro on macOS, Segoe UI on Windows).
 //!
-//! `mod.rs`: colours, palette, accent, fonts and `apply`.
-//! `glass.rs`: the glass widgets (`canvas`, `glass`, `group`, `pill`, `primary`).
+//! `mod.rs`: colours, flavours (palettes), accent, fonts and `apply`.
+//! `glass.rs`: the glass widgets (`canvas`, `glass`, `group`, `pill`, `primary`, `slider`).
 
 mod glass;
 
-pub use glass::{canvas, card, glass_shapes, group, pill, primary, progress};
+pub use glass::{canvas, canvas_of, card, glass_shapes, group, pill, primary, progress, set_transparency, slider};
 
 use egui::epaint::Shadow;
 use egui::{Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Ui, Visuals, vec2};
@@ -40,6 +40,20 @@ pub fn avatar(email: &str) -> Color32 {
     Color32::from_rgb(c.r() / 2 + 24, c.g() / 2 + 24, c.b() / 2 + 24)
 }
 
+// ---------------------------------------------------------------------------
+// Flavours: three dark, three light.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Flavor {
+    #[default]
+    Midnight,
+    Graphite,
+    Abyss,
+    Daylight,
+    Paper,
+    Blossom,
+}
+
 /// Canvas base, three glow blobs ((x, y), radius, rgba), glass tint, accent.
 type Blob = ((f32, f32), f32, [u8; 4]);
 pub struct Palette {
@@ -49,31 +63,79 @@ pub struct Palette {
     pub accent: Color32,
 }
 
-static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+impl Flavor {
+    pub const DARK: [Flavor; 3] = [Flavor::Midnight, Flavor::Graphite, Flavor::Abyss];
+    pub const LIGHT: [Flavor; 3] = [Flavor::Daylight, Flavor::Paper, Flavor::Blossom];
 
-pub fn palette() -> Palette {
-    let rgb = |r, g, b| Color32::from_rgb(r, g, b);
-    let (a, b, c) = ((0.08, 0.05), (0.95, 0.15), (0.55, 1.05));
-    if LIGHT.load(std::sync::atomic::Ordering::Relaxed) {
-        Palette {
-            base: rgb(0xec, 0xef, 0xf5),
-            blobs: [(a, 0.75, [0xa8, 0xc8, 0xff, 170]), (b, 0.6, [0xe0, 0xc8, 0xff, 150]), (c, 0.75, [0xb8, 0xf0, 0xe4, 140])],
-            glass: [0xff, 0xff, 0xff],
-            accent: rgb(0x00, 0x7a, 0xff),
+    pub fn dark(self) -> bool {
+        Self::DARK.contains(&self)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Flavor::Midnight => "Midnight",
+            Flavor::Graphite => "Graphite",
+            Flavor::Abyss => "Abyss",
+            Flavor::Daylight => "Daylight",
+            Flavor::Paper => "Paper",
+            Flavor::Blossom => "Blossom",
         }
-    } else {
-        Palette {
-            base: rgb(0x0b, 0x0d, 0x13),
-            blobs: [(a, 0.75, [0x1d, 0x4e, 0xd8, 95]), (b, 0.6, [0x7c, 0x3a, 0xed, 70]), (c, 0.75, [0x0e, 0x9f, 0x9a, 60])],
-            glass: [0x1c, 0x20, 0x2a],
-            accent: rgb(0x0a, 0x84, 0xff),
+    }
+
+    pub fn palette(self) -> Palette {
+        let rgb = |r, g, b| Color32::from_rgb(r, g, b);
+        let (a, b, c) = ((0.08, 0.05), (0.95, 0.15), (0.55, 1.05));
+        match self {
+            Flavor::Midnight => Palette {
+                base: rgb(0x0b, 0x0d, 0x13),
+                blobs: [(a, 0.75, [0x1d, 0x4e, 0xd8, 95]), (b, 0.6, [0x7c, 0x3a, 0xed, 70]), (c, 0.75, [0x0e, 0x9f, 0x9a, 60])],
+                glass: [0x1c, 0x20, 0x2a],
+                accent: rgb(0x0a, 0x84, 0xff),
+            },
+            Flavor::Graphite => Palette {
+                base: rgb(0x10, 0x11, 0x13),
+                blobs: [(a, 0.75, [0x48, 0x4e, 0x58, 90]), (b, 0.6, [0x35, 0x39, 0x40, 80]), (c, 0.75, [0x5a, 0x60, 0x6b, 45])],
+                glass: [0x1f, 0x21, 0x25],
+                accent: rgb(0x7a, 0xa2, 0xf7),
+            },
+            Flavor::Abyss => Palette {
+                base: rgb(0x03, 0x10, 0x16),
+                blobs: [(a, 0.75, [0x0b, 0x6e, 0x75, 110]), (b, 0.6, [0x0e, 0x8a, 0x5f, 80]), (c, 0.75, [0x1b, 0x3a, 0x8a, 70])],
+                glass: [0x0e, 0x1d, 0x24],
+                accent: rgb(0x14, 0xc8, 0xb0),
+            },
+            Flavor::Daylight => Palette {
+                base: rgb(0xec, 0xef, 0xf5),
+                blobs: [(a, 0.75, [0xa8, 0xc8, 0xff, 170]), (b, 0.6, [0xe0, 0xc8, 0xff, 150]), (c, 0.75, [0xb8, 0xf0, 0xe4, 140])],
+                glass: [0xff, 0xff, 0xff],
+                accent: rgb(0x00, 0x7a, 0xff),
+            },
+            Flavor::Paper => Palette {
+                base: rgb(0xf3, 0xef, 0xe6),
+                blobs: [(a, 0.75, [0xe6, 0xd9, 0xbf, 160]), (b, 0.6, [0xee, 0xe4, 0xd0, 150]), (c, 0.75, [0xdc, 0xd4, 0xc4, 120])],
+                glass: [0xff, 0xfd, 0xf7],
+                accent: rgb(0xb5, 0x55, 0x1d),
+            },
+            Flavor::Blossom => Palette {
+                base: rgb(0xfb, 0xee, 0xf1),
+                blobs: [(a, 0.75, [0xff, 0xc4, 0xd4, 170]), (b, 0.6, [0xff, 0xd6, 0xbc, 150]), (c, 0.75, [0xe4, 0xd0, 0xff, 125])],
+                glass: [0xff, 0xf8, 0xfa],
+                accent: rgb(0xe0, 0x3e, 0x76),
+            },
         }
     }
 }
 
-/// The current theme's accent colour.
+static FLAVOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn flavor() -> Flavor {
+    let i = FLAVOR.load(std::sync::atomic::Ordering::Relaxed);
+    *[Flavor::DARK, Flavor::LIGHT].concat().get(i as usize).unwrap_or(&Flavor::Midnight)
+}
+
+/// The current flavour's accent colour.
 pub fn accent() -> Color32 {
-    palette().accent
+    flavor().palette().accent
 }
 pub const ADD: Color32 = Color32::from_rgb(0x34, 0xc7, 0x59);
 pub const DEL: Color32 = Color32::from_rgb(0xff, 0x45, 0x3a);
@@ -164,9 +226,10 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-pub fn apply(ctx: &egui::Context, light: bool) {
-    LIGHT.store(light, std::sync::atomic::Ordering::Relaxed);
-    let accent = palette().accent;
+pub fn apply(ctx: &egui::Context, f: Flavor) {
+    FLAVOR.store([Flavor::DARK, Flavor::LIGHT].concat().iter().position(|x| *x == f).unwrap_or(0) as u8, std::sync::atomic::Ordering::Relaxed);
+    let light = !f.dark();
+    let accent = f.palette().accent;
     let mut v = if light { Visuals::light() } else { Visuals::dark() };
     let w = |a: u8| if light { Color32::from_black_alpha(a / 2 + 4) } else { Color32::from_white_alpha(a) };
     v.panel_fill = Color32::TRANSPARENT;

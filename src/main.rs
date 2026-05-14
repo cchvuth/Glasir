@@ -37,6 +37,7 @@ fn main() -> eframe::Result {
             .with_active(std::env::var_os("GLASIR_SCREENSHOT").is_none() && std::env::var_os("GLASIR_BACKGROUND").is_none())
             // macOS: unified title bar, content (and glass) runs under the traffic lights.
             .with_fullsize_content_view(true)
+            .with_transparent(cfg!(target_os = "macos"))
             .with_titlebar_shown(false)
             .with_title_shown(false),
         ..Default::default()
