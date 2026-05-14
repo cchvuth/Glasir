@@ -1,5 +1,5 @@
 //! Persisted `Settings` and the Settings dialog (theme flavour swatches, glass,
-//! auto-fetch, pull mode, Claude token / model).
+//! auto-fetch, pull mode, commit email rules, Claude token / model).
 
 use super::app::App;
 use crate::ai;
@@ -61,6 +61,9 @@ impl Default for Settings {
     }
 }
 
+/// Label column of every settings grid, so the sections line up.
+const LABEL_W: f32 = 130.0;
+
 #[derive(Default)]
 pub(super) struct SettingsDlg {
     token: String,
@@ -89,134 +92,137 @@ impl App {
             ui.set_width(520.0);
             ui.heading("Settings");
             ui.add_space(6.0);
-            egui::Grid::new("settings_grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-                ui.label("Theme");
-                ui.vertical(|ui| {
-                    for row in [theme::Flavor::DARK, theme::Flavor::LIGHT] {
-                        ui.horizontal(|ui| {
-                            for f in row {
-                                if flavor_swatch(ui, f, s.flavor == f).clicked() {
-                                    set_flavor(s, ui.ctx(), f);
+            let max_h = ui.ctx().content_rect().height() - 160.0;
+            egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
+                egui::Grid::new("settings_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
+                    ui.label("Theme");
+                    ui.vertical(|ui| {
+                        for row in [theme::Flavor::DARK, theme::Flavor::LIGHT] {
+                            ui.horizontal(|ui| {
+                                for f in row {
+                                    if flavor_swatch(ui, f, s.flavor == f).clicked() {
+                                        set_flavor(s, ui.ctx(), f);
+                                    }
                                 }
-                            }
-                        });
-                    }
-                });
-                ui.end_row();
-                ui.label("Commits to load");
-                if ui.add(egui::DragValue::new(&mut s.max_commits).range(1000..=2_000_000).speed(1000)).changed() {
-                    reload = true;
-                }
-                ui.end_row();
-                ui.label("Glass transparency");
-                ui.horizontal(|ui| {
-                    let r = theme::slider(ui, &mut s.transparency);
-                    ui.label(RichText::new(format!("{:.0}%", s.transparency * 100.0)).small().color(theme::dim(ui)));
-                    if r.changed() {
-                        theme::set_transparency(s.transparency);
-                    }
-                })
-                .response
-                .on_hover_text("How much of the backdrop shows through glass panels. Higher is clearer.");
-                ui.end_row();
-                if cfg!(target_os = "macos") {
-                    ui.label("Window glass");
-                    ui.checkbox(&mut s.native_glass, "Native Liquid Glass backdrop (experimental, macOS 26+, restart)");
-                    ui.end_row();
-                }
-                ui.label("Auto-fetch");
-                ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut s.auto_fetch).range(0..=120).suffix(" min"));
-                    ui.label(RichText::new("every N minutes and on focus · 0 = off").small().color(theme::dim(ui)));
-                });
-                ui.end_row();
-                ui.label("Default pull");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut s.pull, PullMode::Merge, "Merge");
-                    ui.radio_value(&mut s.pull, PullMode::FfOnly, "Fast-forward only");
-                    ui.radio_value(&mut s.pull, PullMode::Rebase, "Rebase");
-                });
-                ui.end_row();
-            });
-
-            ui.add_space(10.0);
-            ui.separator();
-            ui.label(RichText::new(format!("{} AI (Claude)", icon::SPARKLE)).strong());
-            ui.label(
-                RichText::new(
-                    "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`).                      It is stored in your system keychain and only sent to the API URL below.",
-                )
-                .small()
-                .color(theme::dim(ui)),
-            );
-            ui.add_space(4.0);
-            egui::Grid::new("ai_grid").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
-                ui.label("Claude token");
-                ui.horizontal(|ui| {
-                    ui.add(TextEdit::singleline(&mut st.token).password(true).hint_text("Paste token").desired_width(250.0));
-                    if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
-                        match ai::save_token(&st.token) {
-                            Ok(()) => {
-                                ai::remove_plain_token();
-                                st.note = Some((true, "Token saved to the system keychain.".into()));
-                            }
-                            Err(e) => {
-                                st.note = Some(match ai::save_plain_token(&st.token) {
-                                    Ok(()) => (false, format!("No system keychain ({e}); saved to a private file readable only by you.")),
-                                    Err(e2) => (false, format!("Could not save the token: {e}; {e2}")),
-                                });
-                            }
-                        }
-                        st.token.clear();
-                        st.source = ai::token_source();
-                    }
-                    if st.source.is_some() && ui.button("Remove").clicked() {
-                        let _ = ai::save_token("");
-                        ai::remove_plain_token();
-                        st.source = ai::token_source();
-                        st.note = Some((true, "Stored token removed.".into()));
-                    }
-                });
-                ui.end_row();
-                ui.label("");
-                ui.label(
-                    RichText::new(match st.source {
-                        Some(src) => format!("{} Using the token from {src}", icon::CHECK_CIRCLE),
-                        None => format!("{} No token configured", icon::WARNING),
-                    })
-                    .small()
-                    .color(if st.source.is_some() { theme::ADD } else { theme::MOD }),
-                );
-                ui.end_row();
-                ui.label("Model");
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_id_salt("ai_model").selected_text(&s.ai.model).width(200.0).show_ui(ui, |ui| {
-                        for m in ai::MODELS {
-                            ui.selectable_value(&mut s.ai.model, m.to_owned(), m);
+                            });
                         }
                     });
-                    ui.add(TextEdit::singleline(&mut s.ai.model).desired_width(150.0)).on_hover_text("Any model id");
+                    ui.end_row();
+                    ui.label("Commits to load");
+                    if ui.add(egui::DragValue::new(&mut s.max_commits).range(1000..=2_000_000).speed(1000)).changed() {
+                        reload = true;
+                    }
+                    ui.end_row();
+                    ui.label("Glass transparency");
+                    ui.horizontal(|ui| {
+                        let r = theme::slider(ui, &mut s.transparency);
+                        ui.label(RichText::new(format!("{:.0}%", s.transparency * 100.0)).small().color(theme::dim(ui)));
+                        if r.changed() {
+                            theme::set_transparency(s.transparency);
+                        }
+                    })
+                    .response
+                    .on_hover_text("How much of the backdrop shows through glass panels. Higher is clearer.");
+                    ui.end_row();
+                    if cfg!(target_os = "macos") {
+                        ui.label("Window glass");
+                        ui.checkbox(&mut s.native_glass, "Native Liquid Glass backdrop (experimental, macOS 26+, restart)");
+                        ui.end_row();
+                    }
+                    ui.label("Auto-fetch");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut s.auto_fetch).range(0..=120).suffix(" min"));
+                        ui.label(RichText::new("every N minutes and on focus · 0 = off").small().color(theme::dim(ui)));
+                    });
+                    ui.end_row();
+                    ui.label("Default pull");
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut s.pull, PullMode::Merge, "Merge");
+                        ui.radio_value(&mut s.pull, PullMode::FfOnly, "Fast-forward only");
+                        ui.radio_value(&mut s.pull, PullMode::Rebase, "Rebase");
+                    });
+                    ui.end_row();
                 });
-                ui.end_row();
-                ui.label("API base URL");
-                ui.add(TextEdit::singleline(&mut s.ai.base_url).desired_width(330.0))
-                    .on_hover_text("Change only for an Anthropic-compatible gateway");
-                ui.end_row();
-            });
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if st.test.is_some() {
-                    ui.spinner();
-                    ui.label("Testing…");
-                } else if ui.button("Test connection").clicked() {
-                    let cfg = s.ai.clone();
-                    st.note = None;
-                    st.test = Some(Task::spawn(ui.ctx(), move || ai::test(&cfg)));
+
+                ui.add_space(10.0);
+                ui.separator();
+                ui.label(RichText::new(format!("{} AI (Claude)", icon::SPARKLE)).strong());
+                ui.label(
+                    RichText::new(
+                        "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`). It is stored in your system keychain and only sent to the API URL below.",
+                    )
+                    .small()
+                    .color(theme::dim(ui)),
+                );
+                ui.add_space(4.0);
+                egui::Grid::new("ai_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
+                    ui.label("Claude token");
+                    ui.horizontal(|ui| {
+                        ui.add(TextEdit::singleline(&mut st.token).password(true).hint_text("Paste token").desired_width(250.0));
+                        if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
+                            match ai::save_token(&st.token) {
+                                Ok(()) => {
+                                    ai::remove_plain_token();
+                                    st.note = Some((true, "Token saved to the system keychain.".into()));
+                                }
+                                Err(e) => {
+                                    st.note = Some(match ai::save_plain_token(&st.token) {
+                                        Ok(()) => (false, format!("No system keychain ({e}); saved to a private file readable only by you.")),
+                                        Err(e2) => (false, format!("Could not save the token: {e}; {e2}")),
+                                    });
+                                }
+                            }
+                            st.token.clear();
+                            st.source = ai::token_source();
+                        }
+                        if st.source.is_some() && ui.button("Remove").clicked() {
+                            let _ = ai::save_token("");
+                            ai::remove_plain_token();
+                            st.source = ai::token_source();
+                            st.note = Some((true, "Stored token removed.".into()));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("");
+                    ui.label(
+                        RichText::new(match st.source {
+                            Some(src) => format!("{} Using the token from {src}", icon::CHECK_CIRCLE),
+                            None => format!("{} No token configured", icon::WARNING),
+                        })
+                        .small()
+                        .color(if st.source.is_some() { theme::ADD } else { theme::MOD }),
+                    );
+                    ui.end_row();
+                    ui.label("Model");
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("ai_model").selected_text(&s.ai.model).width(200.0).show_ui(ui, |ui| {
+                            for m in ai::MODELS {
+                                ui.selectable_value(&mut s.ai.model, m.to_owned(), m);
+                            }
+                        });
+                        ui.add(TextEdit::singleline(&mut s.ai.model).desired_width(150.0)).on_hover_text("Any model id");
+                    });
+                    ui.end_row();
+                    ui.label("API base URL");
+                    ui.add(TextEdit::singleline(&mut s.ai.base_url).desired_width(330.0))
+                        .on_hover_text("Change only for an Anthropic-compatible gateway");
+                    ui.end_row();
+                });
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if st.test.is_some() {
+                        ui.spinner();
+                        ui.label("Testing…");
+                    } else if ui.button("Test connection").clicked() {
+                        let cfg = s.ai.clone();
+                        st.note = None;
+                        st.test = Some(Task::spawn(ui.ctx(), move || ai::test(&cfg)));
+                    }
+                });
+                if let Some((ok, n)) = &st.note {
+                    ui.colored_label(if *ok { theme::ADD } else { theme::DEL }, n);
                 }
             });
-            if let Some((ok, n)) = &st.note {
-                ui.colored_label(if *ok { theme::ADD } else { theme::DEL }, n);
-            }
             ui.add_space(8.0);
             ui.separator();
             if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
