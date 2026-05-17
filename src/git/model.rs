@@ -92,7 +92,6 @@ pub enum State {
     Rebasing,
     CherryPicking,
     Reverting,
-    Bisecting,
 }
 
 #[derive(Clone, Debug, Default)]

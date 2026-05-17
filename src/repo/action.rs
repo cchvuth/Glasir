@@ -63,6 +63,7 @@ pub enum Action {
     Prompt(Prompt),
     Copy(String),
     Url(String),
+    /// Show a file in the file manager.
     Reveal(String),
     Jump(String),
     /// Ask Claude (streams into `RepoTab::ai`).

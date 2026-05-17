@@ -12,7 +12,7 @@ use std::path::Path;
 pub(super) struct Saved {
     /// `git stash create` commit holding the tracked files' contents.
     pub(super) stash: Option<String>,
-    tracked: Vec<String>,
+    pub(super) tracked: Vec<String>,
     /// Untracked files' bytes.
     pub(super) files: Vec<(String, Vec<u8>)>,
 }
@@ -61,7 +61,7 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     Ok(Saved { stash, tracked, files })
 }
 
-fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
+pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
     for (p, bytes) in &s.files {
         let path = dir.join(p);
         if !path.exists() {

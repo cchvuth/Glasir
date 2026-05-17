@@ -10,7 +10,7 @@ use crate::git::Change;
 use crate::repo::history::Mode;
 use crate::repo::{Action, RepoTab, Sel};
 use crate::theme::{self, icon};
-use egui::{RichText, Sense, Ui};
+use egui::{Sense, Ui};
 
 impl RepoTab {
     pub fn details(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
@@ -20,9 +20,7 @@ impl RepoTab {
         match self.sel.clone() {
             Some(Sel::Wip) => self.wip_panel(ui, acts),
             Some(Sel::Commit(_) | Sel::Compare { .. }) => self.commit_panel(ui, acts),
-            None => {
-                ui.centered_and_justified(|ui| ui.label(RichText::new("Select a commit").color(theme::dim(ui))));
-            }
+            None => {}
         }
     }
 }

@@ -141,6 +141,12 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
     v
 }
 
+/// Keeps the end of a long detail (a path or URL) so labels keep their room.
+fn elide(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max { s.to_owned() } else { format!("…{}", s.chars().skip(n + 1 - max).collect::<String>()) }
+}
+
 /// Draws the palette; returns the chosen command, or `Some(None)` to close.
 pub fn show(ctx: &egui::Context, p: &mut Palette, all: Vec<Item>) -> Option<Option<Cmd>> {
     let mut ranked: Vec<(i32, Item)> = all
@@ -205,7 +211,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette, all: Vec<Item>) -> Option<Opti
                         selected,
                         RichText::new(format!("{}   {}", it.icon, it.label)).color(if selected { theme::text(ui) } else { ui.visuals().text_color() }),
                     )
-                    .right_text(RichText::new(&it.detail).small().color(theme::dim(ui)))
+                    .right_text(RichText::new(elide(&it.detail, 56)).small().color(if selected { theme::text(ui) } else { theme::dim(ui) }))
                     .min_size(egui::vec2(ui.available_width(), 30.0)),
                 );
                 if selected && (up || down) {
@@ -228,7 +234,14 @@ pub fn show(ctx: &egui::Context, p: &mut Palette, all: Vec<Item>) -> Option<Opti
 
 #[cfg(test)]
 mod tests {
-    use super::score;
+    use super::{elide, score};
+
+    #[test]
+    fn long_details_keep_their_end() {
+        assert_eq!(elide("short", 10), "short");
+        assert_eq!(elide("/a/very/long/path/repo", 10), "…path/repo");
+        assert_eq!(elide("/a/very/long/path/repo", 10).chars().count(), 10);
+    }
 
     #[test]
     fn fuzzy_ranking() {

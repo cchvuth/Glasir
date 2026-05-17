@@ -6,12 +6,14 @@ use super::RepoTab;
 use crate::git::{self, FileDiff, Res};
 use std::collections::BTreeSet;
 
+type Loaded = (FileDiff, Vec<Vec<crate::highlight::Spans>>);
+
 pub struct DiffState {
     pub src: DiffSrc,
     pub file: Option<Res<FileDiff>>,
     /// Syntax colors per `[hunk][line]` (empty if unknown language).
     pub hl: Vec<Vec<crate::highlight::Spans>>,
-    task: Option<Task<Res<(FileDiff, Vec<Vec<crate::highlight::Spans>>)>>>,
+    task: Option<Task<Res<Loaded>>>,
     /// Picked change lines `(hunk, line)` for partial staging.
     pub picked: BTreeSet<(usize, usize)>,
 }

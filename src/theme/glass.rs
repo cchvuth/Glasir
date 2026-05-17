@@ -1,6 +1,6 @@
 //! Glass widgets: the lit canvas behind everything, glass panels and cards,
 //! capsule groups and pills, the primary button, the transparency slider and
-//! the progress caption. Reusable widgets live here.
+//! the progress caption, empty states.
 
 use super::{Flavor, Palette, accent, dark, dim, flavor};
 use egui::epaint::{Mesh, Shadow};

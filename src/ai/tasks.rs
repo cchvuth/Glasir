@@ -94,6 +94,14 @@ fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
     Ok(out)
 }
 
+/// `rev`'s parent, or the empty tree for a root commit.
+fn parent_or_empty(dir: &Path, rev: &str) -> Res<String> {
+    match git::run(dir, &["rev-parse", "-q", "--verify", &format!("{rev}^")]) {
+        Ok(p) => Ok(p.trim().to_owned()),
+        Err(_) => Ok(git::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?.trim().to_owned()),
+    }
+}
+
 const SYSTEM: &str = "You are an expert software engineer embedded in a Git client. \
 Follow the requested output format exactly. Never wrap the answer in code fences and never add a preamble.";
 
@@ -113,7 +121,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
                      Format: a summary line in the imperative mood, at most 72 characters. If the change needs explaining, \
                      add a blank line and a short body (wrapped at 72) on what changed and why. \
                      Match the conventions of this repository's recent commits (e.g. prefixes like `feat:` or `area:` if they use them).\n\
-                     \nBranch: {}\nRecent commit subjects:\n{recent}{draft}\nStaged changes:\n{diff}",
+                     \nBranch: {}\nRecent commit subjects:\n{recent}{draft}\nChanges:\n{diff}",
                     branch.trim()
                 ),
                 "low",
@@ -121,14 +129,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
         }
         Purpose::Explain(id) => {
             let info = git::run(dir, &["log", "-1", "--format=fuller", id, "--"])?;
-            let parent = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{id}^")]).ok();
-            let diff = match parent.as_deref().map(str::trim) {
-                Some(p) => diff_with_stat(dir, &[p, id])?,
-                None => {
-                    let empty = git::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?;
-                    diff_with_stat(dir, &[empty.trim(), id])?
-                }
-            };
+            let diff = diff_with_stat(dir, &[&parent_or_empty(dir, id)?, id])?;
             (
                 format!(
                     "Explain this commit to a developer reading the history: what it does, why it was likely made, \

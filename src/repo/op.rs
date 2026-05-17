@@ -227,7 +227,7 @@ impl RepoTab {
                 match &res {
                     Ok(out) if !op.light => {
                         let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                        msgs.push(Msg { text: format!("{} ✔ {}", op.label, first), error: false });
+                        msgs.push(Msg { text: format!("{} ✔ {first}", op.label), error: false });
                     }
                     Ok(_) => {}
                     Err(e) if e == git::CANCELLED => msgs.push(Msg { text: format!("{} cancelled", op.label), error: false }),
@@ -251,16 +251,20 @@ impl RepoTab {
                     self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo, autostash: op.autostash.clone() } });
                     self.redo.clear();
                 }
-                if let Some(saved) = saved.filter(|s| s.stash.is_some() || !s.files.is_empty()) {
+                if let Some(saved) = saved.filter(|s| (s.stash.is_some() && !s.tracked.is_empty()) || !s.files.is_empty()) {
                     self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Discard(saved) });
                     self.redo.clear();
+                    // Light ops toast nothing, but a discard deserves a visible way back.
+                    if op.light && res.is_ok() {
+                        msgs.push(Msg { text: format!("{} ✔ changes backed up", op.label), error: false });
+                    }
                 }
                 self.reload(ctx, !op.light);
             }
             Done::Undo(was_undo, res) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
                 match res {
-                    Ok(()) => to.extend(from.pop().filter(|e| matches!(e.kind, UndoKind::Refs { .. }))),
+                    Ok(()) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_)))),
                     Err(e) => {
                         // Ref history is unreliable now, but discarded work must stay recoverable.
                         from.retain(|e| matches!(e.kind, UndoKind::Discard(_)));

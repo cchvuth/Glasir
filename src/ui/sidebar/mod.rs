@@ -88,7 +88,8 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
         let remote_refs: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Remote && matches(f, &r.name)).collect();
         section(ui, "REMOTE", remote_refs.len(), |ui| {
             for rem in remotes {
-                egui::CollapsingHeader::new(rem).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
+                let url = d.remotes.iter().find(|r| r.0 == rem).map_or("", |r| r.1.as_str());
+                let resp = egui::CollapsingHeader::new(rem).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
                     let mut list: Vec<_> = remote_refs.iter().copied().filter(|r| r.remote() == rem).collect();
                     list.sort_by_key(|r| d.branch_rank(r.remote_branch()));
                     let names: Vec<&str> = list.iter().map(|r| r.remote_branch()).collect();
@@ -107,6 +108,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                         resp.context_menu(|ui| ref_menu(ui, d, r, acts));
                     }
                 });
+                resp.header_response.on_hover_text(url);
             }
         });
         let mut tags: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Tag && matches(f, &r.name)).collect();

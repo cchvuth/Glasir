@@ -11,10 +11,7 @@ use std::time::Instant;
 
 pub fn cmd(dir: &Path) -> Command {
     let mut c = Command::new("git");
-    // Neutralize user config that would change the formats we parse.
-    c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
-        .args(["-c", "core.quotepath=off", "-c", "color.ui=never"])
-        .current_dir(dir)
+    c.current_dir(dir)
         .env("GIT_OPTIONAL_LOCKS", "0")
         // Inherited from a parent git (e.g. launched from a hook) these would point us at another repo.
         .env_remove("GIT_DIR")
@@ -24,6 +21,9 @@ pub fn cmd(dir: &Path) -> Command {
         .env_remove("GIT_EDITOR")
         .env_remove("GIT_SEQUENCE_EDITOR")
         .stdin(Stdio::null());
+    // Neutralize user config that would change the formats we parse.
+    c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
+        .args(["-c", "core.quotepath=off", "-c", "color.ui=never"]);
     // Credential prompts go through our own askpass window; never block on a TTY.
     if let Ok(exe) = std::env::current_exe() {
         c.env("GIT_ASKPASS", &exe)

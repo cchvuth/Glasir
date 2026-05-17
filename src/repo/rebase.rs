@@ -38,18 +38,7 @@ impl Editor {
     pub fn load(dir: &Path, base: &str, label: &str) -> Res<Editor> {
         git::run(dir, &["merge-base", "--is-ancestor", base, "HEAD"])
             .map_err(|_| format!("{label} is not an ancestor of HEAD."))?;
-        let out = git::run(dir, &["log", "-z", "--format=%H%x1f%P%x1f%an%x1f%B", &format!("{base}..HEAD"), "--"])?;
-        let mut items = vec![];
-        for rec in out.split('\0').filter(|r| !r.trim().is_empty()) {
-            let f: Vec<&str> = rec.trim_start_matches('\n').splitn(4, '\x1f').collect();
-            if f.len() < 4 {
-                continue;
-            }
-            if f[1].split_whitespace().count() > 1 {
-                return Err("The range contains merge commits; interactive rebase over merges isn't supported.".into());
-            }
-            items.push(Item { id: f[0].into(), author: f[2].into(), message: f[3].trim_end().into(), act: Act::Pick });
-        }
+        let items = items(dir, &[&format!("{base}..HEAD")])?;
         if items.is_empty() {
             return Err(format!("No commits after {label} on this branch."));
         }
@@ -89,9 +78,29 @@ impl Editor {
         let path = git_dir.join("glasir-rebase-todo");
         std::fs::write(&path, todo).map_err(|e| e.to_string())?;
         let editor = format!("sequence.editor=cat {} >", sh_quote(&path));
-        Ok(Op::new(format!("Rebase onto {}", self.label), &["-c", &editor, "-c", "core.editor=true", "rebase", "-i", &self.base])
-            .undo(Undo::Keep))
+        let args = ["-c", &editor, "-c", "core.editor=true", "rebase", "-i", &self.base];
+        Ok(Op::new(format!("Rebase onto {}", self.label), &args).undo(Undo::Keep))
     }
+}
+
+/// `git log` records as todo items (pick); merges are refused.
+fn items(dir: &Path, revs: &[&str]) -> Res<Vec<Item>> {
+    let mut args = vec!["log", "-z", "--format=%H%x1f%P%x1f%an%x1f%B"];
+    args.extend(revs);
+    args.push("--");
+    let out = git::run(dir, &args)?;
+    let mut items = vec![];
+    for rec in out.split('\0').filter(|r| !r.trim().is_empty()) {
+        let f: Vec<&str> = rec.trim_start_matches('\n').splitn(4, '\x1f').collect();
+        if f.len() < 4 {
+            continue;
+        }
+        if f[1].split_whitespace().count() > 1 {
+            return Err("The range contains merge commits; interactive rebase over merges isn't supported.".into());
+        }
+        items.push(Item { id: f[0].into(), author: f[2].into(), message: f[3].trim_end().into(), act: Act::Pick });
+    }
+    Ok(items)
 }
 
 /// One-step history edit of a single commit on the current branch
@@ -160,6 +169,7 @@ pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {
 }
 
 /// Commit the staged changes as a fixup of `commit` and fold it in (autosquash).
+/// `fixup! <sha>`, not `--fixup` (`fixup! <subject>`): autosquash would pick the oldest commit with that subject.
 pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     let short = &commit[..commit.len().min(7)];
     if is_head {
@@ -167,7 +177,7 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     }
     // Same safety checks as the editor: an ancestor of HEAD, with no merges in between.
     Editor::load(dir, &format!("{commit}^"), short)?;
-    Ok(Op::new(format!("Amend staged into {short}"), &["commit", "--fixup", commit])
+    Ok(Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &format!("{commit}^")])
         .undo(Undo::Keep))
 }

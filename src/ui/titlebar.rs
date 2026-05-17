@@ -25,7 +25,7 @@ impl App {
                 let tab = |ui: &mut Ui| {
                     let name = RichText::new(format!("{} {}", icon::FOLDER_SIMPLE, t.name)).color(if active { strong } else { dim });
                     let r = theme::pill(ui, name).on_hover_text(t.dir.display().to_string());
-                    let x = theme::pill(ui, RichText::new(icon::X).small().color(dim));
+                    let x = theme::pill(ui, RichText::new(icon::X).small().color(dim)).on_hover_text("Close tab (⌘W)");
                     (r, x.clicked())
                 };
                 let (r, closed) = if active { theme::group(ui, tab) } else { ui.horizontal(tab).inner };
@@ -59,7 +59,7 @@ impl App {
                 if theme::pill(ui, icon::TERMINAL_WINDOW).on_hover_text("Command log (⇧⌘L)").clicked() {
                     self.show_log = !self.show_log;
                 }
-                if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).clicked() {
+                if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).on_hover_text("Command palette: commands, branches and repositories").clicked() {
                     self.palette = Some(Default::default());
                 }
                 let glyph = if self.s.flavor.dark() { icon::SUN } else { icon::MOON };

@@ -28,6 +28,7 @@ pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) 
         acts.push(Action::Copy(multi.join("\n")));
     }
 }
+
 /// Double-click: check out the best branch at this commit.
 pub(super) fn checkout_action(d: &RepoData, c: &Commit) -> Option<Action> {
     let refs = d.refs_at.get(&c.id)?;

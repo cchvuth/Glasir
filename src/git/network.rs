@@ -17,10 +17,9 @@ fn batch_ssh(ssh: &str, variant: &str) -> String {
     }
 }
 
-/// `fetch --all --prune --no-tags` for background refreshes. It can never prompt (no askpass,
-/// no terminal, ssh in batch mode), so missing credentials fail fast instead of
-/// hanging or popping up a window.
-pub fn fetch_quiet(dir: &Path) -> Res<String> {
+/// A git command that can never prompt (no askpass, no terminal, ssh in batch
+/// mode), so missing credentials fail fast instead of hanging or popping up a window.
+fn quiet(dir: &Path, args: &[&str]) -> Res<String> {
     let cfg = |k: &str| run(dir, &["config", "--get", k]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
     // git's own precedence: GIT_SSH_COMMAND > core.sshCommand > GIT_SSH.
@@ -34,22 +33,45 @@ pub fn fetch_quiet(dir: &Path) -> Res<String> {
         .env("GCM_INTERACTIVE", "never")
         .env("SSH_ASKPASS_REQUIRE", "never")
         .env("GIT_SSH_COMMAND", batch_ssh(ssh.as_deref().unwrap_or("ssh"), &variant));
+    let mut all = vec!["-c", "credential.interactive=false", "-c", "core.askPass="];
+    all.extend(args);
+    exec(c, dir, &all, None).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// `fetch --all --prune --no-tags` for background refreshes; never prompts.
+pub fn fetch_quiet(dir: &Path) -> Res<String> {
     // Remote-tracking refs only: tags are local refs that undo snapshots, so a background
     // fetch adding or pruning one would invalidate the undo history. A manual Fetch gets them.
-    let args = ["-c", "credential.interactive=false", "-c", "core.askPass=", "fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"];
-    exec(c, dir, &args, None).map(|b| String::from_utf8_lossy(&b).into_owned())
+    quiet(dir, &["fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"])
+}
+
+/// `err` lowercased without its quoted URLs and paths (`'https://…/saml-gw/'`), so a
+/// repository or host name can't decide what went wrong.
+fn unquoted(err: &str) -> String {
+    let (mut out, mut quoted, mut prev) = (String::new(), false, ' ');
+    for c in err.chars() {
+        match c {
+            '\'' if quoted => quoted = false,
+            // Opens after a space or line start ("Couldn't" is no quote).
+            '\'' if prev.is_whitespace() => quoted = true,
+            _ if !quoted => out.push(c),
+            _ => {}
+        }
+        prev = c;
+    }
+    out.to_lowercase()
 }
 
 /// Badge text for a failed background fetch.
 pub fn fetch_failure(err: &str) -> &'static str {
-    let e = err.to_lowercase();
+    let e = unquoted(err);
     let auth = [
         "terminal prompts disabled",
         "could not read username",
         "permission denied",
         "host key verification failed",
         "authentication failed",
-        "saml",
+        "saml sso",
         "returned error: 401",
         "returned error: 403",
     ];
@@ -95,6 +117,7 @@ mod tests {
         assert_eq!(fetch_failure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "Sign in required");
         assert_eq!(fetch_failure("git@github.com: Permission denied (publickey)."), "Sign in required");
         assert_eq!(fetch_failure("ssh: Could not resolve hostname x: nodename nor servname provided"), "Fetch failed");
+        assert_eq!(fetch_failure("fatal: '/srv/saml-gw.git' does not appear to be a git repository"), "Fetch failed");
     }
 
     /// A cancelled autostash op still gives the stashed changes back.

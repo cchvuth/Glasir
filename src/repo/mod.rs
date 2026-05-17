@@ -325,7 +325,7 @@ impl RepoTab {
                 self.view = v;
                 self.reload(ctx, true);
             }
-            Action::OpenTab(p) => self.open_tab = Some(PathBuf::from(p)),
+            Action::OpenTab(p) => self.open_tab = Some(self.dir.join(p)),
             Action::AmendInto(commit) => {
                 let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
                 match crate::repo::rebase::amend_into(&self.dir, &commit, is_head) {

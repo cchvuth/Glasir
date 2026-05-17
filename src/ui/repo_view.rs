@@ -1,6 +1,6 @@
 //! One repository tab: toolbar on top, sidebar left, inspector right and the
 //! center pane (graph, or the diff / merge editor / history / rebase editor
-//! that replaces it), then the tab's dialogs. Collected `Action`s are applied
+//! that replaces it), then the tab's dialogs (and the remote form). Collected `Action`s are applied
 //! to the `RepoTab` at the end of the frame.
 
 use super::settings::Settings;

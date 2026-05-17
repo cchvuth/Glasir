@@ -16,7 +16,7 @@ pub type Res<T> = Result<T, String>;
 
 pub use diff::{FileDiff, Hunk, commit_diff, partial_patch, worktree_diff};
 #[cfg(test)]
-pub use diff::parse_diff; // diff_view / highlight tests
+pub use diff::parse_diff;
 #[cfg(unix)]
 pub use env::import_login_env;
 pub use env::check_git;

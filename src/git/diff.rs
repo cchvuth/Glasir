@@ -140,10 +140,6 @@ pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, r
     any.then_some(out)
 }
 
-fn first(v: Vec<FileDiff>) -> FileDiff {
-    v.into_iter().next().unwrap_or_default()
-}
-
 const DIFF: [&str; 4] = ["diff", "--no-color", "--no-ext-diff", "-M"];
 
 pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
@@ -160,7 +156,7 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
     }
     args.push(&c.path);
     let raw = run_raw(dir, &args, None)?;
-    let mut f = first(parse_diff(&String::from_utf8_lossy(&raw)));
+    let mut f = parse_diff(&String::from_utf8_lossy(&raw)).into_iter().next().unwrap_or_default();
     f.lossy = std::str::from_utf8(&raw).is_err();
     Ok(f)
 }
@@ -175,7 +171,7 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change) -> Re
         args.push(o);
     }
     args.push(&c.path);
-    Ok(first(parse_diff(&run(dir, &args)?)))
+    Ok(parse_diff(&run(dir, &args)?).into_iter().next().unwrap_or_default())
 }
 
 fn untracked_diff(dir: &Path, path: &str) -> Res<FileDiff> {

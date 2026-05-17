@@ -125,9 +125,13 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         }
         ui.label(RichText::new(&change.path).monospace().strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.selectable_value(split, true, "Split");
-            ui.selectable_value(split, false, "Unified");
-            ui.separator();
+            theme::group(ui, |ui| {
+                for (v, text) in [(true, "Split"), (false, "Unified")] {
+                    if ui.add(egui::Button::selectable(*split == v, text)).clicked() {
+                        *split = v;
+                    }
+                }
+            });
             if change.code != '?' && change.code != 'A' {
                 if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
                     acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));
@@ -195,78 +199,76 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     let cw = ui.fonts_mut(|fo| fo.glyph_width(&FontId::monospace(12.5), 'M'));
     let max_chars = f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.text.len()).max().unwrap_or(0);
     let mono = FontId::monospace(12.5);
-    ui.scope(|ui| {
-        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-        egui::ScrollArea::both().id_salt("diff").auto_shrink(false).show_rows(ui, LINE_H, rows.len(), |ui, range| {
-            let content_w = if *split { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
-            ui.set_min_width(content_w);
-            let left = ui.max_rect().left();
-            let top = ui.max_rect().top() - range.start as f32 * LINE_H;
-            let painter = ui.painter().clone();
-            for r in range {
-                let rect = Rect::from_min_size(pos2(left, top + r as f32 * LINE_H), vec2(content_w, LINE_H));
-                let y = rect.center().y;
-                match rows[r] {
-                    Row::Hunk(hi) => {
-                        let h = &f.hunks[hi];
-                        painter.rect_filled(rect, 0.0, theme::faint(ui));
-                        painter.text(pos2(left + 8.0, y), Align2::LEFT_CENTER, &h.header, mono.clone(), theme::dim(ui));
-                        if partial {
-                            let all = |hh: usize, _: usize| hh == hi;
-                            let mut x = ui.clip_rect().right() - 8.0;
-                            let mut btn = |ui: &mut Ui, text: &str| {
-                                let w = text.len() as f32 * 6.6 + 14.0;
-                                x -= w + 6.0;
-                                ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), egui::Button::new(RichText::new(text).small())).clicked()
-                            };
-                            if staged {
-                                if btn(ui, "Unstage hunk") {
-                        acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &change.path));
-                                }
-                            } else {
-                                if btn(ui, "Stage hunk") {
-                        acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &change.path));
-                                }
-                                if btn(ui, "Discard hunk") {
-                        acts.push(apply_op("Discard hunk", partial_patch(f, all, true), &["--reverse"], &change.path));
-                                }
+    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+    egui::ScrollArea::both().id_salt("diff").auto_shrink(false).show_rows(ui, LINE_H, rows.len(), |ui, range| {
+        let content_w = if *split { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
+        ui.set_min_width(content_w);
+        let left = ui.max_rect().left();
+        let top = ui.max_rect().top() - range.start as f32 * LINE_H;
+        let painter = ui.painter().clone();
+        for r in range {
+            let rect = Rect::from_min_size(pos2(left, top + r as f32 * LINE_H), vec2(content_w, LINE_H));
+            let y = rect.center().y;
+            match rows[r] {
+                Row::Hunk(hi) => {
+                    let h = &f.hunks[hi];
+                    painter.rect_filled(rect, 0.0, theme::faint(ui));
+                    painter.text(pos2(left + 8.0, y), Align2::LEFT_CENTER, &h.header, mono.clone(), theme::dim(ui));
+                    if partial {
+                        let all = |hh: usize, _: usize| hh == hi;
+                        let mut x = ui.clip_rect().right() - 8.0;
+                        let mut btn = |ui: &mut Ui, text: &str| {
+                            let w = text.len() as f32 * 6.6 + 14.0;
+                            x -= w + 6.0;
+                            ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), egui::Button::new(RichText::new(text).small())).clicked()
+                        };
+                        if staged {
+                            if btn(ui, "Unstage hunk") {
+                    acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &change.path));
                             }
-                        }
-                    }
-                    Row::Line(hi, li) => {
-                        let l = &f.hunks[hi].lines[li];
-                        let picked = ds.picked.contains(&(hi, li));
-                        let resp = ui.interact(rect, ui.id().with(("dl", r)), Sense::click());
-                        if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
-                            ds.picked.insert((hi, li));
-                        }
-                        let colors = ds.hl.get(hi).and_then(|h| h.get(li));
-                        paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), cw, colors);
-                    }
-                    Row::Pair(hi, a, b) => {
-                        let h = &f.hunks[hi];
-                        let half = rect.width() / 2.0;
-                        let lr = Rect::from_min_size(rect.min, vec2(half, LINE_H));
-                        let rr = Rect::from_min_size(pos2(rect.left() + half, rect.top()), vec2(half, LINE_H));
-                        for (side, idx, old) in [(lr, a, true), (rr, b, false)] {
-                            let Some(li) = idx else {
-                                painter.rect_filled(side, 0.0, theme::faint(ui).gamma_multiply(0.5));
-                                continue;
-                            };
-                            let l = &h.lines[li];
-                            let resp = ui.interact(side, ui.id().with(("sl", r, old)), Sense::click());
-                            if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
-                                ds.picked.insert((hi, li));
+                        } else {
+                            if btn(ui, "Stage hunk") {
+                    acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &change.path));
                             }
-                            let no = if old { l.old } else { l.new };
-                            let colors = ds.hl.get(hi).and_then(|h| h.get(li));
-                            let picked = ds.picked.contains(&(hi, li));
-                            paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), cw, colors);
+                            if btn(ui, "Discard hunk") {
+                    acts.push(apply_op("Discard hunk", partial_patch(f, all, true), &["--reverse"], &change.path));
+                            }
                         }
                     }
                 }
+                Row::Line(hi, li) => {
+                    let l = &f.hunks[hi].lines[li];
+                    let picked = ds.picked.contains(&(hi, li));
+                    let resp = ui.interact(rect, ui.id().with(("dl", r)), Sense::click());
+                    if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
+                        ds.picked.insert((hi, li));
+                    }
+                    let colors = ds.hl.get(hi).and_then(|h| h.get(li));
+                    paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), cw, colors);
+                }
+                Row::Pair(hi, a, b) => {
+                    let h = &f.hunks[hi];
+                    let half = rect.width() / 2.0;
+                    let lr = Rect::from_min_size(rect.min, vec2(half, LINE_H));
+                    let rr = Rect::from_min_size(pos2(rect.left() + half, rect.top()), vec2(half, LINE_H));
+                    for (side, idx, old) in [(lr, a, true), (rr, b, false)] {
+                        let Some(li) = idx else {
+                            painter.rect_filled(side, 0.0, theme::faint(ui).gamma_multiply(0.5));
+                            continue;
+                        };
+                        let l = &h.lines[li];
+                        let resp = ui.interact(side, ui.id().with(("sl", r, old)), Sense::click());
+                        if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
+                            ds.picked.insert((hi, li));
+                        }
+                        let no = if old { l.old } else { l.new };
+                        let colors = ds.hl.get(hi).and_then(|h| h.get(li));
+                        let picked = ds.picked.contains(&(hi, li));
+                        paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), cw, colors);
+                    }
+                }
             }
-        });
+        }
     });
 }
 

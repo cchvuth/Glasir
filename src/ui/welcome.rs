@@ -51,7 +51,7 @@ impl App {
                         }
                     }
                 });
-                ui.add_space(30.0);
+                ui.add_space(22.0);
                 if !self.s.recent.is_empty() {
                     ui.label(RichText::new("RECENT").small().strong().color(theme::dim(ui)));
                     ui.add_space(4.0);

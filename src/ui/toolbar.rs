@@ -93,6 +93,7 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
                 acts.push(Action::Git(pull_op(s.pull)));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
+                ui.label(RichText::new("Pull with").small().color(theme::dim(ui)));
                 for (mode, label) in [
                     (PullMode::Merge, "Fast-forward if possible, else merge"),
                     (PullMode::FfOnly, "Fast-forward only"),
@@ -104,16 +105,16 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
                         ui.close();
                     }
                 }
-            });
-            if theme::pill(ui, format!("{} Push", icon::ARROW_LINE_UP)).clicked() {
+            }).response.on_hover_text("More pull options");
+            if theme::pill(ui, format!("{} Push", icon::ARROW_LINE_UP)).on_hover_text("Push the current branch (sets its upstream on first push)").clicked() {
                 acts.extend(t.push_op(false).map(Action::Git));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
-                if ui.button("Force push (with lease)").clicked() {
+                if ui.button("Force push (with lease)").on_hover_text("Overwrite the remote branch, but only if it is still where you last saw it").clicked() {
                     acts.extend(t.push_op(true).map(Action::Git));
                     ui.close();
                 }
-            });
+            }).response.on_hover_text("More push options");
         }
     }
 }
@@ -121,7 +122,7 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
 fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
     {
         {
-            if theme::pill(ui, format!("{} Branch", icon::GIT_BRANCH)).clicked() {
+            if theme::pill(ui, format!("{} Branch", icon::GIT_BRANCH)).on_hover_text("Create a branch from HEAD and check it out").clicked() {
                 acts.push(Action::Prompt(Prompt {
                     title: "New branch from HEAD".into(),
                     value: String::new(),
@@ -129,7 +130,7 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                 second: None,
                 }));
             }
-            if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).clicked() {
+            if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).on_hover_text("Stash all changes, untracked files included").clicked() {
                 acts.push(Action::Git(stash_op()));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
@@ -141,8 +142,8 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                     acts.push(op("Stash staged", &["stash", "push", "--staged"]));
                     ui.close();
                 }
-            });
-            if theme::pill(ui, format!("{} Pop", icon::TRAY_ARROW_UP)).clicked() {
+            }).response.on_hover_text("More stash options");
+            if theme::pill(ui, format!("{} Pop", icon::TRAY_ARROW_UP)).on_hover_text("Apply the newest stash and drop it").clicked() {
                 acts.push(op("Pop stash", &["stash", "pop"]));
             }
         }

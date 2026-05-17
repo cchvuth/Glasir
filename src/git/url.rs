@@ -1,4 +1,4 @@
-//! Web URLs: hosting page of a remote (github.com / GitHub Enterprise) and
+//! Web URLs: hosting page of a remote (github.com / GitHub Enterprise),
 //! percent-encoding for paths and query strings.
 
 /// `git@ghe.corp:org/repo.git` / `https://user@ghe.corp/org/repo` / `ssh://git@ghe.corp:22/org/repo`

@@ -124,7 +124,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
         ui.colored_label(theme::DEL, p);
     }
     ui.horizontal(|ui| {
-        if theme::primary(ui, problem.is_none(), &format!("{} Start rebase", icon::PLAY), 160.0).clicked() {
+        if theme::primary(ui, problem.is_none(), &format!("{} Start rebase", icon::PLAY), 170.0).clicked() {
             match ed.op(git_dir) {
                 Ok(op) => {
                     acts.push(Action::Git(op));

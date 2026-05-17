@@ -24,7 +24,8 @@ impl RepoTab {
         if !job.poll() {
             return;
         }
-        if job.purpose == ai::Purpose::CommitMessage && !job.text.is_empty() {
+        let message = job.purpose == ai::Purpose::CommitMessage;
+        if message && !job.text.is_empty() {
             let (s, b) = job.text.trim().split_once('\n').unwrap_or((job.text.trim(), ""));
             self.summary = s.trim().to_owned();
             self.body = b.trim().to_owned();
@@ -40,7 +41,7 @@ impl RepoTab {
             }
             (Some(Err(e)), _) => {
                 msgs.push(Msg { text: format!("{}: {e}", job.purpose.title()), error: true });
-                if job.purpose == ai::Purpose::CommitMessage
+                if message
                     && let Some((s, b)) = self.ai_draft.take()
                 {
                     (self.summary, self.body) = (s, b);

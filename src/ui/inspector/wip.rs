@@ -20,8 +20,7 @@ impl RepoTab {
                 State::Merging => ("Merge", "merge"),
                 State::Rebasing => ("Rebase", "rebase"),
                 State::CherryPicking => ("Cherry-pick", "cherry-pick"),
-                State::Reverting => ("Revert", "revert"),
-                _ => ("Bisect", "bisect"),
+                _ => ("Revert", "revert"),
             };
             egui::Frame::new().fill(theme::MOD.gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
                 ui.label(RichText::new(format!("{what} in progress")).strong());
@@ -29,12 +28,11 @@ impl RepoTab {
                     ui.label(format!("{} conflicted file(s) — resolve, then continue.", s.conflicted.len()));
                 }
                 ui.horizontal(|ui| {
-                    if cmd != "bisect" && ui.button("Continue").clicked() {
+                    if ui.button("Continue").clicked() {
                         acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"])));
                     }
-                    let abort = if cmd == "bisect" { vec!["bisect", "reset"] } else { vec![cmd, "--abort"] };
                     if ui.button("Abort").clicked() {
-                        acts.push(op(format!("Abort {cmd}"), &abort));
+                        acts.push(op(format!("Abort {cmd}"), &[cmd, "--abort"]));
                     }
                 });
             });
@@ -67,7 +65,10 @@ impl RepoTab {
             });
             ui.add(TextEdit::multiline(&mut self.body).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
             let was = self.amend;
-            ui.checkbox(&mut self.amend, "Amend previous commit");
+            // Nothing to amend before the first commit.
+            if s.head.is_some() {
+                ui.checkbox(&mut self.amend, "Amend previous commit");
+            }
             if self.amend && !was && self.summary.is_empty() {
                 if let Ok(msg) = crate::git::run(&self.dir, &["log", "-1", "--format=%B"]) {
                     let (s, b) = msg.trim().split_once('\n').unwrap_or((msg.trim(), ""));
@@ -82,9 +83,6 @@ impl RepoTab {
             let shortcut = ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
             if can && (btn.clicked() || shortcut) {
                 commit = true;
-            }
-            if n == 0 && !s.unstaged.is_empty() && !self.amend {
-                ui.label(RichText::new("Stage files to commit (double-click a file, or Stage all).").small().color(theme::dim(ui)));
             }
         });
         if commit {
@@ -123,13 +121,16 @@ impl RepoTab {
                     ui.add_space(6.0);
                 }
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Unstaged Files  {}", s.unstaged.len())).small().strong());
+                    ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if !s.unstaged.is_empty() && ui.small_button("Stage all").clicked() {
                             acts.push(Action::Git(Op::new("Stage all", &["add", "-A"]).light()));
                         }
                     });
                 });
+                if s.unstaged.is_empty() {
+                    ui.label(RichText::new("No unstaged changes").small().color(theme::dim(ui)));
+                }
                 for c in &s.unstaged {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: false };
                     let resp = file_row(ui, c, open.as_ref() == Some(&src));
@@ -170,13 +171,16 @@ impl RepoTab {
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Staged Files  {}", s.staged.len())).small().strong());
+                    ui.label(RichText::new(format!("Staged files  {}", s.staged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if !s.staged.is_empty() && ui.small_button("Unstage all").clicked() {
                             acts.push(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));
                         }
                     });
                 });
+                if s.staged.is_empty() {
+                    ui.label(RichText::new("Nothing staged yet: double-click a file above, or Stage all").small().color(theme::dim(ui)));
+                }
                 for c in &s.staged {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: true };
                     let resp = file_row(ui, c, open.as_ref() == Some(&src));
