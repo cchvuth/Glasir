@@ -274,6 +274,9 @@ impl RepoTab {
                 self.reload(ctx, true);
             }
         }
+        if let Some(r) = &mut self.reflog {
+            r.refresh(ctx, &self.dir);
+        }
         self.refresh_diff(ctx);
     }
 

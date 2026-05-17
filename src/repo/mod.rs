@@ -10,8 +10,8 @@
 //! - `undo`: undo/redo and discard backups
 //! - `diff`, `ai_job`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
-//! - `search`, `history`, `merge_editor`: state behind the graph search bar, the
-//!   file history/blame view and the merge editor (drawn by the same-named `ui` files)
+//! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
+//!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
 
 mod action;
 mod ai_job;
@@ -26,6 +26,7 @@ pub mod merge_editor;
 mod offer;
 mod op;
 pub mod rebase;
+pub mod reflog;
 mod search;
 mod task;
 #[cfg(test)]
@@ -110,6 +111,8 @@ pub struct RepoTab {
     pub fetch_failed: Option<String>,
     /// Debounced filesystem change: (needs full reload, time of last event).
     changed: Option<(bool, f64)>,
+    /// The reflog view, replacing the graph while open.
+    pub reflog: Option<reflog::Reflog>,
 }
 
 impl RepoTab {
@@ -160,6 +163,7 @@ impl RepoTab {
             bg_fetch: None,
             last_fetch: f64::NEG_INFINITY,
             fetch_failed: None,
+            reflog: None,
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -355,6 +359,10 @@ impl RepoTab {
                 }
                 Err(e) => self.notes.push(Msg { text: e, error: true }),
             },
+            Action::Reflog => {
+                (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, None);
+                self.reflog = Some(reflog::Reflog::open(ctx, &self.dir));
+            }
             Action::Undo => self.undo_redo(ctx, true),
             Action::Redo => self.undo_redo(ctx, false),
             Action::Reload => self.reload(ctx, true),

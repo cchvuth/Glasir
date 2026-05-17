@@ -4,7 +4,7 @@
 //! to the `RepoTab` at the end of the frame.
 
 use super::settings::Settings;
-use super::{diff_view, dialogs, graph_view, history, merge_editor, rebase_editor, sidebar, toolbar::toolbar};
+use super::{diff_view, dialogs, graph_view, history, merge_editor, rebase_editor, reflog, sidebar, toolbar::toolbar};
 use crate::repo::history::Mode;
 use crate::repo::{Action, RepoTab};
 use crate::theme;
@@ -71,9 +71,15 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                         }
                         return;
                     }
-                    match &mut t.diff {
-                        Some(ds) => diff_view::show(ui, ds, &mut s.split_diff, &mut acts),
-                        None => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &mut acts),
+                    // A diff opened from the inspector covers the reflog; closing it goes back there.
+                    match (&mut t.diff, &mut t.reflog) {
+                        (Some(ds), _) => diff_view::show(ui, ds, &mut s.split_diff, &mut acts),
+                        (None, Some(rl)) => {
+                            if reflog::show(ui, rl, t.data.as_ref().unwrap(), &mut acts) {
+                                t.reflog = None;
+                            }
+                        }
+                        (None, None) => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &mut acts),
                     }
                 })
             });

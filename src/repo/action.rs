@@ -85,6 +85,8 @@ pub enum Action {
     /// Replace the multi-selection (commit ids, graph order: newest first).
     Multi(Vec<String>),
     MultiOp(MultiOp, Vec<String>),
+    /// Open the reflog view (recover commits lost to a reset or rebase).
+    Reflog,
     Error(String),
     Undo,
     Redo,

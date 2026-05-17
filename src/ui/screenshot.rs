@@ -148,6 +148,16 @@ impl App {
                             t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(id)));
                         }
                     }
+                    // `reflog`, or `reflog:<n>` to select HEAD@{n} too.
+                    q if q.starts_with("reflog") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.apply(&ctx.clone(), Action::Reflog);
+                            if let Some(n) = q.strip_prefix("reflog:").and_then(|n| n.parse::<usize>().ok()) {
+                                t.reflog.as_mut().unwrap().sel = Some(n);
+                                t.apply(&ctx.clone(), Action::Jump(format!("HEAD@{{{n}}}")));
+                            }
+                        }
+                    }
                     q if q.starts_with("palette") => {
                         self.palette = Some(super::palette::Palette { query: q.trim_start_matches("palette").trim_start_matches(':').into(), ..Default::default() })
                     }

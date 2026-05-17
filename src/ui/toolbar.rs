@@ -70,6 +70,10 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             theme::group(ui, |ui| {
+                // Right to left: the overflow menu sits at the far right.
+                if t.data.is_some() {
+                    ui.menu_button(icon::DOTS_THREE, |ui| history_tools(ui, acts)).response.on_hover_text("History tools");
+                }
                 if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
                     acts.push(Action::Reload);
                 }
@@ -81,6 +85,13 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             });
         });
     });
+}
+
+/// The toolbar's overflow menu: reflog.
+fn history_tools(ui: &mut Ui, acts: &mut Vec<Action>) {
+    if ui.button(format!("{} Reflog — recover lost commits", icon::LIFEBUOY)).clicked() {
+        acts.push(Action::Reflog);
+    }
 }
 
 fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Action>) {
