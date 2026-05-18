@@ -36,6 +36,8 @@ pub struct Ref {
     pub worktree: Option<String>,
     /// Unix time the ref's object was created (tag date / commit date).
     pub date: i64,
+    /// An annotated tag's message (empty for branches and lightweight tags).
+    pub message: String,
 }
 
 impl Ref {

@@ -39,16 +39,17 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
         dir,
         &[
             "for-each-ref",
-            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(symref)%1f%(creatordate:unix)%1f%(worktreepath)",
+            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(symref)%1f%(creatordate:unix)%1f%(worktreepath)%1f%(if)%(*objectname)%(then)%(contents:subject)%0a%0a%(contents:body)%(end)%00",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
         ],
     )?;
+    // NUL-terminated records: an annotated tag's message spans lines.
     Ok(out
-        .lines()
+        .split('\0')
         .filter_map(|l| {
-            let f: Vec<&str> = l.split('\x1f').collect();
+            let f: Vec<&str> = l.trim_start_matches('\n').splitn(10, '\x1f').collect();
             if f.len() < 8 || !f[6].is_empty() {
                 return None; // symrefs like origin/HEAD
             }
@@ -74,6 +75,7 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
                 head: f[5] == "*",
                 date: f[7].parse().unwrap_or(0),
                 worktree: f.get(8).filter(|w| f[5] != "*" && !w.is_empty()).map(|w| w.to_string()),
+                message: f.get(9).map_or("", |m| m.trim_end()).into(),
             })
         })
         .collect())
@@ -344,6 +346,14 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         let info = compare_info(&dir, "main", "feat", true, "label").unwrap();
         // Only feat's own change, not main's c3 (merge-base comparison).
         assert_eq!(info.files.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["f"]);
+
+        // Annotated tag messages ride along with the refs; lightweight tags and branches have none.
+        g(&["tag", "-a", "v1", "-m", "Release one\n\nWith notes", "main"]);
+        g(&["tag", "light", "main"]);
+        let refs = refs(&dir).unwrap();
+        let msg = |n: &str| refs.iter().find(|r| r.name == n).map(|r| r.message.clone()).unwrap();
+        assert_eq!((msg("v1").as_str(), msg("light").as_str(), msg("main").as_str()), ("Release one\n\nWith notes", "", ""));
+        assert_eq!(refs.iter().find(|r| r.name == "feat").map(|r| r.head), Some(true));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -303,7 +303,14 @@ pub fn show(
                         painter.text(b.center(), Align2::CENTER_CENTER, format!("+{more}"), FontId::proportional(10.5), text);
                     }
                     let tip_rect = Rect::from_min_max(pill.min, pos2(pill.right() + extra, pill.bottom()));
-                    let names: Vec<String> = ids.iter().map(|&i| ref_label(&d.refs[i])).collect();
+                    // Annotated tags show their message.
+                    let names: Vec<String> = ids
+                        .iter()
+                        .map(|&i| match &d.refs[i] {
+                            t if !t.message.is_empty() => format!("{}\n{}", ref_label(t), t.message),
+                            t => ref_label(t),
+                        })
+                        .collect();
                     stash_x = tip_rect.right() + 4.0;
                     let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag()).on_hover_text(names.join("\n"));
                     hover_ref(ui, &pill_resp, &rf.target);

@@ -12,6 +12,7 @@
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
+//! - `tags`: history tools (move/delete/push tags)
 
 mod action;
 mod ai_job;
@@ -28,6 +29,7 @@ mod op;
 pub mod rebase;
 pub mod reflog;
 mod search;
+pub mod tags;
 mod task;
 #[cfg(test)]
 mod testutil;

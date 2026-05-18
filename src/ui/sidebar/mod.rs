@@ -120,6 +120,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
             for r in tags {
                 let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(&r.name))).frame_when_inactive(false));
                 hover_ref(ui, &resp, &r.target);
+                let resp = if r.message.is_empty() { resp } else { resp.on_hover_text(&r.message) };
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
                 }

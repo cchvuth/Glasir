@@ -186,6 +186,14 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
     if ui.button("Delete tag").clicked() {
         acts.push(Action::Git(Op::new(format!("Delete tag {}", r.name), &["tag", "-d", &r.name]).undo(Undo::Keep)));
     }
+    if let Some((remote, _)) = d.remotes.first() {
+        if ui.button(format!("Delete tag here and from {remote}")).clicked() {
+            acts.push(Action::Git(crate::repo::tags::delete_everywhere(r, remote)));
+        }
+        if ui.button(format!("{} Push all tags to {remote}", icon::TAG)).clicked() {
+            acts.push(Action::Git(crate::repo::tags::push_all(remote)));
+        }
+    }
     if ui.button("Copy tag name").clicked() {
         acts.push(Action::Copy(r.name.clone()));
     }

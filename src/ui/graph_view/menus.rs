@@ -29,6 +29,26 @@ pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) 
     }
 }
 
+/// "Move tag here": every tag not already on this commit, newest first.
+fn move_tag_menu(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) {
+    let mut tags: Vec<&Ref> = d.refs.iter().filter(|r| r.kind == RefKind::Tag && r.target != id).collect();
+    if tags.is_empty() {
+        return;
+    }
+    tags.sort_by_key(|r| std::cmp::Reverse(r.date));
+    ui.menu_button(format!("{} Move tag here", icon::TAG), |ui| {
+        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            for r in tags {
+                let b = ui.button(&r.name);
+                let b = if r.message.is_empty() { b } else { b.on_hover_text(&r.message) };
+                if b.clicked() {
+                    acts.push(Action::Git(crate::repo::tags::move_tag(r, id)));
+                }
+            }
+        });
+    });
+}
+
 /// Double-click: check out the best branch at this commit.
 pub(super) fn checkout_action(d: &RepoData, c: &Commit) -> Option<Action> {
     let refs = d.refs_at.get(&c.id)?;
@@ -92,6 +112,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
             second: Some(("Tag message (⌘↩ to create)".into(), String::new())),
         }));
     }
+    move_tag_menu(ui, d, &c.id, acts);
     ui.separator();
     let target = refs.iter().find(|r| r.kind != RefKind::Tag).map_or(c.id.as_str(), |r| r.name.as_str());
     let is_head = d.status.head.as_deref() == Some(&c.id);
