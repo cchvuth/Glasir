@@ -20,7 +20,8 @@ impl RepoTab {
                 State::Merging => ("Merge", "merge"),
                 State::Rebasing => ("Rebase", "rebase"),
                 State::CherryPicking => ("Cherry-pick", "cherry-pick"),
-                _ => ("Revert", "revert"),
+                State::Reverting => ("Revert", "revert"),
+                _ => ("Patch (git am)", "am"),
             };
             egui::Frame::new().fill(theme::MOD.gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
                 ui.label(RichText::new(format!("{what} in progress")).strong());
@@ -30,6 +31,9 @@ impl RepoTab {
                 ui.horizontal(|ui| {
                     if ui.button("Continue").clicked() {
                         acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"])));
+                    }
+                    if cmd == "am" && ui.button("Skip this patch").clicked() {
+                        acts.push(op("Skip patch", &["am", "--skip"]));
                     }
                     if ui.button("Abort").clicked() {
                         acts.push(op(format!("Abort {cmd}"), &[cmd, "--abort"]));

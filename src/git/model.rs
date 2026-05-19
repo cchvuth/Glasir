@@ -94,6 +94,8 @@ pub enum State {
     Rebasing,
     CherryPicking,
     Reverting,
+    /// `git am` stopped on a patch.
+    Applying,
 }
 
 #[derive(Clone, Debug, Default)]

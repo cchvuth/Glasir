@@ -108,6 +108,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         if let Some((label, a)) = crate::repo::spinoff::move_unpushed(d) {
             v.push(item(icon::GIT_FORK, label, "", Cmd::Tab(a)));
         }
+        v.push(item(icon::BANDAIDS, "Apply patch…", "git am / git apply", Cmd::Tab(Action::ApplyPatch)));
         if let Some((remote, _)) = d.remotes.first() {
             v.push(item(icon::TAG, format!("Push all tags to {remote}"), "", Cmd::Tab(Action::Git(crate::repo::tags::push_all(remote)))));
         }

@@ -20,12 +20,22 @@ pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) 
     if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::DEL)).clicked() {
         acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
     }
+    patch_items(ui, multi, acts);
     ui.separator();
     if ui.button("Compare oldest ↔ newest").clicked() {
         acts.push(Action::Select(Sel::Compare { from: format!("{}^", multi[n - 1]), to: multi[0].clone(), three_dot: false }));
     }
     if ui.button("Copy SHAs").clicked() {
         acts.push(Action::Copy(multi.join("\n")));
+    }
+}
+fn patch_items(ui: &mut Ui, ids: &[String], acts: &mut Vec<Action>) {
+    ui.separator();
+    if ui.button(format!("{} Copy as patch", icon::COPY)).clicked() {
+        acts.push(Action::Patch { ids: ids.to_vec(), save: false });
+    }
+    if ui.button(format!("{} Save as patch…", icon::FLOPPY_DISK)).clicked() {
+        acts.push(Action::Patch { ids: ids.to_vec(), save: true });
     }
 }
 
@@ -199,6 +209,10 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
         if ui.button("Copy link to commit").clicked() {
             acts.push(Action::Copy(format!("{web}/commit/{}", c.id)));
         }
+    }
+    // format-patch skips merge commits.
+    if c.parents.len() < 2 {
+        patch_items(ui, std::slice::from_ref(&c.id), acts);
     }
 }
 

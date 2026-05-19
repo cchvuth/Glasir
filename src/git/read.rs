@@ -153,7 +153,9 @@ pub fn git_dir(dir: &Path) -> Res<PathBuf> {
 
 pub fn state(git_dir: &Path) -> State {
     let has = |f: &str| git_dir.join(f).exists();
-    if has("rebase-merge") || has("rebase-apply") {
+    if has("rebase-apply/applying") {
+        State::Applying
+    } else if has("rebase-merge") || has("rebase-apply") {
         State::Rebasing
     } else if has("MERGE_HEAD") {
         State::Merging

@@ -12,8 +12,8 @@
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
-//! - `tags`, `restore`, `spinoff`: history tools (move/delete/push tags,
-//!   restore a file from a commit, move unpushed commits to a new branch)
+//! - `tags`, `restore`, `spinoff`, `patch`: history tools (move/delete/push tags,
+//!   restore a file from a commit, move unpushed commits to a new branch, patches)
 
 mod action;
 mod ai_job;
@@ -27,6 +27,7 @@ pub mod history;
 pub mod merge_editor;
 mod offer;
 mod op;
+mod patch;
 pub mod rebase;
 pub mod reflog;
 pub mod restore;
@@ -118,6 +119,8 @@ pub struct RepoTab {
     changed: Option<(bool, f64)>,
     /// The reflog view, replacing the graph while open.
     pub reflog: Option<reflog::Reflog>,
+    /// A patch being exported: (text to copy, toast).
+    patch_task: Option<Task<Res<(Option<String>, String)>>>,
 }
 
 impl RepoTab {
@@ -169,6 +172,7 @@ impl RepoTab {
             last_fetch: f64::NEG_INFINITY,
             fetch_failed: None,
             reflog: None,
+            patch_task: None,
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -270,6 +274,7 @@ impl RepoTab {
             self.info = Some(r);
         }
         self.poll_ai(ctx, msgs);
+        self.poll_patch(ctx);
         self.poll_diff();
         self.poll_op(ctx, msgs);
     }
@@ -368,6 +373,8 @@ impl RepoTab {
                 (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, None);
                 self.reflog = Some(reflog::Reflog::open(ctx, &self.dir));
             }
+            Action::Patch { ids, save } => self.export_patch(ctx, ids, save),
+            Action::ApplyPatch => self.apply_patch(ctx),
             Action::Undo => self.undo_redo(ctx, true),
             Action::Redo => self.undo_redo(ctx, false),
             Action::Reload => self.reload(ctx, true),
