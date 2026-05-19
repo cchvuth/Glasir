@@ -105,6 +105,9 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         v.push(item(icon::ARROWS_CLOCKWISE, "Refresh", "F5", Cmd::Tab(Action::Reload)));
         v.push(item(icon::BROOM, "Clean up merged & gone branches…", "", Cmd::Tab(Action::Cleanup)));
         v.push(item(icon::LIFEBUOY, "Reflog — restore lost commits", "after a bad reset or rebase", Cmd::Tab(Action::Reflog)));
+        if let Some((label, a)) = crate::repo::spinoff::move_unpushed(d) {
+            v.push(item(icon::GIT_FORK, label, "", Cmd::Tab(a)));
+        }
         if let Some((remote, _)) = d.remotes.first() {
             v.push(item(icon::TAG, format!("Push all tags to {remote}"), "", Cmd::Tab(Action::Git(crate::repo::tags::push_all(remote)))));
         }

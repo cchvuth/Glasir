@@ -12,7 +12,8 @@
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
-//! - `tags`: history tools (move/delete/push tags)
+//! - `tags`, `restore`, `spinoff`: history tools (move/delete/push tags,
+//!   restore a file from a commit, move unpushed commits to a new branch)
 
 mod action;
 mod ai_job;
@@ -28,7 +29,9 @@ mod offer;
 mod op;
 pub mod rebase;
 pub mod reflog;
+pub mod restore;
 mod search;
+pub mod spinoff;
 pub mod tags;
 mod task;
 #[cfg(test)]

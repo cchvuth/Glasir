@@ -87,10 +87,15 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
     });
 }
 
-/// The toolbar's overflow menu: reflog, tags.
+/// The toolbar's overflow menu: reflog, spin-off, tags.
 fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, acts: &mut Vec<Action>) {
     if ui.button(format!("{} Reflog — recover lost commits", icon::LIFEBUOY)).clicked() {
         acts.push(Action::Reflog);
+    }
+    if let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
+        && ui.button(format!("{} {label}", icon::GIT_FORK)).clicked()
+    {
+        acts.push(a);
     }
     if let Some((remote, _)) = d.remotes.first()
         && ui.button(format!("{} Push all tags to {remote}", icon::TAG)).clicked()

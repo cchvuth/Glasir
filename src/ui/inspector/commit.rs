@@ -3,10 +3,31 @@
 
 use super::{file_items, file_row};
 use crate::ai::Purpose;
-use crate::repo::{Action, DiffSrc, Op, RepoTab, Sel};
+use crate::git::Change;
+use crate::repo::restore::restore_file;
+use crate::repo::{Action, DiffSrc, RepoData, RepoTab, Sel};
 use crate::theme::{self, icon};
 use crate::ui::format::initials;
 use egui::{Color32, RichText, ScrollArea, Sense, Ui};
+
+/// Restore a commit's file into the working tree: as it is in `id`, or as it
+/// was before (`parent`). Undoable like a discard.
+fn restore_items(ui: &mut Ui, d: &RepoData, id: &str, parent: Option<&str>, c: &Change, acts: &mut Vec<Action>) {
+    let short = &id[..id.len().min(7)];
+    if c.code != 'D'
+        && ui.button(format!("{} Restore this file from this commit", icon::ARROW_U_UP_LEFT)).on_hover_text("Overwrite the working-tree copy with this commit's version (⌘Z undoes it)").clicked()
+    {
+        acts.push(Action::Git(restore_file(d, format!("Restore {}", c.path), id, &c.path, &format!("the version from {short}"))));
+    }
+    // An added file didn't exist before; a renamed one had its old name.
+    if let Some(p) = parent.filter(|_| c.code != 'A')
+        && ui.button(format!("{} Restore as it was before this commit", icon::ARROW_U_UP_LEFT)).on_hover_text("Overwrite the working-tree copy with the parent's version (⌘Z undoes it)").clicked()
+    {
+        let path = c.old_path.as_deref().unwrap_or(&c.path);
+        acts.push(Action::Git(restore_file(d, format!("Restore {path}"), p, path, &format!("the version before {short}"))));
+    }
+    ui.separator();
+}
 
 impl RepoTab {
     pub(super) fn commit_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
@@ -92,7 +113,7 @@ impl RepoTab {
             ui.separator();
             let n = info.files.len() + info.untracked.len();
             ui.label(RichText::new(format!("{n} changed file{}", if n == 1 { "" } else { "s" })).small().strong());
-            let stash = self.data.as_ref().is_some_and(|d| d.stashes.iter().any(|s| s.id == info.id));
+            let stash = self.data.as_ref().filter(|d| d.stashes.iter().any(|s| s.id == info.id));
             // A stash's untracked files live in its third parent, a root commit.
             let untracked_id = format!("{}^3", info.id);
             let files = info.files.iter().map(|c| (c, &info.id, info.parents.first().cloned())).chain(info.untracked.iter().map(|c| (c, &untracked_id, None)));
@@ -103,12 +124,13 @@ impl RepoTab {
                     acts.push(Action::Diff(src));
                 }
                 resp.context_menu(|ui| {
-                    if stash
-                        && c.code != 'D'
+                    if let Some(d) = stash.filter(|_| c.code != 'D')
                         && ui.button(format!("{} Apply this file", icon::ARROW_LINE_DOWN)).on_hover_text("Write this file from the stash into the working tree; the stash is kept").clicked()
                     {
-                        let o = Op::new(format!("Apply {} from stash", c.path), &["--literal-pathspecs", "restore", "--source", id, "--worktree", "--", &c.path]);
-                        acts.push(Action::Git(o.light().confirm(format!("Overwrite your local {} with the stash's version?", c.path))));
+                        acts.push(Action::Git(restore_file(d, format!("Apply {} from stash", c.path), id, &c.path, "the stash's version")));
+                    }
+                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none()) {
+                        restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
                     file_items(ui, &c.path, acts);
                     if ui.button("Copy path").clicked() {

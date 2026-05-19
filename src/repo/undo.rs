@@ -36,7 +36,9 @@ fn split_z(s: String) -> Vec<String> {
 pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     let refuse = |why: String| format!("Nothing was discarded: couldn't back it up first ({why}).");
     let stash = git::run(dir, &["stash", "create"]).map_err(|e| refuse(e.trim().to_owned()))?;
-    let stash = Some(stash.trim().to_owned()).filter(|s| !s.is_empty());
+    // No tracked file changed yet: HEAD already holds their contents (e.g. a
+    // restore from history about to overwrite a clean file).
+    let stash = Some(stash.trim().to_owned()).filter(|s| !s.is_empty()).or_else(|| git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).ok().map(|h| h.trim().to_owned()));
     let (tracked, untracked): (Vec<String>, Vec<String>) = match b {
         Backup::All => (
             split_z(git::run(dir, &["diff", "--name-only", "-z", "HEAD"]).unwrap_or_default()),
@@ -51,7 +53,11 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     let mut files = vec![];
     for p in untracked {
         let path = dir.join(&p);
-        let meta = std::fs::symlink_metadata(&path).map_err(|e| refuse(format!("{p}: {e}")))?;
+        let meta = match std::fs::symlink_metadata(&path) {
+            // Not there yet (a file restored from history): nothing to lose.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            m => m.map_err(|e| refuse(format!("{p}: {e}")))?,
+        };
         if !meta.is_file() {
             return Err(refuse(format!("{p} is not a regular file")));
         }

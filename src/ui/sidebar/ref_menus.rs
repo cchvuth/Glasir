@@ -88,6 +88,14 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         integrate_items(ui, d, name, acts);
         compare_items(ui, d, name, acts);
     }
+    if r.head
+        && let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
+    {
+        ui.separator();
+        if ui.button(format!("{} {label}", icon::GIT_FORK)).on_hover_text(format!("New branch at HEAD for them; {name} goes back to {}", r.upstream)).clicked() {
+            acts.push(a);
+        }
+    }
     ui.separator();
     if let Some(remote) = d.remotes.first().map(|r| r.0.clone()) {
         let remote = if r.upstream.is_empty() { remote } else { r.upstream.split('/').next().unwrap_or("origin").to_owned() };
