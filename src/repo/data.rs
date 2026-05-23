@@ -13,6 +13,7 @@ pub struct RepoData {
     pub stashes: Arc<Vec<git::Stash>>,
     pub worktrees: Arc<Vec<git::Worktree>>,
     pub submodules: Arc<Vec<git::Submodule>>,
+    pub lfs: Arc<git::Lfs>,
     pub remotes: Arc<Vec<(String, String)>>,
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
@@ -197,6 +198,7 @@ impl RepoData {
             stashes,
             worktrees: Default::default(),
             submodules: Default::default(),
+            lfs: Default::default(),
             remotes,
             git_dir,
             origin_head,
@@ -229,10 +231,10 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
             })
         });
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
-        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default()));
+        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir)));
         (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
     });
-    let (remotes, submodules) = remotes;
+    let (remotes, submodules, lfs) = remotes;
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
@@ -243,6 +245,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.truncated = truncated;
     d.worktrees = Arc::new(worktrees);
     d.submodules = Arc::new(submodules);
+    d.lfs = Arc::new(lfs);
     Ok(d)
 }
 

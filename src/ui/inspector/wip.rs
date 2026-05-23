@@ -1,7 +1,7 @@
 //! Inspector for the WIP row: operation-in-progress banner, conflicted /
 //! unstaged / staged file lists and the commit box.
 
-use super::{file_items, file_row};
+use super::{file_items, file_row, lfs_track_item};
 use crate::ai::Purpose;
 use crate::git::State;
 use crate::repo::{Action, DiffSrc, Op, RepoTab, op};
@@ -97,7 +97,7 @@ impl RepoTab {
                 if !s.conflicted.is_empty() {
                     ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
                     for c in &s.conflicted {
-                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path));
+                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path));
                         resp.context_menu(|ui| {
                             if ui.button(format!("{} Resolve with AI…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
@@ -137,7 +137,7 @@ impl RepoTab {
                 }
                 for c in &s.unstaged {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: false };
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src));
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src), d.lfs.files.contains(&c.path));
                     if resp.clicked() {
                         acts.push(Action::Diff(src));
                     }
@@ -156,6 +156,7 @@ impl RepoTab {
                             };
                             acts.push(Action::Git(o.light().backup(crate::repo::Backup::Paths(vec![c.path.clone()])).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))));
                         }
+                        lfs_track_item(ui, d, &c.path, acts);
                         if c.code == '?' && ui.button("Add to .gitignore").clicked() {
                             match crate::repo::files::append_gitignore(&self.dir, &c.path) {
                                 Ok(()) => acts.push(Action::Reload),
@@ -187,7 +188,7 @@ impl RepoTab {
                 }
                 for c in &s.staged {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: true };
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src));
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src), d.lfs.files.contains(&c.path));
                     if resp.clicked() {
                         acts.push(Action::Diff(src));
                     }
@@ -198,6 +199,7 @@ impl RepoTab {
                         if ui.button("Unstage").clicked() {
                             acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", &c.path]).light()));
                         }
+                        lfs_track_item(ui, d, &c.path, acts);
                         if c.code != 'A' {
                             file_items(ui, &c.path, acts);
                         }

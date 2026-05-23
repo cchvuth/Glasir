@@ -14,6 +14,8 @@ pub struct FileDiff {
     pub lossy: bool,
     /// A submodule pointer change (shown instead of hunks).
     pub submodule: Option<super::SubmoduleDiff>,
+    /// Git LFS pointer file: (old, new) sides.
+    pub lfs: Option<(Option<super::LfsPointer>, Option<super::LfsPointer>)>,
 }
 
 #[derive(Clone, Debug)]
@@ -147,14 +149,18 @@ fn parse_one(text: &str) -> FileDiff {
     if text.starts_with("Submodule ") {
         return FileDiff { submodule: super::submodule::parse_submodule_diff(text), ..Default::default() };
     }
-    parse_diff(text).into_iter().next().unwrap_or_default()
+    let mut f = parse_diff(text).into_iter().next().unwrap_or_default();
+    f.lfs = super::lfs::pointer_diff(&f);
+    f
 }
 
 const DIFF: [&str; 5] = ["diff", "--no-color", "--no-ext-diff", "--submodule=log", "-M"];
 
 pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
     if c.code == '?' {
-        return untracked_diff(dir, &c.path);
+        let mut f = untracked_diff(dir, &c.path)?;
+        f.lfs = super::lfs::pointer_diff(&f);
+        return Ok(f);
     }
     let mut args = DIFF.to_vec();
     if staged {

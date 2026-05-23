@@ -4,6 +4,7 @@
 
 mod diff;
 mod env;
+mod lfs;
 mod log;
 mod model;
 mod network;
@@ -22,6 +23,7 @@ pub use diff::parse_diff;
 #[cfg(unix)]
 pub use env::import_login_env;
 pub use env::check_git;
+pub use lfs::{Lfs, LfsPointer, lfs};
 pub use log::{LOG, Logged};
 pub use model::{Change, Commit, CommitInfo, Ref, RefKind, Stash, State, Status, Worktree};
 pub use network::{fetch_failure, fetch_quiet, with_autostash};

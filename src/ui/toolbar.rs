@@ -87,7 +87,6 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
     });
 }
 
-/// The toolbar's overflow menu: reflog, spin-off, patches, tags.
 fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, acts: &mut Vec<Action>) {
     if ui.button(format!("{} Reflog — recover lost commits", icon::LIFEBUOY)).clicked() {
         acts.push(Action::Reflog);
@@ -104,6 +103,26 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, acts: &mut Vec<Action>)
         && ui.button(format!("{} Push all tags to {remote}", icon::TAG)).clicked()
     {
         acts.push(Action::Git(crate::repo::tags::push_all(remote)));
+    }
+    if d.lfs.used {
+        ui.separator();
+        if !d.lfs.installed {
+            ui.label(RichText::new(format!("{} {}", icon::WARNING, crate::repo::LFS_MISSING)).small().color(theme::MOD));
+            return;
+        }
+        ui.menu_button(format!("{} Git LFS", icon::DATABASE), |ui| {
+            for (label, tip, args) in [
+                ("Pull LFS objects", "Download the LFS files of the current checkout", &["lfs", "pull"][..]),
+                ("Fetch LFS objects", "Download LFS files without updating the working tree", &["lfs", "fetch"]),
+                ("Prune old LFS objects", "Delete local LFS files that are pushed and no longer checked out", &["lfs", "prune"]),
+                ("Install LFS hooks", "Set up git-lfs hooks for this repository", &["lfs", "install", "--local"]),
+            ] {
+                if ui.button(label).on_hover_text(tip).clicked() {
+                    acts.push(op(label, args));
+                    ui.close();
+                }
+            }
+        });
     }
 }
 

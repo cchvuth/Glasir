@@ -56,6 +56,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use undo::UndoEntry;
 
+/// Shown when a repo uses LFS (or an LFS action is picked) without git-lfs.
+pub const LFS_MISSING: &str = "This repository uses Git LFS, but git-lfs is not installed: large files stay as small pointer files. Install it from git-lfs.com (or brew/apt/winget install git-lfs), run git lfs install, then restart Glasir.";
+
 pub const PAGE: usize = 1000;
 
 pub struct RepoTab {
@@ -204,12 +207,12 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, (wt, sm))) => {
+            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
-                (d.worktrees, d.submodules) = (wt, sm);
+                (d.worktrees, d.submodules, d.lfs) = (wt, sm, lfs);
                 Ok(d)
             }
             None => load_all(&dir, limit, view),
@@ -244,6 +247,9 @@ impl RepoTab {
                         self.sel = None;
                     }
                     let first = self.data.is_none();
+                    if first && d.lfs.used && !d.lfs.installed {
+                        msgs.push(Msg { text: LFS_MISSING.into(), error: true });
+                    }
                     let head = d.status.head.clone();
                     // Resolved or aborted elsewhere: the editor's markers are stale.
                     if self.merge.as_ref().is_some_and(|m| !d.status.conflicted.iter().any(|c| c.path == m.path)) {

@@ -119,7 +119,7 @@ impl RepoTab {
             let files = info.files.iter().map(|c| (c, &info.id, info.parents.first().cloned())).chain(info.untracked.iter().map(|c| (c, &untracked_id, None)));
             for (c, id, parent) in files {
                 let src = DiffSrc::Commit { id: id.clone(), parent, change: c.clone() };
-                let resp = file_row(ui, c, open.as_ref() == Some(&src));
+                let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)));
                 if resp.clicked() {
                     acts.push(Action::Diff(src));
                 }

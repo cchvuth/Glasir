@@ -184,6 +184,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     if let Some(sm) = &f.submodule {
         return submodule_note(ui, &change.path, sm, acts);
     }
+    if let Some((old, new)) = &f.lfs {
+        return lfs_note(ui, old.as_ref(), new.as_ref());
+    }
     if f.binary {
         ui.centered_and_justified(|ui| ui.label("Binary file"));
         return;
@@ -313,6 +316,28 @@ fn submodule_note(ui: &mut Ui, path: &str, sm: &crate::git::SubmoduleDiff, acts:
         if !zero(&sm.to) && ui.button(format!("{} Open submodule in new tab", icon::ARROW_SQUARE_OUT)).clicked() {
             acts.push(Action::OpenTab(path.to_owned()));
         }
+    });
+}
+
+/// An LFS pointer file: the object's size and id instead of the pointer text.
+fn lfs_note(ui: &mut Ui, old: Option<&crate::git::LfsPointer>, new: Option<&crate::git::LfsPointer>) {
+    use crate::ui::format::bytes;
+    note_frame(ui, |ui| {
+        let size = match (old, new) {
+            (Some(o), Some(n)) => format!("size {} (was {})", bytes(n.size), bytes(o.size)),
+            (None, Some(n)) => format!("size {} (new)", bytes(n.size)),
+            (Some(o), None) => format!("size {} (removed)", bytes(o.size)),
+            (None, None) => String::new(),
+        };
+        ui.label(RichText::new(format!("{} Git LFS object, {size}", icon::DATABASE)).strong());
+        ui.add_space(4.0);
+        for (what, p) in [("old", old), ("new", new)] {
+            if let Some(p) = p {
+                ui.label(RichText::new(format!("{what}  {}", p.oid)).monospace().small().color(theme::dim(ui)));
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("The repository stores a pointer; the content lives in LFS storage.").small().color(theme::dim(ui)));
     });
 }
 
