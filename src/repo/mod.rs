@@ -204,12 +204,12 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), d.worktrees.clone())
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, wt)) => {
+            Some((log, refs, st, rm, gd, oh, (wt, sm))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
-                d.worktrees = wt;
+                (d.worktrees, d.submodules) = (wt, sm);
                 Ok(d)
             }
             None => load_all(&dir, limit, view),

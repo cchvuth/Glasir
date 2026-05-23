@@ -181,6 +181,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         }
         Some(Ok(f)) => f,
     };
+    if let Some(sm) = &f.submodule {
+        return submodule_note(ui, &change.path, sm, acts);
+    }
     if f.binary {
         ui.centered_and_justified(|ui| ui.label("Binary file"));
         return;
@@ -269,6 +272,55 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                 }
             }
         }
+    });
+}
+
+/// A submodule pointer change: where it moved and the commits in between.
+fn submodule_note(ui: &mut Ui, path: &str, sm: &crate::git::SubmoduleDiff, acts: &mut Vec<Action>) {
+    let zero = |id: &str| id.bytes().all(|b| b == b'0');
+    let title = match (zero(&sm.from), zero(&sm.to)) {
+        _ if sm.from.is_empty() => "Submodule content changed".to_owned(),
+        (true, _) => format!("Submodule added at {}", sm.to),
+        (_, true) => format!("Submodule removed (was at {})", sm.from),
+        _ => format!("Submodule moved from {} to {}", sm.from, sm.to),
+    };
+    note_frame(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{} {title}", icon::PACKAGE)).strong());
+            if !sm.note.is_empty() && !sm.note.contains("submodule") {
+                ui.label(RichText::new(format!("({})", sm.note)).color(theme::dim(ui)));
+            }
+        });
+        if !sm.log.is_empty() {
+            ui.add_space(6.0);
+        }
+        for l in &sm.log {
+            // `> subject` came in, `< subject` was dropped (rewind).
+            let (sign, color, text) = match l.split_once(' ') {
+                Some(("<", t)) => ("−", theme::DEL, t),
+                Some((_, t)) => ("+", theme::ADD, t),
+                None => ("+", theme::ADD, l.as_str()),
+            };
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(sign).monospace().color(color));
+                ui.label(text);
+            });
+        }
+        for d in &sm.dirty {
+            ui.label(RichText::new(format!("{} Working copy {d}", icon::PENCIL_SIMPLE)).color(theme::MOD));
+        }
+        ui.add_space(6.0);
+        if !zero(&sm.to) && ui.button(format!("{} Open submodule in new tab", icon::ARROW_SQUARE_OUT)).clicked() {
+            acts.push(Action::OpenTab(path.to_owned()));
+        }
+    });
+}
+
+fn note_frame(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.add_space(8.0);
+    egui::Frame::new().fill(theme::faint(ui)).inner_margin(12.0).corner_radius(10.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        add(ui)
     });
 }
 

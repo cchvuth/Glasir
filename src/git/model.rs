@@ -70,6 +70,9 @@ pub struct Status {
     pub staged: Vec<Change>,
     pub unstaged: Vec<Change>,
     pub conflicted: Vec<Change>,
+    /// Changed submodules: path -> porcelain v2 `S<c><m><u>` field
+    /// (`C` new commit checked out, `M` modified content, `U` untracked content).
+    pub submodules: std::collections::HashMap<String, String>,
 }
 
 impl Status {

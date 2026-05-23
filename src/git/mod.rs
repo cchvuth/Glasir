@@ -11,6 +11,7 @@ mod read;
 mod reflog;
 mod runner;
 mod snapshot;
+mod submodule;
 mod url;
 
 pub type Res<T> = Result<T, String>;
@@ -28,4 +29,5 @@ pub use read::{DATE_FORMAT, commit_info, compare_info, git_dir, log, predict_con
 pub use reflog::{ReflogEntry, reflog};
 pub use runner::{CANCELLED, Cancel, cmd, progress_label, run, run_input, run_raw};
 pub use snapshot::{Snapshot, restore, snapshot};
+pub use submodule::{Submodule, SubmoduleDiff, submodules};
 pub use url::{url_encode, url_path, web_url};

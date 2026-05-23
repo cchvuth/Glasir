@@ -108,6 +108,9 @@ pub fn parse_status(out: &str) -> Status {
                 let Some(path) = f.get(fields - 1) else { continue };
                 let old = if kind == '2' { it.next().map(String::from) } else { None };
                 let xy: Vec<char> = f[1].chars().collect();
+                if f[2].starts_with('S') {
+                    s.submodules.insert(path.to_string(), f[2].into());
+                }
                 if xy[0] != '.' {
                     s.staged.push(Change { path: path.to_string(), old_path: old, code: xy[0] });
                 }
@@ -315,6 +318,7 @@ mod tests {
         let out = "# branch.oid abc\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -1\0\
 1 M. N... 100644 100644 100644 a b src/a b.rs\0\
 1 .M N... 100644 100644 100644 a b x.rs\0\
+1 .M S.MU 160000 160000 160000 a a sub mod\0\
 2 R. N... 100644 100644 100644 a b R100 new.rs\0old.rs\0\
 u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         let s = parse_status(out);
@@ -322,7 +326,8 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         assert_eq!(s.staged.len(), 2);
         assert_eq!(s.staged[0].path, "src/a b.rs");
         assert_eq!(s.staged[1].old_path.as_deref(), Some("old.rs"));
-        assert_eq!(s.unstaged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["x.rs", "new file.txt"]);
+        assert_eq!(s.unstaged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["x.rs", "sub mod", "new file.txt"]);
+        assert_eq!((s.submodules.len(), s.submodules["sub mod"].as_str()), (1, "S.MU"));
         assert_eq!(s.conflicted[0].path, "conf.rs");
     }
 

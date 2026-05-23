@@ -12,6 +12,8 @@ pub struct FileDiff {
     pub binary: bool,
     /// Not valid UTF-8: shown lossily, so it must not be patched line by line.
     pub lossy: bool,
+    /// A submodule pointer change (shown instead of hunks).
+    pub submodule: Option<super::SubmoduleDiff>,
 }
 
 #[derive(Clone, Debug)]
@@ -140,7 +142,15 @@ pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, r
     any.then_some(out)
 }
 
-const DIFF: [&str; 4] = ["diff", "--no-color", "--no-ext-diff", "-M"];
+/// One file's diff; submodules come as `--submodule=log` summaries.
+fn parse_one(text: &str) -> FileDiff {
+    if text.starts_with("Submodule ") {
+        return FileDiff { submodule: super::submodule::parse_submodule_diff(text), ..Default::default() };
+    }
+    parse_diff(text).into_iter().next().unwrap_or_default()
+}
+
+const DIFF: [&str; 5] = ["diff", "--no-color", "--no-ext-diff", "--submodule=log", "-M"];
 
 pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
     if c.code == '?' {
@@ -156,7 +166,7 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
     }
     args.push(&c.path);
     let raw = run_raw(dir, &args, None)?;
-    let mut f = parse_diff(&String::from_utf8_lossy(&raw)).into_iter().next().unwrap_or_default();
+    let mut f = parse_one(&String::from_utf8_lossy(&raw));
     f.lossy = std::str::from_utf8(&raw).is_err();
     Ok(f)
 }
@@ -164,14 +174,14 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
 pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change) -> Res<FileDiff> {
     let mut args = match parent {
         Some(p) => [&DIFF[..], &[p, id]].concat(),
-        None => vec!["show", "--format=", "--no-color", "--no-ext-diff", id],
+        None => vec!["show", "--format=", "--no-color", "--no-ext-diff", "--submodule=log", id],
     };
     args.push("--");
     if let Some(o) = &c.old_path {
         args.push(o);
     }
     args.push(&c.path);
-    Ok(parse_diff(&run(dir, &args)?).into_iter().next().unwrap_or_default())
+    Ok(parse_one(&run(dir, &args)?))
 }
 
 fn untracked_diff(dir: &Path, path: &str) -> Res<FileDiff> {
