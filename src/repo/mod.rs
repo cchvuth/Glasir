@@ -8,7 +8,7 @@
 //!   (push/pull/fetch/stash/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
 //! - `undo`: undo/redo and discard backups
-//! - `diff`, `ai_job`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
+//! - `diff` (+ `image_diff`), `ai_job`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
@@ -24,6 +24,7 @@ mod diff;
 mod fetch;
 pub mod files;
 pub mod history;
+pub mod image_diff;
 pub mod merge_editor;
 mod offer;
 mod op;
@@ -73,6 +74,8 @@ pub struct RepoTab {
     pub info: Option<Res<CommitInfo>>,
     info_task: Option<Task<Res<CommitInfo>>>,
     pub diff: Option<DiffState>,
+    /// Whitespace / context options for every diff opened in this tab.
+    pub diff_opts: git::DiffOpts,
     running: Option<(String, Task<Done>)>,
     /// Stops the running op's git command (not set for undo/redo).
     cancel: Option<git::Cancel>,
@@ -140,6 +143,7 @@ impl RepoTab {
             info: None,
             info_task: None,
             diff: None,
+            diff_opts: Default::default(),
             running: None,
             cancel: None,
             undo: vec![],
@@ -320,6 +324,12 @@ impl RepoTab {
                 self.merge = Some(merge_editor::Editor::open(ctx, &self.dir, &path));
             }
             Action::CloseDiff => self.diff = None,
+            Action::DiffOpts(o) => {
+                self.diff_opts = o;
+                if let Some(d) = &self.diff {
+                    self.open_diff(ctx, d.src.clone());
+                }
+            }
             Action::Git(op) => self.run(ctx, op),
             Action::Prompt(p) => self.prompt = Some(p),
             Action::Copy(s) => ctx.copy_text(s),

@@ -59,6 +59,7 @@ pub enum Action {
     Select(Sel),
     Diff(DiffSrc),
     CloseDiff,
+    DiffOpts(crate::git::DiffOpts),
     Git(Op),
     Prompt(Prompt),
     Copy(String),

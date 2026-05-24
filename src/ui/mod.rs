@@ -16,6 +16,7 @@ mod dialogs;
 mod format;
 mod graph_view;
 mod history;
+mod image_diff;
 mod inspector;
 mod merge_editor;
 mod palette;

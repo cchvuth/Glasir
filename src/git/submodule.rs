@@ -145,7 +145,7 @@ mod tests {
 
         // The bump commit's diff names the commits it brings in.
         let lib_change = Change { path: "lib".into(), old_path: None, code: 'M' };
-        let d = commit_diff(&app, "HEAD", Some("HEAD~1"), &lib_change).unwrap().submodule.unwrap();
+        let d = commit_diff(&app, "HEAD", Some("HEAD~1"), &lib_change, Default::default()).unwrap().submodule.unwrap();
         assert_eq!(d.log, ["> add c", "> add b"]);
 
         // Check out an older commit in the submodule and dirty it.
@@ -156,7 +156,7 @@ mod tests {
         assert_ne!(s[0].head, s[0].recorded);
         assert_eq!(s[0].recorded, run(&app, &["rev-parse", "HEAD:lib"]).unwrap().trim());
         assert_eq!(status(&app).unwrap().submodules["lib"], "SCM.");
-        let d = worktree_diff(&app, &lib_change, false).unwrap().submodule.unwrap();
+        let d = worktree_diff(&app, &lib_change, false, Default::default()).unwrap().submodule.unwrap();
         assert_eq!((d.note.as_str(), d.log.as_slice(), d.dirty.as_slice()), ("rewind", &["< add c".to_owned()][..], &["contains modified content".to_owned()][..]));
         let _ = std::fs::remove_dir_all(&root);
     }

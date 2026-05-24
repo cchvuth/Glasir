@@ -1,14 +1,18 @@
 //! Diff viewer: unified or side-by-side, with hunk and line staging for
-//! working-directory diffs. Only visible lines are painted.
+//! working-directory diffs, whitespace / context options, change navigation
+//! (F7 / ⇧F7) and a change minimap. Only visible lines are painted.
 
-use crate::git::{FileDiff, partial_patch};
+use crate::git::{DiffOpts, FileDiff, partial_patch};
 use crate::repo::{Action, Backup, DiffSrc, DiffState, Op};
 use crate::theme::{self, icon};
-use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui, pos2, vec2};
+use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui, UiBuilder, pos2, vec2};
 
 const LINE_H: f32 = 18.0;
 const NUM_W: f32 = 44.0;
 const CHAR_W: f32 = 7.6;
+const RAIL_W: f32 = 8.0;
+/// Lines kept above a change jumped to.
+const LEAD: usize = 3;
 
 enum Row {
     Hunk(usize),
@@ -48,6 +52,31 @@ fn rows(f: &FileDiff, split: bool) -> Vec<Row> {
         flush(&mut rows, &mut dels, &mut adds);
     }
     rows
+}
+
+/// A row's change: `+`, `-`, `~` (split row with both) or 0.
+fn row_kind(f: &FileDiff, r: &Row) -> u8 {
+    let k = |hi: usize, li: Option<usize>| li.map_or(b' ', |li| f.hunks[hi].lines[li].kind);
+    match *r {
+        Row::Hunk(_) => 0,
+        Row::Line(hi, li) => Some(k(hi, Some(li))).filter(|k| matches!(k, b'+' | b'-')).unwrap_or(0),
+        Row::Pair(hi, a, b) => match (k(hi, a) == b'-', k(hi, b) == b'+') {
+            (true, true) => b'~',
+            (true, false) => b'-',
+            (false, true) => b'+',
+            _ => 0,
+        },
+    }
+}
+
+/// First row of each run of changed rows.
+fn change_starts(kinds: &[u8]) -> Vec<usize> {
+    (0..kinds.len()).filter(|&r| kinds[r] != 0 && (r == 0 || kinds[r - 1] == 0)).collect()
+}
+
+/// The next (or previous) change start after (before) `anchor`.
+fn step(starts: &[usize], anchor: usize, forward: bool) -> Option<usize> {
+    if forward { starts.iter().find(|&&s| s > anchor) } else { starts.iter().rev().find(|&&s| s < anchor) }.copied()
 }
 
 /// For each line of a hunk, the line it replaces/is replaced by: the i-th `-`
@@ -110,8 +139,17 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         DiffSrc::Commit { .. } => (false, false),
     };
     let lossy = ds.file.as_ref().is_some_and(|f| f.as_ref().is_ok_and(|f| f.lossy));
-    let partial = worktree && change.code != '?' && !lossy;
+    // Partial staging patches the shown diff, which must be a plain one (no -w).
+    let partial = worktree && change.code != '?' && !lossy && !ds.opts.ignore_ws;
     let file = ds.file.as_ref().and_then(|f| f.as_ref().ok());
+    let rows = file.map_or(vec![], |f| rows(f, *split));
+    let kinds: Vec<u8> = file.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
+    let starts = change_starts(&kinds);
+    // Scroll offset and viewport height of the last frame.
+    let mem = ui.id().with("diff_pos");
+    let (off, view_h) = ui.data(|m| m.get_temp::<(f32, f32)>(mem)).unwrap_or_default();
+    let anchor = (off / LINE_H).round() as usize + LEAD;
+    let mut nav = ui.input(|i| i.key_pressed(egui::Key::F7).then_some(!i.modifiers.shift));
 
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         acts.push(Action::CloseDiff);
@@ -125,13 +163,6 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         }
         ui.label(RichText::new(&change.path).monospace().strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            theme::group(ui, |ui| {
-                for (v, text) in [(true, "Split"), (false, "Unified")] {
-                    if ui.add(egui::Button::selectable(*split == v, text)).clicked() {
-                        *split = v;
-                    }
-                }
-            });
             if change.code != '?' && change.code != 'A' {
                 if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
                     acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));
@@ -149,6 +180,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                 } else if ui.button("Stage file").clicked() {
                     acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", path]).light()));
                 }
+            }
+            if worktree && change.code != '?' && ds.opts.ignore_ws {
+                ui.label(RichText::new(format!("{} Line staging off", icon::INFO)).small().color(theme::MOD))
+                    .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
             }
             if let (true, Some(f)) = (partial && !ds.picked.is_empty(), file) {
                 let n = ds.picked.len();
@@ -168,6 +203,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
             }
         });
     });
+    if ds.image.is_none() {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| view_controls(ui, ds, split, worktree && change.code != '?', &starts, anchor, &mut nav, acts));
+    }
     ui.separator();
 
     let f = match &ds.file {
@@ -187,16 +226,29 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     if let Some((old, new)) = &f.lfs {
         return lfs_note(ui, old.as_ref(), new.as_ref());
     }
+    if let Some(img) = &ds.image {
+        return super::image_diff::show(ui, img);
+    }
     if f.binary {
         ui.centered_and_justified(|ui| ui.label("Binary file"));
         return;
     }
     if f.hunks.is_empty() {
-        ui.centered_and_justified(|ui| ui.label(RichText::new("No changes").color(theme::dim(ui))));
+        let text = if ds.opts.ignore_ws { "Only whitespace changed" } else { "No changes" };
+        ui.centered_and_justified(|ui| ui.label(RichText::new(text).color(theme::dim(ui))));
         return;
     }
 
-    let rows = rows(f, *split);
+    let area = ui.available_rect_before_wrap();
+    let rail = Rect::from_x_y_ranges(area.right() - RAIL_W..=area.right(), area.top() + 2.0..=area.bottom() - 2.0);
+    let body = Rect::from_x_y_ranges(area.left()..=rail.left() - 4.0, area.y_range());
+    let per = (rail.height() / rows.len() as f32).min(LINE_H);
+    let row_at = |y: f32| (((y - rail.top()) / per) as usize).min(rows.len() - 1);
+    let rail_resp = ui.interact(rail, mem.with("rail"), Sense::click_and_drag()).on_hover_text("Changes in this file: click to jump");
+    let mut target = rail_resp.interact_pointer_pos().filter(|_| rail_resp.clicked() || rail_resp.dragged()).map(|p| row_at(p.y) as f32 * LINE_H - view_h / 2.0);
+    if let Some(s) = nav.and_then(|fwd| step(&starts, anchor, fwd)) {
+        target = Some(s.saturating_sub(LEAD) as f32 * LINE_H);
+    }
     let pairs: Vec<Vec<Option<usize>>> = f.hunks.iter().map(partners).collect();
     let span = |hi: usize, li: usize| {
         let other = pairs[hi][li]?;
@@ -205,77 +257,155 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     let cw = ui.fonts_mut(|fo| fo.glyph_width(&FontId::monospace(12.5), 'M'));
     let max_chars = f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.text.len()).max().unwrap_or(0);
     let mono = FontId::monospace(12.5);
-    ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-    egui::ScrollArea::both().id_salt("diff").auto_shrink(false).show_rows(ui, LINE_H, rows.len(), |ui, range| {
-        let content_w = if *split { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
-        ui.set_min_width(content_w);
-        let left = ui.max_rect().left();
-        let top = ui.max_rect().top() - range.start as f32 * LINE_H;
-        let painter = ui.painter().clone();
-        for r in range {
-            let rect = Rect::from_min_size(pos2(left, top + r as f32 * LINE_H), vec2(content_w, LINE_H));
-            let y = rect.center().y;
-            match rows[r] {
-                Row::Hunk(hi) => {
-                    let h = &f.hunks[hi];
-                    painter.rect_filled(rect, 0.0, theme::faint(ui));
-                    painter.text(pos2(left + 8.0, y), Align2::LEFT_CENTER, &h.header, mono.clone(), theme::dim(ui));
-                    if partial {
-                        let all = |hh: usize, _: usize| hh == hi;
-                        let mut x = ui.clip_rect().right() - 8.0;
-                        let mut btn = |ui: &mut Ui, text: &str| {
-                            let w = text.len() as f32 * 6.6 + 14.0;
-                            x -= w + 6.0;
-                            ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), egui::Button::new(RichText::new(text).small())).clicked()
-                        };
-                        if staged {
-                            if btn(ui, "Unstage hunk") {
-                    acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &change.path));
-                            }
-                        } else {
-                            if btn(ui, "Stage hunk") {
-                    acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &change.path));
-                            }
-                            if btn(ui, "Discard hunk") {
-                    acts.push(apply_op("Discard hunk", partial_patch(f, all, true), &["--reverse"], &change.path));
+    let out = ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
+        ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
+        let mut area = egui::ScrollArea::both().id_salt("diff").auto_shrink(false);
+        if let Some(t) = target {
+            area = area.vertical_scroll_offset(t.max(0.0));
+        }
+        area.show_rows(ui, LINE_H, rows.len(), |ui, range| {
+            let content_w = if *split { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
+            ui.set_min_width(content_w);
+            let left = ui.max_rect().left();
+            let top = ui.max_rect().top() - range.start as f32 * LINE_H;
+            let painter = ui.painter().clone();
+            for r in range {
+                let rect = Rect::from_min_size(pos2(left, top + r as f32 * LINE_H), vec2(content_w, LINE_H));
+                let y = rect.center().y;
+                match rows[r] {
+                    Row::Hunk(hi) => {
+                        let h = &f.hunks[hi];
+                        painter.rect_filled(rect, 0.0, theme::faint(ui));
+                        painter.text(pos2(left + 8.0, y), Align2::LEFT_CENTER, &h.header, mono.clone(), theme::dim(ui));
+                        if partial {
+                            let all = |hh: usize, _: usize| hh == hi;
+                            let mut x = ui.clip_rect().right() - 8.0;
+                            let mut btn = |ui: &mut Ui, text: &str| {
+                                let w = text.len() as f32 * 6.6 + 14.0;
+                                x -= w + 6.0;
+                                ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), egui::Button::new(RichText::new(text).small())).clicked()
+                            };
+                            if staged {
+                                if btn(ui, "Unstage hunk") {
+                        acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &change.path));
+                                }
+                            } else {
+                                if btn(ui, "Stage hunk") {
+                        acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &change.path));
+                                }
+                                if btn(ui, "Discard hunk") {
+                        acts.push(apply_op("Discard hunk", partial_patch(f, all, true), &["--reverse"], &change.path));
+                                }
                             }
                         }
                     }
-                }
-                Row::Line(hi, li) => {
-                    let l = &f.hunks[hi].lines[li];
-                    let picked = ds.picked.contains(&(hi, li));
-                    let resp = ui.interact(rect, ui.id().with(("dl", r)), Sense::click());
-                    if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
-                        ds.picked.insert((hi, li));
-                    }
-                    let colors = ds.hl.get(hi).and_then(|h| h.get(li));
-                    paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), cw, colors);
-                }
-                Row::Pair(hi, a, b) => {
-                    let h = &f.hunks[hi];
-                    let half = rect.width() / 2.0;
-                    let lr = Rect::from_min_size(rect.min, vec2(half, LINE_H));
-                    let rr = Rect::from_min_size(pos2(rect.left() + half, rect.top()), vec2(half, LINE_H));
-                    for (side, idx, old) in [(lr, a, true), (rr, b, false)] {
-                        let Some(li) = idx else {
-                            painter.rect_filled(side, 0.0, theme::faint(ui).gamma_multiply(0.5));
-                            continue;
-                        };
-                        let l = &h.lines[li];
-                        let resp = ui.interact(side, ui.id().with(("sl", r, old)), Sense::click());
+                    Row::Line(hi, li) => {
+                        let l = &f.hunks[hi].lines[li];
+                        let picked = ds.picked.contains(&(hi, li));
+                        let resp = ui.interact(rect, ui.id().with(("dl", r)), Sense::click());
                         if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
                             ds.picked.insert((hi, li));
                         }
-                        let no = if old { l.old } else { l.new };
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
-                        let picked = ds.picked.contains(&(hi, li));
-                        paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), cw, colors);
+                        paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), cw, colors);
+                    }
+                    Row::Pair(hi, a, b) => {
+                        let h = &f.hunks[hi];
+                        let half = rect.width() / 2.0;
+                        let lr = Rect::from_min_size(rect.min, vec2(half, LINE_H));
+                        let rr = Rect::from_min_size(pos2(rect.left() + half, rect.top()), vec2(half, LINE_H));
+                        for (side, idx, old) in [(lr, a, true), (rr, b, false)] {
+                            let Some(li) = idx else {
+                                painter.rect_filled(side, 0.0, theme::faint(ui).gamma_multiply(0.5));
+                                continue;
+                            };
+                            let l = &h.lines[li];
+                            let resp = ui.interact(side, ui.id().with(("sl", r, old)), Sense::click());
+                            if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
+                                ds.picked.insert((hi, li));
+                            }
+                            let no = if old { l.old } else { l.new };
+                            let colors = ds.hl.get(hi).and_then(|h| h.get(li));
+                            let picked = ds.picked.contains(&(hi, li));
+                            paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), cw, colors);
+                        }
                     }
                 }
             }
+        })
+    });
+    let (off, view_h) = (out.inner.state.offset.y, out.inner.inner_rect.height());
+    ui.data_mut(|m| m.insert_temp(mem, (off, view_h)));
+    minimap(ui, rail, &kinds, off, view_h);
+}
+
+/// The second header row: layout, whitespace, context, change navigation.
+#[allow(clippy::too_many_arguments)]
+fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, stageable: bool, starts: &[usize], anchor: usize, nav: &mut Option<bool>, acts: &mut Vec<Action>) {
+    let o = ds.pending;
+    theme::group(ui, |ui| {
+        for (v, text) in [(false, "Unified"), (true, "Split")] {
+            if ui.add(egui::Button::selectable(*split == v, text)).clicked() {
+                *split = v;
+            }
         }
     });
+    ui.add_space(6.0);
+    theme::group(ui, |ui| {
+        let hint = if stageable { "Ignore whitespace changes (git diff -w).\nLine and hunk staging are off while this is on." } else { "Ignore whitespace changes (git diff -w)" };
+        if ui.add(egui::Button::selectable(o.ignore_ws, format!("{} Ignore whitespace", icon::PARAGRAPH))).on_hover_text(hint).clicked() {
+            acts.push(Action::DiffOpts(DiffOpts { ignore_ws: !o.ignore_ws, ..o }));
+        }
+    });
+    ui.add_space(6.0);
+    theme::group(ui, |ui| {
+        ui.label(RichText::new("Context").small().color(theme::dim(ui)));
+        for (n, text, hint) in [(3, "3", "3 lines around each change"), (10, "10", "10 lines around each change"), (DiffOpts::FILE, "File", "The whole file")] {
+            if ui.add(egui::Button::selectable(o.context == n, text)).on_hover_text(hint).clicked() && o.context != n {
+                acts.push(Action::DiffOpts(DiffOpts { context: n, ..o }));
+            }
+        }
+    });
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        theme::group(ui, |ui| {
+            let next = ui.add_enabled(step(starts, anchor, true).is_some(), egui::Button::new(icon::ARROW_DOWN).frame_when_inactive(false).corner_radius(255));
+            if next.on_hover_text("Next change (F7)").clicked() {
+                *nav = Some(true);
+            }
+            let prev = ui.add_enabled(step(starts, anchor, false).is_some(), egui::Button::new(icon::ARROW_UP).frame_when_inactive(false).corner_radius(255));
+            if prev.on_hover_text("Previous change (⇧F7)").clicked() {
+                *nav = Some(false);
+            }
+        });
+        let n = starts.len();
+        ui.label(RichText::new(format!("{n} change{}", if n == 1 { "" } else { "s" })).small().color(theme::dim(ui)));
+    });
+}
+
+/// Rail of added / removed / changed rows across the whole diff, with the viewport.
+fn minimap(ui: &Ui, rail: Rect, kinds: &[u8], off: f32, view_h: f32) {
+    // Short diffs map 1:1 to their lines; long ones are squeezed into the rail.
+    let per = (rail.height() / kinds.len().max(1) as f32).min(LINE_H);
+    let p = ui.painter();
+    p.rect_filled(rail, 4.0, theme::faint(ui));
+    let y = |row: f32| rail.top() + row * per;
+    let (v0, v1) = (y(off / LINE_H), y((off + view_h) / LINE_H).min(rail.bottom()));
+    p.rect_filled(Rect::from_x_y_ranges(rail.x_range(), v0..=v1.max(v0 + 6.0)), 4.0, theme::hover(ui).gamma_multiply(2.5));
+    let h = per.max(2.0);
+    let mut last = (f32::NEG_INFINITY, 0u8);
+    for (r, &k) in kinds.iter().enumerate().filter(|(_, k)| **k != 0) {
+        let top = y(r as f32);
+        if top - last.0 < 1.0 && k == last.1 {
+            continue;
+        }
+        last = (top, k);
+        let color = match k {
+            b'+' => theme::ADD,
+            b'-' => theme::DEL,
+            _ => theme::MOD,
+        };
+        p.rect_filled(Rect::from_x_y_ranges(rail.x_range(), top..=top + h), 1.0, color);
+    }
 }
 
 /// A submodule pointer change: where it moved and the commits in between.
@@ -426,6 +556,20 @@ mod tests {
         assert_eq!(changed_span("abc", "xyz"), None); // whole-line rewrite: no emphasis
         assert_eq!(changed_span("foo(a)", "foo(a, b)"), None); // pure insertion: nothing removed
         assert_eq!(changed_span("foo(a, b)", "foo(a)"), Some((5, 8))); // ", b"
+    }
+
+    #[test]
+    fn change_navigation() {
+        let d = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,6 +1,6 @@\n a\n-b\n+B\n c\n d\n-e\n+E\n f\n";
+        let f = &parse_diff(d)[0];
+        let unified: Vec<u8> = rows(f, false).iter().map(|r| row_kind(f, r)).collect();
+        assert_eq!(unified, [0, 0, b'-', b'+', 0, 0, b'-', b'+', 0]);
+        let split: Vec<u8> = rows(f, true).iter().map(|r| row_kind(f, r)).collect();
+        assert_eq!(split, [0, 0, b'~', 0, 0, b'~', 0]);
+        let starts = change_starts(&unified);
+        assert_eq!(starts, [2, 6]);
+        assert_eq!((step(&starts, 0, true), step(&starts, 2, true), step(&starts, 6, true)), (Some(2), Some(6), None));
+        assert_eq!((step(&starts, 6, false), step(&starts, 2, false)), (Some(2), None));
     }
 
     #[test]

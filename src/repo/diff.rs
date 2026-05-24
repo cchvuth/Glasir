@@ -1,18 +1,24 @@
-//! The open diff: loads a file diff (+ syntax colors) in the background.
+//! The open diff: loads a file diff (with syntax colors and image sides) in the background.
 
 use super::action::DiffSrc;
+use super::image_diff::{self, ImageDiff};
 use super::task::Task;
 use super::RepoTab;
-use crate::git::{self, FileDiff, Res};
+use crate::git::{self, DiffOpts, FileDiff, Res};
 use std::collections::BTreeSet;
 
-type Loaded = (FileDiff, Vec<Vec<crate::highlight::Spans>>);
+type Loaded = (FileDiff, Vec<Vec<crate::highlight::Spans>>, Option<ImageDiff>);
 
 pub struct DiffState {
     pub src: DiffSrc,
     pub file: Option<Res<FileDiff>>,
     /// Syntax colors per `[hunk][line]` (empty if unknown language).
     pub hl: Vec<Vec<crate::highlight::Spans>>,
+    /// Both sides of a changed image.
+    pub image: Option<ImageDiff>,
+    /// The options `file` was loaded with; `pending` = requested (they differ while a reload runs).
+    pub opts: DiffOpts,
+    pub pending: DiffOpts,
     task: Option<Task<Res<Loaded>>>,
     /// Picked change lines `(hunk, line)` for partial staging.
     pub picked: BTreeSet<(usize, usize)>,
@@ -31,19 +37,22 @@ impl RepoTab {
         let dir = self.dir.clone();
         let s = src.clone();
         let dark = ctx.global_style().visuals.dark_mode;
+        let (c, o) = (ctx.clone(), self.diff_opts);
         let task = Task::spawn(ctx, move || {
             let f = match &s {
-                DiffSrc::Worktree { change, staged } => git::worktree_diff(&dir, change, *staged),
-                DiffSrc::Commit { id, parent, change } => git::commit_diff(&dir, id, parent.as_deref(), change),
+                DiffSrc::Worktree { change, staged } => git::worktree_diff(&dir, change, *staged, o),
+                DiffSrc::Commit { id, parent, change } => git::commit_diff(&dir, id, parent.as_deref(), change, o),
             }?;
-            let hl = crate::highlight::highlight(&s.change().path, &f, dark);
-            Ok((f, hl))
+            let path = &s.change().path;
+            let image = (f.binary && f.lfs.is_none() && image_diff::is_image(path)).then(|| image_diff::load(&c, &dir, &s));
+            let hl = crate::highlight::highlight(path, &f, dark);
+            Ok((f, hl, image))
         });
-        let (keep, hl) = match self.diff.take().filter(|d| d.src == src) {
-            Some(d) => (d.file, d.hl),
-            None => (None, vec![]),
+        let (keep, hl, image, opts) = match self.diff.take().filter(|d| d.src == src) {
+            Some(d) => (d.file, d.hl, d.image, d.opts),
+            None => (None, vec![], None, o),
         };
-        self.diff = Some(DiffState { src, file: keep, hl, task: Some(task), picked: BTreeSet::new() });
+        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked: BTreeSet::new() });
     }
 
     pub(super) fn poll_diff(&mut self) {
@@ -51,10 +60,12 @@ impl RepoTab {
             && let Some(r) = Task::poll(&mut d.task)
         {
             d.picked.clear();
+            d.opts = d.pending;
             match r {
-                Ok((f, hl)) => {
+                Ok((f, hl, image)) => {
                     d.file = Some(Ok(f));
                     d.hl = hl;
+                    d.image = image;
                 }
                 Err(e) => d.file = Some(Err(e)),
             }

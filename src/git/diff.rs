@@ -156,13 +156,41 @@ fn parse_one(text: &str) -> FileDiff {
 
 const DIFF: [&str; 5] = ["diff", "--no-color", "--no-ext-diff", "--submodule=log", "-M"];
 
-pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
+/// How a diff is shown: `-w` and `-U<context>`. Line staging needs `ignore_ws` off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DiffOpts {
+    pub ignore_ws: bool,
+    pub context: u32,
+}
+
+impl Default for DiffOpts {
+    fn default() -> Self {
+        DiffOpts { ignore_ws: false, context: 3 }
+    }
+}
+
+impl DiffOpts {
+    /// Context that shows the whole file.
+    pub const FILE: u32 = 999_999;
+
+    fn args(self) -> Vec<String> {
+        let mut a = vec![format!("-U{}", self.context)];
+        if self.ignore_ws {
+            a.push("-w".into());
+        }
+        a
+    }
+}
+
+pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<FileDiff> {
     if c.code == '?' {
         let mut f = untracked_diff(dir, &c.path)?;
         f.lfs = super::lfs::pointer_diff(&f);
         return Ok(f);
     }
+    let opts = o.args();
     let mut args = DIFF.to_vec();
+    args.extend(opts.iter().map(String::as_str));
     if staged {
         args.push("--cached");
     }
@@ -177,11 +205,13 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool) -> Res<FileDiff> {
     Ok(f)
 }
 
-pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change) -> Res<FileDiff> {
+pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: DiffOpts) -> Res<FileDiff> {
+    let opts = o.args();
     let mut args = match parent {
         Some(p) => [&DIFF[..], &[p, id]].concat(),
         None => vec!["show", "--format=", "--no-color", "--no-ext-diff", "--submodule=log", id],
     };
+    args.extend(opts.iter().map(String::as_str));
     args.push("--");
     if let Some(o) = &c.old_path {
         args.push(o);
@@ -231,5 +261,28 @@ mod tests {
         let p = partial_patch(f, |h, _| h == 1, true).unwrap();
         assert!(p.ends_with("@@ -10,2 +10,3 @@\n x\n+y\n z\n"), "{p}");
         assert!(partial_patch(f, |_, _| false, false).is_none());
+    }
+
+    /// Real git: `-w` hides whitespace-only edits, `-U` widens the context.
+    #[test]
+    fn whitespace_and_context_options() {
+        let dir = std::env::temp_dir().join(format!("glasir-diffopts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        let body: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("f"), &body).unwrap();
+        g(&["add", "f"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "f"]);
+        std::fs::write(dir.join("f"), body.replace("line 2\n", "line  2\n").replace("line 10\n", "LINE 10\n")).unwrap();
+        let c = Change { path: "f".into(), old_path: None, code: 'M' };
+        let diff = |o| worktree_diff(&dir, &c, false, o).unwrap();
+        let changed = |f: &FileDiff| f.hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind == b'-').count();
+        assert_eq!(changed(&diff(DiffOpts::default())), 2);
+        assert_eq!(changed(&diff(DiffOpts { ignore_ws: true, ..Default::default() })), 1);
+        let whole = diff(DiffOpts { context: DiffOpts::FILE, ..Default::default() });
+        assert_eq!((whole.hunks.len(), whole.hunks[0].lines.len()), (1, 22));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

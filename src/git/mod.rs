@@ -17,7 +17,7 @@ mod url;
 
 pub type Res<T> = Result<T, String>;
 
-pub use diff::{FileDiff, Hunk, commit_diff, partial_patch, worktree_diff};
+pub use diff::{DiffOpts, FileDiff, Hunk, commit_diff, partial_patch, worktree_diff};
 #[cfg(test)]
 pub use diff::parse_diff;
 #[cfg(unix)]

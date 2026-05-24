@@ -9,6 +9,8 @@ license = "MIT"
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
 egui-phosphor = "0.14.0"
+# Already in the tree via eframe (png); image diffs add the other formats.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 keyring = "4.2.0"
 notify = "8"
 open = "5.4.4"
