@@ -166,6 +166,8 @@ pub fn state(git_dir: &Path) -> State {
         State::CherryPicking
     } else if has("REVERT_HEAD") {
         State::Reverting
+    } else if has("BISECT_LOG") {
+        State::Bisecting
     } else {
         State::Clean
     }

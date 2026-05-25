@@ -15,7 +15,8 @@ impl RepoTab {
         let open = self.diff.as_ref().map(|d| d.src.clone());
         let busy = self.busy().is_some();
 
-        if d.state != State::Clean {
+        // A bisect has its own banner above the graph.
+        if !matches!(d.state, State::Clean | State::Bisecting) {
             let (what, cmd) = match d.state {
                 State::Merging => ("Merge", "merge"),
                 State::Rebasing => ("Rebase", "rebase"),

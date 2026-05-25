@@ -2,6 +2,7 @@
 //! credential helpers (GHE SSO), LFS, signing and partial clones behave as in the terminal.
 //! Call sites use the flat `git::` names re-exported below. No egui here.
 
+mod bisect;
 mod diff;
 mod env;
 mod lfs;
@@ -17,6 +18,7 @@ mod url;
 
 pub type Res<T> = Result<T, String>;
 
+pub use bisect::{Bisect, bisect};
 pub use diff::{DiffOpts, FileDiff, Hunk, commit_diff, partial_patch, worktree_diff};
 #[cfg(test)]
 pub use diff::parse_diff;

@@ -97,6 +97,7 @@ pub enum State {
     Rebasing,
     CherryPicking,
     Reverting,
+    Bisecting,
     /// `git am` stopped on a patch.
     Applying,
 }

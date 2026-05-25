@@ -10,6 +10,7 @@
 //! shared text formatters (dates, initials). Reusable widgets live in `theme::glass`.
 
 mod app;
+mod bisect;
 mod command_log;
 mod diff_view;
 mod dialogs;

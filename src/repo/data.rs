@@ -22,6 +22,8 @@ pub struct RepoData {
     pub truncated: bool,
     pub status: Status,
     pub state: git::State,
+    /// Bisect progress while `state` is `Bisecting`.
+    pub bisect: Option<git::Bisect>,
     /// Row 0 is the uncommitted-changes pseudo commit.
     pub wip: bool,
     pub graph: Graph,
@@ -140,6 +142,10 @@ impl RepoData {
             .unwrap_or_else(|| "main".into())
     }
 
+    pub(super) fn load_bisect(&mut self, dir: &Path) {
+        self.bisect = (self.state == git::State::Bisecting).then(|| git::bisect(dir).ok()).flatten();
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build(
         log: Arc<Vec<Commit>>,
@@ -205,6 +211,7 @@ impl RepoData {
             truncated: false,
             status,
             state,
+            bisect: None,
             wip,
             graph,
             row_of,
@@ -246,6 +253,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.worktrees = Arc::new(worktrees);
     d.submodules = Arc::new(submodules);
     d.lfs = Arc::new(lfs);
+    d.load_bisect(dir);
     Ok(d)
 }
 
@@ -302,6 +310,39 @@ mod tests {
         let only = "only on origin".to_owned();
         assert!(msgs(View::default()).contains(&only));
         assert!(!msgs(hide(&["refs/remotes/origin/main"])).contains(&only));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Bisect from two ends to the first bad commit, as the banner's buttons do it.
+    #[test]
+    fn bisect_finds_first_bad_commit() {
+        let dir = scratch("bisect");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for i in 1..=12 {
+            commit(&dir, "f.txt", &format!("{i}{}\n", if i >= 8 { " bug" } else { "" }));
+        }
+        let culprit = sh(&dir, &["rev-parse", "HEAD~4"]).trim().to_owned();
+        let run = |args: &[&str]| exec(&dir, &Op::new("bisect", args)).unwrap();
+        run(&["bisect", "start", "HEAD", "HEAD~11"]);
+        let mut steps = 0;
+        let found = loop {
+            let d = load_all(&dir, 100, View::default()).unwrap();
+            assert_eq!(d.state, git::State::Bisecting);
+            let b = d.bisect.unwrap();
+            if let Some(f) = b.found() {
+                break f.to_owned();
+            }
+            assert!(b.left > 1, "{b:?}");
+            steps += 1;
+            let bad = std::fs::read_to_string(dir.join("f.txt")).unwrap().contains("bug");
+            run(&["bisect", if bad { "bad" } else { "good" }]);
+        };
+        assert_eq!(found, culprit);
+        assert!(steps <= 4, "{steps} steps");
+        run(&["bisect", "reset"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!((d.state, d.bisect, d.status.branch.as_deref()), (git::State::Clean, None, Some("main")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

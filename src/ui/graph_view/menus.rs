@@ -6,7 +6,7 @@ use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_check
 use crate::theme::{self, icon};
 use egui::Ui;
 
-pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) {
+pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut Vec<Action>) {
     let n = multi.len();
     for (kind, label) in [
         (MultiOp::CherryPick, format!("Cherry-pick {n} commits")),
@@ -28,6 +28,7 @@ pub(super) fn multi_menu(ui: &mut Ui, multi: &[String], acts: &mut Vec<Action>) 
     if ui.button("Copy SHAs").clicked() {
         acts.push(Action::Copy(multi.join("\n")));
     }
+    crate::ui::bisect::multi_item(ui, d, multi, acts);
 }
 fn patch_items(ui: &mut Ui, ids: &[String], acts: &mut Vec<Action>) {
     ui.separator();
@@ -192,6 +193,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
             }
         });
     }
+    crate::ui::bisect::commit_items(ui, d, c, acts);
     ui.separator();
     if ui.button("Copy commit SHA").clicked() {
         acts.push(Action::Copy(c.id.clone()));

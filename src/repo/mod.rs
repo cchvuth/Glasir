@@ -217,6 +217,7 @@ impl RepoTab {
             Some((log, refs, st, rm, gd, oh, (wt, sm, lfs))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
                 (d.worktrees, d.submodules, d.lfs) = (wt, sm, lfs);
+                d.load_bisect(&dir);
                 Ok(d)
             }
             None => load_all(&dir, limit, view),
@@ -255,11 +256,16 @@ impl RepoTab {
                         msgs.push(Msg { text: LFS_MISSING.into(), error: true });
                     }
                     let head = d.status.head.clone();
+                    // Bisect checked out the next candidate: select and centre it.
+                    let bisect_moved = d.state == git::State::Bisecting && self.data.as_ref().is_some_and(|o| o.status.head != head);
                     // Resolved or aborted elsewhere: the editor's markers are stale.
                     if self.merge.as_ref().is_some_and(|m| !d.status.conflicted.iter().any(|c| c.path == m.path)) {
                         self.merge = None;
                     }
                     self.data = Some(d);
+                    if bisect_moved && let Some(h) = &head {
+                        self.apply(ctx, Action::Jump(h.clone()));
+                    }
                     if self.sel.is_none() {
                         match (self.data.as_ref().is_some_and(|d| d.wip), head) {
                             (true, _) => self.sel = Some(Sel::Wip),

@@ -82,6 +82,9 @@ pub fn show(
     }
     let search = search.as_ref();
     keyboard_nav(ui, d, sel_row, scroll_to, acts);
+    if d.state == crate::git::State::Bisecting {
+        crate::ui::bisect::banner(ui, d, acts);
+    }
     let v = &d.view;
     if v.filtered() || v.first_parent {
         ui.horizontal(|ui| {
@@ -211,7 +214,7 @@ pub fn show(
                     }
                 }
                 resp.context_menu(|ui| match commit {
-                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, multi, acts),
+                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, d, multi, acts),
                     Some(c) => commit_menu(ui, d, c, acts),
                     None => wip_menu(ui, acts),
                 });
@@ -374,7 +377,19 @@ pub fn show(
                     }
                     Some(cm) => {
                         let text = if faded { text.gamma_multiply(0.35) } else { text };
-                        painter.with_clip_rect(msg_clip).text(pos2(x_msg + 8.0, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
+                        // Bisect: good / bad / skip marks, and the commit being tested.
+                        let mut x_text = x_msg + 8.0;
+                        if let Some(b) = &d.bisect
+                            && let Some(m) = b.mark(&cm.id).or_else(|| (head_id == Some(cm.id.as_str()) && b.found().is_none()).then_some("testing"))
+                        {
+                            let color = crate::ui::bisect::mark_color(m);
+                            let g = painter.layout_no_wrap(m.to_owned(), FontId::proportional(10.5), color);
+                            let tag = Rect::from_min_size(pos2(x_text, ty - 9.0), vec2(g.size().x + 12.0, 18.0));
+                            painter.rect_filled(tag, 9.0, color.gamma_multiply(0.2));
+                            painter.galley(tag.center() - g.size() / 2.0, g, color);
+                            x_text = tag.right() + 6.0;
+                        }
+                        painter.with_clip_rect(msg_clip).text(pos2(x_text, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
                         let small = FontId::proportional(12.0);
                         painter.with_clip_rect(Rect::from_x_y_ranges(x_author..=(x_date - 8.0).max(x_author), msg_clip.y_range())).text(
                             pos2(x_author + 8.0, ty),
