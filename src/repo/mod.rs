@@ -14,7 +14,9 @@
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
 //! - `tags`, `restore`, `spinoff`, `patch`: history tools (move/delete/push tags,
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
+//! - `absorb`: smart rewrite (staged hunks into their commits)
 
+pub mod absorb;
 mod action;
 mod ai_job;
 mod cleanup;
@@ -127,6 +129,9 @@ pub struct RepoTab {
     pub reflog: Option<reflog::Reflog>,
     /// A patch being exported: (text to copy, toast).
     patch_task: Option<Task<Res<(Option<String>, String)>>>,
+    /// Absorb preview (hunk -> target commit), shown as a dialog.
+    pub absorb: Option<absorb::Plan>,
+    absorb_task: Option<Task<Res<absorb::Plan>>>,
 }
 
 impl RepoTab {
@@ -180,6 +185,8 @@ impl RepoTab {
             fetch_failed: None,
             reflog: None,
             patch_task: None,
+            absorb: None,
+            absorb_task: None,
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -291,6 +298,7 @@ impl RepoTab {
         }
         self.poll_ai(ctx, msgs);
         self.poll_patch(ctx);
+        self.poll_absorb();
         self.poll_diff();
         self.poll_op(ctx, msgs);
     }
@@ -369,6 +377,7 @@ impl RepoTab {
                     Err(e) => self.notes.push(Msg { text: e, error: true }),
                 }
             }
+            Action::Absorb => self.start_absorb(ctx),
             Action::Rewrite { commit, act, message } => {
                 let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
                 match crate::repo::rebase::quick(&self.dir, &git_dir, &commit, act, message) {

@@ -105,6 +105,12 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Cleanup);
                         }
                     }
+                    // Smart ops: `absorb` (preview dialog).
+                    "absorb" => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.apply(&ctx.clone(), Action::Absorb);
+                        }
+                    }
                     q if q.starts_with("search:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let mut s = Search::open();

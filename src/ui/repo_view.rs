@@ -90,6 +90,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     dialogs::ai_dialog(t, &ctx, &mut acts);
     dialogs::drop_menu(t, &ctx, &mut acts);
     dialogs::cleanup_dialog(t, &ctx, &mut acts);
+    dialogs::absorb_dialog(t, &ctx, &mut acts);
     dialogs::choice_dialog(t, &ctx, &mut acts);
     for a in acts {
         if let Action::View(v) = &a {

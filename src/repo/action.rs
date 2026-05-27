@@ -80,6 +80,8 @@ pub enum Action {
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
     AmendInto(String),
+    /// Plan absorbing the staged hunks into the commits they belong to (preview first).
+    Absorb,
     OpenTab(String),
     /// Change the graph filter (hide / solo / first-parent) and reload.
     View(View),

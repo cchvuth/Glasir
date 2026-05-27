@@ -136,12 +136,24 @@ pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, r
         let (os, ns) = if reverse {
             (h.new_start as i64 + delta, h.new_start as i64)
         } else {
-            (h.old_start as i64, h.old_start as i64 + delta)
+            // A pure insertion (`-U0`) goes after line `old_start`: `git apply` places it by the new start.
+            (h.old_start as i64, h.old_start as i64 + delta + (old_n == 0) as i64)
         };
         delta += if reverse { old_n - new_n } else { new_n - old_n };
         out += &format!("@@ -{os},{old_n} +{ns},{new_n} @@\n{body}");
     }
     any.then_some(out)
+}
+
+/// Each file of a `--no-renames` patch with its path from the `--name-only -z`
+/// list of the same diff. A typechange (file <-> symlink) is two patches of one
+/// listed path, a deletion then a creation: the first gets `(path, true)`, the second `None`.
+pub fn file_paths<'a>(files: &[FileDiff], names: &'a str) -> Vec<Option<(&'a str, bool)>> {
+    let mut names = names.split('\0');
+    let id = |i: usize| files.get(i).and_then(|f| f.header.first());
+    (0..files.len())
+        .map(|i| (i == 0 || id(i - 1) != id(i)).then(|| (names.next().unwrap_or_default(), id(i + 1) == id(i))))
+        .collect()
 }
 
 /// One file's diff; submodules come as `--submodule=log` summaries.
@@ -261,6 +273,18 @@ mod tests {
         let p = partial_patch(f, |h, _| h == 1, true).unwrap();
         assert!(p.ends_with("@@ -10,2 +10,3 @@\n x\n+y\n z\n"), "{p}");
         assert!(partial_patch(f, |_, _| false, false).is_none());
+        // -U0 insertions after line 5 and 10: new starts as git writes them.
+        let u0 = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -5,0 +6 @@\n+x\n@@ -10,0 +12 @@\n+y\n";
+        let p = partial_patch(&parse_diff(u0)[0], |_, _| true, false).unwrap();
+        assert!(p.ends_with("@@ -5,0 +6,1 @@\n+x\n@@ -10,0 +12,1 @@\n+y\n"), "{p}");
+    }
+
+    #[test]
+    fn typechange_paths() {
+        let d = "diff --git a/l b/l\ndeleted file mode 100644\n--- a/l\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n\
+                 diff --git a/l b/l\nnew file mode 120000\n--- /dev/null\n+++ b/l\n@@ -0,0 +1 @@\n+m\n\
+                 diff --git a/z b/z\n--- a/z\n+++ b/z\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(file_paths(&parse_diff(d), "l\0z\0"), [Some(("l", true)), None, Some(("z", false))]);
     }
 
     /// Real git: `-w` hides whitespace-only edits, `-U` widens the context.

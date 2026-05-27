@@ -1,5 +1,5 @@
 //! Per-repo modal dialogs and popups: value prompt, confirmation, AI result,
-//! branch cleanup, failed-op choices and the branch drop menu. Each reads its
+//! branch cleanup, absorb preview, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
 use crate::ai;
@@ -210,6 +210,53 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
     });
     if close {
         t.cleanup = None;
+    }
+}
+
+/// Absorb preview: each staged hunk and the commit it goes to, or why it stays staged.
+pub(super) fn absorb_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
+    let (Some(p), Some(d)) = (&t.absorb, &t.data) else { return };
+    let mut close = false;
+    egui::Modal::new(Id::new("absorb")).show(ctx, |ui| {
+        ui.set_width(640.0);
+        ui.heading(format!("{} Absorb staged changes", icon::ARROWS_IN));
+        ui.label(
+            RichText::new("Each hunk is folded into the unpushed commit that last changed its lines. Undo with ⌘Z.").small().color(theme::dim(ui)),
+        );
+        ui.add_space(6.0);
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            egui::Grid::new("absorb_rows").num_columns(3).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
+                for r in &p.rows {
+                    ui.label(RichText::new(&r.path).strong());
+                    ui.label(RichText::new(&r.what).monospace().small().color(theme::dim(ui)));
+                    match &r.target {
+                        Ok(i) => {
+                            let (id, summary) = &p.cands[*i];
+                            ui.add(egui::Label::new(RichText::new(format!("{}  {} {summary}", icon::ARROW_RIGHT, &id[..7.min(id.len())])).color(theme::ADD)).truncate());
+                        }
+                        Err(why) => {
+                            ui.add(egui::Label::new(RichText::new(format!("stays staged: {why}")).italics().color(theme::dim(ui))).truncate());
+                        }
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        ui.add_space(8.0);
+        let (n, hunks) = (p.targets().len(), p.rows.iter().filter(|r| r.target.is_ok()).count());
+        ui.horizontal(|ui| {
+            let s = |k: usize| if k == 1 { "" } else { "s" };
+            if theme::primary(ui, n > 0, &format!("Absorb {hunks} hunk{} into {n} commit{}", s(hunks), s(n)), 250.0).clicked() {
+                acts.push(p.op(&t.dir, &d.git_dir).map_or_else(Action::Error, Action::Git));
+                close = true;
+            }
+            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                close = true;
+            }
+        });
+    });
+    if close {
+        t.absorb = None;
     }
 }
 

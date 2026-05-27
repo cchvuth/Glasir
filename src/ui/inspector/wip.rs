@@ -50,6 +50,15 @@ impl RepoTab {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Commit").small().strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let absorb = !s.staged.is_empty() && d.state == State::Clean;
+                    if ui
+                        .add_enabled(absorb, egui::Button::new(format!("{} Absorb", icon::ARROWS_IN)).small())
+                        .on_hover_text("Turn staged hunks into fixups of the unpushed commits they belong to (preview first)")
+                        .on_disabled_hover_text("Stage changes first (not during a merge or rebase)")
+                        .clicked()
+                    {
+                        acts.push(Action::Absorb);
+                    }
                     if generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));

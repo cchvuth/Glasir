@@ -94,6 +94,9 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         v.push(git("Pop stash", op("Pop stash", &["stash", "pop"])));
         v.push(git("Stage all changes", Action::Git(Op::new("Stage all", &["add", "-A"]).light())));
         v.push(git("Unstage all changes", Action::Git(Op::new("Unstage all", &["reset", "-q"]).light())));
+        if !d.status.staged.is_empty() {
+            v.push(item(icon::ARROWS_IN, "Absorb staged changes…", "into the commits they belong to", Cmd::Tab(Action::Absorb)));
+        }
         v.push(item(icon::SPARKLE, "Write commit message with AI", "from staged changes", Cmd::Tab(Action::Ai(crate::ai::Purpose::CommitMessage))));
         v.push(item(icon::SPARKLE, "Stash with AI message", "", Cmd::Tab(Action::Ai(crate::ai::Purpose::StashMessage))));
         if let Some(l) = t.undo_label() {
