@@ -105,10 +105,16 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Cleanup);
                         }
                     }
-                    // Smart ops: `absorb` (preview dialog).
+                    // Smart ops: `absorb` (preview dialog), `cherry:<branch>` (its commits not in HEAD, editor).
                     "absorb" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.apply(&ctx.clone(), Action::Absorb);
+                        }
+                    }
+                    q if q.starts_with("cherry:") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            let ids = git::run(&t.dir, &["rev-list", &format!("HEAD..{}", &q[7..])]).unwrap_or_default();
+                            t.apply(&ctx.clone(), Action::MultiOp(crate::repo::MultiOp::CherryPickEdit, ids.lines().map(String::from).collect()));
                         }
                     }
                     q if q.starts_with("search:") => {

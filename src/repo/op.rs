@@ -288,6 +288,13 @@ impl RepoTab {
         let git_dir = d.git_dir.clone();
         let n = ids.len();
         let op = match kind {
+            MultiOp::CherryPickEdit => {
+                match crate::repo::rebase::Editor::cherry_pick(&self.dir, &ids) {
+                    Ok(ed) => (self.diff, self.merge, self.rebase) = (None, None, Some(ed)),
+                    Err(e) => self.notes.push(Msg { text: e, error: true }),
+                }
+                return;
+            }
             MultiOp::CherryPick => {
                 let mut args = vec!["cherry-pick"];
                 args.extend(ids.iter().rev().map(String::as_str)); // oldest first

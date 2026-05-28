@@ -1,7 +1,8 @@
 //! Interactive rebase engine. Builds a todo list ([`Editor`]) and hands it to
 //! git's own `rebase -i` (via `sequence.editor`) as an [`Op`], so conflicts,
 //! --continue/--abort and hooks behave exactly like on the command line; plus
-//! one-shot rewrites (quick, multi, amend_into). The window is `crate::ui::rebase_editor`.
+//! one-shot rewrites (quick, multi, amend_into) and interactive
+//! cherry-pick ([`Editor::cherry_pick`]). The window is `crate::ui::rebase_editor`.
 
 use crate::git::{self, Res};
 use super::{Op, Undo};
@@ -29,6 +30,8 @@ pub struct Editor {
     pub label: String,
     pub items: Vec<Item>,
     pub(crate) sel: usize,
+    /// Cherry-pick mode: `items` come from elsewhere and are picked onto HEAD (`base`).
+    pub cherry: bool,
     /// HEAD (symbolic ref and commit) when loaded; the todo is only valid for it.
     head: String,
     dir: std::path::PathBuf,
@@ -42,7 +45,18 @@ impl Editor {
         if items.is_empty() {
             return Err(format!("No commits after {label} on this branch."));
         }
-        Ok(Editor { base: base.into(), label: label.into(), items, sel: 0, head: head_state(dir), dir: dir.into() })
+        Ok(Editor { base: base.into(), label: label.into(), items, sel: 0, cherry: false, head: head_state(dir), dir: dir.into() })
+    }
+
+    /// Cherry-pick `ids` (newest first) onto HEAD with pick/reword/squash/drop and
+    /// reordering: an interactive rebase of HEAD onto itself whose todo picks them.
+    pub fn cherry_pick(dir: &Path, ids: &[String]) -> Res<Editor> {
+        let head = git::run(dir, &["rev-parse", "HEAD"])?.trim().to_owned();
+        let label = git::run(dir, &["symbolic-ref", "-q", "--short", "HEAD"]).map_or_else(|_| "HEAD".into(), |b| b.trim().to_owned());
+        let mut args = vec!["--no-walk=unsorted"];
+        args.extend(ids.iter().map(String::as_str));
+        let items = items(dir, &args)?;
+        Ok(Editor { base: head, label, items, sel: 0, cherry: true, head: head_state(dir), dir: dir.into() })
     }
 
     pub(crate) fn problem(&self) -> Option<&'static str> {
@@ -78,8 +92,17 @@ impl Editor {
         let path = git_dir.join("glasir-rebase-todo");
         std::fs::write(&path, todo).map_err(|e| e.to_string())?;
         let editor = format!("sequence.editor=cat {} >", sh_quote(&path));
-        let args = ["-c", &editor, "-c", "core.editor=true", "rebase", "-i", &self.base];
-        Ok(Op::new(format!("Rebase onto {}", self.label), &args).undo(Undo::Keep))
+        let label = match self.cherry {
+            true => format!("Cherry-pick {} commits", self.items.iter().filter(|i| i.act != Act::Drop).count()),
+            false => format!("Rebase onto {}", self.label),
+        };
+        // Cherry-picking onto HEAD carries uncommitted work along, like a cherry-pick would.
+        let mut args = vec!["-c", &editor, "-c", "core.editor=true", "rebase", "-i"];
+        if self.cherry {
+            args.push("--autostash");
+        }
+        args.push(&self.base);
+        Ok(Op::new(label, &args).undo(Undo::Keep))
     }
 }
 
@@ -206,7 +229,7 @@ mod tests {
             .enumerate()
             .map(|(i, &act)| Item { id: format!("c{i}"), message: format!("msg {i}\n\nbody"), author: "a".into(), act })
             .collect();
-        Editor { base: "base".into(), label: "base".into(), items, sel: 0, head: String::new(), dir: Default::default() }
+        Editor { base: "base".into(), label: "base".into(), items, sel: 0, cherry: false, head: String::new(), dir: Default::default() }
     }
 
     #[test]
@@ -333,6 +356,36 @@ mod tests {
         assert_eq!(g2(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c1"]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// Foreign commits picked onto HEAD reordered, reworded and dropped in one rebase.
+    #[test]
+    fn interactive_cherry_pick() {
+        let (dir, g) = repo("cherry");
+        g(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+        for f in ["s1", "s2", "s3"] {
+            std::fs::write(dir.join(f), f).unwrap();
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", f]);
+        }
+        let side: Vec<String> = g(&["rev-list", "-3", "HEAD"]).lines().map(String::from).collect(); // s3, s2, s1
+        g(&["checkout", "-q", "main"]);
+        let mut e = Editor::cherry_pick(&dir, &side).unwrap();
+        assert_eq!((e.items.len(), e.items[0].message.as_str(), e.label.as_str()), (3, "s3", "main"));
+        e.items.swap(0, 2); // newest first: s1, s2, s3 -> s1 is applied last
+        e.items[0].act = Act::Reword;
+        e.items[0].message = "s1 better".into();
+        e.items[1].act = Act::Drop;
+        let op = e.op(&git::git_dir(&dir).unwrap()).unwrap();
+        assert_eq!(op.label, "Cherry-pick 2 commits");
+        std::fs::write(dir.join("a"), "local edit\n").unwrap(); // carried along (autostash)
+        g(&["add", "a"]);
+        run_op(&dir, &op);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "local edit\n");
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["s1 better", "s3", "c3", "c2", "c1"]);
+        assert!(!dir.join("s2").exists());
+        assert_eq!(g(&["rev-parse", "side"]).trim(), side[0]); // the source branch is untouched
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

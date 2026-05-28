@@ -10,6 +10,7 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut
     let n = multi.len();
     for (kind, label) in [
         (MultiOp::CherryPick, format!("Cherry-pick {n} commits")),
+        (MultiOp::CherryPickEdit, format!("{} Cherry-pick interactively…", icon::CHERRIES)),
         (MultiOp::Squash, format!("Squash {n} commits into one")),
         (MultiOp::Revert, format!("Revert {n} commits")),
     ] {

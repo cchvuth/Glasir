@@ -17,6 +17,8 @@ pub enum Sel {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MultiOp {
     CherryPick,
+    /// Open them in the rebase editor in cherry-pick mode.
+    CherryPickEdit,
     Revert,
     Squash,
     Drop,

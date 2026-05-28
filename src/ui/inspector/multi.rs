@@ -15,6 +15,7 @@ impl RepoTab {
         ui.horizontal_wrapped(|ui| {
             for (kind, label, hint) in [
                 (MultiOp::CherryPick, format!("{} Cherry-pick", icon::GIT_COMMIT), "Apply them onto the current branch, oldest first"),
+                (MultiOp::CherryPickEdit, format!("{} Cherry-pick…", icon::CHERRIES), "Pick, reword, squash, drop or reorder them, then apply onto the current branch"),
                 (MultiOp::Squash, format!("{} Squash", icon::STACK), "Combine consecutive commits of the current branch into one"),
                 (MultiOp::Revert, format!("{} Revert", icon::ARROW_COUNTER_CLOCKWISE), "Create commits that undo them"),
                 (MultiOp::Drop, format!("{} Drop", icon::TRASH), "Remove them from the current branch"),
