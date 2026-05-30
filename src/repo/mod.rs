@@ -14,7 +14,7 @@
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
 //! - `tags`, `restore`, `spinoff`, `patch`: history tools (move/delete/push tags,
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
-//! - `absorb`: smart rewrite (staged hunks into their commits)
+//! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
 
 pub mod absorb;
 mod action;
@@ -36,6 +36,7 @@ pub mod reflog;
 pub mod restore;
 mod search;
 pub mod spinoff;
+mod split;
 pub mod tags;
 mod task;
 #[cfg(test)]
@@ -132,6 +133,8 @@ pub struct RepoTab {
     /// Absorb preview (hunk -> target commit), shown as a dialog.
     pub absorb: Option<absorb::Plan>,
     absorb_task: Option<Task<Res<absorb::Plan>>>,
+    /// A guided commit split in progress (banner in the WIP panel).
+    pub split: Option<split::Split>,
 }
 
 impl RepoTab {
@@ -187,6 +190,7 @@ impl RepoTab {
             patch_task: None,
             absorb: None,
             absorb_task: None,
+            split: None,
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -378,6 +382,8 @@ impl RepoTab {
                 }
             }
             Action::Absorb => self.start_absorb(ctx),
+            Action::Split(commit) => self.start_split(ctx, commit),
+            Action::SplitEnd { abort } => self.end_split(ctx, abort),
             Action::Rewrite { commit, act, message } => {
                 let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
                 match crate::repo::rebase::quick(&self.dir, &git_dir, &commit, act, message) {

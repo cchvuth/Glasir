@@ -159,6 +159,10 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
                 acts.push(prompt(format!("New message for {short}"), c.summary.clone(), op));
                 ui.close();
             }
+            if ui.button(format!("{} Split this commit…", icon::SCISSORS)).on_hover_text("Uncommit it, then commit its parts one by one").clicked() {
+                acts.push(Action::Split(c.id.clone()));
+                ui.close();
+            }
             if ui.button("Squash into parent").clicked() {
                 acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Squash, message: None });
                 ui.close();

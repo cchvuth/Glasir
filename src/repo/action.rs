@@ -84,6 +84,10 @@ pub enum Action {
     AmendInto(String),
     /// Plan absorbing the staged hunks into the commits they belong to (preview first).
     Absorb,
+    /// Uncommit this commit and guide splitting it into several.
+    Split(String),
+    /// Finish the guided split (`rebase --continue`), or abort it.
+    SplitEnd { abort: bool },
     OpenTab(String),
     /// Change the graph filter (hide / solo / first-parent) and reload.
     View(View),

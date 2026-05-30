@@ -105,16 +105,22 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Cleanup);
                         }
                     }
-                    // Smart ops: `absorb` (preview dialog), `cherry:<branch>` (its commits not in HEAD, editor).
+                    // Smart ops: `absorb` (preview dialog), `split:<rev>`, `cherry:<branch>` (its commits not in HEAD, editor).
                     "absorb" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.apply(&ctx.clone(), Action::Absorb);
                         }
                     }
-                    q if q.starts_with("cherry:") => {
+                    q if q.starts_with("split:") || q.starts_with("cherry:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
-                            let ids = git::run(&t.dir, &["rev-list", &format!("HEAD..{}", &q[7..])]).unwrap_or_default();
-                            t.apply(&ctx.clone(), Action::MultiOp(crate::repo::MultiOp::CherryPickEdit, ids.lines().map(String::from).collect()));
+                            let (kind, rev) = q.split_once(':').unwrap();
+                            let a = if kind == "split" {
+                                Action::Split(git::run(&t.dir, &["rev-parse", rev]).unwrap_or_default().trim().into())
+                            } else {
+                                let ids = git::run(&t.dir, &["rev-list", &format!("HEAD..{rev}")]).unwrap_or_default();
+                                Action::MultiOp(crate::repo::MultiOp::CherryPickEdit, ids.lines().map(String::from).collect())
+                            };
+                            t.apply(&ctx.clone(), a);
                         }
                     }
                     q if q.starts_with("search:") => {

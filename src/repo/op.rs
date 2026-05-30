@@ -259,6 +259,15 @@ impl RepoTab {
                         msgs.push(Msg { text: format!("{} ✔ changes backed up", op.label), error: false });
                     }
                 }
+                // A guided split ends (or never started): see `split.rs`.
+                match (op.label.as_str(), res.is_ok()) {
+                    (super::split::FINISH, true) => self.finish_split(),
+                    (super::split::FINISH, false) => self.split = None,
+                    (l, false) if l.starts_with("Split ") => self.split = None,
+                    // Show the WIP panel with the uncommitted parts (selected on reload).
+                    (l, true) if l.starts_with("Split ") => self.sel = None,
+                    _ => {}
+                }
                 self.reload(ctx, !op.light);
             }
             Done::Undo(was_undo, res) => {

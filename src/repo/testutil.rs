@@ -26,3 +26,15 @@ pub(super) fn commit(dir: &Path, file: &str, text: &str) {
     sh(dir, &["add", file]);
     sh(dir, &["commit", "-q", "-m", text]);
 }
+
+/// Polls until the running op and the reload after it are done.
+pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) {
+    for _ in 0..1000 {
+        t.poll(ctx, &mut vec![]);
+        if t.running.is_none() && !t.loading() && t.data.is_some() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("op didn't finish");
+}

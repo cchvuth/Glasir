@@ -9,6 +9,26 @@ use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
 impl RepoTab {
+    /// Guided split: Continue / Abort, above whatever the inspector shows.
+    pub(super) fn split_banner(&self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        let Some(sp) = &self.split else { return };
+        let busy = self.busy().is_some();
+        egui::Frame::new().fill(theme::accent().gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(format!("{} Splitting {}", icon::SCISSORS, &sp.id[..7.min(sp.id.len())])).strong());
+            ui.label("Stage a part and commit it, repeat, then Continue.");
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!busy, egui::Button::new("Continue")).on_hover_text("Replay the rest of the branch on top of the parts").clicked() {
+                    acts.push(Action::SplitEnd { abort: false });
+                }
+                if ui.add_enabled(!busy, egui::Button::new("Abort")).on_hover_text("Put the original commit back").clicked() {
+                    acts.push(Action::SplitEnd { abort: true });
+                }
+            });
+        });
+        ui.add_space(6.0);
+    }
+
     pub(super) fn wip_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let Some(d) = &self.data else { return };
         let s = &d.status;
@@ -16,7 +36,8 @@ impl RepoTab {
         let busy = self.busy().is_some();
 
         // A bisect has its own banner above the graph.
-        if !matches!(d.state, State::Clean | State::Bisecting) {
+        // A guided split has its own banner (`split_banner`), shown for any selection.
+        if self.split.is_none() && !matches!(d.state, State::Clean | State::Bisecting) {
             let (what, cmd) = match d.state {
                 State::Merging => ("Merge", "merge"),
                 State::Rebasing => ("Rebase", "rebase"),

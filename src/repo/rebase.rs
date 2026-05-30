@@ -1,7 +1,7 @@
 //! Interactive rebase engine. Builds a todo list ([`Editor`]) and hands it to
 //! git's own `rebase -i` (via `sequence.editor`) as an [`Op`], so conflicts,
 //! --continue/--abort and hooks behave exactly like on the command line; plus
-//! one-shot rewrites (quick, multi, amend_into) and interactive
+//! one-shot rewrites (quick, multi, amend_into, split) and interactive
 //! cherry-pick ([`Editor::cherry_pick`]). The window is `crate::ui::rebase_editor`.
 
 use crate::git::{self, Res};
@@ -15,6 +15,8 @@ pub enum Act {
     Squash,
     Fixup,
     Drop,
+    /// Stop after picking (used by `split`; not offered in the editor).
+    Edit,
 }
 
 pub struct Item {
@@ -78,6 +80,7 @@ impl Editor {
         for (n, it) in self.items.iter().enumerate().rev() {
             let verb = match it.act {
                 Act::Pick | Act::Reword => "pick",
+                Act::Edit => "edit",
                 Act::Squash => "squash",
                 Act::Fixup => "fixup",
                 Act::Drop => "drop",
@@ -203,6 +206,22 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     Ok(Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &format!("{commit}^")])
         .undo(Undo::Keep))
+}
+
+/// Uncommit `commit` so it can be split: HEAD is just reset; an older commit
+/// gets a rebase that stops there (`edit`), then the reset. `rebase --continue`
+/// replays the rest once the parts are committed.
+pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
+    let short = &commit[..commit.len().min(7)];
+    if is_head {
+        return Ok(Op::new(format!("Split {short}"), &["reset", "-q", "HEAD^"]).undo(Undo::Mixed));
+    }
+    let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).map_err(|_| "The root commit can't be split.".to_string())?;
+    let mut ed = Editor::load(dir, base.trim(), short)?;
+    ed.items.iter_mut().find(|i| i.id == commit).ok_or("Commit is not on the current branch.")?.act = Act::Edit;
+    let mut op = ed.op(git_dir)?.then(&["reset", "-q", "HEAD^"]);
+    op.label = format!("Split {short}");
+    Ok(op)
 }
 
 /// `refs/heads/x <sha>` (or just the sha when detached).
@@ -385,6 +404,39 @@ mod tests {
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["s1 better", "s3", "c3", "c2", "c1"]);
         assert!(!dir.join("s2").exists());
         assert_eq!(g(&["rev-parse", "side"]).trim(), side[0]); // the source branch is untouched
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Split an older commit (rebase stops there, changes uncommitted) and HEAD.
+    #[test]
+    fn split_commit() {
+        let (dir, g) = repo("split");
+        for f in ["x", "y"] {
+            std::fs::write(dir.join(f), f).unwrap();
+        }
+        g(&["add", "x", "y"]);
+        g(&["commit", "-q", "-m", "x and y"]);
+        std::fs::write(dir.join("z"), "z").unwrap();
+        g(&["add", "z"]);
+        g(&["commit", "-q", "-m", "z"]);
+        let gd = git::git_dir(&dir).unwrap();
+        let xy = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        run_op(&dir, &split(&dir, &gd, &xy, false).unwrap());
+        assert_eq!(git::state(&gd), git::State::Rebasing);
+        assert_eq!(g(&["log", "-1", "--format=%s"]).trim(), "c3");
+        assert!(g(&["status", "--porcelain"]).contains("?? x"));
+        for f in ["x", "y"] {
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", f]);
+        }
+        g(&["-c", "core.editor=true", "rebase", "--continue"]);
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["z", "y", "x", "c3", "c2", "c1"]);
+        // HEAD: just a reset, no rebase.
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        run_op(&dir, &split(&dir, &gd, &head, true).unwrap());
+        assert_eq!(git::state(&gd), git::State::Clean);
+        assert!(g(&["status", "--porcelain"]).contains("?? z"));
+        assert!(split(&dir, &gd, &g(&["rev-list", "--max-parents=0", "HEAD"]).trim().to_owned(), false).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

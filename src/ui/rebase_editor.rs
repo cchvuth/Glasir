@@ -84,7 +84,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                         let color = match a {
                             Act::Drop => theme::DEL,
                             Act::Squash | Act::Fixup => theme::MOD,
-                            Act::Reword => theme::REN,
+                            Act::Reword | Act::Edit => theme::REN,
                             Act::Pick => theme::ADD,
                         };
                         let text = if it.act == a { RichText::new(label).strong().color(color) } else { RichText::new(label).color(theme::dim(ui)) };

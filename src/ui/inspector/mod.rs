@@ -14,6 +14,7 @@ use egui::{Sense, Ui};
 
 impl RepoTab {
     pub fn details(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+        self.split_banner(ui, acts);
         if self.multi.len() > 1 {
             return self.multi_panel(ui, acts);
         }
