@@ -11,7 +11,13 @@ const MAX_CONTEXT: usize = 1_500_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Purpose {
-    CommitMessage,
+    /// `amend`: the message for HEAD's changes plus the staged ones.
+    CommitMessage { amend: bool },
+    /// What the uncommitted changes (staged, unstaged, untracked) do.
+    ExplainWip,
+    /// Commit Composer: split all uncommitted changes into a commit plan (JSON).
+    /// The draft is the numbered change units (`repo::compose`).
+    Compose,
     Explain(String),
     PullRequest { branch: String, base: String },
     StashMessage,
@@ -23,7 +29,9 @@ pub enum Purpose {
 impl Purpose {
     pub fn title(&self) -> String {
         match self {
-            Purpose::CommitMessage => "Commit message".into(),
+            Purpose::CommitMessage { .. } => "Commit message".into(),
+            Purpose::ExplainWip => "Working changes".into(),
+            Purpose::Compose => "Compose commits".into(),
             Purpose::Explain(id) => format!("Explain {}", &id[..id.len().min(7)]),
             Purpose::PullRequest { branch, .. } => format!("Pull request for {branch}"),
             Purpose::StashMessage => "Stash".into(),
@@ -102,22 +110,54 @@ fn parent_or_empty(dir: &Path, rev: &str) -> Res<String> {
     }
 }
 
+/// The Commit Composer's reply: `{"commits": [{"message", "units": [ids]}]}`.
+fn compose_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "commits": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "message": { "type": "string" },
+                        "units": { "type": "array", "items": { "type": "integer" } }
+                    },
+                    "required": ["message", "units"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["commits"],
+        "additionalProperties": false
+    })
+}
+
 const SYSTEM: &str = "You are an expert software engineer embedded in a Git client. \
 Follow the requested output format exactly. Never wrap the answer in code fences and never add a preamble.";
 
 fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static str)> {
     Ok(match purpose {
-        Purpose::CommitMessage => {
-            let diff = diff_with_stat(dir, &["--cached"])?;
+        Purpose::CommitMessage { amend } => {
+            let base = if *amend { Some(parent_or_empty(dir, "HEAD")?) } else { None };
+            let mut range = vec!["--cached"];
+            range.extend(base.as_deref());
+            let diff = diff_with_stat(dir, &range)?;
             if diff.trim().is_empty() {
                 return Err("Stage some changes first.".into());
             }
+            let what = if *amend {
+                let old = git::run(dir, &["log", "-1", "--format=%B"]).unwrap_or_default();
+                format!("the amended last commit; it replaces the commit below and contains its changes plus the newly staged ones.\nThe commit being amended:\n{}\n", old.trim())
+            } else {
+                "the staged changes below.".into()
+            };
             let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
             let branch = git::run(dir, &["branch", "--show-current"]).unwrap_or_default();
             let draft = if draft.trim().is_empty() { String::new() } else { format!("\nThe author's draft (improve it, keep its intent):\n{draft}\n") };
             (
                 format!(
-                    "Write the commit message for the staged changes below.\n\
+                    "Write the commit message for {what}\n\
                      Format: a summary line in the imperative mood, at most 72 characters. If the change needs explaining, \
                      add a blank line and a short body (wrapped at 72) on what changed and why. \
                      Match the conventions of this repository's recent commits (e.g. prefixes like `feat:` or `area:` if they use them).\n\
@@ -169,6 +209,36 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
                 "medium",
             )
         }
+        Purpose::ExplainWip => {
+            let diff = diff_with_stat(dir, &["HEAD"])?;
+            let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+            (
+                format!(
+                    "Explain these uncommitted changes to the developer who made them, as a reviewer would: \
+                     start with a 1-3 sentence summary of what they do together, then the key changes as short bullet points (\"- \"), \
+                     then anything that looks unfinished, risky or accidental (debug code, stray files, missing pieces). Plain text, no headings.\n\
+                     \nUntracked files (contents not shown):\n{untracked}\nChanges (staged and unstaged, against HEAD):\n{diff}"
+                ),
+                "medium",
+            )
+        }
+        Purpose::Compose => {
+            if draft.len() > MAX_CONTEXT {
+                return Err(format!("These changes are too large to send to Claude ({} KB, limit {} KB).", draft.len() / 1024, MAX_CONTEXT / 1024));
+            }
+            let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
+            (
+                format!(
+                    "Split these uncommitted changes into a sequence of small, focused, logical commits, as a careful engineer would. \
+                     The changes are numbered units (diff hunks, or whole files). Plan the commits in the order they should be made \
+                     (foundations first), and give each one a commit message: a summary line in the imperative mood (at most 72 characters), \
+                     plus a blank line and a short body only if the change needs explaining. Match the conventions of the recent commits.\n\
+                     Every unit must appear in exactly one commit; keep hunks that only make sense together in the same commit.\n\
+                     \nRecent commit subjects:\n{recent}\nUnits:\n{draft}"
+                ),
+                "medium",
+            )
+        }
         Purpose::StashMessage => {
             let diff = diff_with_stat(dir, &["HEAD"])?;
             let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
@@ -215,8 +285,9 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
     let ctx = ctx.clone();
     let p = purpose.clone();
     std::thread::spawn(move || {
+        let schema = (p == Purpose::Compose).then(compose_schema);
         let res = build(&dir, &p, &draft).and_then(|(prompt, effort)| {
-            complete(&cfg, need_token()?, SYSTEM, &prompt, effort, &mut |t| {
+            complete(&cfg, need_token()?, SYSTEM, &prompt, effort, schema.as_ref(), &mut |t| {
                 ctx.request_repaint();
                 tx.send(Ev::Text(t)).is_ok()
             })
@@ -230,7 +301,7 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
 /// Quick round-trip used by Settings → Test.
 pub fn test(cfg: &Config) -> Res<String> {
     let mut out = String::new();
-    complete(cfg, need_token()?, SYSTEM, "Reply with exactly: OK", "low", &mut |t| {
+    complete(cfg, need_token()?, SYSTEM, "Reply with exactly: OK", "low", None, &mut |t| {
         out += &t;
         true
     })?;

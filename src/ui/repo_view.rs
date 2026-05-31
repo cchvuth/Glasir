@@ -14,6 +14,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let ctx = ui.ctx().clone();
     let mut acts = vec![];
     t.ai_cfg.clone_from(&s.ai);
+    crate::ai::set_enabled(s.ai.enabled);
     egui::Panel::top("toolbar")
         .frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 4, bottom: 8 }))
         .show(ui, |ui| toolbar(ui, t, s, &mut acts));
@@ -91,6 +92,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     dialogs::drop_menu(t, &ctx, &mut acts);
     dialogs::cleanup_dialog(t, &ctx, &mut acts);
     dialogs::absorb_dialog(t, &ctx, &mut acts);
+    super::compose::compose_dialog(t, &ctx, &mut acts);
     dialogs::choice_dialog(t, &ctx, &mut acts);
     for a in acts {
         if let Action::View(v) = &a {

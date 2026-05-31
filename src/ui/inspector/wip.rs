@@ -65,7 +65,8 @@ impl RepoTab {
             ui.add_space(6.0);
         }
 
-        let generating = self.ai_busy() == Some(&Purpose::CommitMessage);
+        let generating = matches!(self.ai_busy(), Some(Purpose::CommitMessage { .. }));
+        let ai_on = crate::ai::enabled();
         let mut commit = false;
         egui::Panel::bottom("commit_box").frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -80,16 +81,21 @@ impl RepoTab {
                     {
                         acts.push(Action::Absorb);
                     }
-                    if generating {
+                    if !ai_on {
+                    } else if generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
                     } else if ui
-                        .add_enabled(!s.staged.is_empty(), egui::Button::new(format!("{} AI message", icon::SPARKLE)).small())
-                        .on_hover_text("Write the commit message from the staged changes with Claude")
+                        .add_enabled(!s.staged.is_empty() || self.amend, egui::Button::new(format!("{} AI message", icon::SPARKLE)).small())
+                        .on_hover_text(if self.amend {
+                            "Write the amended commit's message (its changes plus the staged ones) with Claude"
+                        } else {
+                            "Write the commit message from the staged changes with Claude"
+                        })
                         .on_disabled_hover_text("Stage changes first")
                         .clicked()
                     {
-                        acts.push(Action::Ai(Purpose::CommitMessage));
+                        acts.push(Action::Ai(Purpose::CommitMessage { amend: self.amend }));
                     }
                 });
             });
@@ -123,6 +129,27 @@ impl RepoTab {
         if commit {
             acts.push(Action::Git(self.commit_op()));
         }
+        if ai_on {
+            ui.horizontal(|ui| {
+                let any = !s.staged.is_empty() || !s.unstaged.is_empty();
+                if self.composing() {
+                    ui.spinner();
+                    ui.label(RichText::new("Planning commits…").small().color(theme::dim(ui)));
+                } else if ui
+                    .add_enabled(any && s.conflicted.is_empty() && d.state == State::Clean && !busy, egui::Button::new(format!("{} Compose commits with AI", icon::SPARKLE)).small())
+                    .on_hover_text("Let Claude split all uncommitted changes into a series of focused commits (you review the plan first)")
+                    .on_disabled_hover_text("Needs uncommitted changes, and no merge or rebase in progress")
+                    .clicked()
+                {
+                    acts.push(Action::Ai(Purpose::Compose));
+                }
+                let explaining = self.ai_busy() == Some(&Purpose::ExplainWip);
+                if ui.add_enabled(any && !explaining, egui::Button::new(format!("{} Explain changes", icon::SPARKLE)).small()).on_hover_text("What do these uncommitted changes do? Asks Claude").clicked() {
+                    acts.push(Action::Ai(Purpose::ExplainWip));
+                }
+            });
+            ui.add_space(4.0);
+        }
         {
             ScrollArea::vertical().id_salt("wip_files").auto_shrink(false).show(ui, |ui| {
                 if !s.conflicted.is_empty() {
@@ -130,7 +157,7 @@ impl RepoTab {
                     for c in &s.conflicted {
                         let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path));
                         resp.context_menu(|ui| {
-                            if ui.button(format!("{} Resolve with AI…", icon::SPARKLE)).clicked() {
+                            if ai_on && ui.button(format!("{} Resolve with AI…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
                             }
                             if ui.button("Mark resolved").clicked() {

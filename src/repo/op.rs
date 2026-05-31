@@ -266,6 +266,9 @@ impl RepoTab {
                     (l, false) if l.starts_with("Split ") => self.split = None,
                     // Show the WIP panel with the uncommitted parts (selected on reload).
                     (l, true) if l.starts_with("Split ") => self.sel = None,
+                    // A failed compose step leaves the original HEAD's tree staged, which would
+                    // revert the new commits: unstage, so only the uncommitted rest remains.
+                    (l, false) if l.starts_with("Compose ") => self.run(ctx, Op::new("Unstage all", &["reset", "-q"]).light()),
                     _ => {}
                 }
                 self.reload(ctx, !op.light);

@@ -97,8 +97,18 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         if !d.status.staged.is_empty() {
             v.push(item(icon::ARROWS_IN, "Absorb staged changes…", "into the commits they belong to", Cmd::Tab(Action::Absorb)));
         }
-        v.push(item(icon::SPARKLE, "Write commit message with AI", "from staged changes", Cmd::Tab(Action::Ai(crate::ai::Purpose::CommitMessage))));
-        v.push(item(icon::SPARKLE, "Stash with AI message", "", Cmd::Tab(Action::Ai(crate::ai::Purpose::StashMessage))));
+        if crate::ai::enabled() {
+            use crate::ai::Purpose;
+            let detail = if t.amend { "amend: last commit + staged changes" } else { "from staged changes" };
+            v.push(item(icon::SPARKLE, "Write commit message with AI", detail, Cmd::Tab(Action::Ai(Purpose::CommitMessage { amend: t.amend }))));
+            v.push(item(icon::SPARKLE, "Stash with AI message", "", Cmd::Tab(Action::Ai(Purpose::StashMessage))));
+            if d.wip && d.state == crate::git::State::Clean {
+                v.push(item(icon::SPARKLE, "Compose commits with AI…", "split uncommitted changes into commits", Cmd::Tab(Action::Ai(Purpose::Compose))));
+            }
+            if d.wip {
+                v.push(item(icon::SPARKLE, "Explain working changes with AI", "", Cmd::Tab(Action::Ai(Purpose::ExplainWip))));
+            }
+        }
         if let Some(l) = t.undo_label() {
             v.push(item(icon::ARROW_COUNTER_CLOCKWISE, format!("Undo {l}"), "⌘Z", Cmd::Tab(Action::Undo)));
         }

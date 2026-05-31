@@ -123,6 +123,28 @@ impl App {
                             t.apply(&ctx.clone(), a);
                         }
                     }
+                    // Commit Composer: `compose` (a canned plan, the last change left out; no AI),
+                    // `ai:compose` / `ai:explain-wip` (real requests; raise GLASIR_SCREENSHOT_FRAMES).
+                    "compose" => {
+                        if let Some(t) = self.tabs.get_mut(self.active)
+                            && let Ok((mut p, _)) = crate::repo::compose::Plan::load(&t.dir)
+                        {
+                            let n = p.units.len();
+                            let (a, b): (Vec<usize>, Vec<usize>) = (1..n.max(2)).partition(|i| *i <= n / 2);
+                            let reply = serde_json::json!({"commits": [
+                                {"message": "Add the parser", "units": a},
+                                {"message": "Wire the parser into the CLI\n\nAlso documents the new flag.", "units": b},
+                            ]});
+                            let _ = p.fill(&reply.to_string());
+                            t.compose = Some(p);
+                        }
+                    }
+                    q if q.starts_with("ai:") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            let p = if q == "ai:compose" { crate::ai::Purpose::Compose } else { crate::ai::Purpose::ExplainWip };
+                            t.apply(&ctx.clone(), Action::Ai(p));
+                        }
+                    }
                     q if q.starts_with("search:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let mut s = Search::open();

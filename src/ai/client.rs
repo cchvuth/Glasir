@@ -17,11 +17,13 @@ const KEYCHAIN: (&str, &str) = ("glasir", "claude-token");
 pub struct Config {
     pub model: String,
     pub base_url: String,
+    /// Settings → "Enable AI features": off hides every AI button and menu item.
+    pub enabled: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into() }
+        Config { model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true }
     }
 }
 
@@ -114,13 +116,15 @@ pub(super) fn need_token() -> Res<(String, bool)> {
     token().ok_or_else(|| "No Claude token. Add one in Settings → AI, or set ANTHROPIC_API_KEY.".into())
 }
 
-/// Streams one completion; `on_text` returns false to cancel.
+/// Streams one completion; `on_text` returns false to cancel. `schema`: the
+/// reply is JSON matching this JSON Schema (structured output).
 pub(super) fn complete(
     cfg: &Config,
     (token, bearer): (String, bool),
     system: &str,
     prompt: &str,
     effort: &str,
+    schema: Option<&serde_json::Value>,
     on_text: &mut dyn FnMut(String) -> bool,
 ) -> Res<()> {
     let first_party = cfg.base_url.trim_end_matches('/') == DEFAULT_URL;
@@ -132,8 +136,15 @@ pub(super) fn complete(
         "system": system,
         "messages": [{"role": "user", "content": prompt}],
     });
+    let mut output = serde_json::Map::new();
     if !model.starts_with("claude-3") && !model.contains("4-5") {
-        body["output_config"] = serde_json::json!({ "effort": effort });
+        output.insert("effort".into(), effort.into());
+    }
+    if let Some(s) = schema {
+        output.insert("format".into(), serde_json::json!({ "type": "json_schema", "schema": s }));
+    }
+    if !output.is_empty() {
+        body["output_config"] = output.into();
     }
     let mut betas = vec![];
     // Server-side fallback when a safety classifier declines (not offered for Haiku).
@@ -268,7 +279,7 @@ mod tests {
     fn run(url: String, tok: (&str, bool)) -> (Res<()>, String) {
         let cfg = Config { base_url: url, ..Default::default() };
         let mut out = String::new();
-        let r = complete(&cfg, (tok.0.into(), tok.1), "sys", "hi", "low", &mut |t| {
+        let r = complete(&cfg, (tok.0.into(), tok.1), "sys", "hi", "low", None, &mut |t| {
             out += &t;
             true
         });
@@ -289,6 +300,17 @@ mod tests {
         assert!(lower.contains("x-api-key: sk-ant-api-test") && lower.contains("anthropic-version: 2023-06-01"));
         assert!(req.contains(r#""stream":true"#) && req.contains(r#""model":"claude-opus-5-5""#));
         assert!(req.contains(r#""effort":"low""#) && !req.contains("fallbacks"), "gateway URL: no server-side fallback");
+    }
+
+    #[test]
+    fn structured_output_schema() {
+        let (url, h) = serve(sse(&[DELTA, r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#]));
+        let cfg = Config { base_url: url, ..Default::default() };
+        let schema = serde_json::json!({"type": "object", "additionalProperties": false});
+        assert!(complete(&cfg, ("k".into(), false), "sys", "hi", "medium", Some(&schema), &mut |_| true).is_ok());
+        let req = h.join().unwrap();
+        let body: serde_json::Value = serde_json::from_str(&req[req.find("\r\n\r\n").unwrap() + 4..]).unwrap();
+        assert_eq!(body["output_config"], serde_json::json!({"effort": "medium", "format": {"type": "json_schema", "schema": schema}}));
     }
 
     #[test]

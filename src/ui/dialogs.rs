@@ -92,6 +92,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
         // From the merge editor, the answer fills its output pane instead.
         ai::Purpose::Resolve(p) => t.merge.as_ref().is_none_or(|m| m.path != *p),
         ai::Purpose::ExplainRange { .. } => !inline_compare,
+        ai::Purpose::ExplainWip => true,
         _ => false,
     };
     if !modal {

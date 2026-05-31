@@ -146,7 +146,10 @@ impl App {
 
                 ui.add_space(10.0);
                 ui.separator();
-                ui.label(RichText::new(format!("{} AI (Claude)", icon::SPARKLE)).strong());
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{} AI (Claude)", icon::SPARKLE)).strong());
+                    ui.checkbox(&mut s.ai.enabled, "Enable AI features").on_hover_text("Off: every AI button and menu item is hidden");
+                });
                 ui.label(
                     RichText::new(
                         "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`). It is stored in your system keychain and only sent to the API URL below.",

@@ -44,7 +44,7 @@ fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) 
     if ui.button(format!("{} Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
         acts.push(Action::Select(Sel::Compare { from: head.clone(), to: name.into(), three_dot: true }));
     }
-    if ui.button(format!("{} Explain changes vs {head} with AI", icon::SPARKLE)).clicked() {
+    if crate::ai::enabled() && ui.button(format!("{} Explain changes vs {head} with AI", icon::SPARKLE)).clicked() {
         acts.push(Action::Ai(Purpose::ExplainRange { from: head, to: name.into() }));
     }
 }
@@ -56,7 +56,7 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
         _ => (r.upstream.split('/').next().filter(|s| !s.is_empty()).unwrap_or("origin").to_owned(), r.name.clone()),
     };
     ui.separator();
-    if ui.button(format!("{} Write pull request with AI…", icon::SPARKLE)).clicked() {
+    if crate::ai::enabled() && ui.button(format!("{} Write pull request with AI…", icon::SPARKLE)).clicked() {
         let def = d.default_branch();
         let base = if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def };
         acts.push(Action::Ai(Purpose::PullRequest { branch: r.name.clone(), base }));

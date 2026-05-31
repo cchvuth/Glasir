@@ -15,11 +15,13 @@
 //! - `tags`, `restore`, `spinoff`, `patch`: history tools (move/delete/push tags,
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
 //! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
+//! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
 
 pub mod absorb;
 mod action;
 mod ai_job;
 mod cleanup;
+pub mod compose;
 mod conflicts;
 mod data;
 mod diff;
@@ -135,6 +137,9 @@ pub struct RepoTab {
     absorb_task: Option<Task<Res<absorb::Plan>>>,
     /// A guided commit split in progress (banner in the WIP panel).
     pub split: Option<split::Split>,
+    /// Commit Composer plan; its dialog shows once Claude's commits are in.
+    pub compose: Option<compose::Plan>,
+    compose_task: Option<Task<Res<(compose::Plan, String)>>>,
 }
 
 impl RepoTab {
@@ -191,6 +196,8 @@ impl RepoTab {
             absorb: None,
             absorb_task: None,
             split: None,
+            compose: None,
+            compose_task: None,
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -300,6 +307,7 @@ impl RepoTab {
         if let Some(r) = Task::poll(&mut self.info_task) {
             self.info = Some(r);
         }
+        self.poll_compose(ctx);
         self.poll_ai(ctx, msgs);
         self.poll_patch(ctx);
         self.poll_absorb();

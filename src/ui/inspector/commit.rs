@@ -89,12 +89,13 @@ impl RepoTab {
                         }
                     });
                 }
-                None => {
+                None if crate::ai::enabled() => {
                     let label = if compare.is_some() { "Explain these changes" } else { "Explain this commit" };
                     if ui.small_button(format!("{} {label}", icon::SPARKLE)).clicked() {
                         acts.push(Action::Ai(explain));
                     }
                 }
+                None => {}
             }
             ui.add_space(8.0);
             if compare.is_none() { ui.horizontal(|ui| {

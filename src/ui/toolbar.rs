@@ -177,7 +177,7 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                 acts.push(Action::Git(stash_op()));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
-                if ui.button(format!("{} Stash with AI message", icon::SPARKLE)).clicked() {
+                if ai::enabled() && ui.button(format!("{} Stash with AI message", icon::SPARKLE)).clicked() {
                     acts.push(Action::Ai(ai::Purpose::StashMessage));
                     ui.close();
                 }

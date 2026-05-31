@@ -45,7 +45,8 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
             if ed.data.as_ref().is_none_or(|d| d.whole.is_some()) {
                 return;
             }
-            if thinking {
+            if !ai::enabled() {
+            } else if thinking {
                 ui.label(RichText::new("Claude is resolving…").small().color(theme::dim(ui)));
                 ui.spinner();
             } else if theme::pill(ui, format!("{} Resolve with AI", icon::SPARKLE)).on_hover_text("Let Claude write the output; review it, then save").clicked() {

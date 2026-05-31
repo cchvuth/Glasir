@@ -7,8 +7,12 @@ use crate::ai;
 
 impl RepoTab {
     pub(super) fn start_ai(&mut self, ctx: &egui::Context, p: ai::Purpose) {
+        if !self.ai_cfg.enabled {
+            return;
+        }
         let draft = match &p {
-            ai::Purpose::CommitMessage => {
+            ai::Purpose::Compose => return self.start_compose(ctx),
+            ai::Purpose::CommitMessage { .. } => {
                 self.ai_draft = Some((self.summary.clone(), self.body.clone()));
                 format!("{}\n\n{}", self.summary, self.body).trim().to_owned()
             }
@@ -24,7 +28,7 @@ impl RepoTab {
         if !job.poll() {
             return;
         }
-        let message = job.purpose == ai::Purpose::CommitMessage;
+        let message = matches!(job.purpose, ai::Purpose::CommitMessage { .. });
         if message && !job.text.is_empty() {
             let (s, b) = job.text.trim().split_once('\n').unwrap_or((job.text.trim(), ""));
             self.summary = s.trim().to_owned();
@@ -46,6 +50,9 @@ impl RepoTab {
                 {
                     (self.summary, self.body) = (s, b);
                 }
+                if job.purpose == ai::Purpose::Compose {
+                    self.compose = None;
+                }
                 // Only the modal dialogs keep a failed job around (to show the error and Regenerate).
                 if in_editor || !matches!(job.purpose, ai::Purpose::PullRequest { .. } | ai::Purpose::Resolve(_)) {
                     self.ai = None;
@@ -56,7 +63,16 @@ impl RepoTab {
                 self.ai = None;
                 self.run(ctx, Op::new("Stash", &["stash", "push", "--include-untracked", "-m", &msg]));
             }
-            (Some(Ok(())), ai::Purpose::CommitMessage) => self.ai = None,
+            (Some(Ok(())), ai::Purpose::CommitMessage { .. }) => self.ai = None,
+            (Some(Ok(())), ai::Purpose::Compose) => {
+                if let Some(plan) = &mut self.compose
+                    && let Err(e) = plan.fill(&job.text)
+                {
+                    msgs.push(Msg { text: format!("Compose commits: {e}"), error: true });
+                    self.compose = None;
+                }
+                self.ai = None;
+            }
             _ => {}
         }
     }
