@@ -109,6 +109,10 @@ impl RepoData {
         self.config.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 
+    pub fn cfg_all<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> {
+        self.config.iter().filter(move |(k, _)| k == key).map(|(_, v)| v.as_str())
+    }
+
     /// Default folder for a new worktree: `<parent>/<repo>.worktrees/<name>`.
     pub fn worktree_path(&self, name: &str) -> String {
         let main = self.worktrees.first().map(|w| PathBuf::from(&w.path)).or_else(|| self.git_dir.parent().map(Path::to_path_buf)).unwrap_or_default();

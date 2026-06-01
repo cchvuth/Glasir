@@ -135,6 +135,11 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
             v.push(item(icon::TAG, format!("Push all tags to {remote}"), "", Cmd::Tab(Action::Git(crate::repo::tags::push_all(remote)))));
         }
         v.push(item(icon::PLUS, "Add remote…", "name and URL, then fetch", Cmd::Tab(Action::RemoteForm(crate::repo::remotes::Form::add(d)))));
+        for (r, _) in d.remotes.iter() {
+            let from = if d.remotes.len() > 1 { format!(" from {r}") } else { String::new() };
+            let pr = crate::repo::prompt(format!("Pull request number on {r}"), "", crate::repo::remotes::pr_checkout(r));
+            v.push(item(icon::GIT_PULL_REQUEST, format!("Check out PR #…{from}"), "fetch pull/<n>/head into pr/<n>", Cmd::Tab(pr)));
+        }
         if let Some(web) = d.web() {
             v.push(item(icon::GLOBE, "Open repository on remote", web.clone(), Cmd::Tab(Action::Url(web.clone()))));
             if let Some(b) = &d.status.branch {

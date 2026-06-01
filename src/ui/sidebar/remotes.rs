@@ -1,9 +1,9 @@
-//! A remote's right-click menu (fetch, prune, edit, remove)
+//! A remote's right-click menu (fetch, prune, pull requests, edit, remove)
 //! and the add / edit remote dialog.
 
 use crate::git;
 use crate::repo::remotes::{self, Form};
-use crate::repo::{Action, RepoData, RepoTab, op};
+use crate::repo::{Action, RepoData, RepoTab, op, prompt};
 use crate::theme::{self, icon};
 use egui::{Id, Key, RichText, TextEdit};
 
@@ -13,6 +13,14 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
     }
     if ui.button(format!("{} Prune deleted branches", icon::BROOM)).on_hover_text(format!("Drop remote-tracking branches that no longer exist on {name}")).clicked() {
         acts.push(op(format!("Prune {name}"), &["remote", "prune", name]));
+    }
+    ui.separator();
+    if ui.button(format!("{} Check out pull request #…", icon::GIT_PULL_REQUEST)).on_hover_text("Fetches refs/pull/<n>/head into pr/<n> and checks it out (github.com and GitHub Enterprise)").clicked() {
+        acts.push(prompt(format!("Pull request number on {name}"), "", remotes::pr_checkout(name)));
+    }
+    let mut on = remotes::pr_refs_on(d, name);
+    if ui.checkbox(&mut on, format!("Show pull requests as {name}/pr/<n>")).on_hover_text("Fetch every pull request's head too (+refs/pull/*/head); turning it off deletes them again").clicked() {
+        acts.push(Action::Git(remotes::pr_refs_op(d, name)));
     }
     ui.separator();
     if ui.button(format!("{} Edit remote…", icon::PENCIL_SIMPLE)).on_hover_text("Rename it or change its fetch / push URL").clicked() {

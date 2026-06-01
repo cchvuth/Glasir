@@ -1,7 +1,8 @@
 //! Remote management: the add / edit form (rename, fetch and push URL), removal
-//! that ⌘Z restores (config, upstreams, remote-tracking refs).
+//! that ⌘Z restores (config, upstreams, remote-tracking refs), checking out a
+//! pull request by number and the opt-in pull-request refspec.
 
-use super::{Op, RepoData};
+use super::{Op, RepoData, Undo};
 
 /// The add / edit remote dialog. `old`: the edited remote's (name, url, push url).
 #[derive(Clone, Debug, Default)]
@@ -109,6 +110,34 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
         .revert(revert)
 }
 
+/// Fetch pull request `{}` (filled in by a prompt) from `remote` into `pr/{}` and check it
+/// out. Works on github.com and GitHub Enterprise, which publish `refs/pull/<n>/head`.
+pub fn pr_checkout(remote: &str) -> Op {
+    Op::new("Check out pull request", &["fetch", "--progress", remote, "refs/pull/{}/head:refs/heads/pr/{}"])
+        .then(&["checkout", "pr/{}", "--"])
+        .undo(Undo::Keep)
+}
+
+fn pr_refspec(remote: &str) -> String {
+    format!("+refs/pull/*/head:refs/remotes/{remote}/pr/*")
+}
+
+/// Whether `remote` fetches every pull request head as `<remote>/pr/<n>`.
+pub fn pr_refs_on(d: &RepoData, remote: &str) -> bool {
+    d.cfg_all(&format!("remote.{remote}.fetch")).any(|v| v == pr_refspec(remote))
+}
+
+/// Toggle fetching pull request heads; turning it off deletes the fetched `pr/*` refs.
+pub fn pr_refs_op(d: &RepoData, remote: &str) -> Op {
+    let (key, spec) = (format!("remote.{remote}.fetch"), pr_refspec(remote));
+    if !pr_refs_on(d, remote) {
+        return Op::new(format!("Fetch pull requests from {remote}"), &["config", "--add", &key, &spec]).then(&["fetch", "--progress", remote]);
+    }
+    let stale: String = d.refs.iter().filter(|r| r.full.starts_with(&format!("refs/remotes/{remote}/pr/"))).map(|r| format!("delete {}\n", r.full)).collect();
+    let op = Op::new(format!("Stop fetching pull requests from {remote}"), &["config", "--unset-all", "--fixed-value", &key, &spec]);
+    if stale.is_empty() { op } else { op.then(&["update-ref", "--stdin"]).input(stale) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -177,6 +206,43 @@ mod tests {
         exec(&dir, op.revert.as_ref().unwrap()).unwrap();
         assert_eq!((cfg(), tracking()), (before, refs));
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/feat");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
+
+    /// GitHub publishes pull requests as `refs/pull/<n>/head`: check one out, list them all.
+    #[test]
+    fn check_out_pull_requests() {
+        let up = scratch("pr-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        commit(&up, "a.txt", "pr work\n");
+        sh(&up, &["update-ref", "refs/pull/7/head", "HEAD"]);
+        let pr = sh(&up, &["rev-parse", "HEAD"]);
+        sh(&up, &["reset", "-q", "--hard", "HEAD~1"]);
+        let dir = scratch("pr");
+        sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
+        identity(&dir);
+
+        let mut op = pr_checkout("origin");
+        for a in op.cmds.iter_mut().flatten() {
+            *a = a.replace("{}", "7"); // what the prompt does
+        }
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), pr);
+        assert_eq!(sh(&dir, &["branch", "--show-current"]).trim(), "pr/7");
+
+        let load = || load_all(&dir, 100, View::default()).unwrap();
+        assert!(!pr_refs_on(&load(), "origin"));
+        exec(&dir, &pr_refs_op(&load(), "origin")).unwrap();
+        let d = load();
+        assert!(pr_refs_on(&d, "origin"));
+        assert!(d.refs.iter().any(|r| r.name == "origin/pr/7" && r.target == pr.trim()));
+        exec(&dir, &pr_refs_op(&d, "origin")).unwrap();
+        let d = load();
+        assert!(!pr_refs_on(&d, "origin") && !d.refs.iter().any(|r| r.name.starts_with("origin/pr/")));
+        assert_eq!(d.cfg_all("remote.origin.fetch").collect::<Vec<_>>(), ["+refs/heads/*:refs/remotes/origin/*"]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }

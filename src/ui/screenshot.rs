@@ -202,13 +202,15 @@ impl App {
                             }
                         }
                     }
-                    // Remotes: `remote-add`, `remote-edit:<name>`.
-                    q if q.starts_with("remote-") => {
+                    // Remotes: `remote-add`, `remote-edit:<name>`; `commit:<rev>` selects a
+                    // commit (message autolinks).
+                    q if q.starts_with("remote-") || q.starts_with("commit:") => {
                         if let Some(t) = self.tabs.get_mut(self.active)
                             && let Some(d) = &t.data
                         {
                             let a = match q.split_once(':') {
-                                Some((_, r)) => Action::RemoteForm(crate::repo::remotes::Form::edit(d, r)),
+                                Some(("remote-edit", r)) => Action::RemoteForm(crate::repo::remotes::Form::edit(d, r)),
+                                Some((_, rev)) => Action::Jump(git::run(&t.dir, &["rev-parse", rev]).unwrap_or_default().trim().into()),
                                 None => Action::RemoteForm(crate::repo::remotes::Form::add(d)),
                             };
                             t.apply(&ctx.clone(), a);

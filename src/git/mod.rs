@@ -33,4 +33,4 @@ pub use reflog::{ReflogEntry, reflog};
 pub use runner::{CANCELLED, Cancel, cmd, progress_label, run, run_input, run_raw};
 pub use snapshot::{Snapshot, restore, snapshot};
 pub use submodule::{Submodule, SubmoduleDiff, submodules};
-pub use url::{host, url_encode, url_path, web_url};
+pub use url::{autolinks, host, url_encode, url_path, web_url};

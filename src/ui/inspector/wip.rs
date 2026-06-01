@@ -1,7 +1,7 @@
 //! Inspector for the WIP row: operation-in-progress banner, conflicted /
 //! unstaged / staged file lists and the commit box.
 
-use super::{file_items, file_row, lfs_track_item};
+use super::{file_items, file_row, lfs_track_item, permalink_items};
 use crate::ai::Purpose;
 use crate::git::State;
 use crate::repo::{Action, DiffSrc, Op, RepoTab, op};
@@ -227,6 +227,9 @@ impl RepoTab {
                         if c.code != '?' {
                             file_items(ui, &c.path, acts);
                         }
+                        if let Some(h) = d.status.head.as_deref().filter(|_| !matches!(c.code, '?' | 'A')) {
+                            permalink_items(ui, d, h, &c.path, acts);
+                        }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));
                         }
@@ -260,6 +263,9 @@ impl RepoTab {
                         lfs_track_item(ui, d, &c.path, acts);
                         if c.code != 'A' {
                             file_items(ui, &c.path, acts);
+                        }
+                        if let Some(h) = d.status.head.as_deref().filter(|_| c.code != 'A') {
+                            permalink_items(ui, d, h, &c.path, acts);
                         }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));

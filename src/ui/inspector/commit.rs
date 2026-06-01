@@ -1,7 +1,7 @@
 //! Inspector for a commit, stash or compare range: message, author, AI
 //! explanation and the changed files.
 
-use super::{file_items, file_row};
+use super::{file_items, file_row, permalink_items};
 use crate::ai::Purpose;
 use crate::git::Change;
 use crate::repo::restore::restore_file;
@@ -9,6 +9,29 @@ use crate::repo::{Action, DiffSrc, RepoData, RepoTab, Sel};
 use crate::theme::{self, icon};
 use crate::ui::format::initials;
 use egui::{Color32, RichText, ScrollArea, Sense, Ui};
+
+/// Message text with `#123` / `GH-123` linked to the pull request (or issue) on `web`.
+fn linked(ui: &mut Ui, text: &str, web: Option<&str>, style: impl Fn(&str) -> RichText, acts: &mut Vec<Action>) {
+    let parts = crate::git::autolinks(text);
+    let Some(web) = web.filter(|_| parts.iter().any(|p| p.1.is_some())) else {
+        ui.label(style(text));
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        for (s, n) in parts {
+            let Some(n) = n else {
+                ui.label(style(s));
+                continue;
+            };
+            let url = format!("{web}/pull/{n}");
+            // An explicit color: `strong()` would otherwise override the link color.
+            if ui.link(style(s).color(ui.visuals().hyperlink_color)).on_hover_text(&url).clicked() {
+                acts.push(Action::Url(url));
+            }
+        }
+    });
+}
 
 /// Restore a commit's file into the working tree: as it is in `id`, or as it
 /// was before (`parent`). Undoable like a discard.
@@ -65,10 +88,11 @@ impl RepoTab {
             });
             ui.add_space(6.0);
             let (summary, body) = info.message.split_once('\n').unwrap_or((&info.message, ""));
-            ui.label(RichText::new(summary).heading().strong());
+            let web = self.data.as_ref().and_then(|d| d.web());
+            linked(ui, summary, web.as_deref(), |s| RichText::new(s).heading().strong(), acts);
             if !body.trim().is_empty() {
                 ui.add_space(4.0);
-                ui.label(body.trim());
+                linked(ui, body.trim(), web.as_deref(), |s| RichText::new(s), acts);
             }
             ui.add_space(6.0);
             let explain = match &compare {
@@ -134,6 +158,9 @@ impl RepoTab {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
                     file_items(ui, &c.path, acts);
+                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && c.code != 'D') {
+                        permalink_items(ui, d, &info.id, &c.path, acts);
+                    }
                     if ui.button("Copy path").clicked() {
                         acts.push(Action::Copy(c.path.clone()));
                     }
