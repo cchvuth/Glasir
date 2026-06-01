@@ -48,6 +48,8 @@ pub struct Op {
     pub then_open: Option<String>,
     /// Stash uncommitted changes with this message first, reapply them after.
     pub autostash: Option<String>,
+    /// Undoes a config-only op (remotes): ⌘Z runs it, redo runs this op again.
+    pub revert: Option<Box<Op>>,
 }
 
 /// What a discard is about to destroy.
@@ -71,7 +73,12 @@ impl Op {
             backup: None,
             then_open: None,
             autostash: None,
+            revert: None,
         }
+    }
+    pub fn revert(mut self, op: Op) -> Self {
+        self.revert = Some(Box::new(op));
+        self
     }
     pub fn then_open(mut self, path: impl Into<String>) -> Self {
         self.then_open = Some(path.into());
@@ -249,6 +256,11 @@ impl RepoTab {
                 }
                 if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
                     self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo, autostash: op.autostash.clone() } });
+                    self.redo.clear();
+                }
+                if let (Ok(_), Some(undo)) = (&res, &op.revert) {
+                    let redo = Op { confirm: None, revert: None, ..op.clone() };
+                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) } });
                     self.redo.clear();
                 }
                 if let Some(saved) = saved.filter(|s| (s.stash.is_some() && !s.tracked.is_empty()) || !s.files.is_empty()) {

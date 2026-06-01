@@ -1,5 +1,5 @@
-//! Undo/redo: ref snapshots for ops that move refs, and backups of discarded
-//! work so a discard can be undone.
+//! Undo/redo: ref snapshots for ops that move refs, backups of discarded
+//! work so a discard can be undone, and reverting ops for config changes.
 
 use super::op::{Backup, Done, Undo};
 use super::task::Task;
@@ -21,6 +21,8 @@ pub(super) enum UndoKind {
     /// `autostash`: the op carried uncommitted changes along; undo/redo carries them back.
     Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String> },
     Discard(Saved),
+    /// A config-only op (remotes) and the op that reverts it.
+    Op { undo: Box<super::Op>, redo: Box<super::Op> },
 }
 
 pub(super) struct UndoEntry {
@@ -120,6 +122,10 @@ impl RepoTab {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
                 let (mode, autostash) = (mode.mode(), autostash.clone());
                 Box::new(move || move_refs(&dir, &expect, &target, mode, autostash.as_deref()))
+            }
+            UndoKind::Op { undo: u, redo } => {
+                let op = if undo { u.clone() } else { redo.clone() };
+                Box::new(move || super::op::exec(&dir, &op).map(drop))
             }
             // Restoring discarded work has no meaningful redo.
             UndoKind::Discard(_) if !undo => return,

@@ -149,8 +149,18 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
                     }
                 }
             }).response.on_hover_text("More pull options");
-            if theme::pill(ui, format!("{} Push", icon::ARROW_LINE_UP)).on_hover_text("Push the current branch (sets its upstream on first push)").clicked() {
-                acts.extend(t.push_op(false).map(Action::Git));
+            // No remote yet: Push starts publishing (add a remote) instead of doing nothing.
+            let no_remote = t.data.as_ref().filter(|d| d.remotes.is_empty());
+            let push = theme::pill(ui, format!("{} Push", icon::ARROW_LINE_UP));
+            let push = match no_remote {
+                Some(_) => push.on_hover_text("No remote yet: add one (e.g. a new empty repository on GitHub) to publish this branch"),
+                None => push.on_hover_text("Push the current branch (sets its upstream on first push)"),
+            };
+            if push.clicked() {
+                match no_remote {
+                    Some(d) => acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d))),
+                    None => acts.extend(t.push_op(false).map(Action::Git)),
+                }
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
                 if ui.button("Force push (with lease)").on_hover_text("Overwrite the remote branch, but only if it is still where you last saw it").clicked() {

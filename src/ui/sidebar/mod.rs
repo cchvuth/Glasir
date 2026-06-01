@@ -1,7 +1,9 @@
 //! Left sidebar: filter box, local / remote branches, tags, worktrees, submodules and stashes.
-//! `ref_menus` holds the right-click menus of refs (shared with the graph pills).
+//! `ref_menus` holds the right-click menus of refs (shared with the graph pills),
+//! `remotes` a remote's menu and the add / edit remote dialog.
 
 pub mod ref_menus;
+pub mod remotes;
 pub mod stashes;
 mod submodules;
 mod worktrees;
@@ -112,7 +114,20 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                         resp.context_menu(|ui| ref_menu(ui, d, r, acts));
                     }
                 });
-                resp.header_response.on_hover_text(url);
+                resp.header_response.on_hover_text(url).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
+            }
+            if d.remotes.is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new("No remote yet. To publish, create an empty repository on GitHub or GitHub Enterprise, add its URL here, then Push.")
+                            .small()
+                            .color(theme::dim(ui)),
+                    )
+                    .wrap(),
+                );
+            }
+            if ui.small_button(format!("{} Add remote…", icon::PLUS)).on_hover_text("Add a remote (a fork, upstream or mirror) and fetch it; right-click a remote for more").clicked() {
+                acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d)));
             }
         });
         let mut tags: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Tag && matches(f, &r.name)).collect();

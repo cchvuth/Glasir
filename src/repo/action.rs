@@ -96,6 +96,7 @@ pub enum Action {
     MultiOp(MultiOp, Vec<String>),
     /// Open the reflog view (recover commits lost to a reset or rebase).
     Reflog,
+    RemoteForm(super::remotes::Form),
     /// Export commits (newest first) as a patch: copy it, or `save` it to a file.
     Patch { ids: Vec<String>, save: bool },
     ApplyPatch,

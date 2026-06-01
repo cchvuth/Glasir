@@ -186,6 +186,16 @@ pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
         .collect())
 }
 
+/// `remote.*` and `branch.*` settings from every config scope, in git's order (last wins).
+pub fn config(dir: &Path) -> Vec<(String, String)> {
+    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch)\."]).unwrap_or_default())
+}
+
+/// `git config -z --get-regexp`: `key\nvalue\0` records (a bare `key\0` for a valueless key).
+fn parse_config(out: &str) -> Vec<(String, String)> {
+    out.split('\0').filter(|r| !r.is_empty()).map(|r| r.split_once('\n').map_or((r.into(), String::new()), |(k, v)| (k.into(), v.into()))).collect()
+}
+
 fn parse_name_status(out: &str) -> Vec<Change> {
     let mut files = vec![];
     let mut it = out.split('\0').filter(|s| !s.is_empty());
@@ -304,6 +314,14 @@ pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_records() {
+        let c = parse_config("remote.origin.url\ngit@ghe:o/r.git\0remote.origin.fetch\n+refs/heads/*:refs/remotes/origin/*\0user.email\na@b\nc\0remote.x.mirror\0");
+        assert_eq!(c[0], ("remote.origin.url".into(), "git@ghe:o/r.git".into()));
+        assert_eq!(c[2], ("user.email".into(), "a@b\nc".into()));
+        assert_eq!(c[3], ("remote.x.mirror".into(), String::new()));
+    }
 
     #[test]
     fn worktree_porcelain() {

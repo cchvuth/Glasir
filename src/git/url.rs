@@ -23,6 +23,13 @@ pub fn web_url(remote: &str) -> Option<String> {
     Some(format!("{scheme}://{host}/{path}"))
 }
 
+/// Host of a remote's web page: `git@ghe.corp:o/r` -> `ghe.corp` (no port).
+pub fn host(remote: &str) -> Option<String> {
+    let w = web_url(remote)?;
+    let h = w.split_once("://")?.1.split('/').next()?;
+    Some(h.split(':').next()?.to_lowercase())
+}
+
 /// Percent-encode a branch name for a URL path, keeping `/` separators.
 pub fn url_path(s: &str) -> String {
     s.bytes()
@@ -58,6 +65,14 @@ mod tests {
         ] {
             assert_eq!(web_url(i).as_deref(), Some(o), "{i}");
         }
+    }
+
+    #[test]
+    fn hosts() {
+        assert_eq!(host("ssh://git@GHE.corp.se:7999/o/r.git").as_deref(), Some("ghe.corp.se"));
+        assert_eq!(host("git@github.com:o/r").as_deref(), Some("github.com"));
+        assert_eq!(host("http://local:3000/a/b").as_deref(), Some("local"));
+        assert_eq!(host("/srv/repo.git"), None);
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub struct RepoData {
     pub submodules: Arc<Vec<git::Submodule>>,
     pub lfs: Arc<git::Lfs>,
     pub remotes: Arc<Vec<(String, String)>>,
+    /// `remote.*` and `branch.*` config, all scopes in git's order (`cfg` looks keys up).
+    pub config: Arc<Vec<(String, String)>>,
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
     pub origin_head: String,
@@ -100,6 +102,11 @@ impl RepoData {
     pub fn web(&self) -> Option<String> {
         let r = self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first())?;
         git::web_url(&r.1)
+    }
+
+    /// Effective value of a `remote.*` / `branch.*` key (variable names lower-case).
+    pub fn cfg<'a>(&'a self, key: &str) -> Option<&'a str> {
+        self.config.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 
     /// Default folder for a new worktree: `<parent>/<repo>.worktrees/<name>`.
@@ -206,6 +213,7 @@ impl RepoData {
             submodules: Default::default(),
             lfs: Default::default(),
             remotes,
+            config: Default::default(),
             git_dir,
             origin_head,
             truncated: false,
@@ -238,10 +246,10 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
             })
         });
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
-        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir)));
+        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir)));
         (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
     });
-    let (remotes, submodules, lfs) = remotes;
+    let (remotes, submodules, lfs, config) = remotes;
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
@@ -253,6 +261,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.worktrees = Arc::new(worktrees);
     d.submodules = Arc::new(submodules);
     d.lfs = Arc::new(lfs);
+    d.config = Arc::new(config);
     d.load_bisect(dir);
     Ok(d)
 }

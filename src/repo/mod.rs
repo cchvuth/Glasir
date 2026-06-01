@@ -16,6 +16,7 @@
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
 //! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
+//! - `remotes`: remote management and pull-request checkout
 
 pub mod absorb;
 mod action;
@@ -35,6 +36,7 @@ mod op;
 mod patch;
 pub mod rebase;
 pub mod reflog;
+pub mod remotes;
 pub mod restore;
 mod search;
 pub mod spinoff;
@@ -140,6 +142,7 @@ pub struct RepoTab {
     /// Commit Composer plan; its dialog shows once Claude's commits are in.
     pub compose: Option<compose::Plan>,
     compose_task: Option<Task<Res<(compose::Plan, String)>>>,
+    pub remote_form: Option<remotes::Form>,
 }
 
 impl RepoTab {
@@ -198,6 +201,7 @@ impl RepoTab {
             split: None,
             compose: None,
             compose_task: None,
+            remote_form: None,
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -229,12 +233,12 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs))) => {
+            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
-                (d.worktrees, d.submodules, d.lfs) = (wt, sm, lfs);
+                (d.worktrees, d.submodules, d.lfs, d.config) = (wt, sm, lfs, cfg);
                 d.load_bisect(&dir);
                 Ok(d)
             }
@@ -418,6 +422,7 @@ impl RepoTab {
                 (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, None);
                 self.reflog = Some(reflog::Reflog::open(ctx, &self.dir));
             }
+            Action::RemoteForm(f) => self.remote_form = Some(f),
             Action::Patch { ids, save } => self.export_patch(ctx, ids, save),
             Action::ApplyPatch => self.apply_patch(ctx),
             Action::Undo => self.undo_redo(ctx, true),

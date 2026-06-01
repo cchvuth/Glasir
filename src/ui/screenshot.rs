@@ -202,6 +202,18 @@ impl App {
                             }
                         }
                     }
+                    // Remotes: `remote-add`, `remote-edit:<name>`.
+                    q if q.starts_with("remote-") => {
+                        if let Some(t) = self.tabs.get_mut(self.active)
+                            && let Some(d) = &t.data
+                        {
+                            let a = match q.split_once(':') {
+                                Some((_, r)) => Action::RemoteForm(crate::repo::remotes::Form::edit(d, r)),
+                                None => Action::RemoteForm(crate::repo::remotes::Form::add(d)),
+                            };
+                            t.apply(&ctx.clone(), a);
+                        }
+                    }
                     q if q.starts_with("palette") => {
                         self.palette = Some(super::palette::Palette { query: q.trim_start_matches("palette").trim_start_matches(':').into(), ..Default::default() })
                     }
