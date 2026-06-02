@@ -186,9 +186,9 @@ pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
         .collect())
 }
 
-/// `remote.*` and `branch.*` settings from every config scope, in git's order (last wins).
+/// `remote.*`, `branch.*` and `user.*` settings from every config scope, in git's order (last wins).
 pub fn config(dir: &Path) -> Vec<(String, String)> {
-    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch)\."]).unwrap_or_default())
+    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\."]).unwrap_or_default())
 }
 
 /// `git config -z --get-regexp`: `key\nvalue\0` records (a bare `key\0` for a valueless key).

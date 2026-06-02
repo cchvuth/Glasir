@@ -15,7 +15,7 @@ pub struct RepoData {
     pub submodules: Arc<Vec<git::Submodule>>,
     pub lfs: Arc<git::Lfs>,
     pub remotes: Arc<Vec<(String, String)>>,
-    /// `remote.*` and `branch.*` config, all scopes in git's order (`cfg` looks keys up).
+    /// `remote.*`, `branch.*` and `user.*` config, all scopes in git's order (`cfg` looks keys up).
     pub config: Arc<Vec<(String, String)>>,
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
@@ -104,7 +104,7 @@ impl RepoData {
         git::web_url(&r.1)
     }
 
-    /// Effective value of a `remote.*` / `branch.*` key (variable names lower-case).
+    /// Effective value of a `remote.*` / `branch.*` / `user.*` key (variable names lower-case).
     pub fn cfg<'a>(&'a self, key: &str) -> Option<&'a str> {
         self.config.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }

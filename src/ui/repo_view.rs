@@ -14,6 +14,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let ctx = ui.ctx().clone();
     let mut acts = vec![];
     t.ai_cfg.clone_from(&s.ai);
+    t.email_rules.clone_from(&s.email_rules);
     crate::ai::set_enabled(s.ai.enabled);
     egui::Panel::top("toolbar")
         .frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 4, bottom: 8 }))

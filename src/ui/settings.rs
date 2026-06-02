@@ -36,6 +36,8 @@ pub struct Settings {
     pub auto_fetch: u32,
     /// Graph filter (hidden / soloed refs, first-parent) per repo path.
     pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
+    /// Commit email rules, one `host -> @domain` per line (`repo::identity`).
+    pub email_rules: String,
 }
 
 impl Default for Settings {
@@ -57,6 +59,7 @@ impl Default for Settings {
             transparency: 0.25,
             auto_fetch: 10,
             views: Default::default(),
+            email_rules: String::new(),
         }
     }
 }
@@ -140,6 +143,12 @@ impl App {
                         ui.radio_value(&mut s.pull, PullMode::Merge, "Merge");
                         ui.radio_value(&mut s.pull, PullMode::FfOnly, "Fast-forward only");
                         ui.radio_value(&mut s.pull, PullMode::Rebase, "Rebase");
+                    });
+                    ui.end_row();
+                    ui.label("Commit email rules");
+                    ui.vertical(|ui| {
+                        ui.add(TextEdit::multiline(&mut s.email_rules).hint_text("ghe.corp.example -> @corp.example").desired_rows(2).desired_width(330.0));
+                        ui.label(RichText::new("Warns in the commit box when a repo on that host commits with another email").small().color(theme::dim(ui)));
                     });
                     ui.end_row();
                 });

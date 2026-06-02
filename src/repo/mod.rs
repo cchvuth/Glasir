@@ -16,7 +16,8 @@
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
 //! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
-//! - `remotes`: remote management and pull-request checkout
+//! - `remotes`, `identity`: remote management and pull-request checkout, the
+//!   commit-email guard
 
 pub mod absorb;
 mod action;
@@ -29,6 +30,7 @@ mod diff;
 mod fetch;
 pub mod files;
 pub mod history;
+pub mod identity;
 pub mod image_diff;
 pub mod merge_editor;
 mod offer;
@@ -143,6 +145,8 @@ pub struct RepoTab {
     pub compose: Option<compose::Plan>,
     compose_task: Option<Task<Res<(compose::Plan, String)>>>,
     pub remote_form: Option<remotes::Form>,
+    /// Settings → commit email rules (`host -> @domain` lines), mirrored every frame.
+    pub email_rules: String,
 }
 
 impl RepoTab {
@@ -202,6 +206,7 @@ impl RepoTab {
             compose: None,
             compose_task: None,
             remote_form: None,
+            email_rules: String::new(),
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());

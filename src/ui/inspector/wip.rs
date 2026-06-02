@@ -4,9 +4,43 @@
 use super::{file_items, file_row, lfs_track_item, permalink_items};
 use crate::ai::Purpose;
 use crate::git::State;
-use crate::repo::{Action, DiffSrc, Op, RepoTab, op};
+use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, identity, op, prompt};
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
+
+/// Who commits here (effective user.name / user.email), and a warning with a fix when a
+/// Settings rule expects another email domain for one of the remotes' hosts.
+fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) {
+    let (name, email) = (d.cfg("user.name").unwrap_or_default(), d.cfg("user.email").unwrap_or_default());
+    let set = |what: &str, v: &str| prompt(format!("Commit {what} for this repository"), v, Op::new(format!("Set user.{what}"), &["config", "--local", &format!("user.{what}"), "{}"]));
+    let who = if email.is_empty() { format!("{name} (no email set)") } else { format!("{name} <{email}>") };
+    let r = ui
+        .add(egui::Label::new(RichText::new(format!("{} {}", icon::USER_CIRCLE, who.trim())).small().color(theme::dim(ui))).truncate().sense(egui::Sense::click()))
+        .on_hover_text("Commits are made as this identity (git config user.name / user.email).\nClick to change the email for this repository; right-click for the name.");
+    if r.clicked() {
+        acts.push(set("email", email));
+    }
+    r.context_menu(|ui| {
+        if ui.button("Set name for this repository…").clicked() {
+            acts.push(set("name", name));
+        }
+        if ui.button("Set email for this repository…").clicked() {
+            acts.push(set("email", email));
+        }
+    });
+    let hosts = d.remotes.iter().filter_map(|r| crate::git::host(&r.1));
+    let Some((host, dom)) = identity::mismatch(email, hosts, &identity::rules(rules)) else { return };
+    egui::Frame::new().fill(theme::MOD.gamma_multiply(0.18)).inner_margin(6.0).corner_radius(6.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(format!("{} {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::MOD));
+        ui.horizontal(|ui| {
+            if ui.small_button("Set for this repo…").on_hover_text("git config --local user.email").clicked() {
+                acts.push(set("email", &identity::suggest(email, &dom)));
+            }
+            ui.label(RichText::new("or commit anyway").small().color(theme::dim(ui)));
+        });
+    });
+}
 
 impl RepoTab {
     /// Guided split: Continue / Abort, above whatever the inspector shows.
@@ -99,6 +133,7 @@ impl RepoTab {
                     }
                 });
             });
+            identity_row(ui, d, &self.email_rules, acts);
             ui.horizontal(|ui| {
                 let n = self.summary.chars().count();
                 ui.add(TextEdit::singleline(&mut self.summary).hint_text("Summary").desired_width(ui.available_width() - 30.0));

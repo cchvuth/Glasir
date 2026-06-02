@@ -203,7 +203,7 @@ impl App {
                         }
                     }
                     // Remotes: `remote-add`, `remote-edit:<name>`; `commit:<rev>` selects a
-                    // commit (message autolinks).
+                    // commit (message autolinks); `identity:<host -> @domain>` sets a commit email rule.
                     q if q.starts_with("remote-") || q.starts_with("commit:") => {
                         if let Some(t) = self.tabs.get_mut(self.active)
                             && let Some(d) = &t.data
@@ -216,6 +216,7 @@ impl App {
                             t.apply(&ctx.clone(), a);
                         }
                     }
+                    q if q.starts_with("identity:") => self.s.email_rules = q[9..].into(),
                     q if q.starts_with("palette") => {
                         self.palette = Some(super::palette::Palette { query: q.trim_start_matches("palette").trim_start_matches(':').into(), ..Default::default() })
                     }
