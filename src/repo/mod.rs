@@ -16,8 +16,8 @@
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
 //! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
-//! - `remotes`, `identity`: remote management and pull-request checkout, the
-//!   commit-email guard
+//! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
+//!   per-remote connection doctor, the commit-email guard
 
 pub mod absorb;
 mod action;
@@ -27,6 +27,7 @@ pub mod compose;
 mod conflicts;
 mod data;
 mod diff;
+pub mod doctor;
 mod fetch;
 pub mod files;
 pub mod history;
@@ -145,6 +146,8 @@ pub struct RepoTab {
     pub compose: Option<compose::Plan>,
     compose_task: Option<Task<Res<(compose::Plan, String)>>>,
     pub remote_form: Option<remotes::Form>,
+    /// The connection doctor window for one remote.
+    pub doctor: Option<doctor::Doctor>,
     /// Settings → commit email rules (`host -> @domain` lines), mirrored every frame.
     pub email_rules: String,
 }
@@ -206,6 +209,7 @@ impl RepoTab {
             compose: None,
             compose_task: None,
             remote_form: None,
+            doctor: None,
             email_rules: String::new(),
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
@@ -315,6 +319,9 @@ impl RepoTab {
         }
         if let Some(r) = Task::poll(&mut self.info_task) {
             self.info = Some(r);
+        }
+        if let Some(d) = &mut self.doctor {
+            d.poll();
         }
         self.poll_compose(ctx);
         self.poll_ai(ctx, msgs);
@@ -428,6 +435,7 @@ impl RepoTab {
                 self.reflog = Some(reflog::Reflog::open(ctx, &self.dir));
             }
             Action::RemoteForm(f) => self.remote_form = Some(f),
+            Action::Doctor(remote) => self.doctor = Some(doctor::Doctor::open(ctx, &self.dir, &remote)),
             Action::Patch { ids, save } => self.export_patch(ctx, ids, save),
             Action::ApplyPatch => self.apply_patch(ctx),
             Action::Undo => self.undo_redo(ctx, true),

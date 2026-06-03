@@ -79,6 +79,25 @@ pub fn url_encode(s: &str) -> String {
         .collect()
 }
 
+/// `s` with the user info of each `scheme://user[:secret]@host` hidden as `***@host`
+/// (a token can be the user name); ssh's plain `ssh://git@host` stays.
+pub fn redact(s: &str) -> String {
+    let (mut out, mut rest) = (String::new(), s);
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out += head;
+        let auth = &tail[..tail.find(|c: char| c == '/' || c.is_whitespace()).unwrap_or(tail.len())];
+        rest = match auth.rfind('@') {
+            Some(at) if !head.ends_with("ssh://") || auth[..at].contains(':') => {
+                out += "***";
+                &tail[at..]
+            }
+            _ => tail,
+        };
+    }
+    out + rest
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +132,16 @@ mod tests {
         }
         assert_eq!(autolinks("é #9"), [("é ", None), ("#9", Some("9"))]);
         assert!(autolinks("").is_empty());
+    }
+
+    #[test]
+    fn redacts_credentials() {
+        assert_eq!(redact("https://chan:ghp_X@ghe.corp:9/a/x.git"), "https://***@ghe.corp:9/a/x.git");
+        assert_eq!(redact("http://u:p@proxy:8080 and https://ghp_Y@github.com"), "http://***@proxy:8080 and https://***@github.com");
+        for keep in ["ssh://git@ghe.corp/o/r", "git@ghe.corp:o/r", "https://ghe.corp/a@b", "localhost,.corp"] {
+            assert_eq!(redact(keep), keep);
+        }
+        assert_eq!(redact("ssh://git:pw@h/r"), "ssh://***@h/r");
     }
 
     #[test]

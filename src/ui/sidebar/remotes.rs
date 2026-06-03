@@ -1,4 +1,4 @@
-//! A remote's right-click menu (fetch, prune, pull requests, edit, remove)
+//! A remote's right-click menu (fetch, prune, pull requests, doctor, edit, remove)
 //! and the add / edit remote dialog.
 
 use crate::git;
@@ -23,6 +23,9 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
         acts.push(Action::Git(remotes::pr_refs_op(d, name)));
     }
     ui.separator();
+    if ui.button(format!("{} Check connection…", icon::STETHOSCOPE)).on_hover_text("Test sign-in, SSO, SSH, proxy and certificates for this remote").clicked() {
+        acts.push(Action::Doctor(name.into()));
+    }
     if ui.button(format!("{} Edit remote…", icon::PENCIL_SIMPLE)).on_hover_text("Rename it or change its fetch / push URL").clicked() {
         acts.push(Action::RemoteForm(Form::edit(d, name)));
     }

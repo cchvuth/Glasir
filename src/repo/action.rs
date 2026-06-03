@@ -97,6 +97,8 @@ pub enum Action {
     /// Open the reflog view (recover commits lost to a reset or rebase).
     Reflog,
     RemoteForm(super::remotes::Form),
+    /// Check the connection to this remote (doctor window).
+    Doctor(String),
     /// Export commits (newest first) as a patch: copy it, or `save` it to a file.
     Patch { ids: Vec<String>, save: bool },
     ApplyPatch,

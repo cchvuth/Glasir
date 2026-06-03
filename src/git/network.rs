@@ -1,5 +1,5 @@
-//! Remote-facing helpers: the never-prompting background fetch, classifying
-//! its failures, and running an op with local changes auto-stashed.
+//! Remote-facing helpers: the never-prompting background fetch and connection
+//! check, classifying their failures, and running an op with local changes auto-stashed.
 
 use super::log::shell_quote;
 use super::runner::exec;
@@ -45,6 +45,11 @@ pub fn fetch_quiet(dir: &Path) -> Res<String> {
     quiet(dir, &["fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"])
 }
 
+/// Talks to `remote` the way the background fetch does (never prompting): its HEAD.
+pub fn ls_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
+    quiet(dir, &["ls-remote", remote, "HEAD"])
+}
+
 /// `err` lowercased without its quoted URLs and paths (`'https://…/saml-gw/'`), so a
 /// repository or host name can't decide what went wrong.
 fn unquoted(err: &str) -> String {
@@ -60,6 +65,31 @@ fn unquoted(err: &str) -> String {
         prev = c;
     }
     out.to_lowercase()
+}
+
+/// What a failed connection means and how to fix it: (problem, hint).
+pub fn diagnose(err: &str, ssh: bool) -> (&'static str, &'static str) {
+    let e = unquoted(err);
+    let has = |ks: &[&str]| ks.iter().any(|k| e.contains(k));
+    if has(&["saml sso", "enforced saml", "single sign-on"]) {
+        ("SAML SSO not authorized", "The organization enforces single sign-on and your token or SSH key isn't authorized for it. On GitHub: Settings → Developer settings → Personal access tokens (or Settings → SSH keys) → Configure SSO → Authorize for the organization, then check again.")
+    } else if has(&["ssl certificate", "certificate verify", "local issuer", "self signed", "self-signed", "server certificate verification", "schannel", "unable to get issuer"]) {
+        ("TLS certificate not trusted", "Git doesn't trust the server's certificate, usually a company CA or a TLS-inspecting proxy. Point git at your CA bundle: git config --global http.sslCAInfo /path/to/company-ca.pem (on Windows: git config --global http.sslBackend schannel to use the Windows store). Never disable http.sslVerify.")
+    } else if has(&["host key verification failed", "remote host identification has changed", "no matching host key", "host key for"]) {
+        ("Unknown or changed SSH host key", "SSH doesn't know this server's host key yet (or it changed). Run ssh -T git@<host> once in a terminal and compare the fingerprint with the one your admin or GitHub publishes before accepting; if the server was re-keyed, remove the old line with ssh-keygen -R <host>.")
+    } else if has(&["could not resolve host", "could not resolve hostname", "nodename nor servname", "name or service not known", "no such host", "temporary failure in name resolution"]) {
+        ("Host not found (DNS)", "The host name doesn't resolve. Check the remote URL for typos and connect to the VPN: company GitHub Enterprise hosts usually resolve only inside the network.")
+    } else if has(&["proxy connect", "could not resolve proxy", "from proxy", "connect tunnel failed", "could not connect to server", "couldn't connect to server", "failed to connect", "connection timed out", "operation timed out", "connection refused", "network is unreachable", "connection reset"]) {
+        ("Can't connect (network, proxy or firewall)", "The server can't be reached. Check the VPN; if your network needs a proxy, set it for git: git config --global http.proxy http://proxy.example:8080 (or the HTTPS_PROXY variable). SSH on port 22 is often blocked: try the HTTPS URL.")
+    } else if ssh && has(&["permission denied", "publickey"]) {
+        ("SSH key rejected", "The server didn't accept any of your SSH keys. Load your key into the agent (ssh-add), add its public half to your account (Settings → SSH and GPG keys), and make sure the remote's user is git.")
+    } else if has(&["terminal prompts disabled", "could not read username", "could not read password", "authentication failed", "invalid username or password", "returned error: 401", "returned error: 403", "permission denied", "access denied"]) {
+        ("Sign-in required", "Git has no working credentials for this host. Fetch or push once from Glasir (it asks for your username and a personal access token, which your credential helper then remembers), or install Git Credential Manager. Check credential.helper below.")
+    } else if has(&["repository not found", "does not appear to be a git repository", "not found"]) {
+        ("Repository not found", "Check the remote URL. GitHub also answers this way when the account you're signed in with has no access to the repository.")
+    } else {
+        ("Connection failed", "See git's output below.")
+    }
 }
 
 /// Badge text for a failed background fetch.
@@ -117,6 +147,27 @@ mod tests {
         assert_eq!(fetch_failure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "Sign in required");
         assert_eq!(fetch_failure("git@github.com: Permission denied (publickey)."), "Sign in required");
         assert_eq!(fetch_failure("ssh: Could not resolve hostname x: nodename nor servname provided"), "Fetch failed");
+    }
+
+    #[test]
+    fn classifies_connection_failures() {
+        let d = |e: &str, ssh: bool| diagnose(e, ssh).0;
+        assert_eq!(d("remote: The 'acme' organization has enabled or enforced SAML SSO. To access this repository, you must re-authorize the OAuth Application.\nfatal: unable to access 'https://github.com/acme/x/': The requested URL returned error: 403", false), "SAML SSO not authorized");
+        assert_eq!(d("fatal: unable to access 'https://ghe.corp/x/': SSL certificate problem: unable to get local issuer certificate", false), "TLS certificate not trusted");
+        assert_eq!(d("Host key verification failed.\nfatal: Could not read from remote repository.", true), "Unknown or changed SSH host key");
+        assert_eq!(d("ssh: Could not resolve hostname ghe.corp: nodename nor servname provided, or not known", true), "Host not found (DNS)");
+        assert_eq!(d("fatal: unable to access 'https://ghe.corp/x/': Could not resolve host: ghe.corp", false), "Host not found (DNS)");
+        assert_eq!(d("fatal: unable to access 'https://ghe.corp/x/': Failed to connect to proxy.corp port 8080 after 2 ms: Couldn't connect to server", false), "Can't connect (network, proxy or firewall)");
+        assert_eq!(d("git@ghe.corp: Permission denied (publickey).\nfatal: Could not read from remote repository.", true), "SSH key rejected");
+        assert_eq!(d("fatal: could not read Username for 'https://ghe.corp': terminal prompts disabled", false), "Sign-in required");
+        assert_eq!(d("remote: Repository not found.\nfatal: repository 'https://github.com/a/b/' not found", false), "Repository not found");
+        assert_eq!(d("fatal: '/nope' does not appear to be a git repository", false), "Repository not found");
+        assert_eq!(d("something else", false), "Connection failed");
+        // Repository and host names don't count.
+        assert_eq!(d("fatal: '/srv/acme/saml-gateway.git' does not appear to be a git repository", false), "Repository not found");
+        assert_eq!(d("remote: Repository not found.\nfatal: repository 'https://github.com/acme/envoy-proxy/' not found", false), "Repository not found");
+        assert_eq!(d("fatal: unable to access 'https://proxy.corp/self-signed/': Couldn't connect to server", false), "Can't connect (network, proxy or firewall)");
+        assert_eq!(d("fatal: unable to access 'https://ghe.corp/x/': Received HTTP code 407 from proxy after CONNECT", false), "Can't connect (network, proxy or firewall)");
         assert_eq!(fetch_failure("fatal: '/srv/saml-gw.git' does not appear to be a git repository"), "Fetch failed");
     }
 
