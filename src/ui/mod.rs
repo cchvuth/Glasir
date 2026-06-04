@@ -6,7 +6,7 @@
 //! `welcome` (+ clone), `settings`, `toasts`, `command_log`, `screenshot` (dev harness).
 //! A repo tab: `repo_view` (layout) with `sidebar/`, `graph_view/`, `inspector/`
 //! and the center-pane views `diff_view`, `merge_editor`, `history`, `rebase_editor`, `reflog`;
-//! its modals are in `dialogs` (the Commit Composer's in `compose`, the connection doctor in `doctor`). `palette` is the ⌘P command palette; `format` holds
+//! its modals are in `dialogs` (the Commit Composer's in `compose`, the connection doctor in `doctor`). `palette` is the ⌘P command palette, `shortcuts` the `?` cheat sheet; `format` holds
 //! shared text formatters (dates, initials). Reusable widgets live in `theme::glass`.
 
 mod app;
@@ -28,6 +28,7 @@ mod reflog;
 mod repo_view;
 mod screenshot;
 mod settings;
+mod shortcuts;
 mod sidebar;
 mod titlebar;
 mod toasts;

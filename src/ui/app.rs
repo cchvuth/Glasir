@@ -30,6 +30,7 @@ pub struct App {
     pub(super) focused: bool,
     /// The OS draws glass behind the window, so the canvas stays translucent.
     pub(super) glass_backdrop: bool,
+    pub(super) shortcuts: bool,
 }
 
 impl App {
@@ -64,6 +65,7 @@ impl App {
             show_log: false,
             focused: true,
             glass_backdrop,
+            shortcuts: false,
             s,
         };
         let active = app.s.active;
@@ -107,6 +109,9 @@ impl App {
         }
         if cmd && pressed(Key::Comma) {
             self.open_settings();
+        }
+        if (cmd && pressed(Key::Slash)) || (!typing && pressed(Key::Questionmark)) {
+            self.shortcuts = !self.shortcuts;
         }
         if cmd && shift && pressed(Key::L) {
             self.show_log = !self.show_log;
@@ -177,6 +182,7 @@ impl App {
             Some(palette::Cmd::Clone) => self.open_clone(),
             Some(palette::Cmd::Settings) => self.open_settings(),
             Some(palette::Cmd::CommandLog) => self.show_log = !self.show_log,
+            Some(palette::Cmd::Shortcuts) => self.shortcuts = true,
             Some(palette::Cmd::Theme) => toggle_flavor(&mut self.s, ctx),
         }
     }
@@ -215,17 +221,22 @@ fn native_glass(cc: &eframe::CreationContext) -> bool {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let mut msgs: Vec<Msg> = vec![];
+        // An op that added an undo step gets an Undo button on its toast.
+        let mut msgs: Vec<(Msg, Option<(PathBuf, usize)>)> = vec![];
         for t in &mut self.tabs {
-            t.poll(&ctx, &mut msgs);
-            msgs.append(&mut t.notes);
+            let (depth, mut m) = (t.undo_depth(), vec![]);
+            t.poll(&ctx, &mut m);
+            m.append(&mut t.notes);
+            let undo = (t.undo_depth() > depth).then(|| (t.dir.clone(), t.undo_depth()));
+            let n = m.len();
+            msgs.extend(m.into_iter().enumerate().map(|(i, m)| (m, undo.clone().filter(|_| i + 1 == n))));
         }
         let opens: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| t.open_tab.take()).collect();
         for p in opens {
             self.open(&ctx, &p);
         }
-        for m in msgs {
-            self.toast(&ctx, m.text, m.error);
+        for (m, undo) in msgs {
+            self.toast_undo(&ctx, m.text, m.error, undo);
         }
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         if focused && !self.focused
@@ -276,6 +287,9 @@ impl eframe::App for App {
         self.clone_dialog(&ctx);
         self.settings_dialog(&ctx);
         self.command_palette(&ctx);
+        if self.shortcuts {
+            self.shortcuts = super::shortcuts::show(&ctx);
+        }
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
         graph_view::dnd::preview(&ctx);

@@ -105,6 +105,10 @@ impl RepoTab {
     pub fn undo_label(&self) -> Option<&str> {
         self.undo.last().map(|u| u.label.as_str())
     }
+    /// Undo stack height: a toast's Undo button stays live while it is unchanged.
+    pub fn undo_depth(&self) -> usize {
+        self.undo.len()
+    }
     pub fn redo_label(&self) -> Option<&str> {
         self.redo.last().map(|u| u.label.as_str())
     }

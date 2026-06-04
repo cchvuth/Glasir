@@ -16,6 +16,7 @@ pub enum Cmd {
     Settings,
     Theme,
     CommandLog,
+    Shortcuts,
 }
 
 pub struct Item {
@@ -171,6 +172,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
     v.push(item(icon::GEAR_SIX, "Settings", "⌘,", Cmd::Settings));
     v.push(item(icon::MOON, "Toggle light / dark theme", "", Cmd::Theme));
     v.push(item(icon::TERMINAL_WINDOW, "Show command log", "⇧⌘L", Cmd::CommandLog));
+    v.push(item(icon::KEYBOARD, "Keyboard shortcuts", "?", Cmd::Shortcuts));
     for p in recent {
         let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());
         v.push(item(icon::FOLDER_SIMPLE, format!("Open {name}"), p.display().to_string(), Cmd::Open(p.clone())));

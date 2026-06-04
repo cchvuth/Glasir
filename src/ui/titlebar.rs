@@ -59,7 +59,7 @@ impl App {
                 if theme::pill(ui, icon::TERMINAL_WINDOW).on_hover_text("Command log (⇧⌘L)").clicked() {
                     self.show_log = !self.show_log;
                 }
-                if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).on_hover_text("Command palette: commands, branches and repositories").clicked() {
+                if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).on_hover_text("Command palette: commands, branches and repositories (? lists the shortcuts)").clicked() {
                     self.palette = Some(Default::default());
                 }
                 let glyph = if self.s.flavor.dark() { icon::SUN } else { icon::MOON };

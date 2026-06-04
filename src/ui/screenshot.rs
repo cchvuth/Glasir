@@ -20,7 +20,7 @@ impl App {
         }
         // Only once, even if a view makes the tab reload (not ready) on the next frame.
         if ready && *frames == 2 {
-            // Several views at once, comma-separated: `flavor:daylight,settings`.
+            // Several views at once, comma-separated: `flavor:daylight,shortcuts`.
             let views = std::env::var("GLASIR_SCREENSHOT_VIEW").unwrap_or_default();
             for view in views.split(',') {
                 match view {
@@ -220,6 +220,13 @@ impl App {
                     q if q.starts_with("identity:") => self.s.email_rules = q[9..].into(),
                     q if q.starts_with("palette") => {
                         self.palette = Some(super::palette::Palette { query: q.trim_start_matches("palette").trim_start_matches(':').into(), ..Default::default() })
+                    }
+                    // Ease of use: `shortcuts`, `toast-undo`.
+                    "shortcuts" => self.shortcuts = true,
+                    "toast-undo" => {
+                        let undo = self.tabs.last().map(|t| (t.dir.clone(), t.undo_depth()));
+                        self.toast_undo(ctx, "Discard ✔ changes backed up".into(), false, undo);
+                        self.toast(ctx, "Fetch ✔ From github.com:org/repo".into(), false);
                     }
                     _ => {}
                 }
