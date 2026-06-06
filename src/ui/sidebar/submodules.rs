@@ -13,7 +13,8 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
         for s in subs {
             row(ui, d, s, acts);
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons; the row wraps instead
             if !d.submodules.is_empty() {
                 if ui.small_button(format!("{} Update all", icon::ARROWS_CLOCKWISE)).on_hover_text("Initialize and check out the recorded commits, recursively").clicked() {
                     acts.push(op("Update submodules", &["submodule", "update", "--init", "--recursive"]));

@@ -48,15 +48,18 @@ fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
 }
 
 pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Action>) {
+    // One line per row, cut with "…" (full text on hover): a long name must not
+    // wrap or widen the panel.
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add(TextEdit::singleline(filter).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width() - 68.0));
-        if theme::pill(ui, icon::BROOM).on_hover_text("Clean up merged & gone branches").clicked() {
-            acts.push(Action::Cleanup);
-        }
+    theme::bar(ui, |ui| {
         if theme::pill(ui, icon::LIFEBUOY).on_hover_text("Reflog: recover commits lost to a reset or rebase").clicked() {
             acts.push(Action::Reflog);
         }
+        if theme::pill(ui, icon::BROOM).on_hover_text("Clean up merged & gone branches").clicked() {
+            acts.push(Action::Cleanup);
+        }
+        theme::rest(ui, |ui| ui.add(TextEdit::singleline(filter).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width())));
     });
     ui.add_space(4.0);
     let f = filter.as_str();
@@ -81,7 +84,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 let resp = ui.add(egui::Button::selectable(r.head, view_style(ui, d, r, rt)).frame_when_inactive(false));
                 branch_dnd(ui, &resp, &r.name, acts);
                 hover_ref(ui, &resp, &r.target);
-                let resp = if r.gone { resp.on_hover_text("Upstream branch is gone") } else { resp };
+                let resp = resp.on_hover_text(if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() });
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
                 }
@@ -97,14 +100,16 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
         section(ui, "REMOTE", remote_refs.len(), |ui| {
             for rem in remotes {
                 let url = d.remotes.iter().find(|r| r.0 == rem).map_or("", |r| r.1.as_str());
-                let resp = egui::CollapsingHeader::new(rem).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
+                // Headers never truncate their text themselves; hand them a galley cut to their width.
+                let title = egui::WidgetText::from(rem).into_galley(ui, None, ui.available_width() - ui.spacing().indent, egui::TextStyle::Button);
+                let resp = egui::CollapsingHeader::new(title).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
                     let mut list: Vec<_> = remote_refs.iter().copied().filter(|r| r.remote() == rem).collect();
                     list.sort_by_key(|r| d.branch_rank(r.remote_branch()));
                     let names: Vec<&str> = list.iter().map(|r| r.remote_branch()).collect();
                     for (i, r) in list.iter().copied().enumerate() {
                         pinned_separator(ui, d, i, &names);
                         let text = view_style(ui, d, r, RichText::new(r.remote_branch()));
-                        let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false));
+                        let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
                         branch_dnd(ui, &resp, &r.name, acts);
                         hover_ref(ui, &resp, &r.target);
                         if resp.clicked() {
@@ -116,7 +121,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                         resp.context_menu(|ui| ref_menu(ui, d, r, acts));
                     }
                 });
-                resp.header_response.on_hover_text(url).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
+                resp.header_response.on_hover_text(format!("{rem}\n{url}")).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
             }
             if d.remotes.is_empty() {
                 ui.add(
@@ -138,7 +143,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
             for r in tags {
                 let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(&r.name))).frame_when_inactive(false));
                 hover_ref(ui, &resp, &r.target);
-                let resp = if r.message.is_empty() { resp } else { resp.on_hover_text(&r.message) };
+                let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
                 }

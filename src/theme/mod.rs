@@ -7,7 +7,7 @@
 
 mod glass;
 
-pub use glass::{canvas, canvas_of, card, empty_state, glass_shapes, group, pill, primary, progress, set_transparency, slider};
+pub use glass::{bar, canvas, canvas_of, card, empty_state, glass_shapes, group, pill, primary, progress, rest, set_transparency, slider};
 
 use egui::epaint::Shadow;
 use egui::{Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Ui, Visuals, vec2};

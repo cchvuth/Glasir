@@ -13,7 +13,8 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
         for w in wts {
             worktree_row(ui, d, w, here.as_deref() == Some(w.path.as_str()), acts);
         }
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons; the row wraps instead
             if ui.small_button(format!("{} New worktree…", icon::PLUS)).on_hover_text("New branch from HEAD in its own folder").clicked() {
                 acts.push(prompt(
                     "New branch and worktree from HEAD",

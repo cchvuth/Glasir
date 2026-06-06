@@ -162,6 +162,25 @@ pub fn card<R>(ui: &mut Ui, opacity: u8, add: impl FnOnce(&mut Ui) -> R) -> R {
     r
 }
 
+/// A one-line row laid out from the right: add the trailing controls first
+/// (rightmost first), then call [`rest`] for the leading part. Rows built left
+/// to right let a long path or name push the controls off-screen or widen the
+/// panel (a panel sizes itself to its content, so it can even grow every frame).
+pub fn bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let size = vec2(ui.available_width(), ui.spacing().interact_size.y + 6.0);
+    ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), add).inner
+}
+
+/// The leading part of a [`bar`]: left to right in the width the controls left
+/// free; its text is cut with "…" (labels show the full text on hover).
+pub fn rest<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+        add(ui)
+    })
+    .inner
+}
+
 /// A calm, centered empty state: a large accent glyph, a title and one line of help.
 /// Callers add their buttons below it.
 pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
