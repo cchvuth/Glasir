@@ -1,7 +1,7 @@
 //! Inspector for the WIP row: operation-in-progress banner, conflicted /
 //! unstaged / staged file lists and the commit box.
 
-use super::{file_items, file_row, lfs_track_item, permalink_items};
+use super::{file_items, file_row, lfs_track_item, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::State;
 use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, identity, op, prompt};
@@ -68,6 +68,7 @@ impl RepoTab {
         let s = &d.status;
         let open = self.diff.as_ref().map(|d| d.src.clone());
         let busy = self.busy().is_some();
+        let head = s.head.as_deref().unwrap_or_default();
 
         // A bisect has its own banner above the graph.
         // A guided split has its own banner (`split_banner`), shown for any selection.
@@ -207,6 +208,7 @@ impl RepoTab {
                             if ui.button("Show in file manager").clicked() {
                                 acts.push(Action::Reveal(c.path.clone()));
                             }
+                            open_items(ui, d, head, &c.path, false, acts);
                             if ui.button("Restore conflict markers").clicked() {
                                 acts.push(Action::Git(Op::new("Restore conflict", &["--literal-pathspecs", "checkout", "-m", "--", &c.path]).light()));
                             }
@@ -259,6 +261,7 @@ impl RepoTab {
                         if ui.button("Show in file manager").clicked() {
                             acts.push(Action::Reveal(c.path.clone()));
                         }
+                        open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != '?' {
                             file_items(ui, &c.path, acts);
                         }
@@ -296,6 +299,7 @@ impl RepoTab {
                             acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", &c.path]).light()));
                         }
                         lfs_track_item(ui, d, &c.path, acts);
+                        open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {
                             file_items(ui, &c.path, acts);
                         }

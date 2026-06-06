@@ -221,6 +221,7 @@ fn native_glass(cc: &eframe::CreationContext) -> bool {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        crate::repo::tools::set(&self.s.tools);
         // An op that added an undo step gets an Undo button on its toast.
         let mut msgs: Vec<(Msg, Option<(PathBuf, usize)>)> = vec![];
         for t in &mut self.tabs {

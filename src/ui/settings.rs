@@ -4,7 +4,7 @@
 use super::app::App;
 use crate::ai;
 use crate::git;
-use crate::repo::{PullMode, Task};
+use crate::repo::{PullMode, Task, tools};
 use crate::theme::{self, icon};
 use egui::{Align2, Button, Id, Key, RichText, Sense, TextEdit, Ui, vec2};
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,7 @@ pub struct Settings {
     pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
     /// Commit email rules, one `host -> @domain` per line (`repo::identity`).
     pub email_rules: String,
+    pub tools: crate::repo::tools::Tools,
 }
 
 impl Default for Settings {
@@ -60,6 +61,7 @@ impl Default for Settings {
             auto_fetch: 10,
             views: Default::default(),
             email_rules: String::new(),
+            tools: Default::default(),
         }
     }
 }
@@ -73,11 +75,15 @@ pub(super) struct SettingsDlg {
     source: Option<&'static str>,
     note: Option<(bool, String)>,
     test: Option<Task<git::Res<String>>>,
+    /// Detected editor / terminal, shown as the fields' hints.
+    editor: String,
+    terminal: &'static str,
 }
 
 impl App {
     pub(super) fn open_settings(&mut self) {
-        self.settings = Some(SettingsDlg { source: ai::token_source(), ..Default::default() });
+        let (editor, terminal) = (tools::default_editor(), tools::default_terminal());
+        self.settings = Some(SettingsDlg { source: ai::token_source(), editor, terminal, ..Default::default() });
     }
 
     pub(super) fn settings_dialog(&mut self, ctx: &egui::Context) {
@@ -153,6 +159,9 @@ impl App {
                     ui.end_row();
                 });
 
+                ui.add_space(10.0);
+                ui.separator();
+                tools_section(ui, &mut s.tools, &st.editor, st.terminal);
                 ui.add_space(10.0);
                 ui.separator();
                 ui.horizontal(|ui| {
@@ -256,6 +265,45 @@ impl App {
         }
     }
 
+}
+
+fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str) {
+    ui.label(RichText::new(format!("{} Tools", icon::TERMINAL)).strong());
+    ui.add_space(4.0);
+    egui::Grid::new("tools_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
+        ui.label("Editor");
+        ui.add(TextEdit::singleline(&mut t.editor).hint_text(editor).desired_width(330.0))
+            .on_hover_text("Opens files and the repository (toolbar, ⌘P, file menus). {path} is the file; without it the path is appended. Empty = detected.");
+        ui.end_row();
+        ui.label("Terminal");
+        ui.add(TextEdit::singleline(&mut t.terminal).hint_text(terminal).desired_width(330.0))
+            .on_hover_text("Opened in the repository folder ({path}). Empty = your platform's terminal.");
+        ui.end_row();
+    });
+    ui.add_space(8.0);
+    ui.label(RichText::new("Custom commands").strong());
+    ui.label(
+        RichText::new("git arguments (run without a shell) or a shell line, run in the repository. Placeholders: {repo} {branch} {sha} {path}. With {path} a command shows in file menus, with {sha} in commit menus, the rest in ⌘P; output goes to a toast and the command log.")
+            .small()
+            .color(theme::dim(ui)),
+    );
+    ui.add_space(4.0);
+    let mut remove = None;
+    for (i, c) in t.commands.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(TextEdit::singleline(&mut c.name).hint_text("Name").desired_width(130.0));
+            ui.add(TextEdit::singleline(&mut c.command).hint_text("git push origin HEAD:refs/for/{branch}").code_editor().desired_width(320.0));
+            if theme::pill(ui, icon::TRASH).on_hover_text("Remove").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        t.commands.remove(i);
+    }
+    if ui.button(format!("{} Add command", icon::PLUS)).clicked() {
+        t.commands.push(Default::default());
+    }
 }
 
 fn set_flavor(s: &mut Settings, ctx: &egui::Context, f: theme::Flavor) {

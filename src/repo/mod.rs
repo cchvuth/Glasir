@@ -18,6 +18,7 @@
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
 //! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
 //!   per-remote connection doctor, the commit-email guard
+//! - `tools`: open in editor / terminal, custom commands (Settings → Tools)
 
 pub mod absorb;
 mod action;
@@ -46,6 +47,7 @@ pub mod spinoff;
 mod split;
 pub mod tags;
 mod task;
+pub mod tools;
 #[cfg(test)]
 mod testutil;
 mod undo;
@@ -378,7 +380,25 @@ impl RepoTab {
             Action::Url(u) => {
                 let _ = open::that_detached(u);
             }
+            // The repo itself opens in the file manager; a file is revealed in its folder.
+            Action::Reveal(p) if p.is_empty() => {
+                let _ = open::that_detached(&self.dir);
+            }
             Action::Reveal(p) => reveal(&self.dir.join(p)),
+            Action::Editor(p) => {
+                if let Err(e) = tools::open_editor(&self.dir, &self.dir.join(p)) {
+                    self.notes.push(Msg { text: e, error: true });
+                }
+            }
+            Action::Terminal => {
+                if let Err(e) = tools::open_terminal(&self.dir) {
+                    self.notes.push(Msg { text: e, error: true });
+                }
+            }
+            Action::Custom(c, v) => {
+                let op = tools::op(&c, &self.dir, &v);
+                self.run(ctx, op)
+            }
             Action::Jump(id) => {
                 self.scroll_to = self.data.as_ref().and_then(|d| d.row_of.get(&id).copied());
                 self.select(ctx, Sel::Commit(id));

@@ -122,7 +122,10 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
         let mut out = Ok(String::new());
         for args in &op.cmds {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
-            out = git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes));
+            out = match a.as_slice() {
+                [super::tools::SHELL, line] => git::run_shell(dir, line),
+                _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
+            };
             if out.is_err() {
                 break;
             }
@@ -233,8 +236,11 @@ impl RepoTab {
             Done::Op(op, res, snaps, saved) => {
                 match &res {
                     Ok(out) if !op.light => {
-                        let first = out.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                        msgs.push(Msg { text: format!("{} ✔ {first}", op.label), error: false });
+                        // A custom shell command's output is the point: show its last lines.
+                        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+                        let shown = if op.cmds[0][0] == super::tools::SHELL { lines[lines.len().saturating_sub(6)..].join("\n") } else { lines.first().copied().unwrap_or("").to_owned() };
+                        let sep = if shown.contains('\n') { "\n" } else { " " };
+                        msgs.push(Msg { text: format!("{} ✔{sep}{shown}", op.label), error: false });
                     }
                     Ok(_) => {}
                     Err(e) if e == git::CANCELLED => msgs.push(Msg { text: format!("{} cancelled", op.label), error: false }),

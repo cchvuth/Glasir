@@ -221,12 +221,17 @@ impl App {
                     q if q.starts_with("palette") => {
                         self.palette = Some(super::palette::Palette { query: q.trim_start_matches("palette").trim_start_matches(':').into(), ..Default::default() })
                     }
-                    // Ease of use: `shortcuts`, `toast-undo`.
+                    // Ease of use: `shortcuts`, `toast-undo`, `tools` (Settings with a custom command).
                     "shortcuts" => self.shortcuts = true,
                     "toast-undo" => {
                         let undo = self.tabs.last().map(|t| (t.dir.clone(), t.undo_depth()));
                         self.toast_undo(ctx, "Discard ✔ changes backed up".into(), false, undo);
                         self.toast(ctx, "Fetch ✔ From github.com:org/repo".into(), false);
+                    }
+                    "tools" => {
+                        let c = |n: &str, cmd: &str| crate::repo::tools::Custom { name: n.into(), command: cmd.into() };
+                        self.s.tools.commands = vec![c("Push for review", "git push origin HEAD:refs/for/{branch}"), c("Run tests", "cargo test")];
+                        self.open_settings();
                     }
                     _ => {}
                 }

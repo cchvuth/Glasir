@@ -10,7 +10,26 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub fn cmd(dir: &Path) -> Command {
-    let mut c = Command::new("git");
+    let mut c = base("git", dir);
+    // Neutralize user config that would change the formats we parse.
+    c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
+        .args(["-c", "core.quotepath=off", "-c", "color.ui=never"]);
+    c
+}
+
+/// Runs a user's shell line (custom commands) in `dir`: `sh -c`, or PowerShell on
+/// Windows. Logged and cancellable like git commands; git it runs prompts through askpass.
+pub fn run_shell(dir: &Path, line: &str) -> Res<String> {
+    #[cfg(windows)]
+    let (prog, args) = ("powershell", ["-NoProfile", "-Command", line]);
+    #[cfg(not(windows))]
+    let (prog, args) = ("sh", ["-c", line]);
+    exec(base(prog, dir), dir, &args, None).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+/// A `prog` command in `dir` that never blocks on a terminal.
+fn base(prog: &str, dir: &Path) -> Command {
+    let mut c = Command::new(prog);
     c.current_dir(dir)
         .env("GIT_OPTIONAL_LOCKS", "0")
         // Inherited from a parent git (e.g. launched from a hook) these would point us at another repo.
@@ -21,9 +40,6 @@ pub fn cmd(dir: &Path) -> Command {
         .env_remove("GIT_EDITOR")
         .env_remove("GIT_SEQUENCE_EDITOR")
         .stdin(Stdio::null());
-    // Neutralize user config that would change the formats we parse.
-    c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
-        .args(["-c", "core.quotepath=off", "-c", "color.ui=never"]);
     // Credential prompts go through our own askpass window; never block on a TTY.
     if let Ok(exe) = std::env::current_exe() {
         c.env("GIT_ASKPASS", &exe)
@@ -149,6 +165,7 @@ pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8
         return Err(CANCELLED.into());
     }
     let start = Instant::now();
+    let prog = c.get_program().to_string_lossy().into_owned();
     #[cfg(windows)]
     let started = std::time::SystemTime::now();
     let progress = args.contains(&"--progress").then(|| cancel.1.clone());
@@ -156,7 +173,7 @@ pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8
     if input.is_some() {
         c.stdin(Stdio::piped());
     }
-    let mut child = c.spawn().map_err(|e| format!("could not run git: {e}"))?;
+    let mut child = c.spawn().map_err(|e| format!("could not run {prog}: {e}"))?;
     if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
         let data = data.to_vec();
         std::thread::spawn(move || stdin.write_all(&data));
@@ -180,7 +197,7 @@ pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8
     let status = status?;
     if cancelled && !status.success() {
         // Don't wait for the pipes: helpers git started may still hold them.
-        record(dir, args, start, status.code(), "");
+        record(dir, &prog, args, start, status.code(), "");
         #[cfg(windows)]
         drop_index_lock(dir, started);
         return Err(CANCELLED.into());
@@ -190,13 +207,15 @@ pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8
     if squash {
         stderr = squash_progress(&stderr);
     }
-    record(dir, args, start, status.code(), &stderr);
+    // A custom command's output is what the user wants to see.
+    let logged = if prog == "git" { stderr.clone() } else { format!("{}{stderr}", String::from_utf8_lossy(&stdout)) };
+    record(dir, &prog, args, start, status.code(), &logged);
     if status.success() {
         return Ok(stdout);
     }
     let msg = format!("{}\n{}", stderr.trim(), String::from_utf8_lossy(&stdout).trim());
     let msg = msg.trim();
-    Err(if msg.is_empty() { format!("git {} failed ({status})", args.join(" ")) } else { msg.to_owned() })
+    Err(if msg.is_empty() { format!("{prog} {} failed ({status})", args.join(" ")) } else { msg.to_owned() })
 }
 
 /// `taskkill /F` skips git's cleanup: remove the index.lock the killed git created.

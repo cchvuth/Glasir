@@ -30,7 +30,7 @@ pub use model::{Change, Commit, CommitInfo, Ref, RefKind, Stash, State, Status, 
 pub use network::{diagnose, fetch_failure, fetch_quiet, ls_remote_quiet, with_autostash};
 pub use read::{DATE_FORMAT, commit_info, compare_info, config, git_dir, log, predict_conflicts, refs, remotes, stash_info, stashes, state, status, worktrees};
 pub use reflog::{ReflogEntry, reflog};
-pub use runner::{CANCELLED, Cancel, cmd, progress_label, run, run_input, run_raw};
+pub use runner::{CANCELLED, Cancel, cmd, progress_label, run, run_input, run_raw, run_shell};
 pub use snapshot::{Snapshot, restore, snapshot};
 pub use submodule::{Submodule, SubmoduleDiff, submodules};
 pub use url::{autolinks, host, redact, url_encode, url_path, web_url};

@@ -8,7 +8,7 @@ mod wip;
 
 use crate::git::Change;
 use crate::repo::history::Mode;
-use crate::repo::{Action, Op, RepoData, RepoTab, Sel};
+use crate::repo::{Action, Op, RepoData, RepoTab, Sel, tools};
 use crate::theme::{self, icon};
 use egui::{Sense, Ui};
 
@@ -33,6 +33,24 @@ pub fn file_items(ui: &mut Ui, path: &str, acts: &mut Vec<Action>) {
     }
     if ui.button(format!("{} Blame", icon::USER_LIST)).clicked() {
         acts.push(Action::FileView(path.into(), Mode::Blame));
+    }
+}
+
+/// "Open in editor" (unless the file is deleted there) and the custom commands that take a {path}.
+pub fn open_items(ui: &mut Ui, d: &RepoData, sha: &str, path: &str, deleted: bool, acts: &mut Vec<Action>) {
+    if !deleted && ui.button(format!("{} Open in editor", icon::CODE)).on_hover_text("The working-tree file, in the editor from Settings → Tools").clicked() {
+        acts.push(Action::Editor(path.into()));
+    }
+    let vars = tools::Vars { branch: d.status.branch.clone().unwrap_or_default(), sha: sha.into(), path: path.into() };
+    custom_items(ui, tools::commands(Some("path")), &vars, acts);
+}
+
+/// Custom commands (Settings → Tools) as menu entries, run with `vars`.
+pub fn custom_items(ui: &mut Ui, cmds: Vec<tools::Custom>, vars: &tools::Vars, acts: &mut Vec<Action>) {
+    for c in cmds {
+        if ui.button(format!("{} {}", icon::TERMINAL, c.name)).on_hover_text(&c.command).clicked() {
+            acts.push(Action::Custom(c, vars.clone()));
+        }
     }
 }
 

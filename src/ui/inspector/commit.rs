@@ -1,7 +1,7 @@
 //! Inspector for a commit, stash or compare range: message, author, AI
 //! explanation and the changed files.
 
-use super::{file_items, file_row, permalink_items};
+use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::Change;
 use crate::repo::restore::restore_file;
@@ -158,6 +158,9 @@ impl RepoTab {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
                     file_items(ui, &c.path, acts);
+                    if let Some(d) = &self.data {
+                        open_items(ui, d, &info.id, &c.path, c.code == 'D', acts);
+                    }
                     if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && c.code != 'D') {
                         permalink_items(ui, d, &info.id, &c.path, acts);
                     }

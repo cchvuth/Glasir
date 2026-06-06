@@ -66,8 +66,13 @@ pub enum Action {
     Prompt(Prompt),
     Copy(String),
     Url(String),
-    /// Show a file in the file manager.
+    /// Show a file in the file manager ("" = open the repo folder).
     Reveal(String),
+    /// Open a file in the user's editor ("" = the repo folder).
+    Editor(String),
+    Terminal,
+    /// Run a custom command (Settings → Tools) with these placeholder values.
+    Custom(super::tools::Custom, super::tools::Vars),
     Jump(String),
     /// Ask Claude (streams into `RepoTab::ai`).
     Ai(ai::Purpose),

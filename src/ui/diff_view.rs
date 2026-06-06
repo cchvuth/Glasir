@@ -163,6 +163,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         }
         ui.label(RichText::new(&change.path).monospace().strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if worktree && change.code != 'D' && theme::pill(ui, icon::CODE).on_hover_text("Open in editor").clicked() {
+                acts.push(Action::Editor(change.path.clone()));
+            }
             if change.code != '?' && change.code != 'A' {
                 if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
                     acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));

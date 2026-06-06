@@ -221,6 +221,14 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     if c.parents.len() < 2 {
         patch_items(ui, std::slice::from_ref(&c.id), acts);
     }
+    let cmds = crate::repo::tools::commands(Some("sha"));
+    if !cmds.is_empty() {
+        ui.separator();
+        // {branch}: the branch at this commit, else the current one.
+        let branch = refs.iter().find(|r| r.kind == RefKind::Local).map(|r| r.name.clone()).or_else(|| d.status.branch.clone()).unwrap_or_default();
+        let vars = crate::repo::tools::Vars { branch, sha: c.id.clone(), path: String::new() };
+        crate::ui::inspector::custom_items(ui, cmds, &vars, acts);
+    }
 }
 
 pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {

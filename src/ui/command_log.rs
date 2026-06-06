@@ -1,4 +1,4 @@
-//! Bottom panel listing every git command Glasir ran (⇧⌘L).
+//! Bottom panel listing every git command (and custom command) Glasir ran (⇧⌘L).
 
 use crate::git;
 use crate::theme::{self, icon};
@@ -39,7 +39,7 @@ pub(super) fn show(ui: &mut Ui, open: &mut bool) {
                     let repo = e.cwd.file_name().map_or_else(|| e.cwd.display().to_string(), |f| f.to_string_lossy().into_owned());
                     ui.label(RichText::new(repo).small().color(theme::dim(ui)));
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        let text = RichText::new(format!("git {}", e.args.join(" "))).monospace();
+                        let text = RichText::new(format!("{} {}", e.prog, e.args.join(" "))).monospace();
                         let tip = format!("{}
 {status} · {} ms{}{}", e.cwd.display(), e.ms, if e.stderr.is_empty() { "" } else { "\n\n" }, e.stderr);
                         ui.add(egui::Label::new(text).truncate()).on_hover_text(tip);

@@ -117,6 +117,17 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
             v.push(item(icon::ARROW_CLOCKWISE, format!("Redo {l}"), "⇧⌘Z", Cmd::Tab(Action::Redo)));
         }
         v.push(item(icon::ARROWS_CLOCKWISE, "Refresh", "F5", Cmd::Tab(Action::Reload)));
+        v.push(item(icon::CODE, "Open in editor", "the repository folder", Cmd::Tab(Action::Editor(String::new()))));
+        v.push(item(icon::TERMINAL, "Open terminal here", "", Cmd::Tab(Action::Terminal)));
+        v.push(item(icon::FOLDER_OPEN, "Show in file manager", "", Cmd::Tab(Action::Reveal(String::new()))));
+        let vars = crate::repo::tools::Vars {
+            branch: d.status.branch.clone().unwrap_or_default(),
+            sha: d.status.head.clone().unwrap_or_default(),
+            path: String::new(),
+        };
+        for c in crate::repo::tools::commands(None) {
+            v.push(item(icon::TERMINAL, c.name.clone(), "custom command", Cmd::Tab(Action::Custom(c, vars.clone()))));
+        }
         v.push(item(icon::BROOM, "Clean up merged & gone branches…", "", Cmd::Tab(Action::Cleanup)));
         v.push(item(icon::LIFEBUOY, "Reflog — restore lost commits", "after a bad reset or rebase", Cmd::Tab(Action::Reflog)));
         if let Some((label, a)) = crate::repo::spinoff::move_unpushed(d) {
