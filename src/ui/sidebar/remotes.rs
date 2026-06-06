@@ -69,6 +69,9 @@ pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mu
             ui.add(TextEdit::singleline(&mut f.push).hint_text("same as URL").desired_width(f32::INFINITY));
             ui.end_row();
         });
+        if d.remotes.is_empty() && f.old.is_none() {
+            ui.label(RichText::new("Publishing? Create an empty repository on GitHub or GitHub Enterprise first (no README), then paste its URL. Push sends your branch there.").small().color(theme::dim(ui)));
+        }
         let problem = f.problem(d);
         let note = problem.map(String::from).or_else(|| git::web_url(f.url.trim()).map(|w| format!("{} {w}", icon::GLOBE)));
         if let Some(n) = note {

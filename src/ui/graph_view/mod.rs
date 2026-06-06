@@ -1,12 +1,9 @@
-//! The commit graph table: refs | graph | message | author | date.
-//! Only visible rows are laid out and painted, so 100k+ commits scroll smoothly.
-//!
-//! `mod.rs` paints the table and handles row clicks/keys; `search` is the ⌘F bar,
-//! `minimap` the rail at the right, `menus` the commit/WIP/multi-select context
-//! menus, `dnd` branch drag-and-drop, `hover` the ref-hover highlight, `empty`
-//! dates and initials.
+//! The commit graph table: refs | graph | message | author | date. Only visible rows are laid out
+//! and painted, so 100k+ commits scroll smoothly. Siblings: `search` (⌘F bar), `minimap`, `menus`,
+//! `dnd`, `hover`, `empty` (the first-commit guide).
 
 pub mod dnd;
+mod empty;
 pub mod hover;
 pub mod menus;
 mod minimap;
@@ -404,6 +401,11 @@ pub fn show(
             }
         });
     });
+    // No commits yet: the guide fills the space under the WIP row.
+    if d.log.is_empty() {
+        let r = egui::Rect::from_min_max(pos2(body.left(), body.top() + ROW * (n as f32) + 40.0), body.max);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| empty::first_commit_guide(ui, d, acts));
+    }
     if d.truncated && visible.end >= n {
         let btn = Rect::from_center_size(pos2(body.center().x, body.bottom() - 26.0), vec2(230.0, 32.0));
         let label = format!("{}  Load {} more commits", theme::icon::ARROW_DOWN, crate::repo::PAGE);

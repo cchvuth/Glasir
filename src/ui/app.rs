@@ -31,6 +31,8 @@ pub struct App {
     /// The OS draws glass behind the window, so the canvas stays translucent.
     pub(super) glass_backdrop: bool,
     pub(super) shortcuts: bool,
+    /// Screenshot harness: paint the drop hint without a drag.
+    pub(super) drop_hint_shot: bool,
 }
 
 impl App {
@@ -46,6 +48,7 @@ impl App {
             s.flavor = theme::Flavor::Daylight;
         }
         theme::apply(&cc.egui_ctx, s.flavor);
+        cc.egui_ctx.set_zoom_factor(s.zoom.clamp(0.5, 3.0));
         let shot = std::env::var("GLASIR_SCREENSHOT").ok().map(|p| (p, 0));
         #[cfg(target_os = "macos")]
         let glass_backdrop = s.native_glass && native_glass(cc);
@@ -66,6 +69,7 @@ impl App {
             focused: true,
             glass_backdrop,
             shortcuts: false,
+            drop_hint_shot: false,
             s,
         };
         let active = app.s.active;
@@ -82,6 +86,7 @@ impl App {
     }
 
     pub(super) fn open(&mut self, ctx: &egui::Context, path: &Path) {
+        let path = if path.is_file() { path.parent().unwrap_or(path) } else { path };
         match git::run(path, &["rev-parse", "--show-toplevel"]) {
             Ok(top) => {
                 let top = PathBuf::from(top.trim());
@@ -189,6 +194,21 @@ impl App {
 
 }
 
+fn drop_hint(ctx: &egui::Context, force: bool) {
+    if !force && ctx.input(|i| i.raw.hovered_files.is_empty()) {
+        return;
+    }
+    let screen = ctx.content_rect();
+    let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_hint")));
+    p.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(110));
+    let r = egui::Rect::from_center_size(screen.center(), egui::vec2(380.0, 120.0));
+    p.rect_filled(r, 18.0, ctx.global_style().visuals.window_fill);
+    p.rect_stroke(r.shrink(6.0), 14.0, egui::Stroke::new(2.0, theme::accent()), egui::StrokeKind::Inside);
+    let color = ctx.global_style().visuals.text_color();
+    p.text(r.center() - egui::vec2(0.0, 14.0), egui::Align2::CENTER_CENTER, icon::FOLDER_OPEN, egui::FontId::proportional(30.0), theme::accent());
+    p.text(r.center() + egui::vec2(0.0, 24.0), egui::Align2::CENTER_CENTER, "Drop a folder to open it as a repository", egui::FontId::proportional(15.0), color);
+}
+
 /// macOS 26+: put an NSGlassEffectView *behind* egui. window-vibrancy adds it as a
 /// subview, which AppKit composites above the Metal layer egui draws into, so
 /// we push its layer back with a negative zPosition.
@@ -222,6 +242,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         crate::repo::tools::set(&self.s.tools);
+        self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here
         // An op that added an undo step gets an Undo button on its toast.
         let mut msgs: Vec<(Msg, Option<(PathBuf, usize)>)> = vec![];
         for t in &mut self.tabs {
@@ -238,6 +259,9 @@ impl eframe::App for App {
         }
         for (m, undo) in msgs {
             self.toast_undo(&ctx, m.text, m.error, undo);
+        }
+        for p in ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()) {
+            self.open(&ctx, &p);
         }
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
         if focused && !self.focused
@@ -291,6 +315,7 @@ impl eframe::App for App {
         if self.shortcuts {
             self.shortcuts = super::shortcuts::show(&ctx);
         }
+        drop_hint(&ctx, self.drop_hint_shot);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
         graph_view::dnd::preview(&ctx);

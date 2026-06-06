@@ -20,6 +20,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("⌃Tab", "Next tab"),
     ("⌘,", "Settings"),
     ("F5 / ⌘R", "Refresh"),
+    ("⌘+ / ⌘- / ⌘0", "Zoom in / out / reset"),
     ("Esc", "Close diff / editor"),
     ("F7 / ⇧F7", "Next / previous change in a diff"),
 ];

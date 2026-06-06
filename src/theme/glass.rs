@@ -162,6 +162,16 @@ pub fn card<R>(ui: &mut Ui, opacity: u8, add: impl FnOnce(&mut Ui) -> R) -> R {
     r
 }
 
+/// A calm, centered empty state: a large accent glyph, a title and one line of help.
+/// Callers add their buttons below it.
+pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
+    ui.label(RichText::new(glyph).size(34.0).color(accent().gamma_multiply(0.85)));
+    ui.add_space(2.0);
+    ui.label(RichText::new(title).size(16.5).strong());
+    ui.add(egui::Label::new(RichText::new(help).color(dim(ui))).wrap());
+    ui.add_space(6.0);
+}
+
 /// Spinner caption, plus git's `--progress` as a slim bar once it reports a percentage.
 pub fn progress(ui: &mut Ui, label: &str, line: Option<String>) {
     ui.label(RichText::new(label).color(dim(ui)));

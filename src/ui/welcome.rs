@@ -52,6 +52,10 @@ impl App {
                     }
                 });
                 ui.add_space(22.0);
+                if self.s.tips {
+                    self.s.tips = tips(ui);
+                    ui.add_space(22.0);
+                }
                 if !self.s.recent.is_empty() {
                     ui.label(RichText::new("RECENT").small().strong().color(theme::dim(ui)));
                     ui.add_space(4.0);
@@ -149,6 +153,25 @@ impl App {
         }
     }
 
+}
+
+/// First-run tips in a glass strip; returns false once dismissed.
+fn tips(ui: &mut Ui) -> bool {
+    let mut keep = true;
+    ui.horizontal(|ui| {
+        ui.add_space((ui.available_width() - 760.0).max(0.0) / 2.0);
+        theme::group(ui, |ui| {
+            ui.add_space(6.0);
+            ui.label(RichText::new(icon::LIGHTBULB).color(theme::accent()).size(16.0));
+            for (keys, what) in [("⌘P", "run any command"), ("Drop a folder", "here to open it"), ("⌘Z", "undoes commits, rebases and discards"), ("?", "shows every shortcut")] {
+                ui.label(RichText::new(keys).strong());
+                ui.label(RichText::new(what).color(theme::dim(ui)));
+                ui.add_space(8.0);
+            }
+            keep = !theme::pill(ui, icon::X).on_hover_text("Hide these tips").clicked();
+        });
+    });
+    keep
 }
 
 fn home() -> Option<PathBuf> {

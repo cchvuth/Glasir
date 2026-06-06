@@ -39,6 +39,10 @@ pub struct Settings {
     /// Commit email rules, one `host -> @domain` per line (`repo::identity`).
     pub email_rules: String,
     pub tools: crate::repo::tools::Tools,
+    /// UI zoom (⌘+ / ⌘- / ⌘0).
+    pub zoom: f32,
+    /// The welcome page's first-run tips are still shown.
+    pub tips: bool,
 }
 
 impl Default for Settings {
@@ -62,6 +66,8 @@ impl Default for Settings {
             views: Default::default(),
             email_rules: String::new(),
             tools: Default::default(),
+            zoom: 1.0,
+            tips: true,
         }
     }
 }

@@ -21,7 +21,18 @@ impl RepoTab {
         match self.sel.clone() {
             Some(Sel::Wip) => self.wip_panel(ui, acts),
             Some(Sel::Commit(_) | Sel::Compare { .. }) => self.commit_panel(ui, acts),
-            None => {}
+            // A clean working tree (e.g. right after committing everything): a calm note.
+            None => {
+                let clean = self.data.as_ref().is_some_and(|d| !d.wip);
+                ui.add_space(ui.available_height() / 3.0);
+                ui.vertical_centered(|ui| {
+                    if clean {
+                        theme::empty_state(ui, icon::CHECK_CIRCLE, "Nothing to commit", "Your working tree is clean. Select a commit to see its details.");
+                    } else {
+                        theme::empty_state(ui, icon::CURSOR_CLICK, "Select a commit", "Its details, files and diffs show here.");
+                    }
+                });
+            }
         }
     }
 }
