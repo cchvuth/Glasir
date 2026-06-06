@@ -16,7 +16,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     t.ai_cfg.clone_from(&s.ai);
     t.email_rules.clone_from(&s.email_rules);
     crate::ai::set_enabled(s.ai.enabled);
-    egui::Panel::top("toolbar")
+    egui::Panel::top("toolbar").show_separator_line(false)
         .frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 4, bottom: 8 }))
         .show(ui, |ui| toolbar(ui, t, s, &mut acts));
     if t.data.is_none() {
@@ -27,11 +27,11 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             });
         });
     } else {
-        egui::Panel::left("sidebar")
+        egui::Panel::left("sidebar").show_separator_line(false)
             .default_size(250.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 5, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| sidebar::sidebar(ui, t.data.as_ref().unwrap(), &mut t.filter, &mut acts)));
-        egui::Panel::right("details")
+        egui::Panel::right("details").show_separator_line(false)
             .default_size(390.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut acts)));

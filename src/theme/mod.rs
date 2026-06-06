@@ -265,6 +265,8 @@ pub fn apply(ctx: &egui::Context, f: Flavor) {
     }
     v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, w(18));
     v.widgets.noninteractive.corner_radius = CornerRadius::same(10);
+    // Glass edges already separate things; no indent rule under open sections.
+    v.indent_has_left_vline = false;
     let theme = if light { egui::Theme::Light } else { egui::Theme::Dark };
     ctx.set_theme(theme);
     ctx.set_visuals_of(theme, v);

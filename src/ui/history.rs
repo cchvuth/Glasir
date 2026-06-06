@@ -29,7 +29,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, acts: &mut Vec<Action>) -> bool {
         ui.label(RichText::new(title).strong());
         ui.label(RichText::new(&fv.path).monospace().color(theme::dim(ui)));
     });
-    ui.separator();
+    ui.add_space(6.0);
     let data = match &fv.data {
         None => {
             ui.centered_and_justified(|ui| ui.spinner());

@@ -166,10 +166,10 @@ impl App {
                 });
 
                 ui.add_space(10.0);
-                ui.separator();
+                ui.add_space(6.0);
                 tools_section(ui, &mut s.tools, &st.editor, st.terminal);
                 ui.add_space(10.0);
-                ui.separator();
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} AI (Claude)", icon::SPARKLE)).strong());
                     ui.checkbox(&mut s.ai.enabled, "Enable AI features").on_hover_text("Off: every AI button and menu item is hidden");
@@ -251,7 +251,7 @@ impl App {
                 }
             });
             ui.add_space(8.0);
-            ui.separator();
+            ui.add_space(4.0);
             if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                 close = true;
             }

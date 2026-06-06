@@ -278,7 +278,7 @@ impl eframe::App for App {
 
         theme::canvas(ui.painter(), ui.max_rect(), self.glass_backdrop);
         let left = if cfg!(target_os = "macos") { 84 } else { 12 };
-        egui::Panel::top("tabs")
+        egui::Panel::top("tabs").show_separator_line(false)
             .frame(Frame::NONE.inner_margin(Margin { left, right: 12, top: 7, bottom: 4 }))
             .show(ui, |ui| self.tab_bar(ui));
         if let Some(w) = Task::poll(&mut self.git_check) {
@@ -286,7 +286,7 @@ impl eframe::App for App {
         }
         if let Some(w) = &self.git_warn {
             let mut dismiss = false;
-            egui::Panel::top("git_warn").frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 2, bottom: 6 })).show(ui, |ui| {
+            egui::Panel::top("git_warn").show_separator_line(false).frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 2, bottom: 6 })).show(ui, |ui| {
                 theme::group(ui, |ui| {
                     ui.add_space(6.0);
                     ui.label(RichText::new(icon::WARNING).color(theme::MOD).size(16.0));
@@ -299,7 +299,7 @@ impl eframe::App for App {
             }
         }
         if self.show_log {
-            egui::Panel::bottom("cmdlog")
+            egui::Panel::bottom("cmdlog").show_separator_line(false)
                 .resizable(true)
                 .default_size(230.0)
                 .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 12, top: 0, bottom: 12 }))

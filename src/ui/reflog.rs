@@ -76,7 +76,7 @@ pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) 
             None => _ = ui.label(RichText::new("Select an entry to see its commit and restore it; right-click for more.").color(theme::dim(ui))),
         }
     });
-    ui.separator();
+    ui.add_space(6.0);
     let v = match &rl.entries {
         None => {
             ui.centered_and_justified(|ui| ui.spinner());

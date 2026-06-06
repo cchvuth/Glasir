@@ -59,7 +59,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
             }
         });
     });
-    ui.separator();
+    ui.add_space(6.0);
     let Some(d) = &ed.data else {
         ui.centered_and_justified(|ui| ui.spinner());
         return close;

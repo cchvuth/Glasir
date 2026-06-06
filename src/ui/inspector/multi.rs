@@ -34,7 +34,7 @@ impl RepoTab {
                 acts.push(Action::Copy(ids.join("\n")));
             }
         });
-        ui.separator();
+        ui.add_space(6.0);
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             for id in &ids {
                 let c = d.row_of.get(id).and_then(|&r| d.commit(r));

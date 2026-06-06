@@ -135,7 +135,7 @@ impl RepoTab {
                 });
             }); }
             ui.add_space(8.0);
-            ui.separator();
+            ui.add_space(2.0);
             let n = info.files.len() + info.untracked.len();
             ui.label(RichText::new(format!("{n} changed file{}", if n == 1 { "" } else { "s" })).small().strong());
             let stash = self.data.as_ref().filter(|d| d.stashes.iter().any(|s| s.id == info.id));

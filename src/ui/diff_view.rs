@@ -210,7 +210,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         ui.add_space(4.0);
         ui.horizontal(|ui| view_controls(ui, ds, split, worktree && change.code != '?', &starts, anchor, &mut nav, acts));
     }
-    ui.separator();
+    ui.add_space(6.0);
 
     let f = match &ds.file {
         None => {

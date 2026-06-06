@@ -210,6 +210,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&up);
     }
 
+    /// A local-only repo gets its first remote (a freshly created, empty one) and
+    /// publishes to it: the fetch of the empty remote succeeds, the push sets upstream.
+    #[test]
+    fn add_origin_then_first_push() {
+        let up = scratch("first-push-up");
+        sh(&up, &["init", "-q", "--bare"]);
+        let dir = scratch("first-push");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        let load = || load_all(&dir, 100, View::default()).unwrap();
+        let d = load();
+        assert!(d.remotes.is_empty() && d.push_op(false).is_none());
+        let mut f = Form::add(&d);
+        f.url = up.to_string_lossy().into();
+        exec(&dir, &f.op().unwrap()).unwrap();
+        let op = load().push_op(false).unwrap();
+        assert_eq!(op.cmds[0], ["push", "--progress", "-u", "origin", "main"]);
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/main");
+        assert_eq!(sh(&up, &["rev-parse", "main"]), sh(&dir, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
+
     /// GitHub publishes pull requests as `refs/pull/<n>/head`: check one out, list them all.
     #[test]
     fn check_out_pull_requests() {

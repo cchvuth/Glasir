@@ -103,7 +103,7 @@ impl RepoTab {
         let generating = matches!(self.ai_busy(), Some(Purpose::CommitMessage { .. }));
         let ai_on = crate::ai::enabled();
         let mut commit = false;
-        egui::Panel::bottom("commit_box").frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
+        egui::Panel::bottom("commit_box").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Commit").small().strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

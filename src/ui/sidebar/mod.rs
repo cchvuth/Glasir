@@ -34,7 +34,9 @@ fn view_style(ui: &Ui, d: &RepoData, r: &crate::git::Ref, text: RichText) -> Ric
 /// A thin line between the pinned default/long-lived branches and the rest.
 fn pinned_separator(ui: &mut Ui, d: &RepoData, i: usize, names: &[&str]) {
     if i > 0 && d.branch_rank(names[i - 1]) < 2 && d.branch_rank(names[i]) == 2 {
-        ui.separator();
+        let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::hover());
+        let c = ui.visuals().widgets.noninteractive.fg_stroke.color.gamma_multiply(0.12);
+        ui.painter().hline(r.x_range().shrink(8.0), r.center().y, egui::Stroke::new(1.0, c));
     }
 }
 
