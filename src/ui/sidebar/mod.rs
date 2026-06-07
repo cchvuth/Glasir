@@ -59,7 +59,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
         if theme::pill(ui, icon::BROOM).on_hover_text("Clean up merged & gone branches").clicked() {
             acts.push(Action::Cleanup);
         }
-        theme::rest(ui, |ui| ui.add(TextEdit::singleline(filter).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width())));
+        theme::rest(ui, |ui| ui.add(TextEdit::singleline(filter).margin(crate::theme::INPUT_MARGIN).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width())));
     });
     ui.add_space(4.0);
     let f = filter.as_str();

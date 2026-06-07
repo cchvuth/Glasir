@@ -13,7 +13,7 @@ pub fn run(prompt: String) -> eframe::Result {
     let res = eframe::run_ui_native("Glasir askpass", opts, move |ui, _| {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.label(prompt.trim());
-            ui.add(egui::TextEdit::singleline(&mut answer).password(secret).desired_width(f32::INFINITY)).request_focus();
+            ui.add(egui::TextEdit::singleline(&mut answer).margin(crate::theme::INPUT_MARGIN).password(secret).desired_width(f32::INFINITY)).request_focus();
             ui.horizontal(|ui| {
                 if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     println!("{answer}");

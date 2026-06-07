@@ -26,7 +26,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
         theme::rest(ui, |ui| {
             ui.label(egui::RichText::new(icon::MAGNIFYING_GLASS).color(theme::dim(ui)));
             let te = ui.add(
-                egui::TextEdit::singleline(&mut s.query).hint_text("Search commits: message, author, SHA").desired_width(ui.available_width().min(320.0)),
+                egui::TextEdit::singleline(&mut s.query).margin(crate::theme::INPUT_MARGIN).hint_text("Search commits: message, author, SHA").desired_width(ui.available_width().min(320.0)),
             );
             if std::mem::take(&mut s.focus) {
                 te.request_focus();

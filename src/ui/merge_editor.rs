@@ -222,7 +222,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
         .inner_margin(6)
         .show(ui, |ui| {
             area.show(ui, |ui| {
-                let te = TextEdit::multiline(&mut ed.output).code_editor().frame(egui::Frame::NONE).min_size(ui.available_size()).layouter(&mut layouter);
+                let te = TextEdit::multiline(&mut ed.output).code_editor().frame(egui::Frame::NONE.inner_margin(crate::theme::INPUT_MARGIN)).min_size(ui.available_size()).layouter(&mut layouter);
                 ui.add_enabled(!thinking, te).changed()
             })
             .inner

@@ -153,7 +153,7 @@ pub fn card<R>(ui: &mut Ui, opacity: u8, add: impl FnOnce(&mut Ui) -> R) -> R {
     let rect = ui.max_rect();
     glass(ui, rect, 18.0, opacity);
     let r = ui
-        .scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 10.0))), |ui| {
+        .scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 12.0))), |ui| {
             ui.set_clip_rect(rect.shrink(1.0));
             add(ui)
         })

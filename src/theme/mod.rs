@@ -7,6 +7,10 @@
 
 mod glass;
 
+/// Inner margin of every text field: room around the text, mostly sideways
+/// (egui's default of 4 px puts the text against a capsule's edge).
+pub const INPUT_MARGIN: egui::Margin = egui::Margin::symmetric(12, 6);
+
 pub use glass::{bar, bar_h, canvas, canvas_of, card, empty_state, glass_shapes, group, pill, primary, progress, rest, set_transparency, slider};
 
 use egui::epaint::Shadow;
@@ -279,10 +283,10 @@ pub fn apply(ctx: &egui::Context, f: Flavor) {
             (TextStyle::Monospace, FontId::monospace(12.5)),
         ]
         .into();
-        s.spacing.item_spacing = vec2(8.0, 6.0);
-        s.spacing.button_padding = vec2(10.0, 5.0);
-        s.spacing.interact_size.y = 26.0;
-        s.spacing.menu_margin = egui::Margin::same(8);
-        s.spacing.window_margin = egui::Margin::same(18);
+        s.spacing.item_spacing = vec2(10.0, 6.0);
+        s.spacing.button_padding = vec2(14.0, 6.0);
+        s.spacing.interact_size.y = 28.0;
+        s.spacing.menu_margin = egui::Margin::symmetric(12, 8);
+        s.spacing.window_margin = egui::Margin::same(22);
     });
 }

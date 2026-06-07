@@ -50,7 +50,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                             }
                         });
                     });
-                    ui.add(TextEdit::multiline(&mut c.message).hint_text("Commit message").desired_rows(1).desired_width(f32::INFINITY));
+                    ui.add(TextEdit::multiline(&mut c.message).margin(crate::theme::INPUT_MARGIN).hint_text("Commit message").desired_rows(1).desired_width(f32::INFINITY));
                     for &u in &c.units {
                         let unit = &p.units[u];
                         ui.horizontal(|ui| {

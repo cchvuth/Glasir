@@ -246,7 +246,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette, all: Vec<Item>) -> Option<Opti
                 .hint_text(format!("{}  Type a command, branch or repository…", icon::MAGNIFYING_GLASS))
                 .font(egui::TextStyle::Heading)
                 .desired_width(f32::INFINITY)
-                .frame(egui::Frame::NONE),
+                .frame(egui::Frame::NONE.inner_margin(theme::INPUT_MARGIN)),
         );
         te.request_focus();
         if te.changed() {

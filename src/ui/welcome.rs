@@ -105,10 +105,10 @@ impl App {
             ui.heading("Clone a repository");
             ui.add_space(6.0);
             ui.label("Repository URL (HTTPS or SSH — github.com or GitHub Enterprise)");
-            ui.add(TextEdit::singleline(&mut c.url).hint_text("https://github.example.com/org/repo.git").desired_width(f32::INFINITY));
+            ui.add(TextEdit::singleline(&mut c.url).margin(crate::theme::INPUT_MARGIN).hint_text("https://github.example.com/org/repo.git").desired_width(f32::INFINITY));
             ui.label("Clone into");
             ui.horizontal(|ui| {
-                ui.add(TextEdit::singleline(&mut c.dir).desired_width(360.0));
+                ui.add(TextEdit::singleline(&mut c.dir).margin(crate::theme::INPUT_MARGIN).desired_width(360.0));
                 if ui.button("Browse…").clicked()
                     && let Some(p) = rfd::FileDialog::new().pick_folder()
                 {

@@ -57,16 +57,16 @@ pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mu
         ui.add_space(6.0);
         egui::Grid::new("remote_form_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label("Name");
-            let name = ui.add(TextEdit::singleline(&mut f.name).hint_text("upstream").desired_width(f32::INFINITY));
+            let name = ui.add(TextEdit::singleline(&mut f.name).margin(crate::theme::INPUT_MARGIN).hint_text("upstream").desired_width(f32::INFINITY));
             if f.old.is_none() && ui.memory(|m| m.focused().is_none()) {
                 name.request_focus();
             }
             ui.end_row();
             ui.label("URL");
-            ui.add(TextEdit::singleline(&mut f.url).hint_text("https://ghe.corp.example/org/repo.git or git@…").desired_width(f32::INFINITY));
+            ui.add(TextEdit::singleline(&mut f.url).margin(crate::theme::INPUT_MARGIN).hint_text("https://ghe.corp.example/org/repo.git or git@…").desired_width(f32::INFINITY));
             ui.end_row();
             ui.label("Push URL");
-            ui.add(TextEdit::singleline(&mut f.push).hint_text("same as URL").desired_width(f32::INFINITY));
+            ui.add(TextEdit::singleline(&mut f.push).margin(crate::theme::INPUT_MARGIN).hint_text("same as URL").desired_width(f32::INFINITY));
             ui.end_row();
         });
         if d.remotes.is_empty() && f.old.is_none() {

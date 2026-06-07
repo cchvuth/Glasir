@@ -105,7 +105,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                     });
                 });
                 if it.act == Act::Reword {
-                    ui.add(TextEdit::multiline(&mut it.message).desired_rows(3).desired_width(f32::INFINITY));
+                    ui.add(TextEdit::multiline(&mut it.message).margin(crate::theme::INPUT_MARGIN).desired_rows(3).desired_width(f32::INFINITY));
                 }
             });
             if r.response.interact(egui::Sense::click()).clicked() {

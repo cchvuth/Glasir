@@ -159,7 +159,7 @@ impl App {
                     ui.end_row();
                     ui.label("Commit email rules");
                     ui.vertical(|ui| {
-                        ui.add(TextEdit::multiline(&mut s.email_rules).hint_text("ghe.corp.example -> @corp.example").desired_rows(2).desired_width(330.0));
+                        ui.add(TextEdit::multiline(&mut s.email_rules).margin(crate::theme::INPUT_MARGIN).hint_text("ghe.corp.example -> @corp.example").desired_rows(2).desired_width(330.0));
                         ui.label(RichText::new("Warns in the commit box when a repo on that host commits with another email").small().color(theme::dim(ui)));
                     });
                     ui.end_row();
@@ -185,7 +185,7 @@ impl App {
                 egui::Grid::new("ai_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
                     ui.label("Claude token");
                     ui.horizontal(|ui| {
-                        ui.add(TextEdit::singleline(&mut st.token).password(true).hint_text("Paste token").desired_width(250.0));
+                        ui.add(TextEdit::singleline(&mut st.token).margin(crate::theme::INPUT_MARGIN).password(true).hint_text("Paste token").desired_width(250.0));
                         if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
                             match ai::save_token(&st.token) {
                                 Ok(()) => {
@@ -227,11 +227,11 @@ impl App {
                                 ui.selectable_value(&mut s.ai.model, m.to_owned(), m);
                             }
                         });
-                        ui.add(TextEdit::singleline(&mut s.ai.model).desired_width(150.0)).on_hover_text("Any model id");
+                        ui.add(TextEdit::singleline(&mut s.ai.model).margin(crate::theme::INPUT_MARGIN).desired_width(150.0)).on_hover_text("Any model id");
                     });
                     ui.end_row();
                     ui.label("API base URL");
-                    ui.add(TextEdit::singleline(&mut s.ai.base_url).desired_width(330.0))
+                    ui.add(TextEdit::singleline(&mut s.ai.base_url).margin(crate::theme::INPUT_MARGIN).desired_width(330.0))
                         .on_hover_text("Change only for an Anthropic-compatible gateway");
                     ui.end_row();
                 });
@@ -278,11 +278,11 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
     ui.add_space(4.0);
     egui::Grid::new("tools_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
         ui.label("Editor");
-        ui.add(TextEdit::singleline(&mut t.editor).hint_text(editor).desired_width(330.0))
+        ui.add(TextEdit::singleline(&mut t.editor).margin(crate::theme::INPUT_MARGIN).hint_text(editor).desired_width(330.0))
             .on_hover_text("Opens files and the repository (toolbar, ⌘P, file menus). {path} is the file; without it the path is appended. Empty = detected.");
         ui.end_row();
         ui.label("Terminal");
-        ui.add(TextEdit::singleline(&mut t.terminal).hint_text(terminal).desired_width(330.0))
+        ui.add(TextEdit::singleline(&mut t.terminal).margin(crate::theme::INPUT_MARGIN).hint_text(terminal).desired_width(330.0))
             .on_hover_text("Opened in the repository folder ({path}). Empty = your platform's terminal.");
         ui.end_row();
     });
@@ -297,8 +297,8 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
     let mut remove = None;
     for (i, c) in t.commands.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            ui.add(TextEdit::singleline(&mut c.name).hint_text("Name").desired_width(130.0));
-            ui.add(TextEdit::singleline(&mut c.command).hint_text("git push origin HEAD:refs/for/{branch}").code_editor().desired_width(320.0));
+            ui.add(TextEdit::singleline(&mut c.name).margin(crate::theme::INPUT_MARGIN).hint_text("Name").desired_width(130.0));
+            ui.add(TextEdit::singleline(&mut c.command).margin(crate::theme::INPUT_MARGIN).hint_text("git push origin HEAD:refs/for/{branch}").code_editor().desired_width(320.0));
             if theme::pill(ui, icon::TRASH).on_hover_text("Remove").clicked() {
                 remove = Some(i);
             }

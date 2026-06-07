@@ -15,9 +15,9 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     egui::Modal::new(Id::new("prompt")).show(ctx, |ui| {
         ui.set_width(360.0);
         ui.heading(&p.title);
-        let first = ui.add(TextEdit::singleline(&mut p.value).desired_width(f32::INFINITY));
+        let first = ui.add(TextEdit::singleline(&mut p.value).margin(crate::theme::INPUT_MARGIN).desired_width(f32::INFINITY));
         if let Some((hint, v2)) = &mut p.second {
-            ui.add(TextEdit::multiline(v2).hint_text(hint.as_str()).desired_rows(3).desired_width(f32::INFINITY));
+            ui.add(TextEdit::multiline(v2).margin(crate::theme::INPUT_MARGIN).hint_text(hint.as_str()).desired_rows(3).desired_width(f32::INFINITY));
         } else {
             first.request_focus();
         }
@@ -114,7 +114,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
         egui::ScrollArea::vertical().max_height(460.0).auto_shrink([false, true]).show(ui, |ui| {
             let mut text = job.text.as_str();
             let font = if matches!(job.purpose, ai::Purpose::Resolve(_)) { egui::TextStyle::Monospace } else { egui::TextStyle::Body };
-            ui.add(TextEdit::multiline(&mut text).font(font).desired_width(f32::INFINITY));
+            ui.add(TextEdit::multiline(&mut text).margin(crate::theme::INPUT_MARGIN).font(font).desired_width(f32::INFINITY));
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
