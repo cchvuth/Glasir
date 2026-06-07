@@ -154,56 +154,56 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         acts.push(Action::CloseDiff);
     }
-    ui.horizontal(|ui| {
-        if ui.button(icon::X).on_hover_text("Close (Esc)").clicked() {
-            acts.push(Action::CloseDiff);
+    theme::bar(ui, |ui| {
+        if worktree && change.code != 'D' && theme::pill(ui, icon::CODE).on_hover_text("Open in editor").clicked() {
+            acts.push(Action::Editor(change.path.clone()));
         }
-        if let Some(o) = &change.old_path {
-            ui.label(RichText::new(format!("{o} →")).monospace().color(theme::dim(ui)));
+        if change.code != '?' && change.code != 'A' {
+            if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
+                acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));
+            }
+            if theme::pill(ui, icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("File history").clicked() {
+                acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::History));
+            }
         }
-        ui.label(RichText::new(&change.path).monospace().strong());
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if worktree && change.code != 'D' && theme::pill(ui, icon::CODE).on_hover_text("Open in editor").clicked() {
-                acts.push(Action::Editor(change.path.clone()));
-            }
-            if change.code != '?' && change.code != 'A' {
-                if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
-                    acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));
+        if worktree {
+            let path = change.path.as_str();
+            if staged {
+                if ui.button("Unstage file").clicked() {
+                    acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", path]).light()));
                 }
-                if theme::pill(ui, icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("File history").clicked() {
-                    acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::History));
+            } else if ui.button("Stage file").clicked() {
+                acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", path]).light()));
+            }
+        }
+        if worktree && change.code != '?' && ds.opts.ignore_ws {
+            ui.label(RichText::new(format!("{} Line staging off", icon::INFO)).small().color(theme::MOD))
+                .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
+        }
+        if let (true, Some(f)) = (partial && !ds.picked.is_empty(), file) {
+            let n = ds.picked.len();
+            let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
+            if staged {
+                if ui.button(format!("Unstage {n} line(s)")).clicked() {
+                    acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &change.path));
                 }
-            }
-            if worktree {
-                let path = change.path.as_str();
-                if staged {
-                    if ui.button("Unstage file").clicked() {
-                        acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", path]).light()));
-                    }
-                } else if ui.button("Stage file").clicked() {
-                    acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", path]).light()));
+            } else {
+                if ui.button(format!("Discard {n} line(s)")).clicked() {
+                    acts.push(apply_op("Discard lines", partial_patch(f, pick, true), &["--reverse"], &change.path));
                 }
-            }
-            if worktree && change.code != '?' && ds.opts.ignore_ws {
-                ui.label(RichText::new(format!("{} Line staging off", icon::INFO)).small().color(theme::MOD))
-                    .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
-            }
-            if let (true, Some(f)) = (partial && !ds.picked.is_empty(), file) {
-                let n = ds.picked.len();
-                let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
-                if staged {
-                    if ui.button(format!("Unstage {n} line(s)")).clicked() {
-                        acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &change.path));
-                    }
-                } else {
-                    if ui.button(format!("Discard {n} line(s)")).clicked() {
-                        acts.push(apply_op("Discard lines", partial_patch(f, pick, true), &["--reverse"], &change.path));
-                    }
-                    if ui.button(format!("Stage {n} line(s)")).clicked() {
-                        acts.push(apply_op("Stage lines", partial_patch(f, pick, false), &["--cached"], &change.path));
-                    }
+                if ui.button(format!("Stage {n} line(s)")).clicked() {
+                    acts.push(apply_op("Stage lines", partial_patch(f, pick, false), &["--cached"], &change.path));
                 }
             }
+        }
+        theme::rest(ui, |ui| {
+            if ui.button(icon::X).on_hover_text("Close (Esc)").clicked() {
+                acts.push(Action::CloseDiff);
+            }
+            if let Some(o) = &change.old_path {
+                ui.label(RichText::new(format!("{o} →")).monospace().color(theme::dim(ui)));
+            }
+            ui.label(RichText::new(&change.path).monospace().strong());
         });
     });
     if ds.image.is_none() {

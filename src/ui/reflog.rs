@@ -26,7 +26,8 @@ fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action
         acts.push(prompt(format!("New branch at {short}"), "", Op::new("Create branch", &["branch", "{}", &e.id]).undo(Undo::Keep)));
     }
     if let Some(head) = d.status.branch.as_deref().filter(|_| d.status.head.as_deref() != Some(&e.id)) {
-        ui.menu_button(format!("{} Reset {head} here", icon::ARROW_U_UP_LEFT), |ui| {
+        // The branch name goes in the hover text: a long one would push the other buttons off-screen.
+        ui.menu_button(format!("{} Reset branch here", icon::ARROW_U_UP_LEFT), |ui| {
             for (mode, undo, hint) in [
                 ("--soft", Undo::Soft, "keep all changes staged"),
                 ("--mixed", Undo::Mixed, "keep changes in working directory"),
@@ -36,7 +37,9 @@ fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action
                     acts.push(Action::Git(Op::new(format!("Reset {head} to {short}"), &["reset", mode, &e.id]).undo(undo)));
                 }
             }
-        });
+        })
+        .response
+        .on_hover_text(format!("Reset {head} to {short}"));
     }
     if theme::pill(ui, format!("{} Check out", icon::ARROW_BEND_UP_RIGHT)).on_hover_text("Check out this commit (detached HEAD)").clicked() {
         acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &e.id]).undo(Undo::Keep)));

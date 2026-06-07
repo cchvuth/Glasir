@@ -27,7 +27,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, acts: &mut Vec<Action>) -> bool {
             Mode::Blame => format!("{} Blame", icon::USER_LIST),
         };
         ui.label(RichText::new(title).strong());
-        ui.label(RichText::new(&fv.path).monospace().color(theme::dim(ui)));
+        ui.add(egui::Label::new(RichText::new(&fv.path).monospace().color(theme::dim(ui))).truncate());
     });
     ui.add_space(6.0);
     let data = match &fv.data {

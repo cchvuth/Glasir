@@ -35,16 +35,8 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
     let mut close = false;
     let mut auto = false;
     let thinking = ai.is_some_and(|j| j.running() && j.purpose == ai::Purpose::Resolve(ed.path.clone()));
-    ui.horizontal(|ui| {
-        if theme::pill(ui, icon::X).on_hover_text("Close without saving (the conflict markers stay)").clicked() {
-            close = true;
-        }
-        ui.label(RichText::new(format!("{} Resolve conflict", icon::GIT_MERGE)).strong());
-        ui.label(RichText::new(&ed.path).monospace().color(theme::dim(ui)));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ed.data.as_ref().is_none_or(|d| d.whole.is_some()) {
-                return;
-            }
+    theme::bar(ui, |ui| {
+        if ed.data.as_ref().is_some_and(|d| d.whole.is_none()) {
             if !ai::enabled() {
             } else if thinking {
                 ui.label(RichText::new("Claude is resolving…").small().color(theme::dim(ui)));
@@ -57,6 +49,13 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
             if b.on_hover_text("Resolve conflicts whose sides are identical or differ only in whitespace (keeps current)").clicked() {
                 auto = true;
             }
+        }
+        theme::rest(ui, |ui| {
+            if theme::pill(ui, icon::X).on_hover_text("Close without saving (the conflict markers stay)").clicked() {
+                close = true;
+            }
+            ui.label(RichText::new(format!("{} Resolve conflict", icon::GIT_MERGE)).strong());
+            ui.label(RichText::new(&ed.path).monospace().color(theme::dim(ui)));
         });
     });
     ui.add_space(6.0);

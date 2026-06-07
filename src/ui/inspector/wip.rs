@@ -140,7 +140,10 @@ impl RepoTab {
                 ui.add(TextEdit::singleline(&mut self.summary).hint_text("Summary").desired_width(ui.available_width() - 30.0));
                 ui.label(RichText::new(format!("{n}")).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
             });
-            ui.add(TextEdit::multiline(&mut self.body).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
+            // Capped: a long message (amend, split, AI) must not push the Commit button off the card.
+            ScrollArea::vertical().id_salt("commit_body").max_height(160.0).show(ui, |ui| {
+                ui.add(TextEdit::multiline(&mut self.body).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
+            });
             let was = self.amend;
             // Nothing to amend before the first commit.
             if s.head.is_some() {
@@ -166,7 +169,7 @@ impl RepoTab {
             acts.push(Action::Git(self.commit_op()));
         }
         if ai_on {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let any = !s.staged.is_empty() || !s.unstaged.is_empty();
                 if self.composing() {
                     ui.spinner();

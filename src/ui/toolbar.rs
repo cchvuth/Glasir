@@ -7,84 +7,83 @@ use crate::git;
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pull_op, stash_op};
 use crate::theme::{self, icon};
 use crate::ui::settings::Settings;
-use egui::{Align, Button, Layout, RichText, Ui};
+use egui::{Button, RichText, Ui};
 
 pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Action>) {
-    ui.horizontal(|ui| {
-        ui.set_height(36.0);
-        ui.spacing_mut().item_spacing.x = 10.0;
+    ui.spacing_mut().item_spacing.x = 10.0;
+    theme::bar_h(ui, 36.0, |ui| {
         theme::group(ui, |ui| {
-            ui.add_space(6.0);
-            ui.label(RichText::new(&t.name).strong().size(14.5));
+            // Right to left: the overflow menu sits at the far right.
             if let Some(d) = &t.data {
-                let st = &d.status;
-                let branch = st.branch.clone().unwrap_or_else(|| {
-                    format!("detached @ {}", st.head.as_deref().map_or("—", |h| &h[..h.len().min(7)]))
-                });
-                let mut text = format!("{} {branch}", icon::GIT_BRANCH);
-                if st.ahead > 0 {
-                    text += &format!("  {}{}", icon::ARROW_UP, st.ahead);
-                }
-                if st.behind > 0 {
-                    text += &format!("  {}{}", icon::ARROW_DOWN, st.behind);
-                }
-                ui.label(RichText::new(text).color(theme::dim(ui)));
+                ui.menu_button(icon::DOTS_THREE, |ui| history_tools(ui, d, acts)).response.on_hover_text("History tools");
             }
-            ui.add_space(6.0);
+            if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
+                acts.push(Action::Reload);
+            }
+            ui.menu_button(icon::ARROW_SQUARE_OUT, |ui| open_items(ui, acts)).response.on_hover_text("Open in editor, terminal or file manager");
+            if let Some(web) = t.data.as_ref().and_then(|d| d.web())
+                && theme::pill(ui, icon::GLOBE).on_hover_text(format!("Open {web}")).clicked()
+            {
+                acts.push(Action::Url(web));
+            }
         });
-        let busy = t.busy().is_some();
-        ui.add_enabled_ui(!busy && t.data.is_some(), |ui| {
+        theme::rest(ui, |ui| {
             theme::group(ui, |ui| {
-                let undo = ui.add_enabled(t.undo_label().is_some(), Button::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
-                if undo.on_hover_text(t.undo_label().map_or("Nothing to undo".into(), |l| format!("Undo {l} (⌘Z)"))).clicked() {
-                    acts.push(Action::Undo);
-                }
-                let redo = ui.add_enabled(t.redo_label().is_some(), Button::new(format!("{} Redo", icon::ARROW_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
-                if redo.on_hover_text(t.redo_label().map_or("Nothing to redo".into(), |l| format!("Redo {l} (⇧⌘Z)"))).clicked() {
-                    acts.push(Action::Redo);
-                }
-            });
-            theme::group(ui, |ui| toolbar_remote(ui, t, s, acts));
-            theme::group(ui, |ui| toolbar_local(ui, acts));
-        });
-        if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
-            let chip = RichText::new(format!("{} {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
-                .color(theme::MOD);
-            theme::group(ui, |ui| ui.label(chip))
-                .on_hover_text(format!("Merging {target} now would conflict in:\n{}", files.join("\n")));
-        }
-        if let Some(e) = &t.fetch_failed {
-            let chip = RichText::new(format!("{} {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::MOD);
-            let r = theme::group(ui, |ui| theme::pill(ui, chip)).on_hover_text(format!("Background fetch failed:\n{}\n\nClick to fetch now (asks for credentials if needed).", e.trim()));
-            if r.clicked() && !busy {
-                acts.push(Action::Git(fetch_op()));
-            }
-        }
-        if let Some(label) = t.busy() {
-            ui.spinner();
-            theme::progress(ui, &format!("{label}…"), t.progress());
-            if t.cancellable() && theme::group(ui, |ui| theme::pill(ui, format!("{} Cancel", icon::STOP_CIRCLE))).clicked() {
-                acts.push(Action::Cancel);
-            }
-        } else if t.loading() {
-            ui.spinner();
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            theme::group(ui, |ui| {
-                // Right to left: the overflow menu sits at the far right.
+                ui.add_space(6.0);
+                ui.label(RichText::new(&t.name).strong().size(14.5));
                 if let Some(d) = &t.data {
-                    ui.menu_button(icon::DOTS_THREE, |ui| history_tools(ui, d, acts)).response.on_hover_text("History tools");
+                    let st = &d.status;
+                    let branch = st.branch.clone().unwrap_or_else(|| {
+                        format!("detached @ {}", st.head.as_deref().map_or("—", |h| &h[..h.len().min(7)]))
+                    });
+                    let mut text = format!("{} {branch}", icon::GIT_BRANCH);
+                    if st.ahead > 0 {
+                        text += &format!("  {}{}", icon::ARROW_UP, st.ahead);
+                    }
+                    if st.behind > 0 {
+                        text += &format!("  {}{}", icon::ARROW_DOWN, st.behind);
+                    }
+                    ui.label(RichText::new(text).color(theme::dim(ui)));
                 }
-                if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
-                    acts.push(Action::Reload);
-                }
-                ui.menu_button(icon::ARROW_SQUARE_OUT, |ui| open_items(ui, acts)).response.on_hover_text("Open in editor, terminal or file manager");
-                if let Some(web) = t.data.as_ref().and_then(|d| d.web())
-                    && theme::pill(ui, icon::GLOBE).on_hover_text(format!("Open {web}")).clicked()
-                {
-                    acts.push(Action::Url(web));
-                }
+                ui.add_space(6.0);
             });
+            let busy = t.busy().is_some();
+            ui.add_enabled_ui(!busy && t.data.is_some(), |ui| {
+                theme::group(ui, |ui| {
+                    let undo = ui.add_enabled(t.undo_label().is_some(), Button::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
+                    if undo.on_hover_text(t.undo_label().map_or("Nothing to undo".into(), |l| format!("Undo {l} (⌘Z)"))).clicked() {
+                        acts.push(Action::Undo);
+                    }
+                    let redo = ui.add_enabled(t.redo_label().is_some(), Button::new(format!("{} Redo", icon::ARROW_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
+                    if redo.on_hover_text(t.redo_label().map_or("Nothing to redo".into(), |l| format!("Redo {l} (⇧⌘Z)"))).clicked() {
+                        acts.push(Action::Redo);
+                    }
+                });
+                theme::group(ui, |ui| toolbar_remote(ui, t, s, acts));
+                theme::group(ui, |ui| toolbar_local(ui, acts));
+            });
+            if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
+                let chip = RichText::new(format!("{} {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
+                    .color(theme::MOD);
+                theme::group(ui, |ui| ui.label(chip))
+                    .on_hover_text(format!("Merging {target} now would conflict in:\n{}", files.join("\n")));
+            }
+            if let Some(e) = &t.fetch_failed {
+                let chip = RichText::new(format!("{} {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::MOD);
+                let r = theme::group(ui, |ui| theme::pill(ui, chip)).on_hover_text(format!("Background fetch failed:\n{}\n\nClick to fetch now (asks for credentials if needed).", e.trim()));
+                if r.clicked() && !busy {
+                    acts.push(Action::Git(fetch_op()));
+                }
+            }
+            if let Some(label) = t.busy() {
+                ui.spinner();
+                theme::progress(ui, &format!("{label}…"), t.progress());
+                if t.cancellable() && theme::group(ui, |ui| theme::pill(ui, format!("{} Cancel", icon::STOP_CIRCLE))).clicked() {
+                    acts.push(Action::Cancel);
+                }
+            } else if t.loading() {
+                ui.spinner();
+            }
         });
     });
 }

@@ -37,6 +37,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
         egui::Panel::right("details")
             .show_separator_line(false)
             .default_size(390.0)
+            .size_range(300.0..=720.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut acts)));
         egui::CentralPanel::default()

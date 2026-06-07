@@ -72,7 +72,7 @@ impl RepoTab {
         let open = self.diff.as_ref().map(|d| d.src.clone());
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(if compare.is_some() { "to" } else { "commit" }).color(theme::dim(ui)));
                 if ui.link(RichText::new(&info.id[..info.id.len().min(10)]).monospace()).on_hover_text("Copy full SHA").clicked() {
                     acts.push(Action::Copy(info.id.clone()));

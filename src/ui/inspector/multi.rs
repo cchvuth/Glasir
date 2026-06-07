@@ -40,7 +40,7 @@ impl RepoTab {
                 let c = d.row_of.get(id).and_then(|&r| d.commit(r));
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&id[..id.len().min(7)]).monospace().color(theme::dim(ui)));
-                    ui.label(c.map_or("", |c| c.summary.as_str()));
+                    ui.add(egui::Label::new(c.map_or("", |c| c.summary.as_str())).truncate());
                 });
             }
         });

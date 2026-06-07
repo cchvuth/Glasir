@@ -167,7 +167,12 @@ pub fn card<R>(ui: &mut Ui, opacity: u8, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// to right let a long path or name push the controls off-screen or widen the
 /// panel (a panel sizes itself to its content, so it can even grow every frame).
 pub fn bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let size = vec2(ui.available_width(), ui.spacing().interact_size.y + 6.0);
+    bar_h(ui, ui.spacing().interact_size.y + 6.0, add)
+}
+
+/// A [`bar`] of a given height (toolbars of glass groups are taller than a button).
+pub fn bar_h<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let size = vec2(ui.available_width(), height);
     ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), add).inner
 }
 

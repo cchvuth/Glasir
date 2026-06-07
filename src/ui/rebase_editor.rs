@@ -99,9 +99,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                     if it.act == Act::Drop {
                         text = text.strikethrough().color(theme::dim(ui));
                     }
-                    ui.label(text);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(RichText::new(&it.author).small().color(theme::dim(ui)));
+                        theme::rest(ui, |ui| ui.label(text));
                     });
                 });
                 if it.act == Act::Reword {
