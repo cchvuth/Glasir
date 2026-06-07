@@ -20,5 +20,5 @@ jobs:
         with:
           name: glasir-${{ runner.os }}-${{ runner.arch }}
           path: |
-            target/release/glasir
-            target/release/glasir.exe
+            target/release/Glasir
+            target/release/Glasir.exe
