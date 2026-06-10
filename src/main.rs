@@ -34,6 +34,7 @@ fn main() -> eframe::Result {
             .with_inner_size([1440.0, 880.0])
             .with_min_inner_size([900.0, 520.0])
             .with_title("Glasir")
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-512.png")).expect("bundled icon is a valid PNG"))
             .with_active(std::env::var_os("GLASIR_SCREENSHOT").is_none() && std::env::var_os("GLASIR_BACKGROUND").is_none())
             // macOS: unified title bar, content (and glass) runs under the traffic lights.
             .with_fullsize_content_view(true)
