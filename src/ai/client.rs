@@ -19,25 +19,42 @@ pub struct Config {
     pub base_url: String,
     /// Settings → "Enable AI features": off hides every AI button and menu item.
     pub enabled: bool,
+    /// Where the token was saved, so Settings can say so without reading the
+    /// keychain: `Some("")` = none saved, `None` = not known yet (older settings).
+    pub saved_in: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true }
+        Config { model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true, saved_in: None }
     }
 }
 
-/// Where the token comes from, for the settings screen.
-pub fn token_source() -> Option<&'static str> {
-    if env_token().is_some() {
-        Some("the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN environment variable")
-    } else if keychain_token().is_some() {
-        Some("the system keychain")
-    } else if plain_token().is_some() {
-        Some("a private file (no system keychain available)")
-    } else {
-        None
-    }
+pub const IN_KEYCHAIN: &str = "the system keychain";
+pub const IN_FILE: &str = "a private file (no system keychain available)";
+
+/// The environment variable the token comes from, if one is set.
+pub fn env_source() -> Option<&'static str> {
+    env_token().map(|_| "the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN environment variable")
+}
+
+/// The saved token and where it is, looked up at most once per run: macOS can
+/// ask for the user's password on every keychain read, so after the first one
+/// the token comes from memory (and Save / Remove update the memory too).
+static SAVED: std::sync::Mutex<Option<Option<(String, &'static str)>>> = std::sync::Mutex::new(None);
+
+fn saved() -> Option<(String, &'static str)> {
+    let mut s = SAVED.lock().unwrap_or_else(|e| e.into_inner());
+    s.get_or_insert_with(|| keychain_token().map(|t| (t, IN_KEYCHAIN)).or_else(|| plain_token().map(|t| (t, IN_FILE)))).clone()
+}
+
+fn remember(v: Option<(String, &'static str)>) {
+    *SAVED.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+}
+
+/// Where a token is saved (reads the keychain if this run hasn't yet).
+pub fn find_saved() -> Option<&'static str> {
+    saved().map(|(_, at)| at)
 }
 
 fn env_token() -> Option<(String, bool)> {
@@ -46,22 +63,88 @@ fn env_token() -> Option<(String, bool)> {
 }
 
 fn keychain_token() -> Option<String> {
-    let entry = keyring::Entry::new(KEYCHAIN.0, KEYCHAIN.1).ok()?;
-    entry.get_password().ok().or_else(|| {
+    keychain::get(KEYCHAIN.0).or_else(|| {
         // Carry over a token saved under the app's former name ("cuttle").
-        let old = keyring::Entry::new("cuttle", KEYCHAIN.1).ok()?;
-        let t = old.get_password().ok()?;
-        if entry.set_password(&t).is_ok() {
-            let _ = old.delete_credential();
+        let t = keychain::get("cuttle")?;
+        if keychain::set(&t).is_ok() {
+            let _ = keychain::delete("cuttle");
         }
         Some(t)
     })
 }
 
+/// macOS: the login keychain, via Apple's `security` tool. The keychain trusts an
+/// item's creator by code signature, which changes with every Glasir build; one
+/// "Always Allow" for `security` lasts.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use super::KEYCHAIN;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const SECURITY: &str = "/usr/bin/security";
+
+    pub fn get(service: &str) -> Option<String> {
+        let o = Command::new(SECURITY).args(["find-generic-password", "-s", service, "-a", KEYCHAIN.1, "-w"]).stderr(Stdio::null()).output().ok()?;
+        let t = String::from_utf8(o.stdout).ok()?.trim().to_owned();
+        (o.status.success() && !t.is_empty()).then_some(t)
+    }
+
+    pub fn set(token: &str) -> Result<(), String> {
+        set_in(KEYCHAIN.0, token)
+    }
+
+    pub(super) fn set_in(service: &str, token: &str) -> Result<(), String> {
+        if !token.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            return Err("the token contains unexpected characters".into());
+        }
+        delete(service)?; // a fresh item, owned by `security`
+        // The secret goes over stdin (`security -i`), never on a command line.
+        let mut c = Command::new(SECURITY).arg("-i").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+        let cmd = format!("add-generic-password -s {service} -a {} -w \"{token}\"\n", KEYCHAIN.1);
+        c.stdin.take().ok_or("no stdin")?.write_all(cmd.as_bytes()).map_err(|e| e.to_string())?;
+        let o = c.wait_with_output().map_err(|e| e.to_string())?;
+        // `security -i` exits 0 even when a command fails: read the item back.
+        match get(service) {
+            Some(t) if t == token => Ok(()),
+            _ => Err(format!("keychain: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        }
+    }
+
+    pub fn delete(service: &str) -> Result<(), String> {
+        let o = Command::new(SECURITY).args(["delete-generic-password", "-s", service, "-a", KEYCHAIN.1]).output().map_err(|e| e.to_string())?;
+        // 44: no such item.
+        match o.status.code() {
+            Some(0 | 44) => Ok(()),
+            _ => Err(String::from_utf8_lossy(&o.stderr).trim().to_owned()),
+        }
+    }
+}
+
+/// Windows Credential Manager / Linux Secret Service.
+#[cfg(not(target_os = "macos"))]
+mod keychain {
+    use super::KEYCHAIN;
+
+    pub fn get(service: &str) -> Option<String> {
+        keyring::Entry::new(service, KEYCHAIN.1).ok()?.get_password().ok()
+    }
+
+    pub fn set(token: &str) -> Result<(), String> {
+        keyring::Entry::new(KEYCHAIN.0, KEYCHAIN.1).and_then(|e| e.set_password(token)).map_err(|e| e.to_string())
+    }
+
+    pub fn delete(service: &str) -> Result<(), String> {
+        match keyring::Entry::new(service, KEYCHAIN.1).and_then(|e| e.delete_credential()) {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
 /// `(token, bearer)`: OAuth tokens (`sk-ant-oat…`) authenticate with `Authorization: Bearer`.
 fn token() -> Option<(String, bool)> {
-    let stored = keychain_token().or_else(plain_token);
-    env_token().or_else(|| stored.map(|t| {
+    env_token().or_else(|| saved().map(|(t, _)| {
         let bearer = t.starts_with("sk-ant-oat");
         (t, bearer)
     }))
@@ -85,25 +168,35 @@ pub fn save_plain_token(token: &str) -> Res<()> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
     use std::io::Write;
-    o.open(&p).and_then(|mut f| f.write_all(token.trim().as_bytes())).map_err(|e| e.to_string())
+    o.open(&p).and_then(|mut f| f.write_all(token.trim().as_bytes())).map_err(|e| e.to_string())?;
+    remember(Some((token.trim().to_owned(), IN_FILE)));
+    Ok(())
 }
 
 pub fn remove_plain_token() {
     if let Some(p) = plain_path() {
         let _ = std::fs::remove_file(p);
     }
+    if find_saved_cached() == Some(IN_FILE) {
+        remember(None);
+    }
+}
+
+/// Where the token is saved, only if this run already looked (never reads).
+fn find_saved_cached() -> Option<&'static str> {
+    SAVED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|v| v.as_ref().map(|(_, at)| *at))
 }
 
 /// Stores the token in the system keychain (empty = remove).
 pub fn save_token(token: &str) -> Res<()> {
-    let e = keyring::Entry::new(KEYCHAIN.0, KEYCHAIN.1).map_err(|e| e.to_string())?;
     if token.trim().is_empty() {
-        return match e.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(err.to_string()),
-        };
+        keychain::delete(KEYCHAIN.0)?;
+        remember(None);
+        return Ok(());
     }
-    e.set_password(token.trim()).map_err(|e| e.to_string())
+    keychain::set(token.trim())?;
+    remember(Some((token.trim().to_owned(), IN_KEYCHAIN)));
+    Ok(())
 }
 
 pub(super) enum Ev {
@@ -238,6 +331,23 @@ pub(super) fn complete(
 
 #[cfg(test)]
 mod tests {
+    /// Real login keychain, under a throwaway service name: `cargo test -- --ignored keychain`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn keychain_roundtrip() {
+        use super::keychain::{delete, get, set_in};
+        let svc = "glasir-selftest";
+        set_in(svc, "sk-ant-test-123_abc").unwrap();
+        assert_eq!(get(svc).as_deref(), Some("sk-ant-test-123_abc"));
+        set_in(svc, "sk-ant-test-456").unwrap(); // replaces
+        assert_eq!(get(svc).as_deref(), Some("sk-ant-test-456"));
+        assert!(set_in(svc, "bad\" token").is_err());
+        delete(svc).unwrap();
+        delete(svc).unwrap(); // already gone: still fine
+        assert_eq!(get(svc), None);
+    }
+
     use super::*;
     use std::io::{Read, Write};
 

@@ -78,6 +78,7 @@ const LABEL_W: f32 = 130.0;
 #[derive(Default)]
 pub(super) struct SettingsDlg {
     token: String,
+    /// Where the token comes from (an environment variable or where it was saved).
     source: Option<&'static str>,
     note: Option<(bool, String)>,
     test: Option<Task<git::Res<String>>>,
@@ -89,7 +90,19 @@ pub(super) struct SettingsDlg {
 impl App {
     pub(super) fn open_settings(&mut self) {
         let (editor, terminal) = (tools::default_editor(), tools::default_terminal());
-        self.settings = Some(SettingsDlg { source: ai::token_source(), editor, terminal, ..Default::default() });
+        // Never reads the keychain (macOS would ask for the password): the saved
+        // location is remembered in the settings; older settings check once.
+        let ai = &mut self.s.ai;
+        if ai.saved_in.is_none() {
+            ai.saved_in = Some(ai::find_saved().unwrap_or_default().to_owned());
+        }
+        let saved = match ai.saved_in.as_deref() {
+            Some(s) if s == ai::IN_FILE => Some(ai::IN_FILE),
+            Some(s) if !s.is_empty() => Some(ai::IN_KEYCHAIN),
+            _ => None,
+        };
+        let source = ai::env_source().or(saved);
+        self.settings = Some(SettingsDlg { source, editor, terminal, ..Default::default() });
     }
 
     pub(super) fn settings_dialog(&mut self, ctx: &egui::Context) {
@@ -187,25 +200,34 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.add(TextEdit::singleline(&mut st.token).margin(crate::theme::INPUT_MARGIN).password(true).hint_text("Paste token").desired_width(250.0));
                         if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
-                            match ai::save_token(&st.token) {
+                            let saved = match ai::save_token(&st.token) {
                                 Ok(()) => {
                                     ai::remove_plain_token();
                                     st.note = Some((true, "Token saved to the system keychain.".into()));
+                                    Some(ai::IN_KEYCHAIN)
                                 }
-                                Err(e) => {
-                                    st.note = Some(match ai::save_plain_token(&st.token) {
-                                        Ok(()) => (false, format!("No system keychain ({e}); saved to a private file readable only by you.")),
-                                        Err(e2) => (false, format!("Could not save the token: {e}; {e2}")),
-                                    });
-                                }
-                            }
+                                Err(e) => match ai::save_plain_token(&st.token) {
+                                    Ok(()) => {
+                                        st.note = Some((false, format!("No system keychain ({e}); saved to a private file readable only by you.")));
+                                        Some(ai::IN_FILE)
+                                    }
+                                    Err(e2) => {
+                                        st.note = Some((false, format!("Could not save the token: {e}; {e2}")));
+                                        None
+                                    }
+                                },
+                            };
                             st.token.clear();
-                            st.source = ai::token_source();
+                            if let Some(at) = saved {
+                                s.ai.saved_in = Some(at.into());
+                                st.source = ai::env_source().or(Some(at));
+                            }
                         }
                         if st.source.is_some() && ui.button("Remove").clicked() {
                             let _ = ai::save_token("");
                             ai::remove_plain_token();
-                            st.source = ai::token_source();
+                            s.ai.saved_in = Some(String::new());
+                            st.source = ai::env_source();
                             st.note = Some((true, "Stored token removed.".into()));
                         }
                     });

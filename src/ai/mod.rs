@@ -6,7 +6,7 @@
 mod client;
 mod tasks;
 
-pub use client::{Config, MODELS, remove_plain_token, save_plain_token, save_token, token_source};
+pub use client::{Config, IN_FILE, IN_KEYCHAIN, MODELS, env_source, find_saved, remove_plain_token, save_plain_token, save_token};
 pub use tasks::{Job, Purpose, start, test};
 
 use std::sync::atomic::{AtomicBool, Ordering};
