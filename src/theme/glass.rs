@@ -203,7 +203,13 @@ pub fn bar<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// A [`bar`] of a given height (toolbars of glass groups are taller than a button).
 pub fn bar_h<R>(ui: &mut Ui, height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let size = vec2(ui.available_width(), height);
-    ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), add).inner
+    ui.allocate_ui_with_layout(size, egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Always the full height: a row sized to its content changes height
+        // when, say, a spinner appears, and everything below jumps.
+        ui.set_min_height(height);
+        add(ui)
+    })
+    .inner
 }
 
 /// The leading part of a [`bar`]: left to right in the width the controls left
