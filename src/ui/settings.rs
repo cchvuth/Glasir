@@ -354,8 +354,7 @@ fn flavor_swatch(ui: &mut Ui, f: theme::Flavor, selected: bool) -> egui::Respons
     let (rect, resp) = ui.allocate_exact_size(vec2(86.0, 62.0), Sense::click());
     let p = ui.painter().with_clip_rect(rect);
     let r = rect.shrink(2.0);
-    p.rect_filled(r, 10.0, f.palette().base);
-    theme::canvas_of(&p.with_clip_rect(r.shrink(1.0)), r, false, f);
+    theme::canvas_in(&p, r, 10.0, false, f);
     let [gr, gg, gb] = f.palette().glass;
     let card = egui::Rect::from_min_size(r.min + vec2(8.0, 8.0), vec2(r.width() - 16.0, 22.0));
     p.rect_filled(card, 7.0, egui::Color32::from_rgba_unmultiplied(gr, gg, gb, 200));

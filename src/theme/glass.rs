@@ -6,13 +6,37 @@ use super::{Flavor, Palette, accent, dark, dim, flavor};
 use egui::epaint::{Mesh, Shadow};
 use egui::{Color32, CornerRadius, Painter, Pos2, Rect, RichText, Shape, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
-fn radial(mesh: &mut Mesh, c: Pos2, r: f32, col: Color32) {
+/// A radial glow from `col` at `c` to transparent at radius `r`. With `round`
+/// = (rect, corner radius) the glow is trimmed to that rounded rectangle, its
+/// fade kept (painter clipping is rectangular only).
+fn radial(mesh: &mut Mesh, mut c: Pos2, r: f32, col: Color32, round: Option<(Rect, f32)>) {
+    if let Some((b, rad)) = round {
+        // Trimming walks rays from the centre, so the centre must be inside:
+        // a glow anchored past the edge moves onto it.
+        c = c.clamp(b.min + vec2(0.5, 0.5), b.max - vec2(0.5, 0.5));
+        while !inside_rounded(b, rad, c) {
+            c = c.lerp(b.center(), 0.1);
+        }
+    }
     let base = mesh.vertices.len() as u32;
     mesh.colored_vertex(c, col);
     let n = 64;
     for i in 0..=n {
         let a = i as f32 / n as f32 * std::f32::consts::TAU;
-        mesh.colored_vertex(c + vec2(a.cos(), a.sin()) * r, Color32::TRANSPARENT);
+        let rim = c + vec2(a.cos(), a.sin()) * r;
+        match round.filter(|&(b, rad)| !inside_rounded(b, rad, rim)) {
+            // Walk back along the ray to the edge; the colour there is the
+            // gradient's value at that distance.
+            Some((b, rad)) => {
+                let (mut lo, mut hi) = (0.0f32, 1.0f32);
+                for _ in 0..20 {
+                    let m = (lo + hi) / 2.0;
+                    if inside_rounded(b, rad, c + (rim - c) * m) { lo = m } else { hi = m }
+                }
+                mesh.colored_vertex(c + (rim - c) * lo, col.gamma_multiply(1.0 - lo));
+            }
+            None => mesh.colored_vertex(rim, Color32::TRANSPARENT),
+        }
     }
     for i in 0..n {
         mesh.add_triangle(base, base + 1 + i, base + 2 + i);
@@ -22,19 +46,25 @@ fn radial(mesh: &mut Mesh, c: Pos2, r: f32, col: Color32) {
 /// The lit backdrop the glass floats on. Over a native glass backdrop only a
 /// translucent tint is painted so the desktop shows through.
 pub fn canvas(p: &Painter, rect: Rect, backdrop: bool) {
-    canvas_of(p, rect, backdrop, flavor());
+    canvas_in(p, rect, 0.0, backdrop, flavor());
 }
 
-/// Paints a flavour's backdrop (also used for the swatches in Settings).
-pub fn canvas_of(p: &Painter, rect: Rect, backdrop: bool, f: Flavor) {
+fn inside_rounded(b: Rect, rad: f32, p: Pos2) -> bool {
+    let q = ((p - b.center()).abs() - (b.size() / 2.0 - vec2(rad, rad))).max(vec2(0.0, 0.0));
+    b.expand(0.01).contains(p) && q.length() <= rad
+}
+
+/// A flavour's backdrop, with rounded corners when `radius` > 0 (the Settings swatches).
+pub fn canvas_in(p: &Painter, rect: Rect, radius: f32, backdrop: bool, f: Flavor) {
     let Palette { base, blobs, .. } = f.palette();
     // Over the native glass backdrop the canvas itself becomes see-through too.
     let canvas_alpha = if backdrop { 0.55 * (1.0 - transparency()) } else { 1.0 };
-    p.rect_filled(rect, 0.0, base.gamma_multiply(canvas_alpha));
+    p.rect_filled(rect, radius, base.gamma_multiply(canvas_alpha));
     let mut mesh = Mesh::default();
     let s = rect.width().max(rect.height());
+    let round = (radius > 0.0).then_some((rect, radius));
     for ((x, y), r, [cr, cg, cb, ca]) in blobs {
-        radial(&mut mesh, rect.min + vec2(x * rect.width(), y * rect.height()), r * s, Color32::from_rgba_unmultiplied(cr, cg, cb, ca));
+        radial(&mut mesh, rect.min + vec2(x * rect.width(), y * rect.height()), r * s, Color32::from_rgba_unmultiplied(cr, cg, cb, ca), round);
     }
     p.add(mesh);
 }
