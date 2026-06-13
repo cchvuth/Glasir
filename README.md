@@ -1,7 +1,8 @@
+<p align="center"><img src="assets/icon.png" width="160" alt="Glasir icon: a glass leaf whose veins are a commit graph, with golden commits"></p>
+
 # Glasir
 
-*Glasir* — in Norse myth, the gleaming glass tree with golden leaves that stands
-before Valhalla. A glass interface over your branching history.
+*A glass interface over your branching history.*
 
 Glasir is a fast, free and open-source Git client with a modern commit graph,
 smart time-saving operations and optional Claude-powered helpers. Written in
@@ -12,6 +13,25 @@ It drives the real `git` CLI, so everything you configured for the terminal
 keeps working: credential helpers (Git Credential Manager, macOS Keychain,
 libsecret), SSH keys and agents, GitHub Enterprise SSO, hooks, LFS, commit
 signing, partial clones and `fsmonitor`.
+
+## Why "Glasir"?
+
+In Norse myth, **Glasir** (Old Norse *Glasir*, said roughly "GLAH-seer") is a tree
+of shining glass with leaves of red gold. It stands before the doors of Valhalla,
+Odin's hall, and Snorri Sturluson calls it the most beautiful tree among gods and
+men. Old poems quote it as *"Glasir stands with golden leaves before Sigtýr's
+halls"*, and skalds called gold itself "Glasir's foliage".
+
+The name fits a Git client:
+
+- **A tree.** Your repository's history is a tree of branches, and Glasir draws it
+  as one: lanes that fork and merge, every commit a leaf.
+- **Glass.** The interface is built from Liquid Glass: translucent panels over a
+  deep night sky.
+- **Golden leaves.** The commits you craft are the gold. Glasir's job is to make
+  them easy to shape, review and recover.
+- **Before the doors of the hall.** It stands at the entrance: the place you pass
+  through on the way into your code.
 
 ## Features
 
@@ -189,8 +209,12 @@ Requires Rust (stable) and git ≥ 2.38.
 
 ```sh
 cargo build --release
-./target/release/glasir [path/to/repo]
+./target/release/Glasir [path/to/repo]
 ```
+
+On macOS, `scripts/macos-app.sh` builds a proper **Glasir.app** (icon, name,
+version, ad-hoc signature) in `target/release/`; `scripts/macos-app.sh --install`
+also puts it in `/Applications`.
 
 ## AI setup
 
@@ -199,6 +223,11 @@ or an OAuth token (`sk-ant-oat…`, e.g. from `claude setup-token`). Alternative
 set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`. The model (default
 `claude-opus-5-5`) and API base URL (for Anthropic-compatible gateways) are
 configurable. Nothing is sent anywhere until you click an AI action.
+
+The token is read from the keychain once per run, on first use; opening
+Settings never reads it. On macOS it is stored through Apple's `security` tool,
+so updating Glasir doesn't make the keychain ask for your password again (a
+token saved by an older version may ask once: choose **Always Allow**).
 
 ## Keyboard shortcuts
 
