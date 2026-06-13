@@ -115,12 +115,15 @@ pub fn show(
 
     // Lanes wider than the graph column scroll sideways (trackpad / ⇧ wheel over
     // the graph, or the bar under it) instead of being cut off.
-    let lanes_w = d.graph.width as f32 * LANE + 16.0;
+    let lanes_w = d.graph.width as f32 * LANE + 12.0; // same padding as the auto-fit column
     let max_gx = (lanes_w - graph_w).max(0.0);
     let gx_id = egui::Id::new(("graph_x", &d.git_dir));
     let mut gx = ui.data(|m| m.get_temp::<f32>(gx_id)).unwrap_or(0.0);
-    if let Some(r) = *scroll_to {
-        // Jumping to a commit brings its lane into view too.
+    let sel_id = gx_id.with("sel");
+    let sel_moved = ui.data(|m| m.get_temp::<Option<usize>>(sel_id)) != Some(sel_row);
+    ui.data_mut(|m| m.insert_temp(sel_id, sel_row));
+    if let Some(r) = sel_row.filter(|_| sel_moved) {
+        // Selecting a commit (keys, ⌘F, a branch, the minimap) brings its lane into view.
         let cx = 8.0 + d.graph.nodes.get(r).map_or(0.0, |n| n.col as f32) * LANE + LANE / 2.0;
         let hi = (cx - LANE).max(0.0);
         gx = gx.clamp((cx - graph_w + LANE).min(hi), hi); // bounds never cross (f32::clamp panics)
@@ -132,23 +135,26 @@ pub fn show(
     let dim = theme::dim(ui);
     let heads = [(full.left(), x_graph, "BRANCH / TAG"), (x_graph, x_msg - 30.0, "GRAPH"), (x_msg, x_author, "COMMIT MESSAGE"), (x_author, x_date, "AUTHOR"), (x_date, full.right(), "DATE")];
     for (x, end, t) in heads {
-        // Each title stays inside its column, however narrow.
-        if end > x + 8.0 {
-            let clip = Rect::from_x_y_ranges(x..=end - 4.0, hdr.y_range());
-            p.with_clip_rect(clip).text(pos2(x + 8.0, hdr.center().y), Align2::LEFT_CENTER, t, hf.clone(), dim);
+        // A title shows only when it fits its column whole (no "GRA" fragments).
+        let g = p.layout_no_wrap(t.into(), hf.clone(), dim);
+        if g.size().x <= end - x - 12.0 {
+            p.galley(pos2(x + 8.0, hdr.center().y - g.size().y / 2.0), g, dim);
         }
     }
     let fp = Rect::from_center_size(pos2(x_msg - 16.0, hdr.center().y), vec2(22.0, 20.0));
+    let fp_room = graph_w >= 32.0;
     let fp_resp = ui.interact(fp, cols_id.with("first_parent"), Sense::click()).on_hover_text(if v.first_parent {
         "First-parent only (on): click to show merged-in commits again"
     } else {
         "First-parent only: follow each branch's mainline and hide merged-in commits"
     });
-    if v.first_parent || fp_resp.hovered() {
+    if fp_room && (v.first_parent || fp_resp.hovered()) {
         p.rect_filled(fp, 10.0, if v.first_parent { theme::accent().gamma_multiply(0.45) } else { theme::hover(ui) });
     }
-    p.text(fp.center(), Align2::CENTER_CENTER, icon::GIT_COMMIT, FontId::proportional(13.0), if v.first_parent { theme::text(ui) } else { dim });
-    if fp_resp.clicked() {
+    if fp_room {
+        p.text(fp.center(), Align2::CENTER_CENTER, icon::GIT_COMMIT, FontId::proportional(13.0), if v.first_parent { theme::text(ui) } else { dim });
+    }
+    if fp_room && fp_resp.clicked() {
         acts.push(Action::View(View { first_parent: !v.first_parent, ..v.clone() }));
     }
     for (i, x) in [x_graph, x_msg].into_iter().enumerate() {
@@ -172,7 +178,11 @@ pub fn show(
     let body = Rect::from_min_max(ui.cursor().min, pos2(full.right(), full.bottom()));
     let graph_col = Rect::from_x_y_ranges(x_graph..=x_msg, body.y_range());
     if max_gx > 0.0 && ui.rect_contains_pointer(graph_col) {
-        gx -= ui.input(|i| i.smooth_scroll_delta.x);
+        // Only mostly-sideways gestures: a vertical swipe's small x part must not drift the lanes.
+        let d = ui.input(|i| i.smooth_scroll_delta);
+        if d.x.abs() > d.y.abs() {
+            gx -= d.x;
+        }
     }
     gx = gx.clamp(0.0, max_gx);
     let mut visible = 0..0;
@@ -305,8 +315,11 @@ pub fn show(
                     let extra = if more > 0 { 26.0 } else { 0.0 };
                     let w = (g.size().x + 14.0).min(refs_w - 16.0 - extra).max(10.0);
                     let pill = Rect::from_min_size(pos2(left + 6.0, y(r) - 10.0), vec2(w, 20.0));
-                    let to = (c.x - 9.0).clamp(pill.right(), x_msg - 2.0); // node may be scrolled out of view
-                    painter.line_segment([pos2(pill.right(), y(r)), pos2(to, y(r))], Stroke::new(1.5, col.gamma_multiply(0.7)));
+                    // Node may be scrolled out of view; in a narrow column the pill can even
+                    // end past the column's edge, so min/max rather than clamp (which panics).
+                    let from = pill.right() + extra; // after the +N badge, not through it
+                    let to = (c.x - 9.0).min(x_msg - 2.0).max(from);
+                    painter.line_segment([pos2(from, y(r)), pos2(to, y(r))], Stroke::new(1.5, col.gamma_multiply(0.7)));
                     let fill = match rf.kind {
                         RefKind::Local => col.gamma_multiply(0.85),
                         RefKind::Remote => col.gamma_multiply(0.4),
@@ -362,7 +375,7 @@ pub fn show(
                         break;
                     }
                     if stash_x == left + 6.0 {
-                        let dash = [pos2(b.right(), y(r)), pos2((c.x - 9.0).clamp(b.right(), x_msg - 2.0), y(r))];
+                        let dash = [pos2(b.right(), y(r)), pos2((c.x - 9.0).min(x_msg - 2.0).max(b.right()), y(r))];
                         painter.extend(Shape::dashed_line(&dash, Stroke::new(1.2, col.gamma_multiply(0.6)), 3.0, 3.0));
                     }
                     stash_x = b.right() + 4.0;
@@ -422,7 +435,7 @@ pub fn show(
             }
         });
     });
-    if max_gx > 0.0 && graph_w > 48.0 {
+    if max_gx > 2.0 && graph_w > 48.0 {
         let track = Rect::from_x_y_ranges(x_graph + 6.0..=x_msg - 6.0, body.bottom() - 8.0..=body.bottom() - 2.0);
         let thumb_w = (track.width() * graph_w / lanes_w).max(24.0).min(track.width());
         let span = (track.width() - thumb_w).max(1.0);

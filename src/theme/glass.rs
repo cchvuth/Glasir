@@ -13,7 +13,7 @@ fn radial(mesh: &mut Mesh, mut c: Pos2, r: f32, col: Color32, round: Option<(Rec
     if let Some((b, rad)) = round {
         // Trimming walks rays from the centre, so the centre must be inside:
         // a glow anchored past the edge moves onto it.
-        c = c.clamp(b.min + vec2(0.5, 0.5), b.max - vec2(0.5, 0.5));
+        c = pos2(c.x.min(b.max.x - 0.5).max(b.min.x + 0.5), c.y.min(b.max.y - 0.5).max(b.min.y + 0.5)); // not clamp: b may be tiny
         while !inside_rounded(b, rad, c) {
             c = c.lerp(b.center(), 0.1);
         }
