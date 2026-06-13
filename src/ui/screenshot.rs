@@ -15,6 +15,12 @@ impl App {
         let ready = self.tabs.get(self.active).is_none_or(|t| t.data.is_some() && !t.loading());
         let Some((_, frames)) = &mut self.shot else { return };
         ctx.request_repaint();
+        if let (Some(b), Some(t)) = (&mut self.bench, self.tabs.get_mut(self.active))
+            && let Some(rows) = t.data.as_ref().map(|d| d.rows()).filter(|&n| n > 0)
+        {
+            *b = (*b + 37) % rows;
+            t.scroll_to = Some(*b);
+        }
         if ready {
             *frames += 1;
         }
@@ -230,6 +236,8 @@ impl App {
                         self.toast(ctx, "Fetch ✔ From github.com:org/repo".into(), false);
                     }
                     "drop-hint" => self.drop_hint_shot = true,
+                    // Keeps scrolling the graph (with GLASIR_PERF=1 and many GLASIR_SCREENSHOT_FRAMES).
+                    "scroll-bench" => self.bench = Some(0),
                     // `graph-x:<px>`: the graph column scrolled sideways.
                     q if q.starts_with("graph-x:") => {
                         if let Some(d) = self.tabs.get(self.active).and_then(|t| t.data.as_ref()) {

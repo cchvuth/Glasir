@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 pub struct App {
     /// `GLASIR_SCREENSHOT=out.bmp`: save a screenshot once loaded, then exit (UI checks/CI).
     pub(super) shot: Option<(String, u32)>,
+    /// `GLASIR_PERF=1`: per-frame CPU times, summarised on stderr every 2 s.
+    perf: Option<(std::time::Instant, Vec<f32>)>,
+    /// Screenshot view `scroll-bench`: scroll the graph a page per frame.
+    pub(super) bench: Option<usize>,
     pub(super) tabs: Vec<RepoTab>,
     /// `== tabs.len()` shows the welcome page.
     pub(super) active: usize,
@@ -57,6 +61,8 @@ impl App {
         let mut app =
             App {
             shot,
+            perf: std::env::var_os("GLASIR_PERF").map(|_| (std::time::Instant::now(), vec![])),
+            bench: None,
             tabs: vec![],
             active: 0,
             toasts: vec![],
@@ -239,8 +245,18 @@ fn native_glass(cc: &eframe::CreationContext) -> bool {
 }
 
 impl eframe::App for App {
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if let Some((since, times)) = &mut self.perf {
+            times.extend(frame.info().cpu_usage.map(|s| s * 1000.0));
+            if since.elapsed().as_secs_f32() >= 2.0 && !times.is_empty() {
+                times.sort_by(f32::total_cmp);
+                let avg = times.iter().sum::<f32>() / times.len() as f32;
+                let p95 = times[(times.len() * 95 / 100).min(times.len() - 1)];
+                eprintln!("perf: {} frames  avg {avg:.2} ms  p95 {p95:.2} ms  max {:.2} ms", times.len(), times[times.len() - 1]);
+                (*since, *times) = (std::time::Instant::now(), vec![]);
+            }
+        }
         crate::repo::tools::set(&self.s.tools);
         self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here
         // An op that added an undo step gets an Undo button on its toast.

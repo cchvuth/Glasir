@@ -40,6 +40,12 @@ ureq = { version = "3.4.2", default-features = false, features = ["native-tls", 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 keyring = "4.2.0"
 
+# Dependencies (egui, wgpu, syntect, ...) are optimized even in debug builds:
+# an unoptimized egui is several times slower per frame, while Glasir's own
+# code (rebuilt on every change) still compiles quickly.
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

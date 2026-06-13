@@ -43,6 +43,9 @@ pub(super) fn record(dir: &Path, prog: &str, args: &[&str], start: Instant, code
         code,
         stderr: lines[lines.len().saturating_sub(20)..].join("\n"),
     };
+    if entry.ms >= 30 && std::env::var_os("GLASIR_PERF").is_some() {
+        eprintln!("perf: {} ms  {}", entry.ms, entry.shell());
+    }
     let mut log = LOG.lock().unwrap();
     if log.len() >= 500 {
         log.pop_front();
