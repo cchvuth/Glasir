@@ -230,6 +230,13 @@ impl App {
                         self.toast(ctx, "Fetch ✔ From github.com:org/repo".into(), false);
                     }
                     "drop-hint" => self.drop_hint_shot = true,
+                    // `graph-x:<px>`: the graph column scrolled sideways.
+                    q if q.starts_with("graph-x:") => {
+                        if let Some(d) = self.tabs.get(self.active).and_then(|t| t.data.as_ref()) {
+                            let px: f32 = q[8..].parse().unwrap_or(0.0);
+                            ctx.data_mut(|m| m.insert_temp(egui::Id::new(("graph_x", &d.git_dir)), px));
+                        }
+                    }
                     "deselect" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.sel = None;

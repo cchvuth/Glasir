@@ -109,20 +109,33 @@ pub fn show(
     let mut full = ui.available_rect_before_wrap();
     full.max.x -= RAIL_W + 2.0;
     let author_w = if full.width() > 1000.0 { 130.0 } else { 0.0 };
-    let graph_w = if graph_w > 0.0 { graph_w } else { d.graph.width.clamp(1, 10) as f32 * LANE + 12.0 };
-    let graph_w = graph_w.min(full.width() - refs_w - author_w - DATE_W - MSG_MIN).max(2.0 * LANE + 12.0);
-    let x_graph = full.left() + refs_w;
-    let x_msg = x_graph + graph_w;
-    let x_date = full.right() - DATE_W;
-    let x_author = x_date - author_w;
+    let want_graph = if graph_w > 0.0 { graph_w } else { d.graph.width.clamp(1, 10) as f32 * LANE + 12.0 };
+    let Cols { graph: x_graph, msg: x_msg, author: x_author, date: x_date } = columns(full.left(), full.width(), refs_w, want_graph, author_w);
+    let (refs_w, graph_w) = (x_graph - full.left(), x_msg - x_graph);
+
+    // Lanes wider than the graph column scroll sideways (trackpad / ⇧ wheel over
+    // the graph, or the bar under it) instead of being cut off.
+    let lanes_w = d.graph.width as f32 * LANE + 16.0;
+    let max_gx = (lanes_w - graph_w).max(0.0);
+    let gx_id = egui::Id::new(("graph_x", &d.git_dir));
+    let mut gx = ui.data(|m| m.get_temp::<f32>(gx_id)).unwrap_or(0.0);
+    if let Some(r) = *scroll_to {
+        // Jumping to a commit brings its lane into view too.
+        let cx = 8.0 + d.graph.nodes.get(r).map_or(0.0, |n| n.col as f32) * LANE + LANE / 2.0;
+        let hi = (cx - LANE).max(0.0);
+        gx = gx.clamp((cx - graph_w + LANE).min(hi), hi); // bounds never cross (f32::clamp panics)
+    }
 
     let (hdr, _) = ui.allocate_exact_size(vec2(full.width(), 24.0), Sense::hover());
     let p = ui.painter();
     let hf = FontId::proportional(11.0);
     let dim = theme::dim(ui);
-    for (x, t) in [(full.left(), "BRANCH / TAG"), (x_graph, "GRAPH"), (x_msg, "COMMIT MESSAGE"), (x_author, "AUTHOR"), (x_date, "DATE")] {
-        if (t != "AUTHOR" || author_w > 0.0) && (t != "GRAPH" || graph_w > 84.0) {
-            p.text(pos2(x + 8.0, hdr.center().y), Align2::LEFT_CENTER, t, hf.clone(), dim);
+    let heads = [(full.left(), x_graph, "BRANCH / TAG"), (x_graph, x_msg - 30.0, "GRAPH"), (x_msg, x_author, "COMMIT MESSAGE"), (x_author, x_date, "AUTHOR"), (x_date, full.right(), "DATE")];
+    for (x, end, t) in heads {
+        // Each title stays inside its column, however narrow.
+        if end > x + 8.0 {
+            let clip = Rect::from_x_y_ranges(x..=end - 4.0, hdr.y_range());
+            p.with_clip_rect(clip).text(pos2(x + 8.0, hdr.center().y), Align2::LEFT_CENTER, t, hf.clone(), dim);
         }
     }
     let fp = Rect::from_center_size(pos2(x_msg - 16.0, hdr.center().y), vec2(22.0, 20.0));
@@ -157,13 +170,18 @@ pub fn show(
 
     let n = d.rows();
     let body = Rect::from_min_max(ui.cursor().min, pos2(full.right(), full.bottom()));
+    let graph_col = Rect::from_x_y_ranges(x_graph..=x_msg, body.y_range());
+    if max_gx > 0.0 && ui.rect_contains_pointer(graph_col) {
+        gx -= ui.input(|i| i.smooth_scroll_delta.x);
+    }
+    gx = gx.clamp(0.0, max_gx);
     let mut visible = 0..0;
     ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         egui::ScrollArea::vertical().id_salt(("graph", &d.git_dir)).auto_shrink(false).show_rows(ui, ROW, n, |ui, range| {
             let top = ui.max_rect().top() - range.start as f32 * ROW;
             let y = |r: usize| top + r as f32 * ROW + ROW / 2.0;
-            let x = |c: u16| x_graph + 8.0 + c as f32 * LANE + LANE / 2.0;
+            let x = |c: u16| x_graph + 8.0 + c as f32 * LANE + LANE / 2.0 - gx;
             let left = full.left();
             visible = range.clone();
 
@@ -287,7 +305,8 @@ pub fn show(
                     let extra = if more > 0 { 26.0 } else { 0.0 };
                     let w = (g.size().x + 14.0).min(refs_w - 16.0 - extra).max(10.0);
                     let pill = Rect::from_min_size(pos2(left + 6.0, y(r) - 10.0), vec2(w, 20.0));
-                    painter.line_segment([pos2(pill.right(), y(r)), pos2(c.x - 9.0, y(r))], Stroke::new(1.5, col.gamma_multiply(0.7)));
+                    let to = (c.x - 9.0).clamp(pill.right(), x_msg - 2.0); // node may be scrolled out of view
+                    painter.line_segment([pos2(pill.right(), y(r)), pos2(to, y(r))], Stroke::new(1.5, col.gamma_multiply(0.7)));
                     let fill = match rf.kind {
                         RefKind::Local => col.gamma_multiply(0.85),
                         RefKind::Remote => col.gamma_multiply(0.4),
@@ -343,7 +362,7 @@ pub fn show(
                         break;
                     }
                     if stash_x == left + 6.0 {
-                        let dash = [pos2(b.right(), y(r)), pos2(c.x - 9.0, y(r))];
+                        let dash = [pos2(b.right(), y(r)), pos2((c.x - 9.0).clamp(b.right(), x_msg - 2.0), y(r))];
                         painter.extend(Shape::dashed_line(&dash, Stroke::new(1.2, col.gamma_multiply(0.6)), 3.0, 3.0));
                     }
                     stash_x = b.right() + 4.0;
@@ -359,7 +378,7 @@ pub fn show(
                 }
 
                 let ty = y(r);
-                let msg_clip = Rect::from_x_y_ranges(x_msg + 6.0..=x_author - 8.0, ty - ROW..=ty + ROW);
+                let msg_clip = Rect::from_x_y_ranges(x_msg + 6.0..=(x_author - 8.0).max(x_msg + 6.0), ty - ROW..=ty + ROW);
                 match commit {
                     None => {
                         let s = &d.status;
@@ -382,8 +401,9 @@ pub fn show(
                             let color = crate::ui::bisect::mark_color(m);
                             let g = painter.layout_no_wrap(m.to_owned(), FontId::proportional(10.5), color);
                             let tag = Rect::from_min_size(pos2(x_text, ty - 9.0), vec2(g.size().x + 12.0, 18.0));
-                            painter.rect_filled(tag, 9.0, color.gamma_multiply(0.2));
-                            painter.galley(tag.center() - g.size() / 2.0, g, color);
+                            let mp = painter.with_clip_rect(msg_clip);
+                            mp.rect_filled(tag, 9.0, color.gamma_multiply(0.2));
+                            mp.galley(tag.center() - g.size() / 2.0, g, color);
                             x_text = tag.right() + 6.0;
                         }
                         painter.with_clip_rect(msg_clip).text(pos2(x_text, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
@@ -395,12 +415,31 @@ pub fn show(
                             small.clone(),
                             theme::dim(ui),
                         );
-                        painter.text(pos2(x_date + 8.0, ty), Align2::LEFT_CENTER, relative_time(cm.time, &cm.date), small, theme::dim(ui));
+                        let date_clip = Rect::from_x_y_ranges(x_date..=full.right(), msg_clip.y_range());
+                        painter.with_clip_rect(date_clip).text(pos2(x_date + 8.0, ty), Align2::LEFT_CENTER, relative_time(cm.time, &cm.date), small, theme::dim(ui));
                     }
                 }
             }
         });
     });
+    if max_gx > 0.0 && graph_w > 48.0 {
+        let track = Rect::from_x_y_ranges(x_graph + 6.0..=x_msg - 6.0, body.bottom() - 8.0..=body.bottom() - 2.0);
+        let thumb_w = (track.width() * graph_w / lanes_w).max(24.0).min(track.width());
+        let span = (track.width() - thumb_w).max(1.0);
+        let thumb = Rect::from_min_size(pos2(track.left() + span * gx / max_gx, track.top()), vec2(thumb_w, track.height()));
+        let resp = ui.interact(track.expand2(vec2(0.0, 3.0)), gx_id.with("bar"), Sense::click_and_drag()).on_hover_text("Scroll the graph sideways (or ⇧ + wheel over it)");
+        if resp.dragged() {
+            gx = (gx + resp.drag_delta().x * max_gx / span).clamp(0.0, max_gx);
+        } else if resp.clicked()
+            && let Some(px) = resp.interact_pointer_pos()
+        {
+            gx = ((px.x - track.left() - thumb_w / 2.0) / span * max_gx).clamp(0.0, max_gx);
+        }
+        let on = resp.hovered() || resp.dragged();
+        ui.painter().rect_filled(track.expand(2.0), 5.0, theme::bg(ui).gamma_multiply(0.85)); // lanes don't run through it
+        ui.painter().rect_filled(thumb, 3.0, if on { theme::text(ui).gamma_multiply(0.7) } else { theme::dim(ui) });
+    }
+    ui.data_mut(|m| m.insert_temp(gx_id, gx));
     // No commits yet: the guide fills the space under the WIP row.
     if d.log.is_empty() {
         let r = egui::Rect::from_min_max(pos2(body.left(), body.top() + ROW * (n as f32) + 40.0), body.max);
@@ -415,6 +454,31 @@ pub fn show(
     }
     let rail = Rect::from_x_y_ranges(full.right() + 2.0..=full.right() + 2.0 + RAIL_W, body.top() + 2.0..=body.bottom() - 2.0);
     minimap::minimap(ui, rail, d, sel_row, search, visible, scroll_to, acts);
+}
+
+/// Column left edges of the table (graph, message, author, date).
+#[derive(Debug, PartialEq)]
+struct Cols {
+    graph: f32,
+    msg: f32,
+    author: f32,
+    date: f32,
+}
+
+/// Lays out refs | graph | message | author | date in `width` from `left`. The
+/// message keeps `MSG_MIN`; when space runs out the graph gives way first, then
+/// the refs column, each down to a minimum (then the message is squeezed, but
+/// no column ever starts before the previous one).
+fn columns(left: f32, width: f32, refs_w: f32, graph_w: f32, author_w: f32) -> Cols {
+    const MIN_REFS: f32 = 60.0;
+    const MIN_GRAPH: f32 = 2.0 * LANE + 12.0;
+    let date = left + (width - DATE_W).max(0.0);
+    let author = (date - author_w).max(left);
+    let room = (author - left - MSG_MIN).max(MIN_REFS + MIN_GRAPH);
+    let refs = refs_w.min(room - MIN_GRAPH).max(MIN_REFS);
+    let graph = graph_w.min(room - refs).max(MIN_GRAPH);
+    let msg = (left + refs + graph).min(author);
+    Cols { graph: (left + refs).min(msg), msg, author, date }
 }
 
 /// New multi-selection after a ⌘-click (toggle) or ⇧-click (range from the current row).
@@ -452,4 +516,28 @@ fn keyboard_nav(ui: &Ui, d: &RepoData, sel_row: Option<usize>, scroll_to: &mut O
     };
     *scroll_to = Some(next);
     acts.push(Action::Select(d.commit(next).map_or(Sel::Wip, |c| Sel::Commit(c.id.clone()))));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn columns_give_way_in_order() {
+        let c = columns(0.0, 1400.0, 160.0, 120.0, 130.0);
+        assert_eq!(c, Cols { graph: 160.0, msg: 280.0, author: 1154.0, date: 1284.0 });
+        // Tighter: the graph shrinks so the message keeps MSG_MIN.
+        let c = columns(0.0, 700.0, 160.0, 300.0, 0.0);
+        assert_eq!(c.msg, 700.0 - DATE_W - MSG_MIN);
+        assert_eq!(c.graph, 160.0);
+        // Tighter still: the graph is at its minimum, then the refs column gives way.
+        let c = columns(0.0, 480.0, 160.0, 300.0, 0.0);
+        assert_eq!(c.msg - c.graph, 2.0 * LANE + 12.0);
+        assert!(c.graph < 160.0 && c.graph >= 60.0);
+        // Tiny window: columns never overlap or run backwards.
+        for w in [0.0, 50.0, 150.0, 300.0] {
+            let c = columns(10.0, w, 500.0, 900.0, 130.0);
+            assert!(10.0 <= c.graph && c.graph <= c.msg && c.msg <= c.author && c.author <= c.date, "{w}: {c:?}");
+        }
+    }
 }
