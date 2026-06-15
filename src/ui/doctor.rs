@@ -35,7 +35,7 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             ui.add_space(4.0);
             Frame::new().fill(theme::faint(ui)).corner_radius(8).inner_margin(8).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                egui::ScrollArea::vertical().max_height(110.0).show(ui, |ui| ui.label(RichText::new(&r.output).monospace().size(11.5)));
+                egui::ScrollArea::vertical().max_height(110.0).auto_shrink([false, true]).show(ui, |ui| ui.label(RichText::new(&r.output).monospace().size(11.5)));
             });
         }
         ui.add_space(8.0);

@@ -185,11 +185,12 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         } else {
             ui.label(RichText::new("Local branches you probably don't need anymore. Deleting is undoable (⌘Z).").small().color(theme::dim(ui)));
             ui.add_space(4.0);
-            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+            // Full width: reasons line up on the right, long names end in "…".
+            egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
                 for (name, why, on) in list.iter_mut() {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(on, RichText::new(name.as_str()).strong());
+                    theme::bar(ui, |ui| {
                         ui.label(RichText::new(why.as_str()).small().color(theme::dim(ui)));
+                        theme::rest(ui, |ui| ui.checkbox(on, RichText::new(name.as_str()).strong()).on_hover_text(name.as_str()));
                     });
                 }
             });
@@ -225,7 +226,7 @@ pub(super) fn absorb_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             RichText::new("Each hunk is folded into the unpushed commit that last changed its lines. Undo with ⌘Z.").small().color(theme::dim(ui)),
         );
         ui.add_space(6.0);
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
             egui::Grid::new("absorb_rows").num_columns(3).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                 for r in &p.rows {
                     ui.label(RichText::new(&r.path).strong());

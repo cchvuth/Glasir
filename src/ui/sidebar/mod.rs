@@ -40,6 +40,17 @@ fn pinned_separator(ui: &mut Ui, d: &RepoData, i: usize, names: &[&str]) {
     }
 }
 
+/// A sidebar row. The current one (HEAD's branch, this worktree) gets a soft
+/// accent tint and keeps the normal text colour: egui's selected style uses
+/// white text, which frameless rows show on the light themes' pale background.
+pub(super) fn row(ui: &Ui, current: bool, text: RichText) -> egui::Button<'static> {
+    if current {
+        egui::Button::new(text.color(theme::text(ui))).fill(theme::selection(ui))
+    } else {
+        egui::Button::new(text).frame_when_inactive(false)
+    }
+}
+
 fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
     egui::CollapsingHeader::new(RichText::new(format!("{title}  {count}")).small().strong())
         .id_salt(title)
@@ -81,7 +92,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 if r.head {
                     rt = rt.strong();
                 }
-                let resp = ui.add(egui::Button::selectable(r.head, view_style(ui, d, r, rt)).frame_when_inactive(false));
+                let resp = ui.add(row(ui, r.head, view_style(ui, d, r, rt)));
                 branch_dnd(ui, &resp, &r.name, acts);
                 hover_ref(ui, &resp, &r.target);
                 let resp = resp.on_hover_text(if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() });
@@ -133,7 +144,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                     .wrap(),
                 );
             }
-            if ui.small_button(format!("{} Add remote…", icon::PLUS)).on_hover_text("Add a remote (a fork, upstream or mirror) and fetch it; right-click a remote for more").clicked() {
+            if theme::small(ui, true, format!("{} Add remote…", icon::PLUS)).on_hover_text("Add a remote (a fork, upstream or mirror) and fetch it; right-click a remote for more").clicked() {
                 acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d)));
             }
         });

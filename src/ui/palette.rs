@@ -253,7 +253,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette, all: Vec<Item>) -> Option<Opti
             p.sel = 0;
         }
         ui.add_space(6.0);
-        egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
             for (i, (_, it)) in ranked.iter().enumerate() {
                 let selected = i == p.sel;
                 let r = ui.add(

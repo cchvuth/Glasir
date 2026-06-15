@@ -15,14 +15,14 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
         }
         ui.horizontal_wrapped(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons; the row wraps instead
-            if ui.small_button(format!("{} New worktree…", icon::PLUS)).on_hover_text("New branch from HEAD in its own folder").clicked() {
+            if theme::small(ui, true, format!("{} New worktree…", icon::PLUS)).on_hover_text("New branch from HEAD in its own folder").clicked() {
                 acts.push(prompt(
                     "New branch and worktree from HEAD",
                     "",
                     Op::new("Create worktree", &["worktree", "add", "-b", "{}", &d.worktree_path("{}"), "HEAD"]).then_open(d.worktree_path("{}")),
                 ));
             }
-            if d.worktrees.iter().any(|w| w.prunable) && ui.small_button("Prune stale").clicked() {
+            if d.worktrees.iter().any(|w| w.prunable) && theme::small(ui, true, "Prune stale").clicked() {
                 acts.push(op("Prune worktrees", &["worktree", "prune"]));
             }
         });
@@ -48,7 +48,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         w.locked.as_ref().map_or(String::new(), |r| format!("\nLocked{}", if r.is_empty() { String::new() } else { format!(": {r}") })),
         if w.prunable { "\nMissing on disk (prune to clean up)" } else { "" }
     );
-    let resp = ui.add(egui::Button::selectable(current, text).frame_when_inactive(false)).on_hover_text(tip);
+    let resp = ui.add(super::row(ui, current, text)).on_hover_text(tip);
     if (resp.double_clicked() || resp.clicked()) && !current && !w.prunable {
         acts.push(Action::OpenTab(w.path.clone()));
     }

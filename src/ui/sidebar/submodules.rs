@@ -16,14 +16,14 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
         ui.horizontal_wrapped(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons; the row wraps instead
             if !d.submodules.is_empty() {
-                if ui.small_button(format!("{} Update all", icon::ARROWS_CLOCKWISE)).on_hover_text("Initialize and check out the recorded commits, recursively").clicked() {
+                if theme::small(ui, true, format!("{} Update all", icon::ARROWS_CLOCKWISE)).on_hover_text("Initialize and check out the recorded commits, recursively").clicked() {
                     acts.push(op("Update submodules", &["submodule", "update", "--init", "--recursive"]));
                 }
-                if ui.small_button("Sync URLs").on_hover_text("Copy URLs from .gitmodules into the config").clicked() {
+                if theme::small(ui, true, "Sync URLs").on_hover_text("Copy URLs from .gitmodules into the config").clicked() {
                     acts.push(op("Sync submodule URLs", &["submodule", "sync", "--recursive"]));
                 }
             }
-            if ui.small_button(format!("{} Add submodule…", icon::PLUS)).on_hover_text("Add a submodule (its folder is named after the URL)").clicked() {
+            if theme::small(ui, true, format!("{} Add submodule…", icon::PLUS)).on_hover_text("Add a submodule (its folder is named after the URL)").clicked() {
                 acts.push(prompt("Add submodule: repository URL", "", Op::new("Add submodule", &["submodule", "add", "--", "{}"])));
             }
         });

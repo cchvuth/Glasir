@@ -34,7 +34,7 @@ fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) 
         ui.set_width(ui.available_width());
         ui.label(RichText::new(format!("{} {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::MOD));
         ui.horizontal(|ui| {
-            if ui.small_button("Set for this repo…").on_hover_text("git config --local user.email").clicked() {
+            if theme::small(ui, true, "Set for this repo…").on_hover_text("git config --local user.email").clicked() {
                 acts.push(set("email", &identity::suggest(email, &dom)));
             }
             ui.label(RichText::new("or commit anyway").small().color(theme::dim(ui)));
@@ -108,8 +108,7 @@ impl RepoTab {
                 ui.label(RichText::new("Commit").small().strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let absorb = !s.staged.is_empty() && d.state == State::Clean;
-                    if ui
-                        .add_enabled(absorb, egui::Button::new(format!("{} Absorb", icon::ARROWS_IN)).small())
+                    if theme::small(ui, absorb, format!("{} Absorb", icon::ARROWS_IN))
                         .on_hover_text("Turn staged hunks into fixups of the unpushed commits they belong to (preview first)")
                         .on_disabled_hover_text("Stage changes first (not during a merge or rebase)")
                         .clicked()
@@ -120,8 +119,7 @@ impl RepoTab {
                     } else if generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
-                    } else if ui
-                        .add_enabled(!s.staged.is_empty() || self.amend, egui::Button::new(format!("{} AI message", icon::SPARKLE)).small())
+                    } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{} AI message", icon::SPARKLE))
                         .on_hover_text(if self.amend {
                             "Write the amended commit's message (its changes plus the staged ones) with Claude"
                         } else {
@@ -174,8 +172,7 @@ impl RepoTab {
                 if self.composing() {
                     ui.spinner();
                     ui.label(RichText::new("Planning commits…").small().color(theme::dim(ui)));
-                } else if ui
-                    .add_enabled(any && s.conflicted.is_empty() && d.state == State::Clean && !busy, egui::Button::new(format!("{} Compose commits with AI", icon::SPARKLE)).small())
+                } else if theme::small(ui, any && s.conflicted.is_empty() && d.state == State::Clean && !busy, format!("{} Compose commits with AI", icon::SPARKLE))
                     .on_hover_text("Let Claude split all uncommitted changes into a series of focused commits (you review the plan first)")
                     .on_disabled_hover_text("Needs uncommitted changes, and no merge or rebase in progress")
                     .clicked()
@@ -183,7 +180,7 @@ impl RepoTab {
                     acts.push(Action::Ai(Purpose::Compose));
                 }
                 let explaining = self.ai_busy() == Some(&Purpose::ExplainWip);
-                if ui.add_enabled(any && !explaining, egui::Button::new(format!("{} Explain changes", icon::SPARKLE)).small()).on_hover_text("What do these uncommitted changes do? Asks Claude").clicked() {
+                if theme::small(ui, any && !explaining, format!("{} Explain changes", icon::SPARKLE)).on_hover_text("What do these uncommitted changes do? Asks Claude").clicked() {
                     acts.push(Action::Ai(Purpose::ExplainWip));
                 }
             });
@@ -225,7 +222,7 @@ impl RepoTab {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if !s.unstaged.is_empty() && ui.small_button("Stage all").clicked() {
+                        if !s.unstaged.is_empty() && theme::small(ui, true, "Stage all").clicked() {
                             acts.push(Action::Git(Op::new("Stage all", &["add", "-A"]).light()));
                         }
                     });
@@ -280,7 +277,7 @@ impl RepoTab {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Staged files  {}", s.staged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if !s.staged.is_empty() && ui.small_button("Unstage all").clicked() {
+                        if !s.staged.is_empty() && theme::small(ui, true, "Unstage all").clicked() {
                             acts.push(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));
                         }
                     });

@@ -115,7 +115,7 @@ impl RepoTab {
                 }
                 None if crate::ai::enabled() => {
                     let label = if compare.is_some() { "Explain these changes" } else { "Explain this commit" };
-                    if ui.small_button(format!("{} {label}", icon::SPARKLE)).clicked() {
+                    if theme::small(ui, true, format!("{} {label}", icon::SPARKLE)).clicked() {
                         acts.push(Action::Ai(explain));
                     }
                 }

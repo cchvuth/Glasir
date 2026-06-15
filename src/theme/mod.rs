@@ -11,7 +11,7 @@ mod glass;
 /// (egui's default of 4 px puts the text against a capsule's edge).
 pub const INPUT_MARGIN: egui::Margin = egui::Margin::symmetric(12, 6);
 
-pub use glass::{bar, bar_h, canvas, canvas_in, card, empty_state, glass_shapes, group, pill, primary, progress, rest, set_transparency, slider};
+pub use glass::{bar, bar_h, canvas, canvas_in, card, empty_state, glass_shapes, group, pill, primary, progress, rest, set_transparency, slider, small};
 
 use egui::epaint::Shadow;
 use egui::{Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Ui, Visuals, vec2};
@@ -286,6 +286,13 @@ pub fn apply(ctx: &egui::Context, f: Flavor) {
         s.spacing.item_spacing = vec2(10.0, 6.0);
         s.spacing.button_padding = vec2(14.0, 6.0);
         s.spacing.interact_size.y = 28.0;
+        // Short widgets keep their own width: egui widens them to interact_size.x
+        // and centres the content, which puts e.g. a checkbox labelled "x" out of line.
+        s.spacing.interact_size.x = 24.0;
+        // Checkboxes and radio buttons: a bigger box, the tick inset, room before the label.
+        s.spacing.icon_width = 18.0;
+        s.spacing.icon_width_inner = 10.0;
+        s.spacing.icon_spacing = 8.0;
         s.spacing.menu_margin = egui::Margin::symmetric(12, 8);
         s.spacing.window_margin = egui::Margin::same(22);
     });

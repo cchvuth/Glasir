@@ -222,6 +222,17 @@ pub fn rest<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     .inner
 }
 
+/// Compact button (header actions such as "AI message", "Stage all", "+ Add
+/// remote…"): low like egui's small buttons, but with wider side padding so the
+/// label doesn't hug the capsule's ends.
+pub fn small<'a>(ui: &mut Ui, enabled: bool, text: impl egui::IntoAtoms<'a>) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding.x = 18.0;
+        ui.add_enabled(enabled, egui::Button::new(text).small())
+    })
+    .inner
+}
+
 /// A calm, centered empty state: a large accent glyph, a title and one line of help.
 /// Callers add their buttons below it.
 pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
