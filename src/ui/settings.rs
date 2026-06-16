@@ -224,11 +224,17 @@ impl App {
                             }
                         }
                         if st.source.is_some() && ui.button("Remove").clicked() {
-                            let _ = ai::save_token("");
+                            let in_file = s.ai.saved_in.as_deref() == Some(ai::IN_FILE);
                             ai::remove_plain_token();
-                            s.ai.saved_in = Some(String::new());
-                            st.source = ai::env_source();
-                            st.note = Some((true, "Stored token removed.".into()));
+                            match ai::save_token("") {
+                                // A file-saved token means there is no keychain to delete from.
+                                Err(e) if !in_file => st.note = Some((false, format!("Could not remove the token from the keychain: {e}"))),
+                                _ => {
+                                    s.ai.saved_in = Some(String::new());
+                                    st.source = ai::env_source();
+                                    st.note = Some((true, "Stored token removed.".into()));
+                                }
+                            }
                         }
                     });
                     ui.end_row();

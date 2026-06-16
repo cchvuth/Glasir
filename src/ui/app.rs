@@ -160,7 +160,7 @@ impl App {
             t.search = Some(Search::open());
         }
         if cmd && shift && pressed(Key::S) {
-            act = Some(Action::Git(Op::new("Stage all", &["add", "-A"]).light()));
+            act = t.data.as_ref().and_then(|d| crate::repo::stage_all_op(&d.status)).map(Action::Git).or(act);
         }
         if cmd && shift && pressed(Key::U) {
             act = Some(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));

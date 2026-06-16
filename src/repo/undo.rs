@@ -37,10 +37,6 @@ fn split_z(s: String) -> Vec<String> {
 /// Back up everything a discard will destroy. Any failure aborts the discard.
 pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     let refuse = |why: String| format!("Nothing was discarded: couldn't back it up first ({why}).");
-    let stash = git::run(dir, &["stash", "create"]).map_err(|e| refuse(e.trim().to_owned()))?;
-    // No tracked file changed yet: HEAD already holds their contents (e.g. a
-    // restore from history about to overwrite a clean file).
-    let stash = Some(stash.trim().to_owned()).filter(|s| !s.is_empty()).or_else(|| git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).ok().map(|h| h.trim().to_owned()));
     let (tracked, untracked): (Vec<String>, Vec<String>) = match b {
         Backup::All => (
             split_z(git::run(dir, &["diff", "--name-only", "-z", "HEAD"]).unwrap_or_default()),
@@ -50,10 +46,21 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
             git::run(dir, &["--literal-pathspecs", "ls-files", "-z", "--", p]).is_ok_and(|o| !o.is_empty())
         }),
     };
-    // ponytail: untracked copies live in memory, capped so a stray huge file can't exhaust RAM.
+    // `stash create` fails before the first commit and while the index has conflicts:
+    // then the tracked files' bytes are copied like untracked ones (`stash` = None).
+    let stash = if tracked.is_empty() {
+        None
+    } else {
+        git::run(dir, &["stash", "create"]).ok().and_then(|s| {
+            // No tracked file changed yet: HEAD already holds their contents (e.g. a
+            // restore from history about to overwrite a clean file).
+            Some(s.trim().to_owned()).filter(|s| !s.is_empty()).or_else(|| git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).ok().map(|h| h.trim().to_owned()))
+        })
+    };
+    // Copies live in memory, capped so a stray huge file can't exhaust RAM.
     let mut budget: u64 = 256 << 20;
     let mut files = vec![];
-    for p in untracked {
+    for p in untracked.into_iter().chain(stash.is_none().then(|| tracked.clone()).into_iter().flatten()) {
         let path = dir.join(&p);
         let meta = match std::fs::symlink_metadata(&path) {
             // Not there yet (a file restored from history): nothing to lose.
@@ -72,7 +79,8 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
 pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
     for (p, bytes) in &s.files {
         let path = dir.join(p);
-        if !path.exists() {
+        // Copied tracked files overwrite what the discard put there.
+        if !path.exists() || (s.stash.is_none() && s.tracked.contains(p)) {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
@@ -173,6 +181,33 @@ mod tests {
         restore_worktree(&dir, &saved).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "edited\n");
         assert_eq!(std::fs::read_to_string(dir.join("new/b.txt")).unwrap(), "fresh\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `stash create` fails before the first commit and with an unmerged index.
+    #[test]
+    fn discard_backs_up_without_stash() {
+        use crate::repo::testutil::{commit, identity, scratch, sh};
+        let dir = scratch("discard-nostash");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        std::fs::write(dir.join("u"), "u\n").unwrap();
+        assert_eq!(save_worktree(&dir, &Backup::Paths(vec!["u".into()])).unwrap().files.len(), 1);
+
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "theirs\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "ours\n");
+        assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
+        let conflicted = std::fs::read_to_string(dir.join("f")).unwrap();
+        let saved = save_worktree(&dir, &Backup::All).unwrap();
+        sh(&dir, &["reset", "--hard", "-q"]);
+        sh(&dir, &["clean", "-fdq"]);
+        assert!(!dir.join("u").exists());
+        restore_worktree(&dir, &saved).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), conflicted);
+        assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "u\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -93,7 +93,9 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         ));
         v.push(git("Stash all changes", Action::Git(stash_op())));
         v.push(git("Pop stash", op("Pop stash", &["stash", "pop"])));
-        v.push(git("Stage all changes", Action::Git(Op::new("Stage all", &["add", "-A"]).light())));
+        if let Some(o) = crate::repo::stage_all_op(&d.status) {
+            v.push(git("Stage all changes", Action::Git(o)));
+        }
         v.push(git("Unstage all changes", Action::Git(Op::new("Unstage all", &["reset", "-q"]).light())));
         if !d.status.staged.is_empty() {
             v.push(item(icon::ARROWS_IN, "Absorb staged changes…", "into the commits they belong to", Cmd::Tab(Action::Absorb)));

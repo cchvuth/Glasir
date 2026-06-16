@@ -168,7 +168,10 @@ impl RepoData {
         status: Status,
         view: View,
     ) -> Self {
-        let wip = status.is_dirty();
+        let state = git::state(&git_dir);
+        // An operation stopped with a clean tree (conflicts resolved to HEAD, a rebase `edit`
+        // stop) still needs the WIP row: its banner is where it is continued or aborted.
+        let wip = status.is_dirty() || !matches!(state, git::State::Clean | git::State::Bisecting);
         let off = wip as usize;
         let mut row_of: HashMap<String, usize> = log.iter().enumerate().map(|(i, c)| (c.id.clone(), i + off)).collect();
         // First-parent view: git still prints every parent; draw only the first.
@@ -204,7 +207,6 @@ impl RepoData {
             row_of.insert(String::new(), 0);
         }
         let graph = Graph::layout(&parents, &prio);
-        let state = git::state(&git_dir);
         let mut stash_at: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, s) in stashes.iter().enumerate() {
             stash_at.entry(s.base.clone()).or_default().push(i);

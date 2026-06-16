@@ -91,7 +91,8 @@ The name fits a Git client:
 - **3-way merge editor**: Current / Incoming / editable Output, per-conflict
   take-current / incoming / both, auto-resolve trivial conflicts, conflict navigation.
 - **Branch cleanup**: delete merged and orphaned branches in one go.
-- Merge / rebase / cherry-pick banner with Continue and Abort.
+- Merge / rebase / cherry-pick / revert banner with Continue, Skip and Abort (undoable
+  with ⌘Z), shown even when the resolved tree is clean.
 
 ### Remotes and network
 - Fetch, pull (merge, fast-forward only or rebase, with autostash) and push, with

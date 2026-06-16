@@ -158,6 +158,14 @@ pub fn fetch_op() -> Op {
     Op::new("Fetch", &["fetch", "--all", "--prune", "--progress"])
 }
 
+/// Stage every unstaged and untracked change, but never a conflicted file: `add -A`
+/// would mark it resolved, markers and all. None when there's nothing to stage (an
+/// empty pathspec list would stage everything). Paths go over stdin: no argv limit.
+pub fn stage_all_op(s: &git::Status) -> Option<Op> {
+    let paths: String = s.unstaged.iter().flat_map(|c| c.old_path.iter().chain([&c.path])).map(|p| format!("{p}\0")).collect();
+    (!paths.is_empty()).then(|| Op::new("Stage all", &["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
+}
+
 /// Stash everything, untracked files included (toolbar, WIP menu, palette).
 pub fn stash_op() -> Op {
     Op::new("Stash", &["stash", "push", "--include-untracked"])
@@ -307,7 +315,6 @@ impl RepoTab {
         if let Some(r) = &mut self.reflog {
             r.refresh(ctx, &self.dir);
         }
-        self.refresh_diff(ctx);
     }
 
     pub(super) fn multi_op(&mut self, ctx: &egui::Context, kind: MultiOp, ids: Vec<String>) {

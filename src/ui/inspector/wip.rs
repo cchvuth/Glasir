@@ -4,7 +4,7 @@
 use super::{file_items, file_row, lfs_track_item, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::State;
-use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, identity, op, prompt};
+use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, identity, prompt};
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
@@ -87,13 +87,15 @@ impl RepoTab {
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Continue").clicked() {
-                        acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"])));
+                        acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep)));
                     }
-                    if cmd == "am" && ui.button("Skip this patch").clicked() {
-                        acts.push(op("Skip patch", &["am", "--skip"]));
+                    // An empty step (its changes are already in HEAD) can't --continue.
+                    let skip = if cmd == "am" { "Skip this patch" } else { "Skip this commit" };
+                    if cmd != "merge" && ui.button(skip).clicked() {
+                        acts.push(Action::Git(Op::new(skip, &[cmd, "--skip"]).undo(Undo::Keep)));
                     }
                     if ui.button("Abort").clicked() {
-                        acts.push(op(format!("Abort {cmd}"), &[cmd, "--abort"]));
+                        acts.push(Action::Git(Op::new(format!("Abort {cmd}"), &[cmd, "--abort"]).undo(Undo::Keep)));
                     }
                 });
             });
@@ -158,7 +160,8 @@ impl RepoTab {
             let can = (n > 0 || self.amend) && !self.summary.trim().is_empty() && !busy;
             let label = if self.amend { "Amend commit".to_owned() } else { format!("Commit changes to {n} file{}", if n == 1 { "" } else { "s" }) };
             let btn = theme::primary(ui, can, &label, ui.available_width());
-            let shortcut = ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+            // Not while a dialog is open: ⌘↩ there confirms the dialog (e.g. an annotated tag).
+            let shortcut = ui.ctx().memory(|m| m.top_modal_layer().is_none()) && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
             if can && (btn.clicked() || shortcut) {
                 commit = true;
             }
@@ -222,8 +225,10 @@ impl RepoTab {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if !s.unstaged.is_empty() && theme::small(ui, true, "Stage all").clicked() {
-                            acts.push(Action::Git(Op::new("Stage all", &["add", "-A"]).light()));
+                        if let Some(o) = crate::repo::stage_all_op(s)
+                            && theme::small(ui, true, "Stage all").clicked()
+                        {
+                            acts.push(Action::Git(o));
                         }
                     });
                 });

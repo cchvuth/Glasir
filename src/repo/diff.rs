@@ -48,26 +48,32 @@ impl RepoTab {
             let hl = crate::highlight::highlight(path, &f, dark);
             Ok((f, hl, image))
         });
-        let (keep, hl, image, opts) = match self.diff.take().filter(|d| d.src == src) {
-            Some(d) => (d.file, d.hl, d.image, d.opts),
-            None => (None, vec![], None, o),
+        let (keep, hl, image, opts, picked) = match self.diff.take().filter(|d| d.src == src) {
+            Some(d) => (d.file, d.hl, d.image, d.opts, d.picked),
+            None => (None, vec![], None, o, BTreeSet::new()),
         };
-        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked: BTreeSet::new() });
+        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked });
     }
 
     pub(super) fn poll_diff(&mut self) {
         if let Some(d) = &mut self.diff
             && let Some(r) = Task::poll(&mut d.task)
         {
-            d.picked.clear();
             d.opts = d.pending;
             match r {
                 Ok((f, hl, image)) => {
+                    // Picks are (hunk, line) indices: keep them only while they point at the same lines.
+                    if !matches!(&d.file, Some(Ok(old)) if old.hunks == f.hunks) {
+                        d.picked.clear();
+                    }
                     d.file = Some(Ok(f));
                     d.hl = hl;
                     d.image = image;
                 }
-                Err(e) => d.file = Some(Err(e)),
+                Err(e) => {
+                    d.picked.clear();
+                    d.file = Some(Err(e));
+                }
             }
         }
     }

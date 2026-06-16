@@ -18,7 +18,7 @@ pub struct FileDiff {
     pub lfs: Option<(Option<super::LfsPointer>, Option<super::LfsPointer>)>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Hunk {
     pub header: String,
     pub old_start: u32,
@@ -26,7 +26,7 @@ pub struct Hunk {
     pub lines: Vec<Line>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     /// b' ', b'+', b'-' or b'\\'
     pub kind: u8,

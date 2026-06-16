@@ -57,7 +57,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt}
 pub use data::{RepoData, View};
 pub use diff::DiffState;
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op, stash_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, fetch_op, pull_op, stage_all_op, stash_op};
 pub use search::Search;
 pub use task::Task;
 
@@ -237,6 +237,10 @@ impl RepoTab {
 
     /// `full`: log + refs + status; otherwise status only.
     pub fn reload(&mut self, ctx: &egui::Context, full: bool) {
+        // The compared refs may have moved: re-query, keeping the old list until then.
+        if full && let Some(Sel::Compare { from, to, three_dot }) = self.sel.clone() {
+            self.compare_query(ctx, from, to, three_dot);
+        }
         if self.load.is_some() {
             self.queued = Some(self.queued.unwrap_or(false) || full);
             return;
@@ -244,12 +248,12 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.truncated))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg))) => {
+            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg, tr))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
-                (d.worktrees, d.submodules, d.lfs, d.config) = (wt, sm, lfs, cfg);
+                (d.worktrees, d.submodules, d.lfs, d.config, d.truncated) = (wt, sm, lfs, cfg, tr);
                 d.load_bisect(&dir);
                 Ok(d)
             }
@@ -307,6 +311,9 @@ impl RepoTab {
                         }
                     }
                     self.error = None;
+                    // Outside edits too (watcher / focus / F5): staging from a stale diff
+                    // would stage content the file no longer has.
+                    self.refresh_diff(ctx);
                 }
                 Err(e) => self.error = Some(e),
             }
@@ -335,7 +342,8 @@ impl RepoTab {
 
     pub fn select(&mut self, ctx: &egui::Context, sel: Sel) {
         self.multi.clear();
-        if self.sel.as_ref() != Some(&sel) {
+        // A repeated Compare re-queries: its ref names may point elsewhere now.
+        if self.sel.as_ref() != Some(&sel) || matches!(sel, Sel::Compare { .. }) {
             let dir = self.dir.clone();
             match sel.clone() {
                 Sel::Commit(id) => {
@@ -347,13 +355,17 @@ impl RepoTab {
                 Sel::Compare { from, to, three_dot } => {
                     self.info = None;
                     self.diff = None;
-                    let label = format!("{to} compared with {from}");
-                    self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
+                    self.compare_query(ctx, from, to, three_dot);
                 }
                 Sel::Wip => {}
             }
         }
         self.sel = Some(sel);
+    }
+
+    fn compare_query(&mut self, ctx: &egui::Context, from: String, to: String, three_dot: bool) {
+        let (dir, label) = (self.dir.clone(), format!("{to} compared with {from}"));
+        self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
     }
 
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
@@ -471,5 +483,131 @@ impl RepoTab {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::repo::testutil::{commit, identity, scratch, settle, sh};
+    use std::path::Path;
+
+    fn wait(ctx: &egui::Context, t: &mut RepoTab, done: impl Fn(&RepoTab) -> bool) {
+        for _ in 0..1000 {
+            t.poll(ctx, &mut vec![]);
+            if done(t) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("timed out");
+    }
+
+    /// main and feat both change f; merging feat stops on a conflict.
+    fn conflicted_merge(dir: &Path) {
+        sh(dir, &["init", "-q", "-b", "main"]);
+        identity(dir);
+        commit(dir, "other", "x\n");
+        commit(dir, "f", "base\n");
+        sh(dir, &["checkout", "-q", "-b", "feat"]);
+        commit(dir, "f", "theirs\n");
+        sh(dir, &["checkout", "-q", "main"]);
+        commit(dir, "f", "ours\n");
+        assert!(git::run(dir, &["merge", "-q", "feat"]).is_err());
+    }
+
+    /// A merge resolved back to HEAD leaves a clean status: the WIP row (and its
+    /// Continue banner) must stay, and the concluded merge must be undoable.
+    #[test]
+    fn clean_resolved_merge_keeps_wip_and_continue_undoes() {
+        let dir = scratch("clean-merge");
+        conflicted_merge(&dir);
+        let before = sh(&dir, &["rev-parse", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Use ours", &["checkout", "--ours", "--", "f"]).then(&["add", "--", "f"]).light()));
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        assert!(!d.status.is_dirty() && d.state == git::State::Merging);
+        assert!(d.wip && t.sel == Some(Sel::Wip));
+        t.apply(&ctx, Action::Git(Op::new("Continue merge", &["-c", "core.editor=true", "merge", "--continue"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        assert_eq!(t.data.as_ref().unwrap().state, git::State::Clean);
+        assert_eq!(t.undo_label(), Some("Continue merge"));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_all_leaves_conflicts_alone() {
+        let dir = scratch("stage-all");
+        conflicted_merge(&dir);
+        std::fs::write(dir.join("other"), "y\n").unwrap();
+        std::fs::write(dir.join("new*"), "n\n").unwrap();
+        let s = git::status(&dir).unwrap();
+        assert!(op::stage_all_op(&git::Status { unstaged: vec![], ..s.clone() }).is_none());
+        let o = op::stage_all_op(&s).unwrap();
+        op::exec(&dir, &o).unwrap();
+        let s = git::status(&dir).unwrap();
+        assert_eq!(s.conflicted.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["f"]);
+        assert!(s.unstaged.is_empty());
+        let staged: Vec<&str> = s.staged.iter().map(|c| c.path.as_str()).collect();
+        assert!(staged.contains(&"other") && staged.contains(&"new*"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_reload_keeps_truncated_and_refreshes_diff() {
+        let dir = scratch("truncated");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for i in 0..3 {
+            commit(&dir, "f", &format!("a\n{i}\n"));
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 2, View::default());
+        settle(&ctx, &mut t);
+        assert!(t.data.as_ref().unwrap().truncated);
+        std::fs::write(dir.join("f"), "a\nfoo\n").unwrap();
+        t.reload(&ctx, false);
+        settle(&ctx, &mut t);
+        assert!(t.data.as_ref().unwrap().truncated);
+        let change = t.data.as_ref().unwrap().status.unstaged[0].clone();
+        t.apply(&ctx, Action::Diff(DiffSrc::Worktree { change, staged: false }));
+        let has = |t: &RepoTab, s: &str| {
+            t.diff.as_ref().and_then(|d| d.file.as_ref()).and_then(|f| f.as_ref().ok()).is_some_and(|f| f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text == s))
+        };
+        wait(&ctx, &mut t, |t| has(t, "foo"));
+        // An edit made outside Glasir (watcher / focus / F5 reload).
+        std::fs::write(dir.join("f"), "a\nbar\n").unwrap();
+        t.reload(&ctx, false);
+        wait(&ctx, &mut t, |t| has(t, "bar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compare_follows_moved_refs() {
+        let dir = scratch("compare");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        sh(&dir, &["branch", "feat"]);
+        commit(&dir, "b", "b\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let files = |t: &RepoTab| t.info.as_ref().and_then(|i| i.as_ref().ok()).map(|i| i.files.len());
+        let sel = Sel::Compare { from: "feat".into(), to: "main".into(), three_dot: true };
+        t.apply(&ctx, Action::Select(sel.clone()));
+        wait(&ctx, &mut t, |t| files(t) == Some(1));
+        t.apply(&ctx, Action::Git(Op::new("Commit", &["commit", "-q", "--allow-empty", "-m", "c"]).then(&["branch", "-f", "feat"]).undo(Undo::Soft)));
+        wait(&ctx, &mut t, |t| files(t) == Some(0));
+        commit(&dir, "c", "c\n");
+        t.apply(&ctx, Action::Select(sel));
+        wait(&ctx, &mut t, |t| files(t) == Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
