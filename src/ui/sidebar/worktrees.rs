@@ -6,10 +6,13 @@ use crate::theme::{self, icon};
 use egui::{RichText, Ui};
 
 /// The section: worktree rows, then "New worktree…" / "Prune stale".
-pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
+pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, acts: &mut Vec<Action>) {
     let wts: Vec<_> = d.worktrees.iter().filter(|w| !w.bare && (matches(f, &w.path) || w.branch.as_deref().is_some_and(|b| matches(f, b)))).collect();
     section(ui, "WORKTREES", wts.len(), |ui| {
-        let here = d.worktrees.iter().find(|w| d.status.head.as_deref() == Some(w.head.as_str()) && w.branch == d.status.branch).map(|w| w.path.clone());
+        // By path: detached worktrees at the same commit look alike. HEAD + branch only as a fallback.
+        let here = (d.worktrees.iter().find(|w| std::path::Path::new(&w.path) == dir))
+            .or_else(|| d.worktrees.iter().find(|w| d.status.head.as_deref() == Some(w.head.as_str()) && w.branch == d.status.branch))
+            .map(|w| w.path.clone());
         for w in wts {
             worktree_row(ui, d, w, here.as_deref() == Some(w.path.as_str()), acts);
         }

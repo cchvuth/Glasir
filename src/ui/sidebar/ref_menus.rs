@@ -3,7 +3,7 @@
 
 use crate::ai::Purpose;
 use crate::git::RefKind;
-use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, op, prompt};
+use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, delete_branches, op, prompt};
 use crate::theme::icon;
 use crate::ui::graph_view::menus::integrate_items;
 use egui::Ui;
@@ -53,7 +53,7 @@ fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) 
 fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     let (remote, branch) = match r.kind {
         RefKind::Remote => (r.remote().to_owned(), r.remote_branch().to_owned()),
-        _ => (r.upstream.split('/').next().filter(|s| !s.is_empty()).unwrap_or("origin").to_owned(), r.name.clone()),
+        _ => d.push_dest(&r.name, &r.upstream).map_or(("origin".into(), r.name.clone()), |(a, b)| (a.to_owned(), b.to_owned())),
     };
     ui.separator();
     if crate::ai::enabled() && ui.button(format!("{} Write pull request with AI…", icon::SPARKLE)).clicked() {
@@ -97,10 +97,11 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         }
     }
     ui.separator();
-    if let Some(remote) = d.remotes.first().map(|r| r.0.clone()) {
-        let remote = if r.upstream.is_empty() { remote } else { r.upstream.split('/').next().unwrap_or("origin").to_owned() };
-        if ui.button(format!("Push {name} to {remote}")).clicked() {
-            acts.push(op(format!("Push {name}"), &["push", "-u", &remote, name]));
+    if let Some(first) = d.remotes.first().map(|r| r.0.as_str()) {
+        let (remote, rb) = d.push_dest(name, &r.upstream).unwrap_or((first, name));
+        let to = if rb == name { remote.to_owned() } else { format!("{remote}/{rb}") };
+        if ui.button(format!("Push {name} to {to}")).clicked() {
+            acts.push(op(format!("Push {name}"), &["push", "-u", remote, &format!("{name}:refs/heads/{rb}")]));
         }
     }
     if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {
@@ -116,7 +117,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", name]).undo(Undo::Keep)));
     }
     if ui.button("Rename…").clicked() {
-        acts.push(prompt(format!("Rename {name}"), name, Op::new("Rename branch", &["branch", "-m", name, "{}"]).undo(Undo::Keep)));
+        acts.push(prompt(format!("Rename {name}"), name, Op::new("Rename branch", &["branch", "-m", name, "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "{}", name]))));
     }
     let default_up = if r.upstream.is_empty() {
         format!("{}/{name}", d.remotes.first().map_or("origin", |r| r.0.as_str()))
@@ -131,13 +132,11 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
     if !r.head {
         if ui.button("Delete").clicked() {
-            acts.push(Action::Git(Op::new(format!("Delete {name}"), &["branch", "-d", name]).undo(Undo::Keep)));
+            acts.push(Action::Git(delete_branches(d, format!("Delete {name}"), &[name], false)));
         }
         if ui.button("Force delete").clicked() {
             acts.push(Action::Git(
-                Op::new(format!("Delete {name}"), &["branch", "-D", name])
-                    .undo(Undo::Keep)
-                    .confirm(format!("Delete {name} even if it is not merged? (You can undo this.)")),
+                delete_branches(d, format!("Delete {name}"), &[name], true).confirm(format!("Delete {name} even if it is not merged? (You can undo this.)")),
             ));
         }
     }

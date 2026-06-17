@@ -37,7 +37,8 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         if ok && !v.is_empty() {
             let mut op = p.op;
             let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
-            for a in op.cmds.iter_mut().flatten().chain(op.then_open.as_mut()) {
+            let revert = op.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());
+            for a in op.cmds.iter_mut().flatten().chain(op.then_open.as_mut()).chain(revert) {
                 *a = a.replace("{}", v).replace("{2}", &v2);
             }
             acts.push(Action::Git(op));
@@ -175,7 +176,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
 }
 
 pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
-    let Some(list) = &mut t.cleanup else { return };
+    let (Some(list), Some(d)) = (&mut t.cleanup, &t.data) else { return };
     let mut close = false;
     egui::Modal::new(Id::new("cleanup")).show(ctx, |ui| {
         ui.set_width(480.0);
@@ -200,9 +201,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
             let names: Vec<&str> = list.iter().filter(|c| c.2).map(|c| c.0.as_str()).collect();
             let label = format!("Delete {} branch{}", names.len(), if names.len() == 1 { "" } else { "es" });
             if theme::primary(ui, !names.is_empty(), &label, 170.0).clicked() {
-                let mut args = vec!["branch", "-D"];
-                args.extend(names);
-                acts.push(Action::Git(Op::new("Clean up branches", &args).undo(Undo::Keep)));
+                acts.push(Action::Git(crate::repo::delete_branches(d, "Clean up branches".into(), &names, true)));
                 close = true;
             }
             if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -322,8 +321,11 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 let push = Op::new(format!("Push {src}"), &["push", &remote, &format!("{src}:{branch}")]);
                 pick(ui, format!("{} Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
             }
-            let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", &dst, &src]).undo(Undo::Keep);
-            pick(ui, format!("{} Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
+            // `git rebase <dst> <remote ref>` would rebase a detached HEAD and move no branch.
+            if d.local(&src).is_some() {
+                let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", &dst, &src]).undo(Undo::Keep);
+                pick(ui, format!("{} Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
+            }
             if src == head {
                 pick(ui, format!("{} Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst.clone(), label: dst.clone() });
             }

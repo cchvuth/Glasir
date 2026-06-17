@@ -58,7 +58,7 @@ fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
         .show(ui, add);
 }
 
-pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Action>) {
+pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, filter: &mut String, acts: &mut Vec<Action>) {
     // One line per row, cut with "…" (full text on hover): a long name must not
     // wrap or widen the panel.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -161,7 +161,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, filter: &mut String, acts: &mut Vec<Ac
                 resp.context_menu(|ui| ref_menu(ui, d, r, acts));
             }
         });
-        worktrees::list(ui, d, f, acts);
+        worktrees::list(ui, d, dir, f, acts);
         submodules::list(ui, d, f, acts);
         stashes::list(ui, d, f, acts);
     });

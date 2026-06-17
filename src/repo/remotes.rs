@@ -86,12 +86,18 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
     let mut back: Vec<Vec<String>> = vec![];
     let add = |k: &str, v: &str| vec!["config".to_owned(), "--add".into(), k.into(), v.into()];
     let prefix = format!("remote.{name}.");
-    back.extend(d.config.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(k, v)| add(k, v)));
+    // Not the keys of a remote `<name>.x`, which stay.
+    back.extend(d.config.iter().filter(|(k, _)| k.strip_prefix(&prefix).is_some_and(|var| !var.contains('.'))).map(|(k, v)| add(k, v)));
     // `remote remove` also drops the upstream of every branch tracking it.
     for (k, _) in d.config.iter().filter(|(k, v)| k.starts_with("branch.") && k.ends_with(".remote") && v == name) {
         let merge = format!("{}.merge", k.trim_end_matches(".remote"));
         back.push(add(k, name));
         back.extend(d.cfg(&merge).map(|m| add(&merge, m)));
+    }
+    // ...and every push remote naming it.
+    back.extend(d.config.iter().filter(|(k, v)| k.starts_with("branch.") && k.ends_with(".pushremote") && v == name).map(|(k, v)| add(k, v)));
+    if d.cfg("remote.pushdefault") == Some(name) {
+        back.push(add("remote.pushdefault", name));
     }
     let refs: String = d.refs.iter().filter(|r| r.full.starts_with(&format!("refs/remotes/{name}/"))).map(|r| format!("create {} {}\n", r.full, r.target)).collect();
     if !refs.is_empty() {
@@ -113,8 +119,9 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
 /// Fetch pull request `{}` (filled in by a prompt) from `remote` into `pr/{}` and check it
 /// out. Works on github.com and GitHub Enterprise, which publish `refs/pull/<n>/head`.
 pub fn pr_checkout(remote: &str) -> Op {
-    Op::new("Check out pull request", &["fetch", "--progress", remote, "refs/pull/{}/head:refs/heads/pr/{}"])
-        .then(&["checkout", "pr/{}", "--"])
+    // Via FETCH_HEAD and `-B`: running it again updates pr/<n>, even checked out or force-pushed.
+    Op::new("Check out pull request", &["fetch", "--progress", remote, "refs/pull/{}/head"])
+        .then(&["checkout", "-B", "pr/{}", "FETCH_HEAD", "--"])
         .undo(Undo::Keep)
 }
 
@@ -127,13 +134,26 @@ pub fn pr_refs_on(d: &RepoData, remote: &str) -> bool {
     d.cfg_all(&format!("remote.{remote}.fetch")).any(|v| v == pr_refspec(remote))
 }
 
-/// Toggle fetching pull request heads; turning it off deletes the fetched `pr/*` refs.
+/// A pull request head `<remote>/pr/<n>` (`n` is a number).
+fn pr_head<'a>(r: &'a crate::git::Ref, remote: &str) -> Option<&'a str> {
+    r.full.strip_prefix(&format!("refs/remotes/{remote}/pr/")).filter(|n| !n.is_empty())
+}
+
+/// A real branch `pr/<n>` or `pr/<n>/…` on `remote` that pull request heads would collide
+/// with, making every fetch fail: then fetching them can't be turned on.
+pub fn pr_refs_clash<'a>(d: &'a RepoData, remote: &str) -> Option<&'a str> {
+    let numbered = |n: &str| n.split('/').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    (!pr_refs_on(d, remote)).then(|| d.refs.iter().find(|r| pr_head(r, remote).is_some_and(numbered)).map(|r| r.name.as_str())).flatten()
+}
+
+/// Toggle fetching pull request heads; turning it off deletes the fetched `pr/<n>` refs
+/// (not remote branches like `pr/feature`).
 pub fn pr_refs_op(d: &RepoData, remote: &str) -> Op {
     let (key, spec) = (format!("remote.{remote}.fetch"), pr_refspec(remote));
     if !pr_refs_on(d, remote) {
         return Op::new(format!("Fetch pull requests from {remote}"), &["config", "--add", &key, &spec]).then(&["fetch", "--progress", remote]);
     }
-    let stale: String = d.refs.iter().filter(|r| r.full.starts_with(&format!("refs/remotes/{remote}/pr/"))).map(|r| format!("delete {}\n", r.full)).collect();
+    let stale: String = d.refs.iter().filter(|r| pr_head(r, remote).is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))).map(|r| format!("delete {}\n", r.full)).collect();
     let op = Op::new(format!("Stop fetching pull requests from {remote}"), &["config", "--unset-all", "--fixed-value", &key, &spec]);
     if stale.is_empty() { op } else { op.then(&["update-ref", "--stdin"]).input(stale) }
 }
@@ -197,7 +217,11 @@ mod tests {
         exec(&dir, op.revert.as_ref().unwrap()).unwrap();
         assert_eq!(cfg(), before);
 
-        // Remove, then undo: config, the branch's upstream and the tracking refs come back.
+        // Remove, then undo: config, the branch's upstream, push remotes and the tracking refs
+        // come back; a remote whose name starts with `origin.` is left alone.
+        sh(&dir, &["remote", "add", "origin.b", "/b.git"]);
+        sh(&dir, &["config", "branch.feat.pushremote", "origin"]);
+        sh(&dir, &["config", "remote.pushdefault", "origin"]);
         let (before, refs) = (cfg(), tracking());
         let op = remove(&load(), "origin");
         assert!(op.confirm.as_deref().unwrap().contains("its 2 remote-tracking"));
@@ -257,16 +281,29 @@ mod tests {
         exec(&dir, &op).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), pr);
         assert_eq!(sh(&dir, &["branch", "--show-current"]).trim(), "pr/7");
+        // Force-pushed: running it again while on pr/7 moves it to the new head.
+        commit(&up, "a.txt", "pr redone\n");
+        sh(&up, &["update-ref", "refs/pull/7/head", "HEAD"]);
+        let pr = sh(&up, &["rev-parse", "HEAD"]);
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "pr/7"]), pr);
+        sh(&up, &["branch", "pr/feature"]);
 
         let load = || load_all(&dir, 100, View::default()).unwrap();
-        assert!(!pr_refs_on(&load(), "origin"));
+        sh(&dir, &["fetch", "-q", "origin"]);
+        assert!(!pr_refs_on(&load(), "origin") && pr_refs_clash(&load(), "origin").is_none());
         exec(&dir, &pr_refs_op(&load(), "origin")).unwrap();
         let d = load();
         assert!(pr_refs_on(&d, "origin"));
         assert!(d.refs.iter().any(|r| r.name == "origin/pr/7" && r.target == pr.trim()));
         exec(&dir, &pr_refs_op(&d, "origin")).unwrap();
         let d = load();
-        assert!(!pr_refs_on(&d, "origin") && !d.refs.iter().any(|r| r.name.starts_with("origin/pr/")));
+        let pr_refs: Vec<&str> = d.refs.iter().map(|r| r.name.as_str()).filter(|n| n.starts_with("origin/pr/")).collect();
+        assert!(!pr_refs_on(&d, "origin") && pr_refs == ["origin/pr/feature"], "{pr_refs:?}");
+        // A real branch pr/7 would collide with pull request 7.
+        sh(&up, &["branch", "pr/7"]);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        assert_eq!(pr_refs_clash(&load(), "origin"), Some("origin/pr/7"));
         assert_eq!(d.cfg_all("remote.origin.fetch").collect::<Vec<_>>(), ["+refs/heads/*:refs/remotes/origin/*"]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);

@@ -59,12 +59,17 @@ pub fn check(dir: &Path, remote: &str) -> Report {
         }
     }
     // Tokens in the URL or a proxy's password must not reach the screen or a pasted report.
-    for (_, v) in &mut settings {
-        *v = git::redact(v);
+    for (k, v) in &mut settings {
+        *v = if k.to_ascii_lowercase().ends_with("proxy") { redact_proxy(v) } else { git::redact(v) };
     }
     let problem = res.as_ref().err().map(|e| git::diagnose(e, is_ssh(&url)));
     let output = res.unwrap_or_else(|e| e).trim().into();
     Report { url: git::redact(&url), problem, output, settings }
+}
+
+/// A proxy may omit its scheme (`user:pw@host:port`, for git and curl alike).
+fn redact_proxy(v: &str) -> String {
+    if v.contains("://") { git::redact(v) } else { git::redact(&format!("http://{v}"))["http://".len()..].to_owned() }
 }
 
 impl Doctor {
@@ -99,6 +104,9 @@ mod tests {
         assert!(check(&dir, "self").problem.is_none());
         assert!(is_ssh("git@ghe.corp:o/r.git") && is_ssh("ssh://git@ghe.corp/o/r"));
         assert!(!is_ssh("https://ghe.corp/o/r") && !is_ssh("/srv/r.git") && !is_ssh("C:\\r") && !is_ssh("./a:b"));
+        assert_eq!(redact_proxy("u:pw@proxy.corp:8080"), "***@proxy.corp:8080");
+        assert_eq!(redact_proxy("http://u:pw@proxy.corp:8080"), "http://***@proxy.corp:8080");
+        assert_eq!(redact_proxy("proxy.corp:3128"), "proxy.corp:3128");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -171,6 +171,23 @@ pub fn stash_op() -> Op {
     Op::new("Stash", &["stash", "push", "--include-untracked"])
 }
 
+/// `git branch -d` (or `-D`) of local branches. ⌘Z recreates them with their
+/// `branch.<name>.*` config (upstream, description), which git drops and a ref snapshot lacks.
+pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool) -> Op {
+    let mut args = vec!["branch", if force { "-D" } else { "-d" }];
+    args.extend(names);
+    let mut back = Op::new(format!("Restore {}", names.join(", ")), &[]);
+    back.cmds.clear();
+    for (n, r) in names.iter().filter_map(|n| Some((n, d.local(n)?))) {
+        back.cmds.push(vec!["branch".into(), n.to_string(), r.target.clone()]);
+        let prefix = format!("branch.{n}.");
+        // Only this branch's own keys, not those of a branch `<n>.x`.
+        let own = d.config.iter().filter(|(k, _)| k.strip_prefix(&prefix).is_some_and(|v| !v.contains('.')));
+        back.cmds.extend(own.map(|(k, v)| vec!["config".into(), "--add".into(), k.clone(), v.clone()]));
+    }
+    Op::new(label, &args).revert(back)
+}
+
 /// Check out a ref: local branch, remote branch (its local twin or a new
 /// tracking branch), or a tag (detached). A branch checked out in another
 /// worktree opens that worktree instead.
@@ -228,8 +245,10 @@ impl RepoTab {
                 };
                 let before = (op.undo != Undo::No).then(|| git::snapshot(&dir).ok()).flatten();
                 let out = cancel.scope(|| exec(&dir, &op));
-                // Even a partly failed op may have moved refs: always offer undo.
-                let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
+                // Even a partly failed op may have moved refs: offer undo, unless it stopped mid
+                // merge/rebase/cherry-pick (undo can't check out over that; Abort is the way back).
+                let stopped = out.is_err() && git::git_dir(&dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting));
+                let snaps = before.filter(|_| !stopped).and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
                 Done::Op(op, out, snaps, saved)
             }),
         ));
@@ -380,17 +399,22 @@ impl RepoData {
     /// make it overwrite commits you haven't seen.
     pub fn push_op(&self, force: bool) -> Option<Op> {
         let branch = self.status.branch.as_deref()?;
-        let Some(up) = self.status.upstream.as_deref() else {
+        let Some((remote, rb)) = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up)) else {
             let remote = &self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first())?.0;
             return Some(Op::new("Push", &["push", "--progress", "-u", remote, branch]));
         };
+        let up = format!("{remote}/{rb}");
         if !force {
-            return Some(Op::new("Push", &["push", "--progress"]));
+            // A bare push keeps push.default / pushRemote, but `simple` refuses a differently named upstream.
+            return Some(if self.status.upstream.as_deref() != Some(up.as_str()) {
+                Op::new("Push", &["push", "--progress", "-u", remote, branch])
+            } else if rb == branch {
+                Op::new("Push", &["push", "--progress"])
+            } else {
+                Op::new("Push", &["push", "--progress", remote, &format!("{branch}:refs/heads/{rb}")])
+            });
         }
-        let (remote, rb, sha) = match self.refs.iter().find(|r| r.kind == RefKind::Remote && r.name == up) {
-            Some(r) => (r.remote(), r.remote_branch(), r.target.as_str()),
-            None => up.split_once('/').map(|(r, b)| (r, b, ""))?,
-        };
+        let sha = self.refs.iter().find(|r| r.kind == RefKind::Remote && r.name == up).map_or("", |r| r.target.as_str());
         let (lease, spec) = (format!("--force-with-lease=refs/heads/{rb}:{sha}"), format!("{branch}:refs/heads/{rb}"));
         let args = ["push", "--progress", &lease, "--force-if-includes", remote, &spec];
         let at = if sha.is_empty() { "doesn't exist".into() } else { format!("is still at {}", &sha[..7.min(sha.len())]) };

@@ -127,6 +127,9 @@ pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) ->
     });
     match (res, pop) {
         (res, Ok(_)) => res,
+        (_, Err(e)) if e.contains("could not restore untracked files") => Err(format!(
+            "Some untracked files couldn't come back: the new state has files of the same name. They are kept only in the stash \"{msg}\", so don't drop it.\n\n{e}"
+        )),
         (_, Err(e)) => Err(format!(
             "Your changes conflict with the new state: resolve the conflicts. They are also kept in the stash \"{msg}\"; drop it when you're done.\n\n{e}"
         )),

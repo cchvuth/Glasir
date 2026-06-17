@@ -19,7 +19,9 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
         acts.push(prompt(format!("Pull request number on {name}"), "", remotes::pr_checkout(name)));
     }
     let mut on = remotes::pr_refs_on(d, name);
-    if ui.checkbox(&mut on, format!("Show pull requests as {name}/pr/<n>")).on_hover_text("Fetch every pull request's head too (+refs/pull/*/head); turning it off deletes them again").clicked() {
+    let clash = remotes::pr_refs_clash(d, name);
+    let tip = clash.map_or("Fetch every pull request's head too (+refs/pull/*/head); turning it off deletes them again".into(), |b| format!("Not possible: the branch {b} would collide with them"));
+    if ui.add_enabled(clash.is_none(), egui::Checkbox::new(&mut on, format!("Show pull requests as {name}/pr/<n>"))).on_hover_text(tip.as_str()).on_disabled_hover_text(tip.as_str()).clicked() {
         acts.push(Action::Git(remotes::pr_refs_op(d, name)));
     }
     ui.separator();

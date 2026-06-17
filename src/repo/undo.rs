@@ -99,10 +99,20 @@ pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
 /// Undo/redo: move refs from `expect` back to `target`, carrying uncommitted
 /// changes along when the op did (`autostash`).
 pub(super) fn move_refs(dir: &Path, expect: &Snapshot, target: &Snapshot, mode: &str, autostash: Option<&str>) -> Res<()> {
-    if git::snapshot(dir)? != *expect {
+    let cur = git::snapshot(dir)?;
+    let (mut expect, mut target) = (expect.clone(), target.clone());
+    // Tags a Fetch brought in since are unrelated to this entry: keep them, they're no change.
+    for (r, o) in &cur.refs {
+        if !r.starts_with("refs/tags/") || expect.refs.contains_key(r) || target.refs.contains_key(r) {
+            continue;
+        }
+        expect.refs.insert(r.clone(), o.clone());
+        target.refs.insert(r.clone(), o.clone());
+    }
+    if cur != expect {
         return Err("The repository changed outside Glasir since this action; undo history cleared.".into());
     }
-    let restore = || git::restore(dir, target, mode).map(|_| String::new());
+    let restore = || git::restore(dir, &target, mode).map(|_| String::new());
     match autostash {
         Some(msg) => git::with_autostash(dir, msg, restore).map(drop),
         None => restore().map(drop),
@@ -208,6 +218,38 @@ mod tests {
         restore_worktree(&dir, &saved).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), conflicted);
         assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "u\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tag fetched since an undo entry doesn't block undoing it, and stays.
+    /// An op that stops on a conflict mid-rebase records no entry (Abort is the way back).
+    #[test]
+    fn undo_survives_new_tags_and_skips_stopped_rebases() {
+        use super::super::testutil::{commit, identity, scratch, settle, sh};
+        use super::super::{Action, Op, RepoTab, Undo, View};
+        let dir = scratch("undo-tags");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        let before = git::snapshot(&dir).unwrap();
+        commit(&dir, "a.txt", "two\n");
+        let after = git::snapshot(&dir).unwrap();
+        sh(&dir, &["update-ref", "refs/tags/v2", "HEAD"]);
+        move_refs(&dir, &after, &before, "--keep", None).unwrap();
+        assert!(sh(&dir, &["tag"]).contains("v2"));
+        assert_eq!(git::snapshot(&dir).unwrap().refs.get("refs/heads/main"), before.refs.get("refs/heads/main"));
+
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "a.txt", "feat\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a.txt", "main\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Rebase feat onto main", &["rebase", "main", "feat"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        assert_eq!(t.data.as_ref().unwrap().state, git::State::Rebasing);
+        assert_eq!(t.undo_label(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

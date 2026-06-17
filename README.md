@@ -105,7 +105,9 @@ The name fits a Git client:
 - Clone (HTTPS or SSH) and init.
 - **Manage remotes** from the sidebar: add (name, URL, optional push URL, fetched
   right away), rename, edit URLs, fetch or prune one remote, remove (⌘Z restores
-  its config, branch upstreams and remote-tracking branches).
+  its config, branch upstreams and push remotes, and remote-tracking branches).
+- Push goes to the branch's upstream even under another name; a branch started
+  from `origin/main` gets its own remote branch instead.
 
 ### GitHub and GitHub Enterprise (no API, no token)
 - Open the repository, branch or commit page; copy commit links.
@@ -113,7 +115,8 @@ The name fits a Git client:
 - Credential prompts through Glasir's own askpass window; `insteadOf` URL
   rewrites honored.
 - **Check out a pull request by number** (⌘P or a remote's menu): fetches
-  `pull/<n>/head` into `pr/<n>`; optionally show every PR as `<remote>/pr/<n>`.
+  `pull/<n>/head` into `pr/<n>` (again to update it); optionally show every PR as
+  `<remote>/pr/<n>`.
 - Commit messages link **#123** and **GH-123** to the pull request or issue.
 - **Permalinks**: copy a link to a file at a commit, or open it on the remote.
 - **Commit identity guard**: the commit box shows who you commit as; rules in

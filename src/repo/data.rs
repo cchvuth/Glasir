@@ -143,6 +143,14 @@ impl RepoData {
         }
     }
 
+    /// Where pushing `branch` goes as `(remote, branch)`: its upstream, unless that is a
+    /// differently named long-lived branch it was started from (`checkout -b feat origin/main`),
+    /// which must not get its commits: then a branch of its own name.
+    pub fn push_dest<'a>(&self, branch: &'a str, upstream: &'a str) -> Option<(&'a str, &'a str)> {
+        let (remote, rb) = upstream.split_once('/')?;
+        Some(if rb != branch && self.branch_rank(rb) < 2 { (remote, branch) } else { (remote, rb) })
+    }
+
     pub fn default_branch(&self) -> String {
         Some(self.origin_head.clone())
             .filter(|s| !s.is_empty())

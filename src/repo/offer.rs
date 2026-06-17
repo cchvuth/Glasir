@@ -16,7 +16,8 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
         vec![("Pull (rebase)".to_owned(), pull_op(PullMode::Rebase)), ("Pull (merge)".to_owned(), merge)]
     };
     match args.first()?.as_str() {
-        "checkout" if err.contains("would be overwritten by checkout") => {
+        // Not for untracked files: the target's copy would be checked out and the stash couldn't pop.
+        "checkout" if err.contains("would be overwritten by checkout") && !err.contains("untracked working tree files") => {
             let target = op.label.strip_prefix("Checkout ").unwrap_or(&op.label);
             let files: Vec<String> = err.lines().filter(|l| l.starts_with('\t')).map(|l| format!("  •  {}", l.trim())).collect();
             let mut o = op.clone();
@@ -128,6 +129,52 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Branches whose upstream has another name: one started from origin/main gets its own
+    /// remote branch, a deliberate upstream is updated. Deleting and renaming keep the upstream.
+    #[test]
+    fn push_and_undo_with_differently_named_upstream() {
+        let root = scratch("upnames");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let (a, remote) = (root.join("a"), root.join("remote.git"));
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        sh(&a, &["push", "-q", "origin", "main:chan/fix"]);
+        let load = || load_all(&a, 100, View::default()).unwrap();
+        let tip = |r: &str| sh(&remote, &["rev-parse", r]);
+
+        sh(&a, &["checkout", "-q", "-b", "feature", "origin/main"]);
+        commit(&a, "g.txt", "two\n");
+        exec(&a, &load().push_op(false).unwrap()).unwrap();
+        assert_eq!(tip("feature"), sh(&a, &["rev-parse", "HEAD"]));
+        assert_ne!(tip("main"), tip("feature"));
+        assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/feature");
+
+        sh(&a, &["checkout", "-q", "-b", "fix", "--track", "origin/chan/fix"]);
+        commit(&a, "h.txt", "three\n");
+        exec(&a, &load().push_op(false).unwrap()).unwrap();
+        assert_eq!(tip("chan/fix"), sh(&a, &["rev-parse", "HEAD"]));
+        assert!(git::run(&remote, &["rev-parse", "--verify", "-q", "refs/heads/fix"]).is_err());
+
+        // Undo of a delete and a rename brings the upstream back too.
+        sh(&a, &["checkout", "-q", "main"]);
+        let del = crate::repo::op::delete_branches(&load(), "Delete fix".into(), &["fix"], true);
+        exec(&a, &del).unwrap();
+        exec(&a, del.revert.as_ref().unwrap()).unwrap();
+        assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "fix@{u}"]).trim(), "origin/chan/fix");
+        let mut ren = Op::new("Rename branch", &["branch", "-m", "fix", "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "{}", "fix"]));
+        let revert = ren.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());
+        for x in ren.cmds.iter_mut().flatten().chain(revert) {
+            *x = x.replace("{}", "fix2"); // what the prompt does
+        }
+        exec(&a, &ren).unwrap();
+        exec(&a, ren.revert.as_ref().unwrap()).unwrap();
+        assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "fix@{u}"]).trim(), "origin/chan/fix");
+        assert!(git::run(&a, &["config", "--get", "branch.fix2.merge"]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn checkout_autostash() {
         let dir = scratch("autostash");
@@ -183,6 +230,16 @@ mod tests {
         assert_eq!(sh(&dir, &["branch", "--show-current"]).trim(), "feat");
         assert!(read("a.txt").contains("<<<<<<<"));
         assert_eq!(stashes(), 1);
+
+        // An untracked file the target branch has: stashing can't help, so no offer.
+        sh(&dir, &["checkout", "-q", "-f", "main"]);
+        sh(&dir, &["stash", "clear"]);
+        sh(&dir, &["checkout", "-q", "-b", "adds"]);
+        commit(&dir, "added.txt", "theirs\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("added.txt"), "mine\n").unwrap();
+        let op = checkout("adds");
+        assert!(offer(&op, &exec(&dir, &op).unwrap_err(), None).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
