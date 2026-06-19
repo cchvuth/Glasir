@@ -67,6 +67,9 @@ fn attribute(removed: &[&str], around: &[&str], cands: &[&str]) -> Result<usize,
 
 impl Plan {
     pub fn load(dir: &Path) -> Res<Plan> {
+        if git::state(&git::git_dir(dir)?) != git::State::Clean {
+            return Err("Finish or abort the merge, rebase or other operation in progress first.".into());
+        }
         let head = git::run(dir, &["rev-parse", "HEAD"])?.trim().to_owned();
         let index = git::run(dir, &["write-tree"]).map_err(|_| "Resolve the conflicts first.".to_string())?.trim().to_owned();
         // Unpushed commits (no upstream: the last 20 on no remote), stopping at a merge or the root.
@@ -87,8 +90,11 @@ impl Plan {
             let Some((path, typechange)) = named else { continue };
             let stay = |why: &str| Row { path: path.into(), what: String::new(), target: Err(why.into()), at: None };
             let new = f.header.iter().any(|h| h.starts_with("new file"));
-            if typechange || f.hunks.is_empty() || f.binary || new || f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text.contains('\u{FFFD}')) {
-                let why = if typechange { "type change" } else if new { "new file" } else if f.hunks.is_empty() || f.binary { "binary or mode change" } else { "not UTF-8 text" };
+            // Whole deletions stay too: the fixup could empty the commit that added the
+            // file, and a rename's two halves stay together.
+            let gone = f.header.iter().any(|h| h.starts_with("deleted file"));
+            if typechange || f.hunks.is_empty() || f.binary || new || gone || f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text.contains('\u{FFFD}')) {
+                let why = if typechange { "type change" } else if new { "new file" } else if gone { "deleted file" } else if f.hunks.is_empty() || f.binary { "binary or mode change" } else { "not UTF-8 text" };
                 rows.push(stay(why));
                 continue;
             }
@@ -129,6 +135,20 @@ impl Plan {
         if rows.is_empty() {
             return Err("Nothing is staged.".into());
         }
+        // A fixup that exactly reverts its commit would empty it, which stops the autosquash.
+        let pid = |patch: &str| git::run_input(dir, &["patch-id", "--stable"], Some(patch.as_bytes())).map(|o| o.split(' ').next().unwrap_or("").to_owned());
+        let mut ts: Vec<usize> = rows.iter().filter_map(|r| r.target.clone().ok()).collect();
+        ts.sort_unstable();
+        ts.dedup();
+        for t in ts {
+            let mine = |r: &Row| r.target == Ok(t);
+            let patch: String = files.iter().enumerate().filter_map(|(fi, f)| git::partial_patch(f, |hi, _| rows.iter().any(|r| r.at == Some((fi, hi)) && mine(r)), false)).collect();
+            let id = &cands[t].0;
+            let revert = git::run(dir, &[&diff[..1], &diff[2..], &[id.as_str(), &format!("{id}^")]].concat())?;
+            if pid(&patch)? == pid(&revert)? {
+                rows.iter_mut().filter(|r| mine(r)).for_each(|r| r.target = Err(format!("it would undo all of {}", short(id))));
+            }
+        }
         Ok(Plan { rows, cands, files, head, index })
     }
 
@@ -151,7 +171,7 @@ impl Plan {
         let targets = self.targets();
         let oldest = *targets.first().ok_or("No hunk has a clear target commit.")?;
         let n = targets.len();
-        let mut op = Op::new(format!("Absorb into {n} commit{}", if n == 1 { "" } else { "s" }), &["read-tree", &self.head]);
+        let mut op = Op::new(format!("Absorb into {n} commit{}", if n == 1 { "" } else { "s" }), &["read-tree", "--reset", &self.head]);
         let rank = |t: usize| targets.iter().position(|&x| x == t).unwrap();
         for (k, &t) in targets.iter().enumerate() {
             let mut patch = String::new();
@@ -163,7 +183,7 @@ impl Plan {
             std::fs::write(&file, patch).map_err(|e| e.to_string())?;
             let file = file.to_string_lossy();
             if k > 0 {
-                op = op.then(&["read-tree", &self.head]);
+                op = op.then(&["read-tree", "--reset", &self.head]);
             }
             op = op
                 .then(&["apply", "--cached", "--unidiff-zero", &file])
@@ -175,7 +195,7 @@ impl Plan {
         let base = format!("{}^", self.cands[oldest].0);
         Ok(op
             .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-q", "-i", "--autosquash", "--autostash", &base])
-            .then(&["read-tree", &self.index])
+            .then(&["read-tree", "--reset", &self.index])
             .undo(Undo::Soft))
     }
 }
@@ -347,6 +367,7 @@ mod tests {
         write("g", "g1 fixed\n");
         write("p", "p1 fixed\n");
         g(&["add", "f", "g", "p"]);
+        g(&["sparse-checkout", "set", "--no-cone", "/*", "!/README"]); // must stay out of the checkout
 
         let plan = Plan::load(&dir).unwrap();
         assert_eq!(plan.cands.len(), 2);
@@ -357,6 +378,41 @@ mod tests {
         assert_eq!(g(&["show", "HEAD~1:f"]), fixed);
         assert_eq!(g(&["show", "HEAD:g"]), "g1 fixed\n");
         assert_eq!(g(&["diff", "--cached", "--name-only"]), "p\n");
+        assert_eq!((g(&["ls-files", "-t", "README"]), g(&["status", "--porcelain"])), ("S README\n".into(), "M  p\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fixups that would empty their commit stay staged (a deleted file, an exact
+    /// revert); nothing is planned during a merge.
+    #[test]
+    fn emptying_fixups_and_merges() {
+        let dir = scratch("absorb-empty");
+        let g = |a: &[&str]| sh(&dir, a);
+        g(&["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let write = |f: &str, s: &str| std::fs::write(dir.join(f), s).unwrap();
+        for (f, text, msg) in [("README", "root\n", "init"), ("x", "a\nb\n", "add x"), ("README", "root\nmore\n", "add more"), ("y", "y\n", "add y")] {
+            write(f, text);
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", msg]);
+        }
+        g(&["mv", "x", "z"]);
+        write("README", "root\n");
+        g(&["add", "README"]);
+        let plan = Plan::load(&dir).unwrap();
+        let got: Vec<(String, String)> = plan.rows.iter().map(|r| (r.path.clone(), r.target.clone().unwrap_err())).collect();
+        let row = |p: &str, why: &str| (p.to_owned(), why.to_owned());
+        let more = g(&["rev-parse", "--short=7", "HEAD~1"]);
+        assert_eq!(got, [row("README", &format!("it would undo all of {}", more.trim())), row("x", "deleted file"), row("z", "new file")]);
+
+        g(&["reset", "-q", "--hard"]);
+        g(&["checkout", "-q", "-b", "side"]);
+        write("s", "s\n");
+        g(&["add", "s"]);
+        g(&["commit", "-q", "-m", "side"]);
+        g(&["checkout", "-q", "main"]);
+        g(&["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        assert!(Plan::load(&dir).is_err_and(|e| e.contains("merge")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

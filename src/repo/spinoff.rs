@@ -37,6 +37,7 @@ mod tests {
         commit(&dir, "b.txt", "oops 1\n");
         commit(&dir, "c.txt", "oops 2\n");
         std::fs::write(dir.join("a.txt"), "local edit\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "oops 1, edited\n").unwrap(); // a file the moved commits touch
         let tip = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
 
         let d = load_all(&dir, 100, View::default()).unwrap();
@@ -55,6 +56,7 @@ mod tests {
         git::restore(&dir, &before, "--keep").unwrap();
         assert_eq!(git::snapshot(&dir).unwrap(), before);
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "local edit\n");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "oops 1, edited\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

@@ -15,6 +15,8 @@ pub(super) struct Saved {
     pub(super) tracked: Vec<String>,
     /// Untracked files' bytes.
     pub(super) files: Vec<(String, Vec<u8>)>,
+    /// `Backup::Overwrite`: put `files` back even if the path exists.
+    pub(super) overwrite: bool,
 }
 
 pub(super) enum UndoKind {
@@ -42,7 +44,7 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
             split_z(git::run(dir, &["diff", "--name-only", "-z", "HEAD"]).unwrap_or_default()),
             split_z(git::run(dir, &["ls-files", "-z", "--others", "--exclude-standard"]).map_err(refuse)?),
         ),
-        Backup::Paths(ps) => ps.iter().cloned().partition(|p| {
+        Backup::Paths(ps) | Backup::Overwrite(ps) => ps.iter().cloned().partition(|p| {
             git::run(dir, &["--literal-pathspecs", "ls-files", "-z", "--", p]).is_ok_and(|o| !o.is_empty())
         }),
     };
@@ -73,14 +75,14 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         budget = budget.checked_sub(meta.len()).ok_or_else(|| refuse(format!("{p} is too large")))?;
         files.push((p.clone(), std::fs::read(&path).map_err(|e| refuse(format!("{p}: {e}")))?));
     }
-    Ok(Saved { stash, tracked, files })
+    Ok(Saved { stash, tracked, files, overwrite: matches!(b, Backup::Overwrite(_)) })
 }
 
 pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
     for (p, bytes) in &s.files {
         let path = dir.join(p);
-        // Copied tracked files overwrite what the discard put there.
-        if !path.exists() || (s.stash.is_none() && s.tracked.contains(p)) {
+        // Copied tracked files (and `Backup::Overwrite` copies) overwrite what's there now.
+        if s.overwrite || !path.exists() || (s.stash.is_none() && s.tracked.contains(p)) {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }

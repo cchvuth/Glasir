@@ -13,7 +13,7 @@ pub fn restore_file(d: &RepoData, label: String, source: &str, path: &str, what:
         // An untracked or half-resolved file: undo can't bring it back, so ask.
         o.confirm(format!("Overwrite your local {path} with {what}? This can't be undone."))
     } else {
-        o.backup(Backup::Paths(vec![path.to_owned()]))
+        o.backup(Backup::Overwrite(vec![path.to_owned()]))
     }
 }
 
@@ -59,6 +59,21 @@ mod tests {
         crate::repo::undo::save_worktree(&dir, o.backup.as_ref().unwrap()).unwrap();
         exec(&dir, &o).unwrap();
         assert_eq!(read(), "v2\n");
+
+        // An ignored local file (once tracked) isn't in status; undo still puts it back.
+        commit(&dir, ".env", "OLD=1\n");
+        let c_env = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["rm", "-q", "--cached", ".env"]);
+        std::fs::write(dir.join(".gitignore"), ".env\n").unwrap();
+        sh(&dir, &["add", ".gitignore"]);
+        sh(&dir, &["commit", "-q", "-m", "ignore .env"]);
+        std::fs::write(dir.join(".env"), "SECRET=mine\n").unwrap();
+        let o = super::restore_file(&load_all(&dir, 100, View::default()).unwrap(), "Restore".into(), &c_env, ".env", "v1");
+        let saved = crate::repo::undo::save_worktree(&dir, o.backup.as_ref().unwrap()).unwrap();
+        exec(&dir, &o).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "OLD=1\n");
+        crate::repo::undo::restore_worktree(&dir, &saved).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "SECRET=mine\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -38,6 +38,12 @@ pub fn restore(dir: &Path, to: &Snapshot, mode: &str) -> Res<()> {
             // Detached on both sides (e.g. a commit made on a detached HEAD): move HEAD itself.
             run(dir, &["reset", "-q", mode, &to.head, "--"])?;
         } else {
+            // Move the target branch first: its stale tip could clash with local edits on checkout.
+            if let (true, Some(c), Some(oid)) = (mode == "--keep", cur.refs.get(&to.head), to.refs.get(&to.head))
+                && c != oid
+            {
+                run(dir, &["update-ref", &to.head, oid, c])?;
+            }
             run(dir, &["checkout", "-q", to.head.strip_prefix("refs/heads/").unwrap_or(&to.head), "--"])?;
         }
     }

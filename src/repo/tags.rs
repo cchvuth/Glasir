@@ -9,7 +9,7 @@ pub fn move_tag(r: &Ref, target: &str) -> Op {
     let annotated = !r.message.is_empty();
     let mut args = vec!["tag", "-f"];
     if annotated {
-        args.extend(["-a", "-F", "-"]);
+        args.extend(["-a", "--cleanup=verbatim", "-F", "-"]);
     }
     args.extend([r.name.as_str(), target]);
     let op = Op::new(format!("Move tag {}", r.name), &args).undo(Undo::Keep);
@@ -44,7 +44,7 @@ mod tests {
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
         commit(&dir, "a.txt", "one\n");
-        sh(&dir, &["tag", "-a", "v1", "-m", "Release one\n\nNotes"]);
+        sh(&dir, &["tag", "--cleanup=verbatim", "-a", "v1", "-m", "Release one\n\n## Notes"]);
         sh(&dir, &["tag", "light"]);
         commit(&dir, "a.txt", "two\n");
         sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
@@ -56,7 +56,7 @@ mod tests {
         exec(&dir, &move_tag(&tag("v1").unwrap(), &head)).unwrap();
         exec(&dir, &move_tag(&tag("light").unwrap(), &head)).unwrap();
         let (v1, light) = (tag("v1").unwrap(), tag("light").unwrap());
-        assert_eq!((v1.target.as_str(), v1.message.as_str()), (head.as_str(), "Release one\n\nNotes"));
+        assert_eq!((v1.target.as_str(), v1.message.as_str()), (head.as_str(), "Release one\n\n## Notes"));
         assert_eq!((light.target.as_str(), light.message.as_str()), (head.as_str(), ""));
         git::restore(&dir, &before, "--keep").unwrap();
         assert_ne!(tag("v1").unwrap().target, head);

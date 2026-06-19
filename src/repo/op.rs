@@ -57,6 +57,9 @@ pub struct Op {
 pub enum Backup {
     /// These paths (tracked or untracked).
     Paths(Vec<String>),
+    /// Like `Paths`, but undo writes untracked files back even where the op
+    /// recreated them (a restore from history over an ignored file).
+    Overwrite(Vec<String>),
     /// Every uncommitted change, including untracked files.
     All,
 }

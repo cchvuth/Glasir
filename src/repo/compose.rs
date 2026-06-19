@@ -31,6 +31,8 @@ pub struct Plan {
     pub note: Option<String>,
     files: Vec<FileDiff>,
     head: String,
+    /// [`changes`] when the plan was made: the op refuses if they moved since.
+    changes: String,
 }
 
 /// Lines of a unit shown to Claude, per unit; whole new files are cut here.
@@ -49,13 +51,26 @@ fn render(out: &mut String, h: &git::Hunk) {
     }
 }
 
+/// The uncommitted changes the units are made of: `git diff HEAD` and the
+/// untracked files. Submodules with only local edits are left out: `git add`
+/// can't commit those.
+fn changes(dir: &Path) -> Res<(String, String)> {
+    let diff = ["diff", "HEAD", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--submodule=short", "--ignore-submodules=dirty", "--src-prefix=a/", "--dst-prefix=b/"];
+    Ok((git::run(dir, &diff)?, git::run(dir, &["ls-files", "-z", "--others", "--exclude-standard"])?))
+}
+
 impl Plan {
     /// The units and their listing for Claude (`[id] path (what)` + the diff).
     pub fn load(dir: &Path) -> Res<(Plan, String)> {
         let head = git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).map_err(|_| "Make a first commit first.".to_string())?.trim().to_owned();
-        let diff = ["diff", "HEAD", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/"];
-        let files = git::parse_diff(&git::run(dir, &diff)?);
-        let names = git::run(dir, &["diff", "HEAD", "--name-only", "-z", "--no-renames"])?;
+        let (raw, untracked) = changes(dir)?;
+        let files = git::parse_diff(&raw);
+        let names = git::run(dir, &["diff", "HEAD", "--name-only", "-z", "--no-renames", "--ignore-submodules=dirty"])?;
+        // Each commit starts from HEAD's tree, so content only in the index would be lost.
+        let staged = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "--ignore-submodules=dirty"])?;
+        if let Some(p) = staged.split('\0').find(|p| !p.is_empty() && !names.split('\0').any(|n| n == *p)) {
+            return Err(format!("{p} has staged changes that aren't in the working tree; commit or unstage them first."));
+        }
         let (mut units, mut listing) = (vec![], String::new());
         let mut add = |units: &mut Vec<Unit>, path: &str, what: String, hunk, body: &[git::Hunk]| {
             listing += &format!("[{}] {path} ({what})\n", units.len() + 1);
@@ -80,7 +95,6 @@ impl Plan {
                 add(&mut units, path, format!("{status}, hunk {}/{n}", hi + 1), Some((fi, hi)), std::slice::from_ref(h));
             }
         }
-        let untracked = git::run(dir, &["ls-files", "-z", "--others", "--exclude-standard"])?;
         for path in untracked.split('\0').filter(|p| !p.is_empty()) {
             let c = git::Change { path: path.into(), old_path: None, code: '?' };
             let f = git::worktree_diff(dir, &c, false, Default::default()).unwrap_or_default();
@@ -90,7 +104,7 @@ impl Plan {
         if units.is_empty() {
             return Err("There are no uncommitted changes.".into());
         }
-        Ok((Plan { units, commits: vec![], note: None, files, head }, listing))
+        Ok((Plan { units, commits: vec![], note: None, files, head, changes: raw + &untracked }, listing))
     }
 
     /// Takes Claude's JSON reply (see `ai::Purpose::Compose`), repairing it.
@@ -145,11 +159,14 @@ impl Plan {
         if git::run(dir, &["rev-parse", "HEAD"])?.trim() != self.head {
             return Err("HEAD moved since the plan was made; compose again.".into());
         }
+        if changes(dir).map(|(d, u)| d + &u)? != self.changes {
+            return Err("The changes were edited since the plan was made; compose again.".into());
+        }
         if self.commits.iter().any(|c| c.message.trim().is_empty()) {
             return Err("Every commit needs a message.".into());
         }
         let n = self.commits.len();
-        let mut op = Op::new(format!("Compose {n} commit{}", if n == 1 { "" } else { "s" }), &["read-tree", &self.head]);
+        let mut op = Op::new(format!("Compose {n} commit{}", if n == 1 { "" } else { "s" }), &["read-tree", "--reset", &self.head]);
         let mut done: Vec<usize> = vec![];
         for (k, c) in self.commits.iter().enumerate() {
             done.extend(&c.units);
@@ -160,7 +177,7 @@ impl Plan {
             }
             let whole: Vec<&str> = done.iter().filter(|&&u| self.units[u].hunk.is_none()).map(|&u| self.units[u].path.as_str()).collect();
             if k > 0 {
-                op = op.then(&["read-tree", &self.head]);
+                op = op.then(&["read-tree", "--reset", &self.head]);
             }
             if !patch.is_empty() {
                 let file = git_dir.join(format!("glasir-compose-{k}.patch"));
@@ -272,7 +289,7 @@ mod tests {
 
     #[test]
     fn edit_plan() {
-        let mut p = Plan { units: vec![], commits: vec![], note: None, files: vec![], head: String::new() };
+        let mut p = Plan { units: vec![], commits: vec![], note: None, files: vec![], head: String::new(), changes: String::new() };
         p.commits = vec![Commit { message: "a".into(), units: vec![0, 1] }, Commit { message: "b".into(), units: vec![2] }];
         p.move_unit(1, None);
         assert_eq!(ids(&p.commits), [vec![0], vec![1], vec![2]]);
@@ -303,6 +320,11 @@ mod tests {
         assert!(listing.contains("[2] a (modified, hunk 2/2)\n@@ -15,6 +15,6 @@") && listing.contains("[4] c (new file, untracked)\n@@ -0,0 +1,1 @@\n+new"), "{listing}");
         plan.fill(r#"{"commits":[{"message":"Second half of a, add c","units":[2,4]},{"message":"First half\n\nwith b","units":[3,1]}]}"#).unwrap();
         assert_eq!(plan.note, None);
+        // An edit made after planning is refused rather than left out of the commits.
+        let a = std::fs::read_to_string(dir.join("a")).unwrap();
+        std::fs::write(dir.join("a"), "edited later\n").unwrap();
+        assert!(plan.op(&dir, &git::git_dir(&dir).unwrap()).is_err());
+        std::fs::write(dir.join("a"), a).unwrap();
         let op = plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap();
         assert_eq!((op.label.as_str(), op.undo), ("Compose 2 commits", Undo::Soft));
         super::super::op::exec(&dir, &op).unwrap();
@@ -314,6 +336,30 @@ mod tests {
         // A stale plan is refused.
         assert!(plan.op(&dir, &git::git_dir(&dir).unwrap()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A submodule with only local edits is no unit; content only in the index is refused.
+    #[test]
+    fn compose_dirty_submodule_and_index_only_content() {
+        let (dir, sub) = (scratch("compose-sm"), scratch("compose-sm-sub"));
+        let g = |a: &[&str]| sh(&dir, a);
+        for d in [&dir, &sub] {
+            sh(d, &["init", "-q", "-b", "main"]);
+            identity(d);
+            commit(d, "x", "x1\n");
+        }
+        g(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "sub"]);
+        g(&["commit", "-q", "-m", "sub"]);
+        std::fs::write(dir.join("sub/x"), "dirty\n").unwrap();
+        std::fs::write(dir.join("x"), "x2\n").unwrap();
+        let (plan, _) = Plan::load(&dir).unwrap();
+        assert_eq!(plan.units.iter().map(|u| u.path.as_str()).collect::<Vec<_>>(), ["x"]);
+        std::fs::write(dir.join("new"), "precious\n").unwrap();
+        g(&["add", "new"]);
+        std::fs::remove_file(dir.join("new")).unwrap();
+        assert!(Plan::load(&dir).is_err_and(|e| e.starts_with("new has staged changes")));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sub);
     }
 
     /// A typechange is one whole-file unit; a failed step leaves the rest unstaged, not reverted.
