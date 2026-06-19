@@ -40,9 +40,8 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// `base` need not be an ancestor of HEAD: `base..HEAD` is what `rebase -i <base>` replays onto it.
     pub fn load(dir: &Path, base: &str, label: &str) -> Res<Editor> {
-        git::run(dir, &["merge-base", "--is-ancestor", base, "HEAD"])
-            .map_err(|_| format!("{label} is not an ancestor of HEAD."))?;
         let items = items(dir, &[&format!("{base}..HEAD")])?;
         if items.is_empty() {
             return Err(format!("No commits after {label} on this branch."));
@@ -134,6 +133,7 @@ fn items(dir: &Path, revs: &[&str]) -> Res<Vec<Item>> {
 pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option<String>) -> Res<Op> {
     // Squash/fixup meld into the parent, so the parent must be in the todo too.
     let back = if matches!(act, Act::Squash | Act::Fixup) { "~2" } else { "^" };
+    on_branch(dir, commit)?;
     let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}{back}")])
         .map_err(|_| "Commits next to the root can't be rewritten this way; use the interactive rebase editor.".to_string())?;
     let short = &commit[..commit.len().min(7)];
@@ -160,14 +160,9 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
 /// Squash needs a contiguous run; everything melds into the oldest selected.
 pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {
     // Base = parent of the oldest selected commit (the one furthest from HEAD).
-    let mut oldest = None;
-    for id in ids {
-        let n: usize = git::run(dir, &["rev-list", "--count", &format!("{id}..HEAD")])?.trim().parse().unwrap_or(0);
-        if oldest.as_ref().is_none_or(|(m, _)| n > *m) {
-            oldest = Some((n, id.clone()));
-        }
-    }
-    let (_, oldest) = oldest.ok_or("Nothing selected.")?;
+    // ids are newest first by graph row (--date-order lists parents after children).
+    let oldest = ids.last().ok_or("Nothing selected.")?;
+    on_branch(dir, oldest)?;
     let parent = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{oldest}^")])
         .map_err(|_| "The root commit can't be rewritten this way.".to_string())?;
     let mut ed = Editor::load(dir, parent.trim(), &oldest[..oldest.len().min(7)])?;
@@ -201,11 +196,13 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     if is_head {
         return Ok(Op::new(format!("Amend {short}"), &["commit", "--amend", "--no-edit"]).undo(Undo::Soft));
     }
-    // Same safety checks as the editor: an ancestor of HEAD, with no merges in between.
+    // Same safety checks as the editor: on this branch, with no merges after it.
+    on_branch(dir, commit)?;
     Editor::load(dir, &format!("{commit}^"), short)?;
+    // Soft: undo puts the folded-in changes back in the index (`--keep` would drop them).
     Ok(Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &format!("{commit}^")])
-        .undo(Undo::Keep))
+        .undo(Undo::Soft))
 }
 
 /// Uncommit `commit` so it can be split: HEAD is just reset; an older commit
@@ -216,12 +213,17 @@ pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op>
     if is_head {
         return Ok(Op::new(format!("Split {short}"), &["reset", "-q", "HEAD^"]).undo(Undo::Mixed));
     }
+    on_branch(dir, commit)?;
     let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).map_err(|_| "The root commit can't be split.".to_string())?;
     let mut ed = Editor::load(dir, base.trim(), short)?;
     ed.items.iter_mut().find(|i| i.id == commit).ok_or("Commit is not on the current branch.")?.act = Act::Edit;
     let mut op = ed.op(git_dir)?.then(&["reset", "-q", "HEAD^"]);
     op.label = format!("Split {short}");
     Ok(op)
+}
+
+fn on_branch(dir: &Path, commit: &str) -> Res<()> {
+    git::run(dir, &["merge-base", "--is-ancestor", commit, "HEAD"]).map(drop).map_err(|_| "Commit is not on the current branch.".into())
 }
 
 /// `refs/heads/x <sha>` (or just the sha when detached).
@@ -340,6 +342,70 @@ mod tests {
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c3", "c2", "c1"]);
         assert_eq!(g(&["show", "HEAD~1:b"]), "c2 fixed\n");
         assert_eq!(std::fs::read_to_string(dir.join("c")).unwrap(), "unstaged edit\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Through the app: ⌘Z keeps the amended-in changes staged; another branch's commit is refused.
+    #[test]
+    fn amend_into_undo_and_other_branch() {
+        use super::super::testutil::settle;
+        use super::super::{Action, RepoTab, View};
+        let (dir, g) = repo("amend-undo");
+        let (c2, tip) = (g(&["rev-parse", "HEAD~1"]).trim().to_owned(), g(&["rev-parse", "HEAD"]));
+        std::fs::write(dir.join("b"), "c2 fixed\n").unwrap();
+        g(&["add", "b"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::AmendInto(c2));
+        settle(&ctx, &mut t);
+        assert_eq!(g(&["show", "HEAD~1:b"]), "c2 fixed\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
+        assert_eq!(g(&["diff", "--cached", "--name-only"]), "b\n");
+        assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "c2 fixed\n");
+        g(&["reset", "-q", "--hard"]);
+        g(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+        std::fs::write(dir.join("s"), "s").unwrap();
+        g(&["add", "s"]);
+        g(&["commit", "-q", "-m", "s"]);
+        let s = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        g(&["checkout", "-q", "main"]);
+        assert_eq!(amend_into(&dir, &s, false).unwrap_err(), "Commit is not on the current branch.");
+        // The editor still opens onto a diverged branch: its commits after the merge base.
+        assert_eq!(Editor::load(&dir, "side", "side").unwrap().items.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⌘Z of an interactive cherry-pick carries an uncommitted edit of a picked file back.
+    #[test]
+    fn cherry_pick_undo_keeps_overlapping_edit() {
+        use super::super::testutil::settle;
+        use super::super::{Action, RepoTab, View};
+        let (dir, g) = repo("cherry-undo");
+        let lines = |edit: usize, to: &str| (1..=20).map(|i| if i == edit { to.to_owned() } else { i.to_string() }).collect::<Vec<_>>().join("\n");
+        std::fs::write(dir.join("f"), lines(0, "")).unwrap();
+        g(&["add", "f"]);
+        g(&["commit", "-q", "-m", "f"]);
+        g(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(dir.join("f"), lines(2, "two")).unwrap();
+        g(&["commit", "-q", "-am", "side"]);
+        let side = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        g(&["checkout", "-q", "main"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("f"), lines(19, "nineteen")).unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let op = Editor::cherry_pick(&dir, &[side]).unwrap().op(&git::git_dir(&dir).unwrap()).unwrap();
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_ne!(g(&["rev-parse", "HEAD"]), tip);
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), lines(19, "nineteen"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

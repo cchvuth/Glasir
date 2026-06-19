@@ -139,7 +139,9 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
             acts.push(Action::Git(Op::new(format!("Cherry-pick {short}"), &pick).undo(Undo::Keep)));
         }
     }
-    if d.status.branch.is_some() && !is_head && ui.button("Edit history after this commit (interactive rebase)…").clicked() {
+    // Only HEAD's own history: for another branch's commit it would be a rebase onto it.
+    let on_branch = d.status.head.as_ref().and_then(|h| d.row_of.get(h)).zip(d.row_of.get(&c.id)).is_some_and(|(&h, &r)| d.reachable(h)[r]);
+    if d.status.branch.is_some() && !is_head && on_branch && ui.button("Edit history after this commit (interactive rebase)…").clicked() {
         acts.push(Action::Rebase { base: c.id.clone(), label: short.into() });
     }
     if d.status.branch.is_some() && c.parents.len() == 1 {

@@ -304,7 +304,14 @@ pub fn predict_conflicts(dir: &Path, other: &str) -> Option<Vec<String>> {
 /// Files changed from `from` to `to`, shaped like a commit so the inspector can
 /// show it. `three_dot`: compare against their merge base (what a PR would show).
 pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &str) -> Res<CommitInfo> {
-    let base = if three_dot { run(dir, &["merge-base", from, to])? } else { run(dir, &["rev-parse", from])? };
+    let base = match three_dot {
+        true => run(dir, &["merge-base", from, to])?,
+        false => match run(dir, &["rev-parse", "-q", "--verify", from]) {
+            // The root commit's `^`: compare against the empty tree.
+            Err(_) if from.ends_with('^') => super::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?,
+            r => r?,
+        },
+    };
     let base = base.trim().to_owned();
     let to_id = run(dir, &["rev-parse", to])?.trim().to_owned();
     let files = parse_name_status(&run(dir, &["diff-tree", "-r", "-z", "--name-status", "-M", &base, &to_id])?);
@@ -373,6 +380,9 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         let info = compare_info(&dir, "main", "feat", true, "label").unwrap();
         // Only feat's own change, not main's c3 (merge-base comparison).
         assert_eq!(info.files.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["f"]);
+        let root = g(&["rev-list", "--max-parents=0", "HEAD"]);
+        let info = compare_info(&dir, &format!("{}^", root.trim()), "main", false, "label").unwrap();
+        assert_eq!(info.files.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
 
         // Annotated tag messages ride along with the refs; lightweight tags and branches have none.
         g(&["tag", "-a", "v1", "-m", "Release one\n\nWith notes", "main"]);

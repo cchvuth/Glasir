@@ -288,7 +288,11 @@ impl RepoTab {
                     self.amend = false;
                 }
                 if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
-                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo, autostash: op.autostash.clone() } });
+                    // Git's own `--autostash` (pull, cherry-pick): `reset --keep` would refuse edits the op merged into.
+                    let autostash = op.autostash.clone().or_else(|| {
+                        (op.undo == Undo::Keep && op.cmds.iter().flatten().any(|a| a == "--autostash")).then(|| format!("autostash to undo {}", op.label))
+                    });
+                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo, autostash } });
                     self.redo.clear();
                 }
                 if let (Ok(_), Some(undo)) = (&res, &op.revert) {
@@ -308,6 +312,7 @@ impl RepoTab {
                 match (op.label.as_str(), res.is_ok()) {
                     (super::split::FINISH, true) => self.finish_split(),
                     (super::split::FINISH, false) => self.split = None,
+                    (super::split::ABORT, true) => self.split_aborted(),
                     (l, false) if l.starts_with("Split ") => self.split = None,
                     // Show the WIP panel with the uncommitted parts (selected on reload).
                     (l, true) if l.starts_with("Split ") => self.sel = None,

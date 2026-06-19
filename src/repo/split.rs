@@ -3,7 +3,7 @@
 //! The whole split becomes one undo step.
 
 use super::undo::{UndoEntry, UndoKind};
-use super::{Choice, Msg, Op, RepoTab, Undo};
+use super::{Backup, Choice, Msg, Op, RepoTab, Undo};
 use crate::git;
 
 pub struct Split {
@@ -20,6 +20,7 @@ pub struct Split {
 
 /// Label of the ops that end a split (matched in `poll_op`).
 pub(super) const FINISH: &str = "Finish split";
+pub(super) const ABORT: &str = "Abort split";
 
 impl RepoTab {
     pub(super) fn start_split(&mut self, ctx: &egui::Context, commit: String) {
@@ -49,21 +50,27 @@ impl RepoTab {
         let (Some(sp), Some(d)) = (&self.split, &self.data) else { return };
         let cont = || Op::new(FINISH, &["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep);
         if abort {
-            let op = if sp.rebase { Op::new("Abort split", &["rebase", "--abort"]) } else { Op::new("Abort split", &["reset", "-q", &sp.id, "--"]) };
-            // Back to where the split started: the steps in between are moot.
-            self.undo.truncate(sp.undo_len);
-            self.split = None;
+            let op = match sp.rebase {
+                // Track the commit's files again first: `rebase --abort` won't overwrite its now-untracked added files.
+                true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).backup(Backup::All),
+                false => Op::new(ABORT, &["reset", "-q", &sp.id, "--"]),
+            };
             return self.run(ctx, op);
         }
         let s = &d.status;
+        // The commit's force-added ignored files are untracked now but missing from status.
+        let mut ign = vec!["--literal-pathspecs", "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--"];
+        ign.extend(sp.files.iter().map(String::as_str));
+        let ign = git::run(&self.dir, &ign).unwrap_or_default();
         let mut left: Vec<&str> = s.staged.iter().chain(&s.unstaged).map(|c| c.path.as_str()).filter(|p| sp.files.iter().any(|f| f == p)).collect();
+        left.extend(ign.split('\0').filter(|p| !p.is_empty()));
         left.sort_unstable();
         left.dedup();
         if left.is_empty() {
             return if sp.rebase { self.run(ctx, cont()) } else { self.finish_split() };
         }
         let message = if self.summary.trim().is_empty() { sp.message.clone() } else { format!("{}\n\n{}", self.summary.trim(), self.body.trim()).trim().to_owned() };
-        let mut add = vec!["--literal-pathspecs", "add", "-A", "--"];
+        let mut add = vec!["--literal-pathspecs", "add", "-A", "-f", "--"];
         add.extend(&left);
         let mut rest = Op::new(FINISH, &add).then(&["commit", "-q", "-F", "-"]).input(message).undo(Undo::Keep);
         // No "continue anyway": git refuses `rebase --continue` with uncommitted tracked changes.
@@ -74,6 +81,13 @@ impl RepoTab {
         let n = left.len();
         let text = format!("{n} file{} from {} not committed yet: {}.", if n == 1 { " is" } else { "s are" }, &sp.id[..7.min(sp.id.len())], left.join(", "));
         self.choice = Some(Choice { title: "Changes left over".into(), text, ops });
+    }
+
+    /// Aborted: back to where the split started, so the steps in between are moot.
+    pub(super) fn split_aborted(&mut self) {
+        let Some(sp) = self.split.take() else { return };
+        let steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
+        self.undo.extend(steps.into_iter().filter(|e| matches!(e.kind, UndoKind::Discard(_))));
     }
 
     /// The split is done: merge its undo entries into one.
@@ -135,6 +149,47 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Abort right after splitting an older commit that added files; a force-added
+    /// ignored file of the commit counts as left over at Continue.
+    #[test]
+    fn split_abort_and_ignored_files() {
+        let dir = scratch("split-abort");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, ".gitignore", "*.log\n");
+        for f in ["x", "build.log"] {
+            std::fs::write(dir.join(f), f).unwrap();
+        }
+        sh(&dir, &["add", "-f", "x", "build.log"]);
+        sh(&dir, &["commit", "-q", "-m", "x"]);
+        commit(&dir, "z", "c3");
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let x = sh(&dir, &["rev-parse", "HEAD~1"]).trim().to_owned();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Split(x.clone()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::SplitEnd { abort: true });
+        settle(&ctx, &mut t);
+        assert!(t.split.is_none());
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(sh(&dir, &["symbolic-ref", "--short", "HEAD"]), "main\n");
+        assert!(t.undo.iter().all(|e| !e.label.starts_with("Split ")));
+
+        t.apply(&ctx, Action::Split(x));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Stage", &["add", "x"]).light()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Commit", &["commit", "-q", "-m", "x"]).undo(Undo::Soft)));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::SplitEnd { abort: false });
+        settle(&ctx, &mut t);
+        assert!(t.split.is_some());
+        assert!(t.choice.as_ref().is_some_and(|c| c.text.contains("build.log")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
