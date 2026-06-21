@@ -11,12 +11,15 @@ use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 /// Who commits here (effective user.name / user.email), and a warning with a fix when a
 /// Settings rule expects another email domain for one of the remotes' hosts.
 fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) {
-    let (name, email) = (d.cfg("user.name").unwrap_or_default(), d.cfg("user.email").unwrap_or_default());
-    let set = |what: &str, v: &str| prompt(format!("Commit {what} for this repository"), v, Op::new(format!("Set user.{what}"), &["config", "--local", &format!("user.{what}"), "{}"]));
+    let user = (d.cfg("user.name").unwrap_or_default(), d.cfg("user.email").unwrap_or_default());
+    let (name, email) = if d.author.1.is_empty() { user } else { (d.author.0.as_str(), d.author.1.as_str()) };
+    // author.* (or GIT_AUTHOR_*) overrides user.*: setting user.* would change nothing.
+    let key = |what: &str| if (what == "name" && name != user.0) || (what == "email" && email != user.1) { format!("author.{what}") } else { format!("user.{what}") };
+    let set = |what: &str, v: &str| prompt(format!("Commit {what} for this repository"), v, Op::new(format!("Set {}", key(what)), &["config", "--local", &key(what), "{}"]));
     let who = if email.is_empty() { format!("{name} (no email set)") } else { format!("{name} <{email}>") };
     let r = ui
         .add(egui::Label::new(RichText::new(format!("{} {}", icon::USER_CIRCLE, who.trim())).small().color(theme::dim(ui))).truncate().sense(egui::Sense::click()))
-        .on_hover_text("Commits are made as this identity (git config user.name / user.email).\nClick to change the email for this repository; right-click for the name.");
+        .on_hover_text("Commits are made as this identity (git config user.* / author.*, or GIT_AUTHOR_* in the environment).\nClick to change the email for this repository; right-click for the name.");
     if r.clicked() {
         acts.push(set("email", email));
     }
@@ -34,7 +37,7 @@ fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) 
         ui.set_width(ui.available_width());
         ui.label(RichText::new(format!("{} {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::MOD));
         ui.horizontal(|ui| {
-            if theme::small(ui, true, "Set for this repo…").on_hover_text("git config --local user.email").clicked() {
+            if theme::small(ui, true, "Set for this repo…").on_hover_text(format!("git config --local {}", key("email"))).clicked() {
                 acts.push(set("email", &identity::suggest(email, &dom)));
             }
             ui.label(RichText::new("or commit anyway").small().color(theme::dim(ui)));

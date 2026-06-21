@@ -202,6 +202,17 @@ pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8
         drop_index_lock(dir, started);
         return Err(CANCELLED.into());
     }
+    if prog != "git" {
+        // A shell line's background jobs (`server &`) inherit our pipes: don't wait for them to exit.
+        let (done, exited) = (|| out.is_finished() && err.is_finished(), Instant::now());
+        while !done() && exited.elapsed() < std::time::Duration::from_millis(300) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        if !done() {
+            record(dir, &prog, args, start, status.code(), "(output held by a background process)");
+            return if status.success() { Ok(vec![]) } else { Err(format!("{prog} failed ({status})")) };
+        }
+    }
     let (stdout, stderr) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
     let mut stderr = String::from_utf8_lossy(&stderr).into_owned();
     if squash {
@@ -288,5 +299,14 @@ mod tests {
         // Later commands in a cancelled scope don't start.
         assert_eq!(cancel.scope(|| run(&dir, &["--version"])), Err(CANCELLED.to_owned()));
         assert!(run(&dir, &["--version"]).is_ok(), "the scope ends with the closure");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_line_returns_while_its_background_job_runs() {
+        let t = Instant::now();
+        assert_eq!(run_shell(&std::env::temp_dir(), "sleep 3 &").unwrap(), "");
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(run_shell(&std::env::temp_dir(), "echo hi").unwrap(), "hi\n");
     }
 }

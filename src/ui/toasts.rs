@@ -10,8 +10,8 @@ pub(super) struct Toast {
     text: String,
     error: bool,
     until: f64,
-    /// (tab dir, undo depth): an Undo button while that step is still the newest.
-    undo: Option<(PathBuf, usize)>,
+    /// (tab dir, undo step id): an Undo button while that step is still the newest.
+    undo: Option<(PathBuf, u64)>,
 }
 
 impl App {
@@ -19,7 +19,7 @@ impl App {
         self.toast_undo(ctx, text, error, None);
     }
 
-    pub(super) fn toast_undo(&mut self, ctx: &egui::Context, text: String, error: bool, undo: Option<(PathBuf, usize)>) {
+    pub(super) fn toast_undo(&mut self, ctx: &egui::Context, text: String, error: bool, undo: Option<(PathBuf, u64)>) {
         let now = ctx.input(|i| i.time);
         let secs = if error { 12.0 } else if undo.is_some() { 8.0 } else { 4.0 };
         self.toasts.push(Toast { text, error, until: now + secs, undo });
@@ -35,10 +35,10 @@ impl App {
         let mut dismiss = None;
         let mut undo = None;
         let tabs = &self.tabs;
-        let live = |u: &Option<(PathBuf, usize)>| {
-            let (dir, depth) = u.as_ref()?;
+        let live = |u: &Option<(PathBuf, u64)>| {
+            let (dir, id) = u.as_ref()?;
             let i = tabs.iter().position(|t| t.dir == *dir)?;
-            (tabs[i].undo_depth() == *depth && tabs[i].busy().is_none()).then_some(i)
+            (tabs[i].undo_top() == Some(*id) && tabs[i].busy().is_none()).then_some(i)
         };
         egui::Area::new(Id::new("toasts")).anchor(Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0)).show(ctx, |ui| {
             for (i, t) in self.toasts.iter().enumerate() {

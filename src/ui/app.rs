@@ -178,8 +178,10 @@ impl App {
 
     fn command_palette(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.palette else { return };
-        let items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull);
-        let Some(choice) = palette::show(ctx, p, items) else { return };
+        if p.items.is_empty() {
+            p.items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull);
+        }
+        let Some(choice) = palette::show(ctx, p) else { return };
         self.palette = None;
         match choice {
             None => {}
@@ -260,12 +262,12 @@ impl eframe::App for App {
         crate::repo::tools::set(&self.s.tools);
         self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here
         // An op that added an undo step gets an Undo button on its toast.
-        let mut msgs: Vec<(Msg, Option<(PathBuf, usize)>)> = vec![];
+        let mut msgs: Vec<(Msg, Option<(PathBuf, u64)>)> = vec![];
         for t in &mut self.tabs {
-            let (depth, mut m) = (t.undo_depth(), vec![]);
+            let (top, mut m) = (t.undo_top(), vec![]);
             t.poll(&ctx, &mut m);
             m.append(&mut t.notes);
-            let undo = (t.undo_depth() > depth).then(|| (t.dir.clone(), t.undo_depth()));
+            let undo = t.undo_top().filter(|&id| Some(id) > top).map(|id| (t.dir.clone(), id));
             let n = m.len();
             msgs.extend(m.into_iter().enumerate().map(|(i, m)| (m, undo.clone().filter(|_| i + 1 == n))));
         }

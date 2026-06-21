@@ -34,9 +34,23 @@ pub fn submodules(dir: &Path) -> Res<Vec<Submodule>> {
     if !dir.join(".gitmodules").exists() {
         return Ok(vec![]);
     }
-    let mut list = parse_status(&run(dir, &["submodule", "status", "--recursive"])?);
+    // Only gitlinks mapped in .gitmodules: an unmapped one makes `submodule status` fail
+    // outright, and a stale .gitmodules entry would make the pathspec fail.
+    let cfg = run(dir, &["config", "-z", "-f", ".gitmodules", "--get-regexp", r"^submodule\..*\.path$"]).unwrap_or_default();
+    let mapped: Vec<&str> = cfg.split('\0').filter_map(|e| e.split_once('\n')).map(|p| p.1).collect();
+    if mapped.is_empty() {
+        return Ok(vec![]);
+    }
+    let index = run(dir, &[&["--literal-pathspecs", "ls-files", "-s", "-z", "--"][..], &mapped].concat())?;
+    let mut paths: Vec<&str> = index.split('\0').filter_map(|e| e.strip_prefix("160000 ")?.split_once('\t')).map(|p| p.1).collect();
+    paths.dedup(); // a conflicted gitlink has one entry per stage
+    if paths.is_empty() {
+        return Ok(vec![]);
+    }
+    let status = |cached: &[&str]| run(dir, &[&["--literal-pathspecs", "submodule", "status"], cached, &["--recursive", "--"], &paths].concat());
+    let mut list = parse_status(&status(&[])?);
     if list.iter().any(|s| s.flag == '+') {
-        let cached = parse_status(&run(dir, &["submodule", "status", "--cached", "--recursive"])?);
+        let cached = parse_status(&status(&["--cached"])?);
         for s in list.iter_mut() {
             if let Some(c) = cached.iter().find(|c| c.path == s.path) {
                 s.recorded.clone_from(&c.head);
@@ -69,7 +83,8 @@ pub fn parse_submodule_diff(out: &str) -> Option<SubmoduleDiff> {
             d.log.push(subject.into());
             continue;
         }
-        let rest = l.strip_prefix("Submodule ")?;
+        // Vendored in place of the submodule: the files' own diff follows its "deleted" line.
+        let Some(rest) = l.strip_prefix("Submodule ") else { break };
         any = true;
         if let Some((_, what)) = rest.rsplit_once(" contains ") {
             d.dirty.push(format!("contains {what}"));
@@ -108,6 +123,8 @@ mod tests {
         let d = parse_submodule_diff("Submodule x contains modified content\nSubmodule x c067836..00f9310:\n  > b\n  > a\n").unwrap();
         assert_eq!((d.dirty.len(), d.log.len(), d.to.as_str()), (1, 2, "00f9310"));
         assert!(parse_submodule_diff("diff --git a/f b/f\n").is_none());
+        let d = parse_submodule_diff("Submodule lib 4c9c797...0000000 (submodule deleted)\ndiff --git a/lib/a b/lib/a\n+x\n").unwrap();
+        assert_eq!((d.to.as_str(), d.note.as_str()), ("0000000", "submodule deleted"));
     }
 
     /// Real git: status flags, recorded vs checked-out commit, pointer diffs with subjects.
@@ -142,6 +159,16 @@ mod tests {
         g(&app, &["commit", "-q", "-am", "bump lib"]);
         let s = submodules(&app).unwrap();
         assert_eq!((s.len(), s[0].path.as_str(), s[0].flag), (1, "lib", ' '));
+        // A gitlink with no .gitmodules entry (an embedded repo added by mistake) and a stale entry.
+        let orphan = app.join("orphan");
+        std::fs::create_dir_all(&orphan).unwrap();
+        g(&orphan, &["init", "-q"]);
+        commit(&orphan, "x");
+        g(&app, &["add", "orphan"]);
+        g(&app, &["config", "-f", ".gitmodules", "submodule.gone.path", "gone"]);
+        assert_eq!(submodules(&app).unwrap().len(), 1);
+        g(&app, &["config", "-f", ".gitmodules", "--remove-section", "submodule.gone"]);
+        g(&app, &["rm", "-qf", "--cached", "orphan"]);
 
         // The bump commit's diff names the commits it brings in.
         let lib_change = Change { path: "lib".into(), old_path: None, code: 'M' };

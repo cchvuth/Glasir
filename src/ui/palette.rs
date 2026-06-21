@@ -30,6 +30,8 @@ pub struct Item {
 pub struct Palette {
     pub query: String,
     pub sel: usize,
+    /// Built once per opening: with thousands of refs, building is too slow for every frame.
+    pub items: Vec<Item>,
 }
 
 /// Subsequence match, case-insensitive. Higher is better; rewards consecutive
@@ -200,9 +202,10 @@ fn elide(s: &str, max: usize) -> String {
 }
 
 /// Draws the palette; returns the chosen command, or `Some(None)` to close.
-pub fn show(ctx: &egui::Context, p: &mut Palette, all: Vec<Item>) -> Option<Option<Cmd>> {
-    let mut ranked: Vec<(i32, Item)> = all
-        .into_iter()
+pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
+    let mut ranked: Vec<(i32, &Item)> = p
+        .items
+        .iter()
         .filter_map(|it| {
             if p.query.trim().is_empty() {
                 return Some((0, it));

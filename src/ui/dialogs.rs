@@ -87,12 +87,12 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
 /// Modal for AI results that need a decision (pull request text, conflict resolution).
 pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let Some(job) = &t.ai else { return };
-    let inline_compare = matches!(t.sel, Some(crate::repo::Sel::Compare { .. }));
     let modal = match &job.purpose {
         ai::Purpose::PullRequest { .. } => true,
         // From the merge editor, the answer fills its output pane instead.
         ai::Purpose::Resolve(p) => t.merge.as_ref().is_none_or(|m| m.path != *p),
-        ai::Purpose::ExplainRange { .. } => !inline_compare,
+        // The inspector shows it inline only while that same range is selected.
+        ai::Purpose::ExplainRange { from: f, to: tt } => !matches!(&t.sel, Some(crate::repo::Sel::Compare { from, to, .. }) if f == from && tt == to),
         ai::Purpose::ExplainWip => true,
         _ => false,
     };

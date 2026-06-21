@@ -98,7 +98,7 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Op {
         }
         _ => Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)]),
     };
-    op.undo(Undo::Keep)
+    Op { custom: true, ..op.undo(Undo::Keep) }
 }
 
 /// `prog` on PATH (with Windows' .exe / .cmd), or as given when it is a path.
@@ -184,7 +184,7 @@ pub fn open_terminal(dir: &Path) -> Res<()> {
     let custom = !set.trim().is_empty();
     let cmd = if custom { set } else { default_terminal().to_owned() };
     // macOS `open -a` and `wt -d` take the folder as an argument; the others start in it.
-    let append = custom || cmd.starts_with("open ") || cmd.starts_with("wt ");
+    let append = cmd.starts_with("open ") || cmd.starts_with("wt ");
     launch(&cmd, dir, dir, append).map_err(|e| format!("Could not open a terminal ({cmd}): {e}\nSet a terminal command in Settings → Tools."))
 }
 
@@ -237,6 +237,30 @@ mod tests {
             let log = crate::git::LOG.lock().unwrap();
             assert!(log.iter().any(|e| e.cwd == dir && e.prog == "sh" && e.stderr.trim() == "main"));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A custom command's free-text name must not trigger the label-keyed follow-ups.
+    #[test]
+    fn custom_names_dont_act_like_builtin_ops() {
+        use crate::repo::testutil::settle;
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("custom-label");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        std::fs::write(dir.join("a.txt"), "staged\n").unwrap();
+        sh(&dir, &["add", "a.txt"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.summary = "draft".into();
+        for (name, command) in [("Commit lint", "git status"), ("Compose up", "git no-such-command")] {
+            t.apply(&ctx, Action::Custom(Custom { name: name.into(), command: command.into() }, Vars::default()));
+            settle(&ctx, &mut t);
+        }
+        assert_eq!(t.summary, "draft");
+        assert_eq!(sh(&dir, &["show", ":a.txt"]), "staged\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

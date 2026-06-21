@@ -28,27 +28,36 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             }
         });
         theme::rest(ui, |ui| {
-            theme::group(ui, |ui| {
-                ui.add_space(6.0);
-                ui.label(RichText::new(&t.name).strong().size(14.5));
-                if let Some(d) = &t.data {
-                    let st = &d.status;
-                    let branch = st.branch.clone().unwrap_or_else(|| {
-                        format!("detached @ {}", st.head.as_deref().map_or("—", |h| &h[..h.len().min(7)]))
-                    });
-                    let mut text = format!("{} {branch}", icon::GIT_BRANCH);
-                    if st.ahead > 0 {
-                        text += &format!("  {}{}", icon::ARROW_UP, st.ahead);
+            // Leave the controls after the name their width (as measured last frame), so a
+            // long branch name is cut instead of pushing them over the right-hand group.
+            let id = ui.id().with("controls");
+            let room = ui.available_width() - ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+            ui.scope(|ui| {
+                ui.set_max_width(room.max(120.0));
+                theme::group(ui, |ui| {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&t.name).strong().size(14.5));
+                    if let Some(d) = &t.data {
+                        let st = &d.status;
+                        let branch = st.branch.clone().unwrap_or_else(|| {
+                            format!("detached @ {}", st.head.as_deref().map_or("—", |h| &h[..h.len().min(7)]))
+                        });
+                        let mut text = format!("{} {branch}", icon::GIT_BRANCH);
+                        if st.ahead > 0 {
+                            text += &format!("  {}{}", icon::ARROW_UP, st.ahead);
+                        }
+                        if st.behind > 0 {
+                            text += &format!("  {}{}", icon::ARROW_DOWN, st.behind);
+                        }
+                        ui.label(RichText::new(text).color(theme::dim(ui)));
                     }
-                    if st.behind > 0 {
-                        text += &format!("  {}{}", icon::ARROW_DOWN, st.behind);
-                    }
-                    ui.label(RichText::new(text).color(theme::dim(ui)));
-                }
-                ui.add_space(6.0);
+                    ui.add_space(6.0);
+                });
             });
+            let x0 = ui.cursor().min.x;
             let busy = t.busy().is_some();
             ui.add_enabled_ui(!busy && t.data.is_some(), |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // measured at full size, never cut
                 theme::group(ui, |ui| {
                     let undo = ui.add_enabled(t.undo_label().is_some(), Button::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
                     if undo.on_hover_text(t.undo_label().map_or("Nothing to undo".into(), |l| format!("Undo {l} (⌘Z)"))).clicked() {
@@ -84,6 +93,8 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             } else if t.loading() {
                 ui.spinner();
             }
+            let w = ui.cursor().min.x - x0;
+            ui.data_mut(|d| d.insert_temp(id, w));
         });
     });
 }

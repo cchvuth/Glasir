@@ -105,6 +105,7 @@ fn history(dir: &Path, path: &str) -> Res<Vec<Entry>> {
     let out = git::run(
         dir,
         &[
+            "--literal-pathspecs",
             "log",
             "--follow",
             "-M",
@@ -187,5 +188,19 @@ mod tests {
         assert_eq!(h.len(), 2);
         assert_eq!((h[0].change.path.as_str(), h[0].change.old_path.as_deref()), ("new.rs", Some("old.rs")));
         assert_eq!((h[1].change.code, h[1].parent.as_deref()), ('A', None));
+    }
+
+    #[test]
+    fn history_path_is_literal() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-literal");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "f1.txt", "one");
+        commit(&dir, "f[1].txt", "two");
+        commit(&dir, "f1.txt", "three");
+        let h = history(&dir, "f[1].txt").unwrap();
+        assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["two"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

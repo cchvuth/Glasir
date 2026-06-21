@@ -25,20 +25,34 @@ impl Reflog {
 
     pub fn poll(&mut self) {
         if let Some(e) = Task::poll(&mut self.task) {
-            // New entries arrive on top: keep the same entry selected.
-            let grew = match (&self.entries, &e) {
-                (Some(Ok(old)), Ok(new)) => new.len().saturating_sub(old.len()),
-                _ => 0,
+            self.sel = match (self.sel, &self.entries, &e) {
+                (Some(i), Some(Ok(old)), Ok(new)) => old.get(i).and_then(|o| reselect(o, i, new)),
+                _ => None,
             };
-            self.sel = self.sel.map(|i| i + grew);
             self.entries = Some(e);
         }
     }
 }
 
+/// Where entry `o`, formerly at `i`, is now. New entries arrive on top and the
+/// `-n2000` cap or expiry drops old ones, so it only moves down: look from `i`.
+fn reselect(o: &ReflogEntry, i: usize, new: &[ReflogEntry]) -> Option<usize> {
+    let same = |n: &ReflogEntry| n.id == o.id && n.time == o.time && n.action == o.action && n.detail == o.detail;
+    new.iter().skip(i).position(same).map(|p| p + i).or_else(|| new.iter().position(same))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::git;
+
+    #[test]
+    fn selection_follows_the_entry_at_the_cap() {
+        let e = |n: i64| git::ReflogEntry { id: n.to_string(), time: n, action: "commit".into(), detail: String::new(), summary: String::new(), lost: false };
+        let old: Vec<_> = (0..5).rev().map(e).collect(); // 4 3 2 1 0
+        let new: Vec<_> = (1..6).rev().map(e).collect(); // 5 4 3 2 1: same length
+        assert_eq!(super::reselect(&old[2], 2, &new), Some(3));
+        assert_eq!(super::reselect(&old[4], 4, &new), None);
+    }
     use crate::repo::op::{Op, exec};
     use crate::repo::testutil::{commit, identity, scratch, sh};
 

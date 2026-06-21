@@ -311,7 +311,7 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
         ui.end_row();
         ui.label("Terminal");
         ui.add(TextEdit::singleline(&mut t.terminal).margin(crate::theme::INPUT_MARGIN).hint_text(terminal).desired_width(330.0))
-            .on_hover_text("Opened in the repository folder ({path}). Empty = your platform's terminal.");
+            .on_hover_text("Started in the repository folder; {path} = the folder. Empty = your platform's terminal.");
         ui.end_row();
     });
     ui.add_space(8.0);

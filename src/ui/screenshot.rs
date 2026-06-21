@@ -231,7 +231,7 @@ impl App {
                     "shortcuts" => self.shortcuts = true,
                     "welcome" => self.active = self.tabs.len(),
                     "toast-undo" => {
-                        let undo = self.tabs.last().map(|t| (t.dir.clone(), t.undo_depth()));
+                        let undo = self.tabs.last().and_then(|t| Some((t.dir.clone(), t.undo_top()?)));
                         self.toast_undo(ctx, "Discard ✔ changes backed up".into(), false, undo);
                         self.toast(ctx, "Fetch ✔ From github.com:org/repo".into(), false);
                     }

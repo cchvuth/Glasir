@@ -30,6 +30,15 @@ pub(super) enum UndoKind {
 pub(super) struct UndoEntry {
     pub(super) label: String,
     pub(super) kind: UndoKind,
+    /// Unique, increasing: a toast's Undo button stays live while its step is on top.
+    id: u64,
+}
+
+impl UndoEntry {
+    pub(super) fn new(label: String, kind: UndoKind) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        UndoEntry { label, kind, id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
+    }
 }
 
 fn split_z(s: String) -> Vec<String> {
@@ -125,9 +134,9 @@ impl RepoTab {
     pub fn undo_label(&self) -> Option<&str> {
         self.undo.last().map(|u| u.label.as_str())
     }
-    /// Undo stack height: a toast's Undo button stays live while it is unchanged.
-    pub fn undo_depth(&self) -> usize {
-        self.undo.len()
+    /// The newest undo step's id; a new step (or a redo) makes it larger.
+    pub fn undo_top(&self) -> Option<u64> {
+        self.undo.last().map(|u| u.id)
     }
     pub fn redo_label(&self) -> Option<&str> {
         self.redo.last().map(|u| u.label.as_str())
@@ -252,6 +261,30 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!(t.data.as_ref().unwrap().state, git::State::Rebasing);
         assert_eq!(t.undo_label(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_step_at_the_same_depth_has_a_new_id() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, View};
+        let dir = scratch("undo-top");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let step = |t: &mut RepoTab, a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, t);
+            t.undo_top()
+        };
+        let first = step(&mut t, Action::Git(Op::new("Branch", &["branch", "x"]).undo(Undo::Keep)));
+        assert!(first.is_some());
+        assert_eq!(step(&mut t, Action::Undo), None);
+        let second = step(&mut t, Action::Git(Op::new("Branch", &["branch", "y"]).undo(Undo::Keep)));
+        assert!(second.is_some() && second != first);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -10,6 +10,11 @@ impl RepoTab {
         if !self.ai_cfg.enabled {
             return;
         }
+        // A replaced job is dropped mid-stream: its partial text stays and its follow-up (draft restore, stash) never runs.
+        if let Some(busy) = self.ai_busy().map(|p| p.title()).or(self.compose_task.is_some().then(|| "Compose commits".into())) {
+            self.notes.push(Msg { text: format!("Claude is still working on {busy}; wait for it to finish"), error: true });
+            return;
+        }
         let draft = match &p {
             ai::Purpose::Compose => return self.start_compose(ctx),
             ai::Purpose::CommitMessage { .. } => {
@@ -79,5 +84,27 @@ impl RepoTab {
 
     pub fn ai_busy(&self) -> Option<&ai::Purpose> {
         self.ai.as_ref().filter(|j| j.running()).map(|j| &j.purpose)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::*;
+    use super::super::{Action, RepoTab, Task, View};
+    use crate::ai;
+
+    #[test]
+    fn busy_job_is_not_replaced() {
+        let dir = scratch("ai-busy");
+        sh(&dir, &["init", "-q"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        t.ai_cfg.enabled = true;
+        let (_tx, rx) = std::sync::mpsc::channel();
+        t.compose_task = Some(Task(rx));
+        t.apply(&ctx, Action::Ai(ai::Purpose::StashMessage));
+        assert!(t.ai.is_none());
+        assert!(t.notes.iter().any(|m| m.text.contains("Compose commits")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

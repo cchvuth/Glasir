@@ -17,6 +17,8 @@ pub struct RepoData {
     pub remotes: Arc<Vec<(String, String)>>,
     /// `remote.*`, `branch.*` and `user.*` config, all scopes in git's order (`cfg` looks keys up).
     pub config: Arc<Vec<(String, String)>>,
+    /// (name, email) new commits are authored with (`git::author`).
+    pub author: (String, String),
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
     pub origin_head: String,
@@ -228,6 +230,7 @@ impl RepoData {
             lfs: Default::default(),
             remotes,
             config: Default::default(),
+            author: Default::default(),
             git_dir,
             origin_head,
             truncated: false,
@@ -260,10 +263,10 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
             })
         });
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
-        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir)));
+        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir), git::author(dir)));
         (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
     });
-    let (remotes, submodules, lfs, config) = remotes;
+    let (remotes, submodules, lfs, config, author) = remotes;
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
@@ -276,6 +279,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.submodules = Arc::new(submodules);
     d.lfs = Arc::new(lfs);
     d.config = Arc::new(config);
+    d.author = author;
     d.load_bisect(dir);
     Ok(d)
 }

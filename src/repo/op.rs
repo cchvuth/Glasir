@@ -50,6 +50,9 @@ pub struct Op {
     pub autostash: Option<String>,
     /// Undoes a config-only op (remotes): ⌘Z runs it, redo runs this op again.
     pub revert: Option<Box<Op>>,
+    /// A Settings → Tools command: its label is the user's free text, so the
+    /// label-keyed follow-ups (commit box, split, compose) must not fire.
+    pub custom: bool,
 }
 
 /// What a discard is about to destroy.
@@ -77,6 +80,7 @@ impl Op {
             then_open: None,
             autostash: None,
             revert: None,
+            custom: false,
         }
     }
     pub fn revert(mut self, op: Op) -> Self {
@@ -285,7 +289,7 @@ impl RepoTab {
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
                     self.open_tab = Some(PathBuf::from(p));
                 }
-                if res.is_ok() && op.label.starts_with("Commit") {
+                if res.is_ok() && !op.custom && op.label.starts_with("Commit") {
                     self.summary.clear();
                     self.body.clear();
                     self.amend = false;
@@ -295,16 +299,16 @@ impl RepoTab {
                     let autostash = op.autostash.clone().or_else(|| {
                         (op.undo == Undo::Keep && op.cmds.iter().flatten().any(|a| a == "--autostash")).then(|| format!("autostash to undo {}", op.label))
                     });
-                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Refs { before, after, mode: op.undo, autostash } });
+                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash }));
                     self.redo.clear();
                 }
                 if let (Ok(_), Some(undo)) = (&res, &op.revert) {
                     let redo = Op { confirm: None, revert: None, ..op.clone() };
-                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) } });
+                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) }));
                     self.redo.clear();
                 }
                 if let Some(saved) = saved.filter(|s| (s.stash.is_some() && !s.tracked.is_empty()) || !s.files.is_empty()) {
-                    self.undo.push(UndoEntry { label: op.label.clone(), kind: UndoKind::Discard(saved) });
+                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Discard(saved)));
                     self.redo.clear();
                     // Light ops toast nothing, but a discard deserves a visible way back.
                     if op.light && res.is_ok() {
@@ -313,6 +317,7 @@ impl RepoTab {
                 }
                 // A guided split ends (or never started): see `split.rs`.
                 match (op.label.as_str(), res.is_ok()) {
+                    _ if op.custom => {}
                     (super::split::FINISH, true) => self.finish_split(),
                     (super::split::FINISH, false) => self.split = None,
                     (super::split::ABORT, true) => self.split_aborted(),

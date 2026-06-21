@@ -191,6 +191,18 @@ pub fn config(dir: &Path) -> Vec<(String, String)> {
     parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\."]).unwrap_or_default())
 }
 
+/// The (name, email) git authors commits with: author.* and GIT_AUTHOR_* beat user.*.
+/// Empty when git has no identity.
+pub fn author(dir: &Path) -> (String, String) {
+    run(dir, &["var", "GIT_AUTHOR_IDENT"]).ok().and_then(|s| parse_ident(&s)).unwrap_or_default()
+}
+
+/// `Name <email> 1700000000 +0100`.
+fn parse_ident(s: &str) -> Option<(String, String)> {
+    let (name, rest) = s.split_once('<')?;
+    Some((name.trim().into(), rest.split_once('>')?.0.into()))
+}
+
 /// `git config -z --get-regexp`: `key\nvalue\0` records (a bare `key\0` for a valueless key).
 fn parse_config(out: &str) -> Vec<(String, String)> {
     out.split('\0').filter(|r| !r.is_empty()).map(|r| r.split_once('\n').map_or((r.into(), String::new()), |(k, v)| (k.into(), v.into()))).collect()
@@ -328,6 +340,12 @@ mod tests {
         assert_eq!(c[0], ("remote.origin.url".into(), "git@ghe:o/r.git".into()));
         assert_eq!(c[2], ("user.email".into(), "a@b\nc".into()));
         assert_eq!(c[3], ("remote.x.mirror".into(), String::new()));
+    }
+
+    #[test]
+    fn ident() {
+        assert_eq!(parse_ident("Ann Lee <a@x.example> 1700000000 +0100\n"), Some(("Ann Lee".into(), "a@x.example".into())));
+        assert_eq!(parse_ident(" <> 1 +0000"), Some((String::new(), String::new())));
     }
 
     #[test]
