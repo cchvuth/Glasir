@@ -33,7 +33,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .default_size(250.0)
             .size_range(180.0..=520.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 5, top: 2, bottom: 12 }))
-            .show(ui, |ui| theme::card(ui, 150, |ui| sidebar::sidebar(ui, t.data.as_ref().unwrap(), &t.dir, &mut t.filter, &mut acts)));
+            .show(ui, |ui| theme::card(ui, 150, |ui| sidebar::sidebar(ui, t.data.as_ref().unwrap(), &t.dir, &t.sel, &mut t.filter, &mut acts)));
         egui::Panel::right("details")
             .show_separator_line(false)
             .default_size(390.0)

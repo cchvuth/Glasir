@@ -132,7 +132,8 @@ The name fits a Git client:
   branch), open in a new tab, lock / unlock, remove (with force / with its
   branch), prune.
 - **Stashes**: stash all, staged only, or with an AI-written message; apply, pop,
-  delete; apply a single file from a stash.
+  delete (⌘/⇧-click several to delete them at once; ⌘Z brings them back in
+  place); apply a single file from a stash.
 - **Tags**: create (lightweight or annotated), push one or all, delete locally, on
   the remote or both at once, **move a tag** to another commit (undoable, keeps its
   annotation); annotated tag messages show on hover.

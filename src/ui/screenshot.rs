@@ -198,6 +198,16 @@ impl App {
                             t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(id)));
                         }
                     }
+                    // The first and third stashes ⌘-clicked in the sidebar.
+                    "stashes" => {
+                        if let Some(t) = self.tabs.get_mut(self.active)
+                            && let Some(ids) = t.data.as_ref().map(|d| d.stashes.iter().step_by(2).take(2).map(|s| s.id.clone()).collect::<Vec<_>>())
+                            && let Some(last) = ids.last().cloned()
+                        {
+                            ctx.data_mut(|m| m.insert_temp(Id::new(crate::ui::sidebar::stashes::MULTI), ids));
+                            t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(last)));
+                        }
+                    }
                     // `reflog`, or `reflog:<n>` to select HEAD@{n} too.
                     q if q.starts_with("reflog") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {

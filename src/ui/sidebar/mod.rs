@@ -9,7 +9,7 @@ mod submodules;
 mod worktrees;
 
 use crate::git::RefKind;
-use crate::repo::{Action, RepoData, branch_checkout};
+use crate::repo::{Action, RepoData, Sel, branch_checkout};
 use crate::theme::{self, icon};
 use crate::ui::graph_view::dnd::branch_dnd;
 use crate::ui::graph_view::hover::hover_ref;
@@ -58,7 +58,7 @@ fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
         .show(ui, add);
 }
 
-pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, filter: &mut String, acts: &mut Vec<Action>) {
+pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Sel>, filter: &mut String, acts: &mut Vec<Action>) {
     // One line per row, cut with "…" (full text on hover): a long name must not
     // wrap or widen the panel.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
@@ -163,6 +163,6 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, filter: &mut St
         });
         worktrees::list(ui, d, dir, f, acts);
         submodules::list(ui, d, f, acts);
-        stashes::list(ui, d, f, acts);
+        stashes::list(ui, d, sel, f, acts);
     });
 }

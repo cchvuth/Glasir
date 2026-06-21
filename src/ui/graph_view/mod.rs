@@ -387,7 +387,7 @@ pub fn show(
                     if resp.clicked() {
                         acts.push(Action::Select(Sel::Commit(st.id.clone())));
                     }
-                    resp.context_menu(|ui| crate::ui::sidebar::stashes::stash_menu(ui, st, acts));
+                    resp.context_menu(|ui| crate::ui::sidebar::stashes::stash_menu(ui, d, st, acts));
                 }
 
                 let ty = y(r);

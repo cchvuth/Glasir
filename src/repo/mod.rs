@@ -57,7 +57,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt}
 pub use data::{RepoData, View};
 pub use diff::DiffState;
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, fetch_op, pull_op, stage_all_op, stash_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, drop_stashes, fetch_op, pull_op, stage_all_op, stash_op};
 pub use search::Search;
 pub use task::Task;
 

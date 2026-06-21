@@ -195,6 +195,31 @@ pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool)
     Op::new(label, &args).revert(back)
 }
 
+/// Drop these stashes in one op, highest index first so the lower names stay valid.
+/// `git stash store` only pushes on top, so ⌘Z rebuilds the stack down to the
+/// deepest dropped stash: it pops the survivors above it, then re-stores all of
+/// them oldest first, which brings back the order and the `stash@{n}` numbers.
+pub fn drop_stashes(all: &[git::Stash], ids: &[String]) -> Op {
+    let dropped: Vec<&git::Stash> = all.iter().filter(|s| ids.contains(&s.id)).collect();
+    let (n, deepest) = (dropped.len(), all.iter().rposition(|s| ids.contains(&s.id)).unwrap_or(0));
+    let (label, ask) = match dropped[..] {
+        [s] => ("Drop stash".to_owned(), format!("Delete {}? (Undo with ⌘Z.)", s.name)),
+        _ => (format!("Drop {n} stashes"), format!("Delete {n} stashes? (Undo with ⌘Z.)")),
+    };
+    let mut op = Op::new(label, &[]).confirm(ask);
+    op.cmds = dropped.iter().rev().map(|s| vec!["stash".into(), "drop".into(), s.name.clone()]).collect();
+    // Undo pops by position: refuse if the top stash changed since (a new stash would be lost).
+    let verify = match all.iter().find(|s| !ids.contains(&s.id)) {
+        Some(top) => format!("verify refs/stash {}\n", top.id),
+        None => "verify refs/stash\n".into(),
+    };
+    let mut back = Op::new(format!("Restore {n} stashes"), &["update-ref", "--stdin"]).input(verify);
+    let survivors = all[..=deepest].iter().filter(|s| !ids.contains(&s.id)).count();
+    back.cmds.extend((0..survivors).map(|_| vec!["stash".into(), "drop".into(), "stash@{0}".into()]));
+    back.cmds.extend(all[..=deepest].iter().rev().map(|s| ["stash", "store", "-m", &s.message, &s.id].map(String::from).to_vec()));
+    op.revert(back)
+}
+
 /// Check out a ref: local branch, remote branch (its local twin or a new
 /// tracking branch), or a tag (detached). A branch checked out in another
 /// worktree opens that worktree instead.
@@ -436,5 +461,50 @@ impl RepoData {
             args.join(" ")
         );
         Some(Op::new("Force push", &args).confirm(text))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::{commit, identity, scratch, settle, sh};
+    use super::super::{Action, RepoTab, View};
+
+    /// Deleting non-adjacent stashes, then ⌘Z: the same stashes come back at the same positions.
+    #[test]
+    fn drop_stashes_and_undo() {
+        let dir = scratch("drop-stashes");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        for m in ["one", "two", "three"] {
+            std::fs::write(dir.join("a"), m).unwrap();
+            sh(&dir, &["stash", "push", "-q", "-m", m]);
+        }
+        let list = || sh(&dir, &["stash", "list", "--format=%gd %H %gs"]);
+        let orig = list();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let all = t.data.as_ref().unwrap().stashes.clone();
+        let mut op = super::drop_stashes(&all, &[all[0].id.clone(), all[2].id.clone()]);
+        assert_eq!(op.label, "Drop 2 stashes");
+        op.confirm = None;
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: two\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(list(), orig);
+        assert!(orig.starts_with("stash@{0} ") && orig.contains("stash@{2} ") && orig.ends_with("On main: one\n"));
+        t.apply(&ctx, Action::Redo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: two\n");
+        // A stash made after the drop sits where undo pops: it refuses instead of losing it.
+        std::fs::write(dir.join("a"), "four").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "four"]);
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: four\nOn main: two\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
