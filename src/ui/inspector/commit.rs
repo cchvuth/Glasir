@@ -125,7 +125,12 @@ impl RepoTab {
             if compare.is_none() { ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), Sense::hover());
                 ui.painter().circle_filled(rect.center(), 15.0, theme::avatar(&info.email));
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials(&info.author), egui::FontId::proportional(12.0), Color32::WHITE);
+                match self.avatars.get(&info.email) {
+                    Some(t) => theme::photo(ui.painter(), rect.center(), 15.0, &t, 1.0),
+                    None => {
+                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials(&info.author), egui::FontId::proportional(12.0), Color32::WHITE);
+                    }
+                }
                 ui.vertical(|ui| {
                     ui.label(RichText::new(&info.author).strong()).on_hover_text(&info.email);
                     ui.label(RichText::new(format!("authored {}", info.date)).small().color(theme::dim(ui)));

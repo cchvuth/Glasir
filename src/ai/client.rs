@@ -199,6 +199,14 @@ pub fn save_token(token: &str) -> Res<()> {
     Ok(())
 }
 
+/// The OS TLS stack and trust store (corporate CAs); rustls + the platform verifier on Linux.
+pub fn tls() -> ureq::tls::TlsConfig {
+    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier);
+    #[cfg(not(target_os = "linux"))]
+    let tls = tls.provider(ureq::tls::TlsProvider::NativeTls);
+    tls.build()
+}
+
 pub(super) enum Ev {
     Text(String),
     Done(Res<()>),
@@ -248,11 +256,8 @@ pub(super) fn complete(
     if bearer {
         betas.push("oauth-2025-04-20");
     }
-    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier);
-    #[cfg(not(target_os = "linux"))]
-    let tls = tls.provider(ureq::tls::TlsProvider::NativeTls);
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .tls_config(tls.build())
+        .tls_config(tls())
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(180)))
         .timeout_recv_body(Some(Duration::from_secs(30 * 60)))

@@ -27,7 +27,7 @@ pub use env::check_git;
 pub use lfs::{Lfs, LfsPointer, lfs};
 pub use log::{LOG, Logged};
 pub use model::{Change, Commit, CommitInfo, Ref, RefKind, Stash, State, Status, Worktree};
-pub use network::{diagnose, fetch_failure, fetch_quiet, ls_remote_quiet, with_autostash};
+pub use network::{credential_token, diagnose, fetch_failure, fetch_quiet, ls_remote_quiet, with_autostash};
 pub use read::{DATE_FORMAT, author, commit_info, compare_info, config, git_dir, log, predict_conflicts, refs, remotes, stash_info, stashes, state, status, worktrees};
 pub use reflog::{ReflogEntry, reflog};
 pub use runner::{CANCELLED, Cancel, cmd, progress_label, run, run_input, run_raw, run_shell};

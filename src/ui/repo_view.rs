@@ -86,7 +86,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                                 t.reflog = None;
                             }
                         }
-                        (None, None) => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &mut acts),
+                        (None, None) => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, &mut acts),
                     }
                 })
             });

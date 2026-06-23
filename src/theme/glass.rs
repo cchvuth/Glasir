@@ -6,6 +6,12 @@ use super::{Flavor, Palette, accent, dark, dim, flavor};
 use egui::epaint::{Mesh, Shadow};
 use egui::{Color32, CornerRadius, Painter, Pos2, Rect, RichText, Shape, Stroke, StrokeKind, Ui, UiBuilder, pos2, vec2};
 
+/// A round picture (avatar) of radius `r` at `c`, faded by `alpha`.
+pub fn photo(p: &Painter, c: Pos2, r: f32, tex: &egui::TextureHandle, alpha: f32) {
+    let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+    p.add(egui::epaint::RectShape::filled(Rect::from_center_size(c, vec2(2.0 * r, 2.0 * r)), r, Color32::WHITE.gamma_multiply(alpha)).with_texture(tex.id(), uv));
+}
+
 /// A radial glow from `col` at `c` to transparent at radius `r`. With `round`
 /// = (rect, corner radius) the glow is trimmed to that rounded rectangle, its
 /// fade kept (painter clipping is rectangular only).

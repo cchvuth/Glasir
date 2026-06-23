@@ -19,10 +19,12 @@
 //! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
 //!   per-remote connection doctor, the commit-email guard
 //! - `tools`: open in editor / terminal, custom commands (Settings → Tools)
+//! - `avatars`: commit authors' GitHub / GitHub Enterprise profile pictures
 
 pub mod absorb;
 mod action;
 mod ai_job;
+pub mod avatars;
 mod cleanup;
 pub mod compose;
 mod conflicts;
@@ -152,6 +154,7 @@ pub struct RepoTab {
     pub doctor: Option<doctor::Doctor>,
     /// Settings → commit email rules (`host -> @domain` lines), mirrored every frame.
     pub email_rules: String,
+    pub avatars: avatars::Avatars,
 }
 
 impl RepoTab {
@@ -213,6 +216,7 @@ impl RepoTab {
             remote_form: None,
             doctor: None,
             email_rules: String::new(),
+            avatars: Default::default(),
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -331,6 +335,9 @@ impl RepoTab {
         }
         if let Some(d) = &mut self.doctor {
             d.poll();
+        }
+        if let Some(d) = &self.data {
+            self.avatars.sync(ctx, &self.dir, d);
         }
         self.poll_compose(ctx);
         self.poll_ai(ctx, msgs);

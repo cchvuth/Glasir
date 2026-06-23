@@ -43,6 +43,8 @@ pub struct Settings {
     pub zoom: f32,
     /// The welcome page's first-run tips are still shown.
     pub tips: bool,
+    /// Commit authors' GitHub / GitHub Enterprise profile pictures (`repo::avatars`).
+    pub avatars: bool,
 }
 
 impl Default for Settings {
@@ -68,6 +70,7 @@ impl Default for Settings {
             tools: Default::default(),
             zoom: 1.0,
             tips: true,
+            avatars: true,
         }
     }
 }
@@ -157,6 +160,10 @@ impl App {
                         ui.checkbox(&mut s.native_glass, "Native Liquid Glass backdrop (experimental, macOS 26+, restart)");
                         ui.end_row();
                     }
+                    ui.label("Avatars");
+                    ui.checkbox(&mut s.avatars, "Show GitHub avatars")
+                        .on_hover_text("Authors' profile pictures from the origin remote's GitHub / GitHub Enterprise host, using git's saved credentials for it. Off: no avatar requests at all.");
+                    ui.end_row();
                     ui.label("Auto-fetch");
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut s.auto_fetch).range(0..=120).suffix(" min"));

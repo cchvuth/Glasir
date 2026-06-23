@@ -65,6 +65,7 @@ pub fn show(
     multi: &[String],
     scroll_to: &mut Option<usize>,
     search: &mut Option<Search>,
+    avatars: &crate::repo::avatars::Avatars,
     acts: &mut Vec<Action>,
 ) {
     let sel_row = match sel {
@@ -298,8 +299,13 @@ pub fn show(
                         }
                         let a = if faded { 0.3 } else { 1.0 };
                         gp.circle_filled(c, 9.0, theme::avatar(&cm.email).gamma_multiply(a));
+                        match avatars.get(&cm.email) {
+                            Some(t) => theme::photo(&gp, c, 9.0, &t, a),
+                            None => {
+                                gp.text(c, Align2::CENTER_CENTER, initials(&cm.author), FontId::proportional(9.0), Color32::WHITE.gamma_multiply(a));
+                            }
+                        }
                         gp.circle_stroke(c, 9.0, Stroke::new(1.5, col));
-                        gp.text(c, Align2::CENTER_CENTER, initials(&cm.author), FontId::proportional(9.0), Color32::WHITE.gamma_multiply(a));
                     }
                 }
 

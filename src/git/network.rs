@@ -19,7 +19,7 @@ fn batch_ssh(ssh: &str, variant: &str) -> String {
 
 /// A git command that can never prompt (no askpass, no terminal, ssh in batch
 /// mode), so missing credentials fail fast instead of hanging or popping up a window.
-fn quiet(dir: &Path, args: &[&str]) -> Res<String> {
+fn quiet(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<String> {
     let cfg = |k: &str| run(dir, &["config", "--get", k]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
     // git's own precedence: GIT_SSH_COMMAND > core.sshCommand > GIT_SSH.
@@ -35,19 +35,26 @@ fn quiet(dir: &Path, args: &[&str]) -> Res<String> {
         .env("GIT_SSH_COMMAND", batch_ssh(ssh.as_deref().unwrap_or("ssh"), &variant));
     let mut all = vec!["-c", "credential.interactive=false", "-c", "core.askPass="];
     all.extend(args);
-    exec(c, dir, &all, None).map(|b| String::from_utf8_lossy(&b).into_owned())
+    exec(c, dir, &all, input).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
 /// `fetch --all --prune --no-tags` for background refreshes; never prompts.
 pub fn fetch_quiet(dir: &Path) -> Res<String> {
     // Remote-tracking refs only: tags are local refs that undo snapshots, so a background
     // fetch adding or pruning one would invalidate the undo history. A manual Fetch gets them.
-    quiet(dir, &["fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"])
+    quiet(dir, &["fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"], None)
 }
 
 /// Talks to `remote` the way the background fetch does (never prompting): its HEAD.
 pub fn ls_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
-    quiet(dir, &["ls-remote", remote, "HEAD"])
+    quiet(dir, &["ls-remote", remote, "HEAD"], None)
+}
+
+/// The token (password) git's credential helper holds for `https://<host>`, without
+/// ever prompting. Only stderr reaches the command log, never the answer on stdout.
+pub fn credential_token(dir: &Path, host: &str) -> Option<String> {
+    let out = quiet(dir, &["credential", "fill"], Some(format!("protocol=https\nhost={host}\n\n").as_bytes())).ok()?;
+    out.lines().find_map(|l| l.strip_prefix("password=")).filter(|p| !p.is_empty()).map(str::to_owned)
 }
 
 /// `err` lowercased without its quoted URLs and paths (`'https://…/saml-gw/'`), so a
@@ -172,6 +179,26 @@ mod tests {
         assert_eq!(d("fatal: unable to access 'https://proxy.corp/self-signed/': Couldn't connect to server", false), "Can't connect (network, proxy or firewall)");
         assert_eq!(d("fatal: unable to access 'https://ghe.corp/x/': Received HTTP code 407 from proxy after CONNECT", false), "Can't connect (network, proxy or firewall)");
         assert_eq!(fetch_failure("fatal: '/srv/saml-gw.git' does not appear to be a git repository"), "Fetch failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_token_from_helper_only() {
+        let dir = std::env::temp_dir().join(format!("glasir-credential-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        run(&dir, &["init", "-q"]).unwrap();
+        // The empty value drops the user's own helpers (their keychain stays out of it).
+        run(&dir, &["config", "credential.helper", ""]).unwrap();
+        assert_eq!(credential_token(&dir, "ghe.example"), None, "no helper: no token and no prompt");
+        let helper = "!f() { test \"$1\" = get && cat >/dev/null && echo username=x && echo password=tok-123; }; f";
+        run(&dir, &["config", "--add", "credential.helper", helper]).unwrap();
+        assert_eq!(credential_token(&dir, "ghe.example").as_deref(), Some("tok-123"));
+        let log = crate::git::LOG.lock().unwrap();
+        let fills: Vec<_> = log.iter().filter(|l| l.cwd == dir && l.args.iter().any(|a| a == "fill")).collect();
+        assert!(!fills.is_empty() && !fills.iter().any(|l| l.stderr.contains("tok-123")));
+        drop(log);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A cancelled autostash op still gives the stashed changes back.

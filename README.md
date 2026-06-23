@@ -36,8 +36,13 @@ The name fits a Git client:
 ## Features
 
 ### Commit graph
-- Colored lanes with rounded joins, author-initial avatars, merge dots and a
+- Colored lanes with rounded joins, author avatars, merge dots and a
   live **WIP** row for uncommitted changes.
+- **GitHub avatars**: authors' real profile pictures (graph and commit details)
+  from the origin's github.com / GitHub Enterprise host, with the token git's
+  credential helper already has for it (never prompts; public github.com works
+  without one). Cached on disk for a week; initials otherwise. Settings → "Show
+  GitHub avatars" turns it off, with no avatar requests at all.
 - Branch, remote and tag **pills** joined to their commits (`+N` when several),
   with their own right-click menus; worktree branches get a tree icon.
 - Loads the latest 1,000 commits for a fast start; **Load 1,000 more** at the
