@@ -39,9 +39,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
         if ed.data.as_ref().is_some_and(|d| d.whole.is_none()) {
             if !ai::enabled() {
             } else if thinking {
-                ui.label(RichText::new("Claude is resolving…").small().color(theme::dim(ui)));
+                ui.label(RichText::new(format!("{} is resolving…", ai::name())).small().color(theme::dim(ui)));
                 ui.spinner();
-            } else if theme::pill(ui, format!("{} Resolve with AI", icon::SPARKLE)).on_hover_text("Let Claude write the output; review it, then save").clicked() {
+            } else if theme::pill(ui, format!("{} Resolve with AI", icon::SPARKLE)).on_hover_text(format!("Let {} write the output; review it, then save", ai::name())).clicked() {
                 acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
             let n = conflicts(&ed.chunks).filter(|c| c.trivial()).count();

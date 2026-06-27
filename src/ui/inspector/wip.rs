@@ -126,9 +126,9 @@ impl RepoTab {
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
                     } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{} AI message", icon::SPARKLE))
                         .on_hover_text(if self.amend {
-                            "Write the amended commit's message (its changes plus the staged ones) with Claude"
+                            format!("Write the amended commit's message (its changes plus the staged ones) with {}", crate::ai::name())
                         } else {
-                            "Write the commit message from the staged changes with Claude"
+                            format!("Write the commit message from the staged changes with {}", crate::ai::name())
                         })
                         .on_disabled_hover_text("Stage changes first")
                         .clicked()
@@ -179,14 +179,14 @@ impl RepoTab {
                     ui.spinner();
                     ui.label(RichText::new("Planning commits…").small().color(theme::dim(ui)));
                 } else if theme::small(ui, any && s.conflicted.is_empty() && d.state == State::Clean && !busy, format!("{} Compose commits with AI", icon::SPARKLE))
-                    .on_hover_text("Let Claude split all uncommitted changes into a series of focused commits (you review the plan first)")
+                    .on_hover_text(format!("Let {} split all uncommitted changes into a series of focused commits (you review the plan first)", crate::ai::name()))
                     .on_disabled_hover_text("Needs uncommitted changes, and no merge or rebase in progress")
                     .clicked()
                 {
                     acts.push(Action::Ai(Purpose::Compose));
                 }
                 let explaining = self.ai_busy() == Some(&Purpose::ExplainWip);
-                if theme::small(ui, any && !explaining, format!("{} Explain changes", icon::SPARKLE)).on_hover_text("What do these uncommitted changes do? Asks Claude").clicked() {
+                if theme::small(ui, any && !explaining, format!("{} Explain changes", icon::SPARKLE)).on_hover_text(format!("What do these uncommitted changes do? Asks {}", crate::ai::name())).clicked() {
                     acts.push(Action::Ai(Purpose::ExplainWip));
                 }
             });

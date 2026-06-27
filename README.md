@@ -5,7 +5,7 @@
 *A glass interface over your branching history.*
 
 Glasir is a fast, free and open-source Git client with a modern commit graph,
-smart time-saving operations and optional Claude-powered helpers. Written in
+smart time-saving operations and optional AI helpers (Claude or ChatGPT). Written in
 Rust (egui) for macOS (Apple Silicon), Linux and Windows. No account, no paid
 tier, no telemetry.
 
@@ -170,10 +170,10 @@ The name fits a Git client:
 - **Patches**: copy or save commits as a patch (`git format-patch`); apply a patch
   file as commits (`git am`, with Continue / Skip / Abort) or as working-tree changes.
 
-### AI (bring your own Claude token)
+### AI (bring your own Claude or ChatGPT token)
 - ✨ **Commit messages** from your staged changes (keeps your draft if it fails);
   when amending, the message covers the last commit's changes plus the staged ones.
-- ✨ **Commit Composer**: Claude splits all your uncommitted changes (hunk by hunk,
+- ✨ **Commit Composer**: the AI splits all your uncommitted changes (hunk by hunk,
   new files whole) into a series of focused commits; review the plan, edit messages,
   move changes between commits, split / merge / reorder, then create them in one
   undoable step (⌘Z).
@@ -228,13 +228,19 @@ also puts it in `/Applications`.
 
 ## AI setup
 
-Open **Settings → AI (Claude)** and paste an Anthropic API key (`sk-ant-api…`)
-or an OAuth token (`sk-ant-oat…`, e.g. from `claude setup-token`). Alternatively
-set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`. The model (default
-`claude-opus-5-5`) and API base URL (for Anthropic-compatible gateways) are
-configurable. Nothing is sent anywhere until you click an AI action.
+Open **Settings → AI** and pick a provider:
 
-The token is read from the keychain once per run, on first use; opening
+- **Claude (Anthropic)**: paste an Anthropic API key (`sk-ant-api…`) or an OAuth
+  token (`sk-ant-oat…`, e.g. from `claude setup-token`), or set
+  `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`. Default model `claude-opus-5-5`.
+- **ChatGPT (OpenAI)**: paste an OpenAI API key, or set `OPENAI_API_KEY`.
+  Default model `gpt-5`; the base URL (default `https://api.openai.com/v1`) can
+  point at any OpenAI-compatible Chat Completions endpoint.
+
+Each provider keeps its own token, model and API base URL; every AI feature uses
+the selected one. Nothing is sent anywhere until you click an AI action.
+
+A token is read from the keychain once per run, on first use; opening
 Settings never reads it. On macOS it is stored through Apple's `security` tool,
 so updating Glasir doesn't make the keychain ask for your password again (a
 token saved by an older version may ask once: choose **Always Allow**).

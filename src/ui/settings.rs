@@ -1,5 +1,5 @@
 //! Persisted `Settings` and the Settings dialog (theme flavour swatches, glass,
-//! auto-fetch, pull mode, commit email rules, Claude token / model).
+//! auto-fetch, pull mode, commit email rules, AI provider / token / model).
 
 use super::app::App;
 use crate::ai;
@@ -93,18 +93,7 @@ pub(super) struct SettingsDlg {
 impl App {
     pub(super) fn open_settings(&mut self) {
         let (editor, terminal) = (tools::default_editor(), tools::default_terminal());
-        // Never reads the keychain (macOS would ask for the password): the saved
-        // location is remembered in the settings; older settings check once.
-        let ai = &mut self.s.ai;
-        if ai.saved_in.is_none() {
-            ai.saved_in = Some(ai::find_saved().unwrap_or_default().to_owned());
-        }
-        let saved = match ai.saved_in.as_deref() {
-            Some(s) if s == ai::IN_FILE => Some(ai::IN_FILE),
-            Some(s) if !s.is_empty() => Some(ai::IN_KEYCHAIN),
-            _ => None,
-        };
-        let source = ai::env_source().or(saved);
+        let source = token_source(&mut self.s.ai);
         self.settings = Some(SettingsDlg { source, editor, terminal, ..Default::default() });
     }
 
@@ -191,29 +180,43 @@ impl App {
                 ui.add_space(10.0);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{} AI (Claude)", icon::SPARKLE)).strong());
+                    ui.label(RichText::new(format!("{} AI", icon::SPARKLE)).strong());
                     ui.checkbox(&mut s.ai.enabled, "Enable AI features").on_hover_text("Off: every AI button and menu item is hidden");
                 });
+                let p = s.ai.provider;
                 ui.label(
-                    RichText::new(
-                        "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`). It is stored in your system keychain and only sent to the API URL below.",
-                    )
+                    RichText::new(match p {
+                        ai::Provider::Claude => "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`). It is stored in your system keychain and only sent to the API URL below.",
+                        ai::Provider::OpenAi => "Bring your own OpenAI API key (sk-…, from platform.openai.com). It is stored in your system keychain and only sent to the API URL below.",
+                    })
                     .small()
                     .color(theme::dim(ui)),
                 );
                 ui.add_space(4.0);
                 egui::Grid::new("ai_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
-                    ui.label("Claude token");
+                    ui.label("Provider");
+                    ui.horizontal(|ui| {
+                        for q in ai::Provider::ALL {
+                            if ui.radio_value(&mut s.ai.provider, q, q.label()).changed() {
+                                st.source = token_source(&mut s.ai);
+                                st.token.clear();
+                                st.note = None;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    let p = s.ai.provider;
+                    ui.label(if p == ai::Provider::OpenAi { "OpenAI API key" } else { "Claude token" });
                     ui.horizontal(|ui| {
                         ui.add(TextEdit::singleline(&mut st.token).margin(crate::theme::INPUT_MARGIN).password(true).hint_text("Paste token").desired_width(250.0));
                         if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
-                            let saved = match ai::save_token(&st.token) {
+                            let saved = match ai::save_token(p, &st.token) {
                                 Ok(()) => {
-                                    ai::remove_plain_token();
+                                    ai::remove_plain_token(p);
                                     st.note = Some((true, "Token saved to the system keychain.".into()));
                                     Some(ai::IN_KEYCHAIN)
                                 }
-                                Err(e) => match ai::save_plain_token(&st.token) {
+                                Err(e) => match ai::save_plain_token(p, &st.token) {
                                     Ok(()) => {
                                         st.note = Some((false, format!("No system keychain ({e}); saved to a private file readable only by you.")));
                                         Some(ai::IN_FILE)
@@ -226,19 +229,19 @@ impl App {
                             };
                             st.token.clear();
                             if let Some(at) = saved {
-                                s.ai.saved_in = Some(at.into());
-                                st.source = ai::env_source().or(Some(at));
+                                *s.ai.current().2 = Some(at.into());
+                                st.source = ai::env_source(p).or(Some(at));
                             }
                         }
                         if st.source.is_some() && ui.button("Remove").clicked() {
-                            let in_file = s.ai.saved_in.as_deref() == Some(ai::IN_FILE);
-                            ai::remove_plain_token();
-                            match ai::save_token("") {
+                            let in_file = s.ai.current().2.as_deref() == Some(ai::IN_FILE);
+                            ai::remove_plain_token(p);
+                            match ai::save_token(p, "") {
                                 // A file-saved token means there is no keychain to delete from.
                                 Err(e) if !in_file => st.note = Some((false, format!("Could not remove the token from the keychain: {e}"))),
                                 _ => {
-                                    s.ai.saved_in = Some(String::new());
-                                    st.source = ai::env_source();
+                                    *s.ai.current().2 = Some(String::new());
+                                    st.source = ai::env_source(p);
                                     st.note = Some((true, "Stored token removed.".into()));
                                 }
                             }
@@ -255,19 +258,22 @@ impl App {
                         .color(if st.source.is_some() { theme::ADD } else { theme::MOD }),
                     );
                     ui.end_row();
+                    let (model, base_url, _) = s.ai.current();
                     ui.label("Model");
                     ui.horizontal(|ui| {
-                        egui::ComboBox::from_id_salt("ai_model").selected_text(&s.ai.model).width(200.0).show_ui(ui, |ui| {
-                            for m in ai::MODELS {
-                                ui.selectable_value(&mut s.ai.model, m.to_owned(), m);
+                        egui::ComboBox::from_id_salt("ai_model").selected_text(model.as_str()).width(200.0).show_ui(ui, |ui| {
+                            for &m in p.models() {
+                                ui.selectable_value(model, m.to_owned(), m);
                             }
                         });
-                        ui.add(TextEdit::singleline(&mut s.ai.model).margin(crate::theme::INPUT_MARGIN).desired_width(150.0)).on_hover_text("Any model id");
+                        ui.add(TextEdit::singleline(model).margin(crate::theme::INPUT_MARGIN).desired_width(150.0)).on_hover_text("Any model id");
                     });
                     ui.end_row();
                     ui.label("API base URL");
-                    ui.add(TextEdit::singleline(&mut s.ai.base_url).margin(crate::theme::INPUT_MARGIN).desired_width(330.0))
-                        .on_hover_text("Change only for an Anthropic-compatible gateway");
+                    ui.add(TextEdit::singleline(base_url).margin(crate::theme::INPUT_MARGIN).desired_width(330.0)).on_hover_text(match p {
+                        ai::Provider::Claude => "Change only for an Anthropic-compatible gateway",
+                        ai::Provider::OpenAi => "Change only for an OpenAI-compatible endpoint (gateway or local server)",
+                    });
                     ui.end_row();
                 });
                 ui.add_space(6.0);
@@ -306,6 +312,23 @@ impl App {
         }
     }
 
+}
+
+/// Where the selected provider's token comes from. Never reads the keychain
+/// (macOS would ask for the password): the saved location is remembered in the
+/// settings; older settings check once.
+fn token_source(cfg: &mut ai::Config) -> Option<&'static str> {
+    let p = cfg.provider;
+    let saved_in = cfg.current().2;
+    if saved_in.is_none() {
+        *saved_in = Some(ai::find_saved(p).unwrap_or_default().to_owned());
+    }
+    let saved = match saved_in.as_deref() {
+        Some(s) if s == ai::IN_FILE => Some(ai::IN_FILE),
+        Some(s) if !s.is_empty() => Some(ai::IN_KEYCHAIN),
+        _ => None,
+    };
+    ai::env_source(p).or(saved)
 }
 
 fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str) {

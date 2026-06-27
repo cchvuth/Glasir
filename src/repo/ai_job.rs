@@ -12,7 +12,7 @@ impl RepoTab {
         }
         // A replaced job is dropped mid-stream: its partial text stays and its follow-up (draft restore, stash) never runs.
         if let Some(busy) = self.ai_busy().map(|p| p.title()).or(self.compose_task.is_some().then(|| "Compose commits".into())) {
-            self.notes.push(Msg { text: format!("Claude is still working on {busy}; wait for it to finish"), error: true });
+            self.notes.push(Msg { text: format!("{} is still working on {busy}; wait for it to finish", ai::name()), error: true });
             return;
         }
         let draft = match &p {

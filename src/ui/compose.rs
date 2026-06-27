@@ -19,7 +19,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         ui.set_width(680.0);
         ui.heading(format!("{} Compose commits", icon::SPARKLE));
         ui.label(
-            RichText::new("Claude's plan for your uncommitted changes, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.")
+            RichText::new(format!("{}'s plan for your uncommitted changes, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.", crate::ai::name()))
                 .small()
                 .color(theme::dim(ui)),
         );

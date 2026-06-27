@@ -103,7 +103,7 @@ impl RepoTab {
                 Some(job) => {
                     egui::Frame::new().fill(theme::faint(ui)).inner_margin(8.0).corner_radius(6.0).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{} Claude", icon::SPARKLE)).small().strong());
+                            ui.label(RichText::new(format!("{} {}", icon::SPARKLE, crate::ai::name())).small().strong());
                             if job.running() {
                                 ui.spinner();
                             }

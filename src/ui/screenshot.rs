@@ -31,6 +31,11 @@ impl App {
             for view in views.split(',') {
                 match view {
                     "settings" => self.open_settings(),
+                    "settings:openai" => {
+                        self.s.ai.provider = crate::ai::Provider::OpenAi;
+                        ctx.set_zoom_factor(0.6); // so the AI section at the bottom fits
+                        self.open_settings();
+                    }
                     "bottom" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.scroll_to = t.data.as_ref().map(|d| d.rows().saturating_sub(1));

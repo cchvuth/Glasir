@@ -1,7 +1,7 @@
 //! The AI features: what each [`Purpose`] sends (git context + prompt), and
 //! [`Job`], a completion streaming on a background thread into the UI.
 
-use super::client::{Config, Ev, complete, need_token};
+use super::client::{Config, Ev, Provider, complete, need_token};
 use crate::git::{self, Res};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
@@ -94,7 +94,8 @@ fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
     let out = format!("{}\n{}", git::run(dir, &stat)?, git::run(dir, &patch)?);
     if out.len() > MAX_CONTEXT {
         return Err(format!(
-            "These changes are too large to send to Claude ({} KB, limit {} KB). Narrow them down (e.g. stage fewer files).",
+            "These changes are too large to send to {} ({} KB, limit {} KB). Narrow them down (e.g. stage fewer files).",
+            super::name(),
             out.len() / 1024,
             MAX_CONTEXT / 1024
         ));
@@ -224,7 +225,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
         }
         Purpose::Compose => {
             if draft.len() > MAX_CONTEXT {
-                return Err(format!("These changes are too large to send to Claude ({} KB, limit {} KB).", draft.len() / 1024, MAX_CONTEXT / 1024));
+                return Err(format!("These changes are too large to send to {} ({} KB, limit {} KB).", super::name(), draft.len() / 1024, MAX_CONTEXT / 1024));
             }
             let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
             (
@@ -287,7 +288,7 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
     std::thread::spawn(move || {
         let schema = (p == Purpose::Compose).then(compose_schema);
         let res = build(&dir, &p, &draft).and_then(|(prompt, effort)| {
-            complete(&cfg, need_token()?, SYSTEM, &prompt, effort, schema.as_ref(), &mut |t| {
+            complete(&cfg, need_token(cfg.provider)?, SYSTEM, &prompt, effort, schema.as_ref(), &mut |t| {
                 ctx.request_repaint();
                 tx.send(Ev::Text(t)).is_ok()
             })
@@ -301,9 +302,10 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
 /// Quick round-trip used by Settings → Test.
 pub fn test(cfg: &Config) -> Res<String> {
     let mut out = String::new();
-    complete(cfg, need_token()?, SYSTEM, "Reply with exactly: OK", "low", None, &mut |t| {
+    complete(cfg, need_token(cfg.provider)?, SYSTEM, "Reply with exactly: OK", "low", None, &mut |t| {
         out += &t;
         true
     })?;
-    Ok(format!("{} replied: {}", cfg.model, out.trim()))
+    let model = if cfg.provider == Provider::OpenAi { &cfg.openai.model } else { &cfg.model };
+    Ok(format!("{model} replied: {}", out.trim()))
 }

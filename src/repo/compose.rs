@@ -118,7 +118,7 @@ impl Plan {
             message: String,
             units: Vec<i64>,
         }
-        let r: Reply = serde_json::from_str(reply.trim()).map_err(|e| format!("Claude's plan isn't valid ({e})."))?;
+        let r: Reply = serde_json::from_str(reply.trim()).map_err(|e| format!("{}'s plan isn't valid ({e}).", ai::name()))?;
         (self.commits, self.note) = repair(r.commits.into_iter().map(|c| (c.message, c.units)).collect(), self.units.len());
         Ok(())
     }
@@ -228,12 +228,12 @@ fn repair(raw: Vec<(String, Vec<i64>)>, n: usize) -> (Vec<Commit>, Option<String
         notes.push(format!("{twice} change(s) planned twice stay in their first commit"));
     }
     if !missing.is_empty() {
-        notes.push(format!("{} change(s) Claude left out are in the last commit", missing.len()));
+        notes.push(format!("{} change(s) {} left out are in the last commit", missing.len(), ai::name()));
         commits.push(Commit { message: "Remaining changes".into(), units: missing });
     }
     let note = (!notes.is_empty()).then(|| {
         let s = notes.join("; ");
-        format!("Fixed up Claude's plan: {s}.")
+        format!("Fixed up {}'s plan: {s}.", ai::name())
     });
     (commits, note)
 }
