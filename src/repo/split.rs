@@ -5,6 +5,8 @@
 use super::undo::{UndoEntry, UndoKind};
 use super::{Backup, Choice, Msg, Op, RepoTab, Undo};
 use crate::git;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 pub struct Split {
     pub id: String,
@@ -21,6 +23,35 @@ pub struct Split {
 /// Label of the ops that end a split (matched in `poll_op`).
 pub(super) const FINISH: &str = "Finish split";
 pub(super) const ABORT: &str = "Abort split";
+
+/// What `reset --hard <rev>` loses: paths whose worktree bytes differ from `rev`.
+/// Not the split commit's own content, which the abort brings back anyway.
+fn changed_since(dir: &Path, rev: &str) -> Backup {
+    let z = |args: &[&str]| git::run(dir, args).map(|o| o.split('\0').filter(|p| !p.is_empty()).map(String::from).collect::<Vec<_>>());
+    let (Ok(mut paths), Ok(untracked)) = (z(&["diff", "--name-only", "-z", "--no-renames", rev]), z(&["ls-files", "-z", "--others", "--exclude-standard"])) else {
+        return Backup::All;
+    };
+    paths.extend(untracked);
+    paths.sort_unstable();
+    paths.dedup();
+    if paths.is_empty() {
+        return Backup::Paths(paths);
+    }
+    // The commit's own files show up as untracked (or deleted from the index) with `rev`'s bytes.
+    let mut ls = vec!["--literal-pathspecs", "ls-tree", "-r", "-z", rev, "--"];
+    ls.extend(paths.iter().map(String::as_str));
+    let Ok(tree) = z(&ls) else { return Backup::All };
+    let blobs: HashMap<&str, &str> = tree.iter().filter_map(|r| r.split_once('\t').and_then(|(m, p)| Some((p, m.rsplit(' ').next()?)))).collect();
+    let cand: Vec<String> = paths.iter().filter(|p| blobs.contains_key(p.as_str()) && dir.join(p).is_file()).cloned().collect();
+    if !cand.is_empty() {
+        let mut hash = vec!["hash-object", "--"];
+        hash.extend(cand.iter().map(String::as_str));
+        let Ok(out) = git::run(dir, &hash) else { return Backup::All };
+        let same: HashSet<&str> = cand.iter().zip(out.lines()).filter(|(p, h)| blobs[p.as_str()] == *h).map(|(p, _)| p.as_str()).collect();
+        paths.retain(|p| !same.contains(p.as_str()));
+    }
+    Backup::Paths(paths)
+}
 
 impl RepoTab {
     pub(super) fn start_split(&mut self, ctx: &egui::Context, commit: String) {
@@ -52,7 +83,7 @@ impl RepoTab {
         if abort {
             let op = match sp.rebase {
                 // Track the commit's files again first: `rebase --abort` won't overwrite its now-untracked added files.
-                true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).backup(Backup::All),
+                true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).backup(changed_since(&self.dir, &sp.id)),
                 false => Op::new(ABORT, &["reset", "-q", &sp.id, "--"]),
             };
             return self.run(ctx, op);
@@ -179,6 +210,7 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
         assert_eq!(sh(&dir, &["symbolic-ref", "--short", "HEAD"]), "main\n");
         assert!(t.undo.iter().all(|e| !e.label.starts_with("Split ")));
+        assert_eq!(t.undo_label(), None);
 
         t.apply(&ctx, Action::Split(x));
         settle(&ctx, &mut t);
@@ -190,6 +222,41 @@ mod tests {
         settle(&ctx, &mut t);
         assert!(t.split.is_some());
         assert!(t.choice.as_ref().is_some_and(|c| c.text.contains("build.log")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only edits made during the split are an undoable discard, not the commit's content.
+    #[test]
+    fn split_abort_backs_up_only_new_edits() {
+        let dir = scratch("split-abort-edits");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for n in ["1", "2", "3"] {
+            commit(&dir, "a", n);
+            commit(&dir, &format!("f{n}"), n);
+        }
+        let x = sh(&dir, &["rev-parse", "HEAD~3"]).trim().to_owned();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let split_abort = |t: &mut RepoTab, edit: bool| {
+            t.apply(&ctx, Action::Split(x.clone()));
+            settle(&ctx, t);
+            if edit {
+                std::fs::write(dir.join("f1"), "mine").unwrap();
+            }
+            t.apply(&ctx, Action::SplitEnd { abort: true });
+            settle(&ctx, t);
+        };
+        split_abort(&mut t, false);
+        assert_eq!(t.undo_label(), None);
+        split_abort(&mut t, true);
+        assert_eq!(std::fs::read_to_string(dir.join("f1")).unwrap(), "1");
+        assert_eq!(t.undo_label(), Some(ABORT));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("f1")).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "3");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

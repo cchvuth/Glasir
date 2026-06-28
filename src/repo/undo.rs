@@ -50,7 +50,8 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     let refuse = |why: String| format!("Nothing was discarded: couldn't back it up first ({why}).");
     let (tracked, untracked): (Vec<String>, Vec<String>) = match b {
         Backup::All => (
-            split_z(git::run(dir, &["diff", "--name-only", "-z", "HEAD"]).unwrap_or_default()),
+            // No HEAD yet (unborn branch): every index entry is a staged new file.
+            split_z(git::run(dir, &["diff", "--name-only", "-z", "HEAD"]).or_else(|_| git::run(dir, &["ls-files", "-z"])).map_err(refuse)?),
             split_z(git::run(dir, &["ls-files", "-z", "--others", "--exclude-standard"]).map_err(refuse)?),
         ),
         Backup::Paths(ps) | Backup::Overwrite(ps) => ps.iter().cloned().partition(|p| {
@@ -148,6 +149,11 @@ impl RepoTab {
         if self.running.is_some() {
             return;
         }
+        // Moving refs mid merge/rebase would corrupt it; a guided split's own steps are fine.
+        let busy = self.data.as_ref().is_some_and(|d| !matches!(git::state(&d.git_dir), git::State::Clean | git::State::Bisecting));
+        if busy && self.split.is_none() && matches!(e.kind, UndoKind::Refs { .. }) {
+            return self.notes.push(super::Msg { text: "Finish or abort the operation in progress first, then undo.".into(), error: true });
+        }
         let dir = self.dir.clone();
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         let job: Box<dyn FnOnce() -> Res<()> + Send> = match &e.kind {
@@ -214,6 +220,16 @@ mod tests {
         identity(&dir);
         std::fs::write(dir.join("u"), "u\n").unwrap();
         assert_eq!(save_worktree(&dir, &Backup::Paths(vec!["u".into()])).unwrap().files.len(), 1);
+        std::fs::write(dir.join("s"), "staged\n").unwrap();
+        sh(&dir, &["add", "s"]);
+        let saved = save_worktree(&dir, &Backup::All).unwrap();
+        sh(&dir, &["reset", "--hard", "-q"]);
+        sh(&dir, &["clean", "-fdq"]);
+        assert!(!dir.join("s").exists() && !dir.join("u").exists());
+        restore_worktree(&dir, &saved).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("s")).unwrap(), "staged\n");
+        assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "u\n");
+        std::fs::remove_file(dir.join("s")).unwrap();
 
         commit(&dir, "f", "base\n");
         sh(&dir, &["checkout", "-q", "-b", "feat"]);
@@ -233,9 +249,9 @@ mod tests {
     }
 
     /// A tag fetched since an undo entry doesn't block undoing it, and stays.
-    /// An op that stops on a conflict mid-rebase records no entry (Abort is the way back).
+    /// A rebase stopped on a conflict keeps its entry, but undo waits until it's finished.
     #[test]
-    fn undo_survives_new_tags_and_skips_stopped_rebases() {
+    fn undo_survives_new_tags_and_waits_for_stopped_rebases() {
         use super::super::testutil::{commit, identity, scratch, settle, sh};
         use super::super::{Action, Op, RepoTab, Undo, View};
         let dir = scratch("undo-tags");
@@ -252,6 +268,7 @@ mod tests {
 
         sh(&dir, &["checkout", "-q", "-b", "feat"]);
         commit(&dir, "a.txt", "feat\n");
+        let feat_tip = sh(&dir, &["rev-parse", "feat"]);
         sh(&dir, &["checkout", "-q", "main"]);
         commit(&dir, "a.txt", "main\n");
         let ctx = egui::Context::default();
@@ -260,7 +277,23 @@ mod tests {
         t.apply(&ctx, Action::Git(Op::new("Rebase feat onto main", &["rebase", "main", "feat"]).undo(Undo::Keep)));
         settle(&ctx, &mut t);
         assert_eq!(t.data.as_ref().unwrap().state, git::State::Rebasing);
-        assert_eq!(t.undo_label(), None);
+        assert_eq!(t.undo_label(), Some("Rebase feat onto main"));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(t.data.as_ref().unwrap().state, git::State::Rebasing);
+        assert_eq!(t.undo_label(), Some("Rebase feat onto main"));
+        assert!(t.notes.pop().is_some_and(|m| m.error));
+
+        std::fs::write(dir.join("a.txt"), "both\n").unwrap();
+        sh(&dir, &["add", "a.txt"]);
+        t.apply(&ctx, Action::Git(Op::new("Continue rebase", &["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        for _ in 0..2 {
+            t.apply(&ctx, Action::Undo);
+            settle(&ctx, &mut t);
+        }
+        assert_eq!(t.redo_label(), Some("Rebase feat onto main"));
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), feat_tip);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

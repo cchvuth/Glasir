@@ -192,9 +192,9 @@ pub fn config(dir: &Path) -> Vec<(String, String)> {
 }
 
 /// The (name, email) git authors commits with: author.* and GIT_AUTHOR_* beat user.*.
-/// Empty when git has no identity.
+/// Empty when git has no identity configured (not a guessed `login@hostname` one).
 pub fn author(dir: &Path) -> (String, String) {
-    run(dir, &["var", "GIT_AUTHOR_IDENT"]).ok().and_then(|s| parse_ident(&s)).unwrap_or_default()
+    run(dir, &["-c", "user.useConfigOnly=true", "var", "GIT_AUTHOR_IDENT"]).ok().and_then(|s| parse_ident(&s)).unwrap_or_default()
 }
 
 /// `Name <email> 1700000000 +0100`.

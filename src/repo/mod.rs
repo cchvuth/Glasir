@@ -252,12 +252,12 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.truncated))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg, tr))) => {
+            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg, au, tr))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
-                (d.worktrees, d.submodules, d.lfs, d.config, d.truncated) = (wt, sm, lfs, cfg, tr);
+                (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated) = (wt, sm, lfs, cfg, au, tr);
                 d.load_bisect(&dir);
                 Ok(d)
             }
@@ -567,10 +567,11 @@ mod tests {
     }
 
     #[test]
-    fn status_reload_keeps_truncated_and_refreshes_diff() {
+    fn status_reload_keeps_truncated_author_and_refreshes_diff() {
         let dir = scratch("truncated");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
+        sh(&dir, &["config", "author.email", "me@corp.example"]);
         for i in 0..3 {
             commit(&dir, "f", &format!("a\n{i}\n"));
         }
@@ -582,6 +583,7 @@ mod tests {
         t.reload(&ctx, false);
         settle(&ctx, &mut t);
         assert!(t.data.as_ref().unwrap().truncated);
+        assert_eq!(t.data.as_ref().unwrap().author.1, "me@corp.example");
         let change = t.data.as_ref().unwrap().status.unstaged[0].clone();
         t.apply(&ctx, Action::Diff(DiffSrc::Worktree { change, staged: false }));
         let has = |t: &RepoTab, s: &str| {

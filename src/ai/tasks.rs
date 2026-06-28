@@ -199,8 +199,14 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             )
         }
         Purpose::ExplainRange { from, to } => {
-            let log = git::run(dir, &["log", "--format=- %h %s (%an)", &format!("{from}..{to}"), "--"])?;
-            let diff = diff_with_stat(dir, &[&format!("{from}...{to}")])?;
+            // `<root>^` (a compare that starts at the root commit) doesn't resolve: everything up to `to`.
+            let root = from.strip_suffix('^').filter(|_| git::run(dir, &["rev-parse", "-q", "--verify", from]).is_err());
+            let range = if root.is_some() { to.clone() } else { format!("{from}..{to}") };
+            let log = git::run(dir, &["log", "--format=- %h %s (%an)", &range, "--"])?;
+            let diff = match root {
+                Some(r) => diff_with_stat(dir, &[&parent_or_empty(dir, r)?, to])?,
+                None => diff_with_stat(dir, &[&format!("{from}...{to}")])?,
+            };
             (
                 format!(
                     "Explain what changed in `{to}` compared to `{from}`, for a developer catching up. \
@@ -308,4 +314,30 @@ pub fn test(cfg: &Config) -> Res<String> {
     })?;
     let model = if cfg.provider == Provider::OpenAi { &cfg.openai.model } else { &cfg.model };
     Ok(format!("{model} replied: {}", out.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explain_range_from_the_root_commit() {
+        let dir = std::env::temp_dir().join(format!("glasir-explain-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| git::run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            g(&["config", k, v]);
+        }
+        for f in ["a", "b"] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", &format!("add {f}")]);
+        }
+        let root = g(&["rev-list", "--max-parents=0", "HEAD"]).trim().to_owned();
+        let (prompt, _) = build(&dir, &Purpose::ExplainRange { from: format!("{root}^"), to: "main".into() }, "").unwrap();
+        assert!(prompt.contains("add a") && prompt.contains("add b") && prompt.contains("+a"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -314,10 +314,8 @@ impl RepoTab {
                 };
                 let before = (op.undo != Undo::No).then(|| git::snapshot(&dir).ok()).flatten();
                 let out = cancel.scope(|| exec(&dir, &op));
-                // Even a partly failed op may have moved refs: offer undo, unless it stopped mid
-                // merge/rebase/cherry-pick (undo can't check out over that; Abort is the way back).
-                let stopped = out.is_err() && git::git_dir(&dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting));
-                let snaps = before.filter(|_| !stopped).and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
+                // Even a partly failed op may have moved refs: always offer undo.
+                let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
                 Done::Op(op, out, snaps, saved)
             }),
         ));
