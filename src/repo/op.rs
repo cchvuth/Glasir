@@ -131,6 +131,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
             out = match a.as_slice() {
                 [super::tools::SHELL, line] => git::run_shell(dir, line),
+                [STASH_LIST | STASH_DROP | STASH_HAS, ..] => stash_cmd(dir, &a),
                 _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
             };
             if out.is_err() {
@@ -195,7 +196,39 @@ pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool)
     Op::new(label, &args).revert(back)
 }
 
-/// Drop these stashes in one op, highest index first so the lower names stay valid.
+/// `exec` pseudo-commands that name stashes by commit id, since `stash@{n}` shifts whenever
+/// a stash is made or dropped (CLI, another tab): `STASH_LIST n ids..` fails unless the
+/// first `n` stashes are exactly `ids`, `STASH_DROP id` drops wherever `id` is now, and
+/// `STASH_HAS ids..` fails unless every commit still exists.
+const STASH_LIST: &str = "!stash-list";
+const STASH_DROP: &str = "!stash-drop";
+const STASH_HAS: &str = "!stash-has";
+
+fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
+    let short = |id: &str| id[..7.min(id.len())].to_owned();
+    match a {
+        [STASH_LIST, n, ids @ ..] => {
+            let n: usize = n.parse().map_err(|_| "bad stash count".to_owned())?;
+            let cur = git::stashes(dir)?;
+            if cur.iter().take(n).map(|s| s.id.as_str()).eq(ids.iter().copied()) {
+                Ok(String::new())
+            } else {
+                Err("The stash list changed since, so no stash was touched. Check the stashes and try again.".into())
+            }
+        }
+        [STASH_DROP, id] => match git::stashes(dir)?.into_iter().find(|s| s.id == *id) {
+            Some(s) => git::run(dir, &["stash", "drop", &s.name]),
+            None => Err(format!("Stash {} is no longer in the stash list.", short(id))),
+        },
+        [STASH_HAS, ids @ ..] => match ids.iter().find(|id| git::run(dir, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_err()) {
+            Some(id) => Err(format!("Stash {} no longer exists (git gc pruned it), so no stash was touched.", short(id))),
+            None => Ok(String::new()),
+        },
+        _ => Err(format!("bad stash command {a:?}")),
+    }
+}
+
+/// Drop these stashes in one op, by commit id, after checking the list is still the one shown.
 /// `git stash store` only pushes on top, so ⌘Z rebuilds the stack down to the
 /// deepest dropped stash: it pops the survivors above it, then re-stores all of
 /// them oldest first, which brings back the order and the `stash@{n}` numbers.
@@ -206,16 +239,20 @@ pub fn drop_stashes(all: &[git::Stash], ids: &[String]) -> Op {
         [s] => ("Drop stash".to_owned(), format!("Delete {}? (Undo with ⌘Z.)", s.name)),
         _ => (format!("Drop {n} stashes"), format!("Delete {n} stashes? (Undo with ⌘Z.)")),
     };
+    let check = |n: usize, ss: &[&git::Stash]| [STASH_LIST.to_owned(), n.to_string()].into_iter().chain(ss.iter().map(|s| s.id.clone())).collect();
+    let by_id = |cmd: &str, ss: &[&git::Stash]| ss.iter().map(|s| vec![cmd.to_owned(), s.id.clone()]).collect::<Vec<_>>();
+    // The undo below is built from `all`, and redo reruns this op: both need the list unchanged.
     let mut op = Op::new(label, &[]).confirm(ask);
-    op.cmds = dropped.iter().rev().map(|s| vec!["stash".into(), "drop".into(), s.name.clone()]).collect();
-    // Undo pops by position: refuse if the top stash changed since (a new stash would be lost).
-    let verify = match all.iter().find(|s| !ids.contains(&s.id)) {
-        Some(top) => format!("verify refs/stash {}\n", top.id),
-        None => "verify refs/stash\n".into(),
-    };
-    let mut back = Op::new(format!("Restore {n} stashes"), &["update-ref", "--stdin"]).input(verify);
-    let survivors = all[..=deepest].iter().filter(|s| !ids.contains(&s.id)).count();
-    back.cmds.extend((0..survivors).map(|_| vec!["stash".into(), "drop".into(), "stash@{0}".into()]));
+    op.cmds = vec![check(all.len() + 1, &all.iter().collect::<Vec<_>>())];
+    op.cmds.extend(by_id(STASH_DROP, &dropped));
+    // Check everything before popping: the survivors above the deepest drop and the one
+    // below it must be where the drop left them, and every dropped commit must still exist.
+    let survivors: Vec<&git::Stash> = all.iter().filter(|s| !ids.contains(&s.id)).collect();
+    let above = deepest + 1 - n;
+    let mut back = Op::new(format!("Restore {n} stashes"), &[]);
+    back.cmds = vec![[STASH_HAS.to_owned()].into_iter().chain(dropped.iter().map(|s| s.id.clone())).collect()];
+    back.cmds.push(check(above + 1, &survivors[..(above + 1).min(survivors.len())]));
+    back.cmds.extend(by_id(STASH_DROP, &survivors[..above]));
     back.cmds.extend(all[..=deepest].iter().rev().map(|s| ["stash", "store", "-m", &s.message, &s.id].map(String::from).to_vec()));
     op.revert(back)
 }
@@ -505,6 +542,75 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: four\nOn main: two\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stashes made, popped or pruned behind the app's back: the drop, its undo and its redo
+    /// refuse instead of dropping or popping any stash but the ones the user deleted.
+    #[test]
+    fn drop_stashes_refuses_when_stashes_changed() {
+        let dir = scratch("drop-stashes-changed");
+        let ctx = egui::Context::default();
+        let push = |m: &str| {
+            std::fs::write(dir.join("a"), m).unwrap();
+            sh(&dir, &["stash", "push", "-q", "-m", m]);
+        };
+        let list = || sh(&dir, &["stash", "list", "--format=%s"]).replace("On main: ", "").lines().collect::<Vec<_>>().join(" ");
+        let setup = |msgs: &[&str]| {
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            sh(&dir, &["init", "-q", "-b", "main"]);
+            identity(&dir);
+            commit(&dir, "a", "base");
+            msgs.iter().for_each(|m| push(m));
+            let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+            settle(&ctx, &mut t);
+            t
+        };
+        let drop = |t: &mut RepoTab, at: &[usize]| {
+            let all = t.data.as_ref().unwrap().stashes.clone();
+            let mut op = super::drop_stashes(&all, &at.iter().map(|&i| all[i].id.clone()).collect::<Vec<_>>());
+            op.confirm = None;
+            op
+        };
+        let act = |t: &mut RepoTab, a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, t);
+        };
+
+        // Redo after a new stash: it keeps the new one.
+        let mut t = setup(&["s0", "s1"]);
+        let op = drop(&mut t, &[0]);
+        act(&mut t, Action::Git(op));
+        act(&mut t, Action::Undo);
+        push("new");
+        assert_eq!(t.redo_label(), Some("Drop stash"));
+        act(&mut t, Action::Redo);
+        assert_eq!(list(), "new s1 s0");
+
+        // Undo after a survivor in the rebuilt part was popped: s0 below is kept.
+        let mut t = setup(&["s0", "s1", "s2", "s3", "s4"]);
+        let op = drop(&mut t, &[0, 3]);
+        act(&mut t, Action::Git(op));
+        assert_eq!(list(), "s3 s2 s0");
+        sh(&dir, &["stash", "drop", "-q", "stash@{1}"]);
+        act(&mut t, Action::Undo);
+        assert_eq!(list(), "s3 s0");
+
+        // Undo after gc pruned the dropped commit: the survivors stay.
+        let mut t = setup(&["s0", "s1", "s2"]);
+        let op = drop(&mut t, &[2]);
+        act(&mut t, Action::Git(op));
+        sh(&dir, &["gc", "-q", "--prune=now"]);
+        act(&mut t, Action::Undo);
+        assert_eq!(list(), "s2 s1");
+
+        // A stash made while the delete waited for confirmation.
+        let mut t = setup(&["s0", "s1"]);
+        let op = drop(&mut t, &[0]);
+        push("ext");
+        act(&mut t, Action::Git(op));
+        assert_eq!(list(), "ext s1 s0");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
