@@ -24,6 +24,12 @@ const MAX_AUTHORS: usize = 200;
 static ENABLED: AtomicBool = AtomicBool::new(!cfg!(test));
 /// Hosts that answered 401/403/429: no more API calls to them this session.
 static BLOCKED: Mutex<Vec<String>> = Mutex::new(vec![]);
+/// `host/owner/repo[@sha]` the API answered 404 for, with the time: skipped for `MISS_TTL`
+/// so each reload doesn't repeat them (a private repo 404s for every commit).
+static MISSING: Mutex<Vec<(String, u64)>> = Mutex::new(vec![]);
+const MISS_TTL: u64 = 3600;
+/// Misses (and no hit) after which the whole repo is skipped.
+const MISS_REPO: usize = 3;
 /// Serializes read-merge-write of the on-disk index.
 static INDEX: Mutex<()> = Mutex::new(());
 
@@ -55,7 +61,12 @@ impl Avatars {
     /// Queues the authors of a newly loaded log (or of the current one, once enabled).
     pub(super) fn sync(&mut self, ctx: &egui::Context, dir: &Path, d: &RepoData) {
         let key = Arc::as_ptr(&d.log) as usize;
-        if !enabled() || key == self.seen {
+        if !enabled() {
+            // The results of a batch cut short were dropped; queue them again once enabled.
+            self.seen = 0;
+            return;
+        }
+        if key == self.seen {
             return;
         }
         self.seen = key;
@@ -87,6 +98,10 @@ impl Avatars {
                     s.spawn(|| loop {
                         let next = queue.lock().unwrap().next();
                         let Some((email, sha)) = next else { break };
+                        if !enabled() {
+                            tex.lock().unwrap().remove(&email);
+                            continue;
+                        }
                         match c.resolve(&email, &sha).filter(|_| enabled()) {
                             Some(bytes) => {
                                 let t = bytes.and_then(|b| texture(&ctx, &email, &b));
@@ -126,7 +141,14 @@ fn github_repo(origin: &str) -> Option<(String, String, String)> {
 }
 
 fn api_base(host: &str) -> String {
-    if host == "github.com" { "https://api.github.com".into() } else { format!("https://{host}/api/v3") }
+    if host == "github.com" {
+        "https://api.github.com".into()
+    } else if host.ends_with(".ghe.com") {
+        // GHE Cloud with data residency: the API has its own subdomain.
+        format!("https://api.{host}")
+    } else {
+        format!("https://{host}/api/v3")
+    }
 }
 
 /// `<id>+<login>@users.noreply.<host>` -> its avatar URL, no API call needed.
@@ -145,6 +167,21 @@ fn sized(url: &str) -> String {
 fn image_ok(url: &str, host: &str) -> bool {
     let Some(h) = url.strip_prefix("https://").and_then(|r| r.split(['/', '?', '#']).next()) else { return false };
     !h.contains(['@', ':']) && if host == "github.com" { h == "avatars.githubusercontent.com" } else { h == host || h.ends_with(&format!(".{host}")) }
+}
+
+/// `avatar_url` of the first commit's author in a commit-list reply.
+fn avatar_of(body: &[u8], host: &str) -> Option<Option<String>> {
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let c = v.as_array()?.first()?;
+    Some(c["author"]["avatar_url"].as_str().map(sized).filter(|u| image_ok(u, host)))
+}
+
+fn is_image(bytes: &[u8]) -> bool {
+    image::guess_format(bytes).is_ok()
+}
+
+fn now_fresh(at: u64, now: u64) -> bool {
+    now.saturating_sub(at) < MISS_TTL
 }
 
 fn fresh(at: u64, now: u64) -> bool {
@@ -173,7 +210,11 @@ struct Lookup {
     updates: Mutex<Vec<(String, Entry)>>,
     now: u64,
     lookups: AtomicUsize,
+    hits: AtomicUsize,
+    misses: AtomicUsize,
     token: OnceLock<Option<String>>,
+    /// The token got a 401: leave it out from now on.
+    bad_token: AtomicBool,
     agent: ureq::Agent,
 }
 
@@ -189,7 +230,7 @@ impl Lookup {
             .into();
         let index = cache.as_deref().map(load_index).unwrap_or_default();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        Lookup { host, owner, repo, dir, cache, index, updates: Mutex::new(vec![]), now, lookups: AtomicUsize::new(0), token: OnceLock::new(), agent }
+        Lookup { host, owner, repo, dir, cache, index, updates: Mutex::new(vec![]), now, lookups: AtomicUsize::new(0), hits: AtomicUsize::new(0), misses: AtomicUsize::new(0), token: OnceLock::new(), bad_token: AtomicBool::new(false), agent }
     }
 
     /// `Some(None)`: no picture (initials); `None`: unknown for now, retry on a later load.
@@ -228,7 +269,28 @@ impl Lookup {
     }
 
     fn read(&self, url: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.cache.as_ref()?.join(file_name(url))).ok()
+        std::fs::read(self.cache.as_ref()?.join(file_name(url))).ok().filter(|b| is_image(b))
+    }
+
+    fn token(&self) -> Option<&str> {
+        if self.bad_token.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.token.get_or_init(|| git::credential_token(&self.dir, &self.host)).as_deref()
+    }
+
+    fn skipped(&self, repo: &str, sha: &str) -> bool {
+        let m = MISSING.lock().unwrap();
+        m.iter().any(|(k, at)| now_fresh(*at, self.now) && (k == repo || k.strip_prefix(repo).and_then(|r| r.strip_prefix('@')) == Some(sha)))
+    }
+
+    fn miss(&self, repo: &str, sha: &str) {
+        let mut m = MISSING.lock().unwrap();
+        m.retain(|(_, at)| now_fresh(*at, self.now));
+        m.push((format!("{repo}@{sha}"), self.now));
+        if self.misses.fetch_add(1, Ordering::Relaxed) + 1 >= MISS_REPO && self.hits.load(Ordering::Relaxed) == 0 {
+            m.push((repo.to_owned(), self.now));
+        }
     }
 
     fn record(&self, key: String, url: Option<String>) {
@@ -237,23 +299,33 @@ impl Lookup {
 
     /// The `avatar_url` of the author of `sha` (`Some(None)`: not a GitHub user).
     fn lookup(&self, sha: &str) -> Option<Option<String>> {
-        if BLOCKED.lock().unwrap().contains(&self.host) || self.lookups.fetch_add(1, Ordering::Relaxed) >= MAX_LOOKUPS {
+        let repo = format!("{}/{}/{}", self.host, self.owner, self.repo);
+        if BLOCKED.lock().unwrap().contains(&self.host) || self.skipped(&repo, sha) || self.lookups.fetch_add(1, Ordering::Relaxed) >= MAX_LOOKUPS {
             return None;
         }
+        // The commit list (one entry, no diff) carries the same author as the commit itself.
         // github.com's API lives on api.github.com; a GHE token goes to its own host only.
-        let token = self.token.get_or_init(|| git::credential_token(&self.dir, &self.host));
-        let url = format!("{}/repos/{}/{}/commits/{sha}", api_base(&self.host), self.owner, self.repo);
-        let (status, body, _) = self.get(&url, token.as_deref())?;
-        match status {
+        let url = format!("{}/repos/{}/{}/commits?sha={sha}&per_page=1", api_base(&self.host), self.owner, self.repo);
+        let mut got = self.get(&url, self.token())?;
+        if got.0 == 401 && self.token().is_some() {
+            // A stale token fails even on public repos; they answer without it.
+            self.bad_token.store(true, Ordering::Relaxed);
+            got = self.get(&url, None)?;
+        }
+        match got.0 {
             200 => {
-                let v: serde_json::Value = serde_json::from_slice(&body).ok()?;
-                Some(v["author"]["avatar_url"].as_str().map(sized).filter(|u| image_ok(u, &self.host)))
+                self.hits.fetch_add(1, Ordering::Relaxed);
+                avatar_of(&got.1, &self.host)
             }
             401 | 403 | 429 => {
                 BLOCKED.lock().unwrap().push(self.host.clone());
                 None
             }
-            // 404 / 422: that commit isn't on the remote (yet).
+            // 404 / 422: that commit isn't on the remote (yet), or the repo is private to us.
+            404 | 422 => {
+                self.miss(&repo, sha);
+                None
+            }
             _ => None,
         }
     }
@@ -266,9 +338,9 @@ impl Lookup {
             }
             // Private-mode GHE serves pictures to signed-in users only.
             let own = url.strip_prefix("https://").is_some_and(|r| r.split('/').next() == Some(self.host.as_str()));
-            let token = if own { self.token.get_or_init(|| git::credential_token(&self.dir, &self.host)).clone() } else { None };
-            match self.get(&url, token.as_deref())? {
-                (200, body, _) => return Some(body),
+            match self.get(&url, if own { self.token() } else { None })? {
+                // A redirect to a login page is a 200 too.
+                (200, body, _) => return is_image(&body).then_some(body),
                 (301 | 302 | 307 | 308, _, loc) => url = loc,
                 _ => return None,
             }
@@ -333,6 +405,7 @@ mod tests {
         }
         assert_eq!(api_base("github.com"), "https://api.github.com");
         assert_eq!(api_base("ghe.corp.example"), "https://ghe.corp.example/api/v3");
+        assert_eq!(api_base("octocorp.ghe.com"), "https://api.octocorp.ghe.com");
         assert_eq!(sized("https://avatars.githubusercontent.com/u/1?v=4"), "https://avatars.githubusercontent.com/u/1?v=4&s=64");
         assert_eq!(sized("https://ghe.corp/avatars/u/2"), "https://ghe.corp/avatars/u/2?s=64");
         assert!(image_ok("https://avatars.githubusercontent.com/u/1?s=64", "github.com"));
@@ -341,6 +414,38 @@ mod tests {
             assert!(!image_ok(bad, "github.com"), "{bad}");
         }
         assert!(!image_ok("https://ghe.corp.evil/u/1", "ghe.corp") && !image_ok("https://notghe.corp/u/1", "ghe.corp"));
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+    #[test]
+    fn commit_list_reply() {
+        let a = |s: &str| avatar_of(s.as_bytes(), "github.com");
+        assert_eq!(a(r#"[{"author":{"avatar_url":"https://avatars.githubusercontent.com/u/1?v=4"}}]"#), Some(Some("https://avatars.githubusercontent.com/u/1?v=4&s=64".into())));
+        assert_eq!(a(r#"[{"author":null}]"#), Some(None));
+        assert_eq!(a(r#"[{"author":{"avatar_url":"https://evil.example/a.png"}}]"#), Some(None));
+        assert_eq!((a("[]"), a("{}"), a("<html>")), (None, None, None));
+    }
+
+    #[test]
+    fn html_is_not_a_picture() {
+        assert!(is_image(PNG) && !is_image(b"<!doctype html><title>Sign in</title>") && !is_image(b""));
+    }
+
+    /// A 404 skips that commit, and after a few misses without a hit the whole repo.
+    #[test]
+    fn misses_are_remembered() {
+        let l = Lookup::new("miss.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
+        let repo = "miss.example/o/r";
+        assert!(!l.skipped(repo, "a"));
+        l.miss(repo, "a");
+        assert!(l.skipped(repo, "a") && !l.skipped(repo, "b") && !l.skipped("miss.example/o/rr", "a"));
+        l.miss(repo, "b");
+        l.miss(repo, "c");
+        assert!(l.skipped(repo, "zzz"));
+        let mut later = Lookup::new("miss.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
+        later.now = l.now + MISS_TTL;
+        assert!(!later.skipped(repo, "a") && !later.skipped(repo, "zzz"));
     }
 
     /// Fresh entries come from disk without the network; expired ones are refreshed,
@@ -352,7 +457,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&cache);
         std::fs::create_dir_all(&cache).unwrap();
         let (pic, now) = ("https://avatars.githubusercontent.com/u/1?s=64", 10 * TTL);
-        std::fs::write(cache.join(file_name(pic)), b"png").unwrap();
+        std::fs::write(cache.join(file_name(pic)), PNG).unwrap();
         let e = |url: Option<&str>, at| Entry { url: url.map(Into::into), at };
         let index: HashMap<_, _> = [
             ("github.com a@x.org".to_owned(), e(Some(pic), now - 60)),
@@ -364,9 +469,9 @@ mod tests {
         let mut l = Lookup::new("github.com".into(), "o".into(), "r".into(), cache.clone(), Some(cache.clone()));
         l.now = now;
         l.lookups.store(MAX_LOOKUPS, Ordering::Relaxed);
-        assert_eq!(l.resolve("A@x.org", "abc"), Some(Some(b"png".to_vec())));
+        assert_eq!(l.resolve("A@x.org", "abc"), Some(Some(PNG.to_vec())));
         assert_eq!(l.resolve("none@x.org", "abc"), Some(None));
-        assert_eq!(l.resolve("old@x.org", "abc"), Some(Some(b"png".to_vec())));
+        assert_eq!(l.resolve("old@x.org", "abc"), Some(Some(PNG.to_vec())));
         assert_eq!(l.resolve("new@x.org", "abc"), None);
         l.record("github.com new@x.org".into(), None);
         l.save();
