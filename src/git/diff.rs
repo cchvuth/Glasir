@@ -166,7 +166,9 @@ fn parse_one(text: &str) -> FileDiff {
     f
 }
 
-const DIFF: [&str; 5] = ["diff", "--no-color", "--no-ext-diff", "--submodule=log", "-M"];
+// Literal pathspecs: `data[1].csv` must not glob-match `data1.csv`, or hunk
+// staging/discard would patch the wrong file.
+const DIFF: [&str; 6] = ["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--submodule=log", "-M"];
 
 /// How a diff is shown: `-w` and `-U<context>`. Line staging needs `ignore_ws` off.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -221,7 +223,7 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
     let opts = o.args();
     let mut args = match parent {
         Some(p) => [&DIFF[..], &[p, id]].concat(),
-        None => vec!["show", "--format=", "--no-color", "--no-ext-diff", "--submodule=log", id],
+        None => vec!["--literal-pathspecs", "show", "--format=", "--no-color", "--no-ext-diff", "--submodule=log", id],
     };
     args.extend(opts.iter().map(String::as_str));
     args.push("--");
@@ -307,6 +309,35 @@ mod tests {
         assert_eq!(changed(&diff(DiffOpts { ignore_ws: true, ..Default::default() })), 1);
         let whole = diff(DiffOpts { context: DiffOpts::FILE, ..Default::default() });
         assert_eq!((whole.hunks.len(), whole.hunks[0].lines.len()), (1, 22));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real git: a path with glob characters is matched literally, so hunk
+    /// staging/discard of `data[1].csv` can't touch `data1.csv`.
+    #[test]
+    fn glob_characters_in_path_are_literal() {
+        let dir = std::env::temp_dir().join(format!("glasir-diffglob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        for f in ["data1.csv", "data[1].csv"] {
+            std::fs::write(dir.join(f), "a\n").unwrap();
+        }
+        g(&["add", "-A"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "f"]);
+        for f in ["data1.csv", "data[1].csv"] {
+            std::fs::write(dir.join(f), "b\n").unwrap();
+        }
+        let c = Change { path: "data[1].csv".into(), old_path: None, code: 'M' };
+        let names = |f: FileDiff| f.header.into_iter().find(|h| h.starts_with("--- ")).unwrap();
+        assert_eq!(names(worktree_diff(&dir, &c, false, DiffOpts::default()).unwrap()), "--- a/data[1].csv");
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-qam", "g"]);
+        let head = g(&["rev-parse", "HEAD"]);
+        assert_eq!(names(commit_diff(&dir, head.trim(), Some("HEAD~"), &c, DiffOpts::default()).unwrap()), "--- a/data[1].csv");
+        let root = g(&["rev-parse", "HEAD~"]);
+        assert_eq!(names(commit_diff(&dir, root.trim(), None, &c, DiffOpts::default()).unwrap()), "--- /dev/null");
+        assert!(commit_diff(&dir, root.trim(), None, &c, DiffOpts::default()).unwrap().header[0].ends_with("b/data[1].csv"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

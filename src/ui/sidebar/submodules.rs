@@ -70,7 +70,7 @@ fn row(ui: &mut Ui, d: &RepoData, s: &Submodule, acts: &mut Vec<Action>) {
     resp.context_menu(|ui| {
         if !nested {
             let (label, args): (&str, &[&str]) =
-                if init { ("Update (recursive)", &["submodule", "update", "--recursive", "--", &s.path]) } else { ("Initialize & update", &["submodule", "update", "--init", "--recursive", "--", &s.path]) };
+                if init { ("Update (recursive)", &["--literal-pathspecs", "submodule", "update", "--recursive", "--", &s.path]) } else { ("Initialize & update", &["--literal-pathspecs", "submodule", "update", "--init", "--recursive", "--", &s.path]) };
             if ui.button(label).on_hover_text("Check out the recorded commit").clicked() {
                 acts.push(Action::Git(Op::new(format!("{label} {}", s.path), args)));
             }
@@ -87,12 +87,51 @@ fn row(ui: &mut Ui, d: &RepoData, s: &Submodule, acts: &mut Vec<Action>) {
         if !nested {
             ui.separator();
             if ui.button("Remove submodule").clicked() {
-                acts.push(Action::Git(
-                    Op::new(format!("Remove submodule {}", s.path), &["submodule", "deinit", "-f", "--", &s.path])
-                        .then(&["rm", "-f", "--", &s.path])
-                        .confirm(format!("Remove submodule {}? Its folder (and any uncommitted work in it) is deleted; the removal is staged for the next commit.", s.path)),
-                ));
+                acts.push(Action::Git(remove(&s.path)));
             }
         }
     });
+}
+
+// Literal pathspecs: a glob-y path like `lib[2]` must not also deinit/rm `lib2`.
+fn remove(path: &str) -> Op {
+    Op::new(format!("Remove submodule {path}"), &["--literal-pathspecs", "submodule", "deinit", "-f", "--", path])
+        .then(&["--literal-pathspecs", "rm", "-f", "--", path])
+        .confirm(format!("Remove submodule {path}? Its folder (and any uncommitted work in it) is deleted; the removal is staged for the next commit."))
+}
+
+#[cfg(test)]
+mod tests {
+    /// Real git: removing submodule `lib[2]` leaves the tracked file `lib2` (and its edits) alone.
+    #[test]
+    fn remove_matches_path_literally() {
+        use crate::git::run;
+        let root = std::env::temp_dir().join(format!("glasir-subremove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (lib, app) = (root.join("lib"), root.join("app"));
+        let g = |dir: &std::path::Path, args: &[&str]| {
+            let mut a = vec!["-c", "protocol.file.allow=always", "-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false"];
+            a.extend_from_slice(args);
+            run(dir, &a).unwrap_or_else(|e| panic!("{args:?}: {e}"))
+        };
+        for d in [&lib, &app] {
+            std::fs::create_dir_all(d).unwrap();
+            g(d, &["init", "-q"]);
+            std::fs::write(d.join("f"), "a\n").unwrap();
+            g(d, &["add", "f"]);
+            g(d, &["commit", "-q", "-m", "f"]);
+        }
+        g(&app, &["submodule", "add", "-q", lib.to_str().unwrap(), "lib[2]"]);
+        std::fs::write(app.join("lib2"), "a\n").unwrap();
+        g(&app, &["add", "lib2"]);
+        g(&app, &["commit", "-q", "-m", "sub"]);
+        std::fs::write(app.join("lib2"), "WORK\n").unwrap();
+        for cmd in super::remove("lib[2]").cmds {
+            g(&app, &cmd.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        assert_eq!(std::fs::read_to_string(app.join("lib2")).unwrap(), "WORK\n");
+        assert_eq!(g(&app, &["status", "--porcelain", "--", "lib2"]), " M lib2\n");
+        assert!(!app.join("lib[2]").join("f").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
