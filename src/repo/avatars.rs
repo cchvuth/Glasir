@@ -28,8 +28,8 @@ static BLOCKED: Mutex<Vec<String>> = Mutex::new(vec![]);
 /// so each reload doesn't repeat them (a private repo 404s for every commit).
 static MISSING: Mutex<Vec<(String, u64)>> = Mutex::new(vec![]);
 const MISS_TTL: u64 = 3600;
-/// Misses (and no hit) after which the whole repo is skipped.
-const MISS_REPO: usize = 3;
+/// `host/owner/repo` whose API page answered, so commit 404s there are just unpushed commits.
+static REACHABLE: Mutex<Vec<String>> = Mutex::new(vec![]);
 /// Serializes read-merge-write of the on-disk index.
 static INDEX: Mutex<()> = Mutex::new(());
 
@@ -180,6 +180,16 @@ fn is_image(bytes: &[u8]) -> bool {
     image::guess_format(bytes).is_ok()
 }
 
+/// A 401 to a request that carried the token: the token is stale, retry without it.
+fn retry_bare(status: u16, had_token: bool) -> bool {
+    status == 401 && had_token
+}
+
+/// Only a tokenless request failing says the host refuses us (or rate-limits us).
+fn blocks_host(status: u16, had_token: bool) -> bool {
+    matches!(status, 401 | 403 | 429) && !had_token
+}
+
 fn now_fresh(at: u64, now: u64) -> bool {
     now.saturating_sub(at) < MISS_TTL
 }
@@ -210,8 +220,6 @@ struct Lookup {
     updates: Mutex<Vec<(String, Entry)>>,
     now: u64,
     lookups: AtomicUsize,
-    hits: AtomicUsize,
-    misses: AtomicUsize,
     token: OnceLock<Option<String>>,
     /// The token got a 401: leave it out from now on.
     bad_token: AtomicBool,
@@ -230,7 +238,7 @@ impl Lookup {
             .into();
         let index = cache.as_deref().map(load_index).unwrap_or_default();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        Lookup { host, owner, repo, dir, cache, index, updates: Mutex::new(vec![]), now, lookups: AtomicUsize::new(0), hits: AtomicUsize::new(0), misses: AtomicUsize::new(0), token: OnceLock::new(), bad_token: AtomicBool::new(false), agent }
+        Lookup { host, owner, repo, dir, cache, index, updates: Mutex::new(vec![]), now, lookups: AtomicUsize::new(0), token: OnceLock::new(), bad_token: AtomicBool::new(false), agent }
     }
 
     /// `Some(None)`: no picture (initials); `None`: unknown for now, retry on a later load.
@@ -284,12 +292,46 @@ impl Lookup {
         m.iter().any(|(k, at)| now_fresh(*at, self.now) && (k == repo || k.strip_prefix(repo).and_then(|r| r.strip_prefix('@')) == Some(sha)))
     }
 
-    fn miss(&self, repo: &str, sha: &str) {
+    /// Remembers a commit as missing; `gone`: the whole repo is unreachable.
+    fn miss(&self, repo: &str, sha: &str, gone: bool) {
         let mut m = MISSING.lock().unwrap();
         m.retain(|(_, at)| now_fresh(*at, self.now));
         m.push((format!("{repo}@{sha}"), self.now));
-        if self.misses.fetch_add(1, Ordering::Relaxed) + 1 >= MISS_REPO && self.hits.load(Ordering::Relaxed) == 0 {
+        if gone {
             m.push((repo.to_owned(), self.now));
+        }
+    }
+
+    /// An API GET with our token if we have one; a 401 marks the token bad and retries
+    /// once without it. Also says whether the answer came from a request that had the token.
+    fn api_get(&self, url: &str) -> Option<((u16, Vec<u8>, String), bool)> {
+        // Decided by this request's own token, not by `bad_token`, which other workers may have set.
+        let tok = self.token();
+        let mut got = self.get(url, tok)?;
+        let mut had = tok.is_some();
+        if retry_bare(got.0, had) {
+            // A stale token fails even on public repos; they answer without it.
+            self.bad_token.store(true, Ordering::Relaxed);
+            got = self.get(url, None)?;
+            had = false;
+        }
+        Some((got, had))
+    }
+
+    /// Whether the repo's own API page answers (checked once per session): a public repo whose
+    /// commits aren't pushed still does; a missing or private one doesn't.
+    fn reachable(&self, repo: &str) -> bool {
+        if REACHABLE.lock().unwrap().iter().any(|r| r == repo) {
+            return true;
+        }
+        let url = format!("{}/repos/{}/{}", api_base(&self.host), self.owner, self.repo);
+        match self.api_get(&url) {
+            Some(((404 | 401 | 403, ..), _)) => false,
+            // Unknown (network error, 5xx) counts as reachable: don't skip on a guess.
+            _ => {
+                REACHABLE.lock().unwrap().push(repo.to_owned());
+                true
+            }
         }
     }
 
@@ -306,24 +348,17 @@ impl Lookup {
         // The commit list (one entry, no diff) carries the same author as the commit itself.
         // github.com's API lives on api.github.com; a GHE token goes to its own host only.
         let url = format!("{}/repos/{}/{}/commits?sha={sha}&per_page=1", api_base(&self.host), self.owner, self.repo);
-        let mut got = self.get(&url, self.token())?;
-        if got.0 == 401 && self.token().is_some() {
-            // A stale token fails even on public repos; they answer without it.
-            self.bad_token.store(true, Ordering::Relaxed);
-            got = self.get(&url, None)?;
-        }
+        let (got, had_token) = self.api_get(&url)?;
         match got.0 {
-            200 => {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-                avatar_of(&got.1, &self.host)
-            }
-            401 | 403 | 429 => {
+            200 => avatar_of(&got.1, &self.host),
+            s if blocks_host(s, had_token) => {
                 BLOCKED.lock().unwrap().push(self.host.clone());
                 None
             }
             // 404 / 422: that commit isn't on the remote (yet), or the repo is private to us.
-            404 | 422 => {
-                self.miss(&repo, sha);
+            s @ (404 | 422) => {
+                let gone = s == 404 && !self.reachable(&repo);
+                self.miss(&repo, sha, gone);
                 None
             }
             _ => None,
@@ -432,20 +467,30 @@ mod tests {
         assert!(is_image(PNG) && !is_image(b"<!doctype html><title>Sign in</title>") && !is_image(b""));
     }
 
-    /// A 404 skips that commit, and after a few misses without a hit the whole repo.
+    /// A 404 skips that commit; the whole repo only when it is unreachable.
     #[test]
     fn misses_are_remembered() {
         let l = Lookup::new("miss.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
         let repo = "miss.example/o/r";
         assert!(!l.skipped(repo, "a"));
-        l.miss(repo, "a");
-        assert!(l.skipped(repo, "a") && !l.skipped(repo, "b") && !l.skipped("miss.example/o/rr", "a"));
-        l.miss(repo, "b");
-        l.miss(repo, "c");
+        l.miss(repo, "a", false);
+        l.miss(repo, "b", false);
+        l.miss(repo, "c", false);
+        assert!(l.skipped(repo, "a") && !l.skipped(repo, "zzz") && !l.skipped("miss.example/o/rr", "a"));
+        l.miss(repo, "d", true);
         assert!(l.skipped(repo, "zzz"));
         let mut later = Lookup::new("miss.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
         later.now = l.now + MISS_TTL;
         assert!(!later.skipped(repo, "a") && !later.skipped(repo, "zzz"));
+    }
+
+    #[test]
+    fn stale_token_decisions() {
+        assert!(retry_bare(401, true) && !retry_bare(401, false) && !retry_bare(403, true));
+        for s in [401, 403, 429] {
+            assert!(blocks_host(s, false) && !blocks_host(s, true), "{s}");
+        }
+        assert!(!blocks_host(404, false) && !blocks_host(200, false));
     }
 
     /// Fresh entries come from disk without the network; expired ones are refreshed,
