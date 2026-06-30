@@ -205,6 +205,8 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<F
     let opts = o.args();
     let mut args = DIFF.to_vec();
     args.extend(opts.iter().map(String::as_str));
+    // Hunks get staged / discarded: they must be the real content, not a textconv rendering.
+    args.push("--no-textconv");
     if staged {
         args.push("--cached");
     }
@@ -338,6 +340,43 @@ mod tests {
         let root = g(&["rev-parse", "HEAD~"]);
         assert_eq!(names(commit_diff(&dir, root.trim(), None, &c, DiffOpts::default()).unwrap()), "--- /dev/null");
         assert!(commit_diff(&dir, root.trim(), None, &c, DiffOpts::default()).unwrap().header[0].ends_with("b/data[1].csv"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Real git: staging a whole file's hunks from its diff stages exactly that file's
+    /// real content, whatever its name (glob characters), textconv or diff prefixes.
+    #[test]
+    fn staged_hunks_hit_the_right_file() {
+        let dir = std::env::temp_dir().join(format!("glasir-stage-exact-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        let w = |p: &str, t: &str| std::fs::write(dir.join(p), t).unwrap();
+        g(&["init", "-q"]);
+        for (k, v) in [("diff.redact.textconv", "sed 's/=.*/=***/'"), ("diff.srcPrefix", ""), ("diff.dstPrefix", "")] {
+            g(&["config", k, v]);
+        }
+        w(".gitattributes", "*.env diff=redact\n");
+        let lines = "a\nb\nc\nd\n";
+        for (p, t) in [("f1.txt", "one\n"), ("f[0-9].txt", "lit\n"), ("a.env", "# c1\n# c2\n"), ("src/main.rs", lines), ("main.rs", lines)] {
+            w(p, t);
+        }
+        g(&["add", "-A"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+        // Unsaved work in a file the glob `f[0-9].txt` matches: must stay unstaged.
+        w("f1.txt", "ONE precious\n");
+        for (p, t) in [("f[0-9].txt", "LIT\n"), ("a.env", "# c1\n# c2\nPASSWORD=hunter2\n"), ("src/main.rs", "a\nB\nc\nd\n")] {
+            w(p, t);
+            let c = Change { path: p.into(), old_path: None, code: 'M' };
+            let patch = partial_patch(&worktree_diff(&dir, &c, false, DiffOpts::default()).unwrap(), |_, _| true, false).unwrap();
+            run_raw(&dir, &["apply", "--recount", "--whitespace=nowarn", "--cached", "-"], Some(patch.as_bytes())).unwrap();
+        }
+        let index = |p: &str| g(&["show", &format!(":{p}")]);
+        assert_eq!(index("f1.txt"), "one\n");
+        assert_eq!(index("f[0-9].txt"), "LIT\n");
+        assert_eq!(index("a.env"), "# c1\n# c2\nPASSWORD=hunter2\n");
+        assert_eq!(index("src/main.rs"), "a\nB\nc\nd\n");
+        assert_eq!(index("main.rs"), lines);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

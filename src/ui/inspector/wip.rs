@@ -295,11 +295,11 @@ impl RepoTab {
                         acts.push(Action::Diff(src));
                     }
                     if resp.double_clicked() {
-                        acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", &c.path]).light()));
+                        acts.push(Action::Git(crate::repo::unstage_op(c)));
                     }
                     resp.context_menu(|ui| {
                         if ui.button("Unstage").clicked() {
-                            acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", &c.path]).light()));
+                            acts.push(Action::Git(crate::repo::unstage_op(c)));
                         }
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);

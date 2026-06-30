@@ -139,8 +139,8 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
         DiffSrc::Commit { .. } => (false, false),
     };
     let lossy = ds.file.as_ref().is_some_and(|f| f.as_ref().is_ok_and(|f| f.lossy));
-    // Partial staging patches the shown diff, which must be a plain one (no -w).
-    let partial = worktree && change.code != '?' && !lossy && !ds.opts.ignore_ws;
+    // Partial staging patches the shown diff, which must be a plain (no -w), current one.
+    let partial = worktree && change.code != '?' && !lossy && !ds.opts.ignore_ws && !ds.loading();
     let file = ds.file.as_ref().and_then(|f| f.as_ref().ok());
     let rows = file.map_or(vec![], |f| rows(f, *split));
     let kinds: Vec<u8> = file.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
@@ -170,7 +170,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
             let path = change.path.as_str();
             if staged {
                 if ui.button("Unstage file").clicked() {
-                    acts.push(Action::Git(Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--", path]).light()));
+                    acts.push(Action::Git(crate::repo::unstage_op(&change)));
                 }
             } else if ui.button("Stage file").clicked() {
                 acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", path]).light()));

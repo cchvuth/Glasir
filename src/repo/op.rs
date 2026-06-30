@@ -191,6 +191,14 @@ pub fn discard_op(c: &git::Change) -> Op {
     o.light().backup(Backup::Paths(vec![c.path.clone()])).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))
 }
 
+/// Unstage one file; a staged rename needs its old path reset too, or its deletion stays staged.
+pub fn unstage_op(c: &git::Change) -> Op {
+    let mut args = vec!["--literal-pathspecs", "reset", "-q", "--"];
+    args.extend(c.old_path.as_deref());
+    args.push(&c.path);
+    Op::new("Unstage", &args).light()
+}
+
 /// Stash everything, untracked files included (toolbar, WIP menu, palette).
 pub fn stash_op() -> Op {
     Op::new("Stash", &["stash", "push", "--include-untracked"])
@@ -406,6 +414,9 @@ impl RepoTab {
                     (l, false) if l.starts_with("Compose ") => self.run(ctx, Op::new("Unstage all", &["reset", "-q"]).light()),
                     _ => {}
                 }
+                // Hunk buttons patch the shown diff: mark it stale now, not after the status reload,
+                // or a second click re-applies the old patch wherever its context still matches.
+                self.refresh_diff(ctx);
                 self.reload(ctx, !op.light);
             }
             Done::Undo(was_undo, res) => {
@@ -520,6 +531,25 @@ impl RepoData {
 mod tests {
     use super::super::testutil::{commit, identity, scratch, settle, sh};
     use super::super::{Action, RepoTab, View};
+
+    /// Unstaging a `git mv` rename unstages both halves: no lone deletion left staged.
+    #[test]
+    fn unstage_rename() {
+        let dir = scratch("unstage-rename");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "old", "a\nb\nc\nd\n");
+        sh(&dir, &["mv", "old", "new"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let c = t.data.as_ref().unwrap().status.staged[0].clone();
+        assert_eq!((c.path.as_str(), c.old_path.as_deref()), ("new", Some("old")));
+        t.apply(&ctx, Action::Git(super::unstage_op(&c)));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " D old\n?? new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Deleting non-adjacent stashes, then ⌘Z: the same stashes come back at the same positions.
     #[test]

@@ -24,6 +24,13 @@ pub struct DiffState {
     pub picked: BTreeSet<(usize, usize)>,
 }
 
+impl DiffState {
+    /// A (re)load is running: the shown `file` may predate the last op.
+    pub fn loading(&self) -> bool {
+        self.task.is_some()
+    }
+}
+
 impl RepoTab {
     pub(super) fn refresh_diff(&mut self, ctx: &egui::Context) {
         if let Some(d) = &self.diff

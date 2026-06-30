@@ -59,7 +59,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt}
 pub use data::{RepoData, View};
 pub use diff::DiffState;
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_op, drop_stashes, fetch_op, pull_op, stage_all_op, stash_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_op, drop_stashes, fetch_op, pull_op, stage_all_op, stash_op, unstage_op};
 pub use search::Search;
 pub use task::Task;
 
@@ -594,6 +594,27 @@ mod tests {
         std::fs::write(dir.join("f"), "a\nbar\n").unwrap();
         t.reload(&ctx, false);
         wait(&ctx, &mut t, |t| has(t, "bar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Once a staging op finishes, the diff it patched is already reloading (hunk
+    /// buttons hidden): re-applying the old patch could hit an identical block elsewhere.
+    #[test]
+    fn diff_is_stale_as_soon_as_an_op_finishes() {
+        let dir = scratch("stale-diff");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        std::fs::write(dir.join("f"), "b\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let change = t.data.as_ref().unwrap().status.unstaged[0].clone();
+        t.apply(&ctx, Action::Diff(DiffSrc::Worktree { change, staged: false }));
+        wait(&ctx, &mut t, |t| t.diff.as_ref().is_some_and(|d| !d.loading()));
+        t.apply(&ctx, Action::Git(Op::new("Stage", &["add", "f"]).light()));
+        wait(&ctx, &mut t, |t| t.running.is_none());
+        assert!(t.diff.as_ref().unwrap().loading());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

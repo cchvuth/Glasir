@@ -13,6 +13,7 @@ pub fn cmd(dir: &Path) -> Command {
     let mut c = base("git", dir);
     // Neutralize user config that would change the formats we parse.
     c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
+        .args(["-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/"])
         .args(["-c", "core.quotepath=off", "-c", "color.ui=never"]);
     c
 }
