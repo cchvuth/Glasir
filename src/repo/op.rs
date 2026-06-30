@@ -174,6 +174,23 @@ pub fn stage_all_op(s: &git::Status) -> Option<Op> {
     (!paths.is_empty()).then(|| Op::new("Stage all", &["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
 }
 
+/// Discard one unstaged change (WIP list), backed up so ⌘Z brings the bytes back.
+pub fn discard_op(c: &git::Change) -> Op {
+    let o = match (c.code, &c.old_path) {
+        ('?', _) => Op::new("Discard", &["--literal-pathspecs", "clean", "-fq", "--", &c.path]),
+        // Intent-to-add (`add -N`): `checkout` would empty the file instead of removing it.
+        ('A' | 'R' | 'C', old) => {
+            let o = Op::new("Discard", &["--literal-pathspecs", "rm", "-fq", "--", &c.path]);
+            match old.as_deref().filter(|_| c.code == 'R') {
+                Some(old) => o.then(&["--literal-pathspecs", "checkout", "--", old]),
+                None => o,
+            }
+        }
+        _ => Op::new("Discard", &["--literal-pathspecs", "checkout", "--", &c.path]),
+    };
+    o.light().backup(Backup::Paths(vec![c.path.clone()])).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))
+}
+
 /// Stash everything, untracked files included (toolbar, WIP menu, palette).
 pub fn stash_op() -> Op {
     Op::new("Stash", &["stash", "push", "--include-untracked"])
@@ -609,6 +626,40 @@ mod tests {
         push("ext");
         act(&mut t, Action::Git(op));
         assert_eq!(list(), "ext s1 s0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rename git sees in the worktree (`git add -N new` after `mv old new`).
+    #[test]
+    fn worktree_rename_stage_all_and_discard() {
+        let dir = scratch("wt-rename");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "old.txt", "keep me\n");
+        let renamed = || {
+            std::fs::rename(dir.join("old.txt"), dir.join("new.txt")).unwrap();
+            sh(&dir, &["add", "-N", "new.txt"]);
+            let s = crate::git::status(&dir).unwrap();
+            assert_eq!(s.unstaged[0].old_path.as_deref(), Some("old.txt"));
+            s
+        };
+        super::exec(&dir, &super::stage_all_op(&renamed()).unwrap()).unwrap();
+        let s = crate::git::status(&dir).unwrap();
+        assert!(s.unstaged.is_empty(), "{:?}", s.unstaged);
+        assert_eq!((s.staged[0].code, s.staged[0].old_path.as_deref()), ('R', Some("old.txt")));
+        sh(&dir, &["reset", "-q", "--hard"]);
+
+        super::exec(&dir, &super::discard_op(&renamed().unstaged[0])).unwrap();
+        let s = crate::git::status(&dir).unwrap();
+        assert!(s.unstaged.is_empty() && s.staged.is_empty(), "{:?}", s.unstaged);
+        assert!(!dir.join("new.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), "keep me\n");
+
+        // An intent-to-add new file is removed, not truncated to 0 bytes.
+        std::fs::write(dir.join("n.txt"), "draft\n").unwrap();
+        sh(&dir, &["add", "-N", "n.txt"]);
+        super::exec(&dir, &super::discard_op(&crate::git::status(&dir).unwrap().unstaged[0])).unwrap();
+        assert!(!dir.join("n.txt").exists() && crate::git::status(&dir).unwrap().unstaged.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

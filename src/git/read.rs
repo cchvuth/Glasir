@@ -39,7 +39,7 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
         dir,
         &[
             "for-each-ref",
-            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(symref)%1f%(creatordate:unix)%1f%(worktreepath)%1f%(if)%(*objectname)%(then)%(contents:subject)%0a%0a%(contents:body)%(end)%00",
+            "--format=%(refname)%1f%(objectname)%1f%(*objectname)%1f%(upstream:short)%1f%(upstream:track,nobracket)%1f%(HEAD)%1f%(symref)%1f%(creatordate:unix)%1f%(worktreepath)%1f%(if)%(*objectname)%(then)%(contents)%1f%(contents:signature)%(end)%00",
             "refs/heads",
             "refs/remotes",
             "refs/tags",
@@ -49,7 +49,7 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
     Ok(out
         .split('\0')
         .filter_map(|l| {
-            let f: Vec<&str> = l.trim_start_matches('\n').splitn(10, '\x1f').collect();
+            let f: Vec<&str> = l.trim_start_matches('\n').splitn(11, '\x1f').collect();
             if f.len() < 8 || !f[6].is_empty() {
                 return None; // symrefs like origin/HEAD
             }
@@ -75,7 +75,10 @@ pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
                 head: f[5] == "*",
                 date: f[7].parse().unwrap_or(0),
                 worktree: f.get(8).filter(|w| f[5] != "*" && !w.is_empty()).map(|w| w.to_string()),
-                message: f.get(9).map_or("", |m| m.trim_end()).into(),
+                annotated: !f[2].is_empty(),
+                // `%(contents)` keeps the message byte for byte (`subject` joins wrapped lines);
+                // a signed tag's signature is not part of it.
+                message: f.get(9).map_or("", |m| f.get(10).and_then(|sig| m.strip_suffix(sig)).unwrap_or(m).trim_end()).into(),
             })
         })
         .collect())
@@ -111,11 +114,13 @@ pub fn parse_status(out: &str) -> Status {
                 if f[2].starts_with('S') {
                     s.submodules.insert(path.to_string(), f[2].into());
                 }
+                // Either side can be the rename (`.R`: worktree rename of an intent-to-add file).
+                let from = |c: char| old.clone().filter(|_| matches!(c, 'R' | 'C'));
                 if xy[0] != '.' {
-                    s.staged.push(Change { path: path.to_string(), old_path: old, code: xy[0] });
+                    s.staged.push(Change { path: path.to_string(), old_path: from(xy[0]), code: xy[0] });
                 }
                 if xy[1] != '.' {
-                    s.unstaged.push(Change { path: path.to_string(), old_path: None, code: xy[1] });
+                    s.unstaged.push(Change { path: path.to_string(), old_path: from(xy[1]), code: xy[1] });
                 }
             }
             'u' => {
@@ -166,6 +171,9 @@ pub fn state(git_dir: &Path) -> State {
         State::CherryPicking
     } else if has("REVERT_HEAD") {
         State::Reverting
+    } else if let Ok(todo) = std::fs::read_to_string(git_dir.join("sequencer/todo")) {
+        // A multi-commit pick/revert whose conflicted step was committed by hand: more to do.
+        if todo.trim_start().starts_with("revert") { State::Reverting } else { State::CherryPicking }
     } else if has("BISECT_LOG") {
         State::Bisecting
     } else {
@@ -365,13 +373,15 @@ mod tests {
 1 .M N... 100644 100644 100644 a b x.rs\0\
 1 .M S.MU 160000 160000 160000 a a sub mod\0\
 2 R. N... 100644 100644 100644 a b R100 new.rs\0old.rs\0\
+2 .R N... 100644 100644 100644 a a R100 moved.rs\0was.rs\0\
 u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         let s = parse_status(out);
         assert_eq!((s.branch.as_deref(), s.head.as_deref(), s.ahead, s.behind), (Some("main"), Some("abc"), 2, 1));
         assert_eq!(s.staged.len(), 2);
         assert_eq!(s.staged[0].path, "src/a b.rs");
         assert_eq!(s.staged[1].old_path.as_deref(), Some("old.rs"));
-        assert_eq!(s.unstaged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["x.rs", "sub mod", "new file.txt"]);
+        assert_eq!(s.unstaged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["x.rs", "sub mod", "moved.rs", "new file.txt"]);
+        assert_eq!((s.unstaged[0].old_path.as_deref(), s.unstaged[2].old_path.as_deref()), (None, Some("was.rs")));
         assert_eq!((s.submodules.len(), s.submodules["sub mod"].as_str()), (1, "S.MU"));
         assert_eq!(s.conflicted[0].path, "conf.rs");
     }
@@ -409,6 +419,20 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         let msg = |n: &str| refs.iter().find(|r| r.name == n).map(|r| r.message.clone()).unwrap();
         assert_eq!((msg("v1").as_str(), msg("light").as_str(), msg("main").as_str()), ("Release one\n\nWith notes", "", ""));
         assert_eq!(refs.iter().find(|r| r.name == "feat").map(|r| r.head), Some(true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cherry-pick/revert of several commits leaves only `sequencer/` once a
+    /// conflicted step is committed by hand; the rest still has to run.
+    #[test]
+    fn leftover_sequencer_is_in_progress() {
+        let dir = std::env::temp_dir().join(format!("glasir-seq-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sequencer")).unwrap();
+        assert_eq!(state(&dir), State::Clean);
+        std::fs::write(dir.join("sequencer/todo"), "pick abc B\npick def C\n").unwrap();
+        assert_eq!(state(&dir), State::CherryPicking);
+        std::fs::write(dir.join("sequencer/todo"), "revert abc B\n").unwrap();
+        assert_eq!(state(&dir), State::Reverting);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

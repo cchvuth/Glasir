@@ -74,14 +74,15 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, acts: &mut Vec<A
     if target == head {
         return;
     }
+    let rev = d.branch_rev(target);
     if ui.button(format!("Merge {target} into {head}")).clicked() {
-        acts.push(Action::Git(Op::new(format!("Merge {target}"), &["merge", "--no-edit", target]).undo(Undo::Keep)));
+        acts.push(Action::Git(Op::new(format!("Merge {target}"), &["merge", "--no-edit", rev]).undo(Undo::Keep)));
     }
     if ui.button(format!("Rebase {head} onto {target}")).clicked() {
-        acts.push(Action::Git(Op::new(format!("Rebase onto {target}"), &["rebase", target]).undo(Undo::Keep)));
+        acts.push(Action::Git(Op::new(format!("Rebase onto {target}"), &["rebase", rev]).undo(Undo::Keep)));
     }
     if ui.button(format!("Interactive rebase {head} onto {target}…")).clicked() {
-        acts.push(Action::Rebase { base: target.into(), label: target.into() });
+        acts.push(Action::Rebase { base: rev.into(), label: target.into() });
     }
 }
 

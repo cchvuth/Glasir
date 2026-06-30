@@ -38,6 +38,8 @@ pub struct Ref {
     pub date: i64,
     /// An annotated tag's message (empty for branches and lightweight tags).
     pub message: String,
+    /// An annotated tag (its message may be empty).
+    pub annotated: bool,
 }
 
 impl Ref {

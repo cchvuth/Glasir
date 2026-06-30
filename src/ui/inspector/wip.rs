@@ -252,12 +252,7 @@ impl RepoTab {
                             acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", &c.path]).light()));
                         }
                         if ui.button("Discard changes").clicked() {
-                            let o = if c.code == '?' {
-                                Op::new("Discard", &["--literal-pathspecs", "clean", "-fq", "--", &c.path])
-                            } else {
-                                Op::new("Discard", &["--literal-pathspecs", "checkout", "--", &c.path])
-                            };
-                            acts.push(Action::Git(o.light().backup(crate::repo::Backup::Paths(vec![c.path.clone()])).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))));
+                            acts.push(Action::Git(crate::repo::discard_op(c)));
                         }
                         lfs_track_item(ui, d, &c.path, acts);
                         if c.code == '?' && ui.button("Add to .gitignore").clicked() {

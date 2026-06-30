@@ -96,6 +96,12 @@ impl RepoData {
         if self.wip && row == 0 { None } else { self.log.get(row - self.wip as usize) }
     }
 
+    /// The full ref of branch `name` (local first, like git), else `name` itself (a commit id).
+    /// Pass this, not the short name, as a revision: git resolves `x` to tag `x` before branch `x`.
+    pub fn branch_rev<'a>(&'a self, name: &'a str) -> &'a str {
+        self.refs.iter().find(|r| r.kind != RefKind::Tag && r.name == name).map_or(name, |r| &r.full)
+    }
+
     pub fn local(&self, name: &str) -> Option<&Ref> {
         self.refs.iter().find(|r| r.kind == RefKind::Local && r.name == name)
     }
@@ -404,6 +410,33 @@ mod tests {
         assert_eq!((read("a.txt").as_str(), read("b.txt").as_str(), read("new.txt").as_str()), ("stashed a\n", "two\n", "untracked\n"));
         assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]), "");
         assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A tag (or a local `origin/x`) with a branch's short name must not stand in for it.
+    #[test]
+    fn branch_rev_beats_same_named_tag() {
+        let dir = scratch("branch-rev");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "release-1"]);
+        commit(&dir, "r.txt", "r1\n");
+        sh(&dir, &["tag", "release-1"]);
+        commit(&dir, "r.txt", "r1 fix\n");
+        let tip = sh(&dir, &["rev-parse", "refs/heads/release-1"]);
+        sh(&dir, &["checkout", "-q", "-b", "feat", "main"]);
+        commit(&dir, "f.txt", "feat\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        exec(&dir, &Op::new("Merge", &["merge", "--no-edit", d.branch_rev("release-1")])).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        // `rebase <onto> <branch>` takes the short name (a branch first); `refs/heads/feat` would detach.
+        sh(&dir, &["tag", "feat", "main~1"]);
+        exec(&dir, &Op::new("Rebase", &["rebase", d.branch_rev("release-1"), "feat"])).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "refs/heads/feat~1"]), tip);
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/feat\n");
+        assert_eq!(d.branch_rev("abc123"), "abc123");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

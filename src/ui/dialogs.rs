@@ -294,7 +294,8 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
     let Some((src, dst, at)) = t.drop_menu.clone() else { return };
     let Some(d) = &t.data else { return };
     let head = d.status.branch.clone().unwrap_or_default();
-    let dst_ref = d.refs.iter().find(|r| r.name == dst).map(|r| (r.kind, r.remote().to_owned(), r.remote_branch().to_owned()));
+    let (src_rev, dst_rev) = (d.branch_rev(&src), d.branch_rev(&dst));
+    let dst_ref = d.refs.iter().find(|r| r.full == dst_rev).map(|r| (r.kind, r.remote().to_owned(), r.remote_branch().to_owned()));
     let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
     let area = egui::Area::new(Id::new("drop_menu")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         Frame::popup(ui.style()).show(ui, |ui| {
@@ -310,9 +311,9 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             // Merging needs a local target branch (checking out a remote ref would detach HEAD).
             if dst == head || matches!(dst_ref, Some((git::RefKind::Local, ..))) {
                 let merge = if dst == head {
-                    Op::new(format!("Merge {src}"), &["merge", "--no-edit", &src])
+                    Op::new(format!("Merge {src}"), &["merge", "--no-edit", src_rev])
                 } else {
-                    Op::new(format!("Merge {src} into {dst}"), &["checkout", &dst, "--"]).then(&["merge", "--no-edit", &src])
+                    Op::new(format!("Merge {src} into {dst}"), &["checkout", &dst, "--"]).then(&["merge", "--no-edit", src_rev])
                 };
                 pick(ui, format!("{} Merge {src} into {dst}", icon::GIT_MERGE), Action::Git(merge.undo(Undo::Keep)));
             }
@@ -321,13 +322,14 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 let push = Op::new(format!("Push {src}"), &["push", &remote, &format!("{src}:{branch}")]);
                 pick(ui, format!("{} Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
             }
-            // `git rebase <dst> <remote ref>` would rebase a detached HEAD and move no branch.
+            // `git rebase <dst> <remote ref>` (or `refs/heads/<src>`) would rebase a detached HEAD
+            // and move no branch; a short `<branch>` argument is looked up as a branch first.
             if d.local(&src).is_some() {
-                let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", &dst, &src]).undo(Undo::Keep);
+                let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", dst_rev, &src]).undo(Undo::Keep);
                 pick(ui, format!("{} Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
             }
             if src == head {
-                pick(ui, format!("{} Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst.clone(), label: dst.clone() });
+                pick(ui, format!("{} Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst_rev.into(), label: dst.clone() });
             }
             if ui.button("Cancel").clicked() {
                 close = true;

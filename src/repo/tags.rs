@@ -6,7 +6,7 @@ use crate::git::Ref;
 
 /// Point tag `r` at `target`; an annotated tag is re-created with its message.
 pub fn move_tag(r: &Ref, target: &str) -> Op {
-    let annotated = !r.message.is_empty();
+    let annotated = r.annotated;
     let mut args = vec!["tag", "-f"];
     if annotated {
         args.extend(["-a", "--cleanup=verbatim", "-F", "-"]);
@@ -68,5 +68,27 @@ mod tests {
         assert_eq!(sh(&remote, &["tag"]), "light\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// The message is kept byte for byte, and an empty annotation is still an annotated tag.
+    #[test]
+    fn move_tag_keeps_message_and_type() {
+        let dir = scratch("tags-msg");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        let msg = "Release 2.0\nwrapped line\n\nbody";
+        sh(&dir, &["tag", "--cleanup=verbatim", "-a", "t1", "-m", msg]);
+        sh(&dir, &["tag", "--cleanup=verbatim", "-a", "t2", "-m", ""]);
+        commit(&dir, "a.txt", "two\n");
+        let tag = |n: &str| git::refs(&dir).unwrap().into_iter().find(|r| r.name == n).unwrap();
+        for t in ["t1", "t2"] {
+            exec(&dir, &move_tag(&tag(t), "HEAD")).unwrap();
+            assert_eq!(sh(&dir, &["cat-file", "-t", t]), "tag\n");
+        }
+        assert_eq!(sh(&dir, &["tag", "-l", "--format=%(contents)", "t1"]).trim_end(), msg);
+        assert_eq!(tag("t1").message, msg);
+        assert_eq!(sh(&dir, &["rev-parse", "t2^{commit}"]), sh(&dir, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
