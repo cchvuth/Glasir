@@ -339,6 +339,10 @@ impl RepoTab {
                 };
                 let before = (op.undo != Undo::No).then(|| git::snapshot(&dir).ok()).flatten();
                 let out = cancel.scope(|| exec(&dir, &op));
+                let saved = saved.map(|mut s| {
+                    s.seal(&dir);
+                    s
+                });
                 // Even a partly failed op may have moved refs: always offer undo.
                 let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
                 Done::Op(op, out, snaps, saved)
@@ -424,8 +428,9 @@ impl RepoTab {
                 match res {
                     Ok(()) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_)))),
                     Err(e) => {
-                        // Ref history is unreliable now, but discarded work must stay recoverable.
-                        from.retain(|e| matches!(e.kind, UndoKind::Discard(_)));
+                        // Ref snapshots are unreliable now. Discards and reverting ops (deleted
+                        // branches, dropped stashes) stay: they check the state before acting.
+                        from.retain(|e| !matches!(e.kind, UndoKind::Refs { .. }));
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
                 }

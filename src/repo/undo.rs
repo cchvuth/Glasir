@@ -13,10 +13,33 @@ pub(super) struct Saved {
     /// `git stash create` commit holding the tracked files' contents.
     pub(super) stash: Option<String>,
     pub(super) tracked: Vec<String>,
-    /// Untracked files' bytes.
+    /// Untracked files' bytes, and tracked files' exact bytes (line endings) when they fit.
     pub(super) files: Vec<(String, Vec<u8>)>,
     /// `Backup::Overwrite`: put `files` back even if the path exists.
     pub(super) overwrite: bool,
+    /// `Backup::All` with a real `stash create` commit: undo also restores its index (`^2`).
+    pub(super) index: bool,
+    /// What each path held right after the op (`seal`): undo refuses once one changed.
+    pub(super) after: Vec<(String, Option<u64>)>,
+}
+
+impl Saved {
+    /// Records the paths' state after the discard ran.
+    pub(super) fn seal(&mut self, dir: &Path) {
+        let mut paths: Vec<&String> = self.tracked.iter().chain(self.files.iter().map(|(p, _)| p)).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        self.after = paths.into_iter().map(|p| (p.clone(), fingerprint(&dir.join(p)))).collect();
+    }
+}
+
+/// A hash of what's at `path` (None = nothing), to tell whether it changed.
+fn fingerprint(path: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let mut h = std::hash::DefaultHasher::new();
+    (meta.is_symlink(), std::fs::read_link(path).ok(), meta.is_file().then(|| std::fs::read(path).ok())).hash(&mut h);
+    Some(h.finish())
 }
 
 pub(super) enum UndoKind {
@@ -58,52 +81,77 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
             git::run(dir, &["--literal-pathspecs", "ls-files", "-z", "--", p]).is_ok_and(|o| !o.is_empty())
         }),
     };
+    // git prints raw bytes; a name that isn't UTF-8 decodes lossily and would match no file.
+    if let Some(p) = tracked.iter().chain(&untracked).find(|p| p.contains('\u{FFFD}')) {
+        return Err(refuse(format!("{p}: file name isn't valid UTF-8")));
+    }
     // `stash create` fails before the first commit and while the index has conflicts:
     // then the tracked files' bytes are copied like untracked ones (`stash` = None).
-    let stash = if tracked.is_empty() {
-        None
-    } else {
-        git::run(dir, &["stash", "create"]).ok().and_then(|s| {
-            // No tracked file changed yet: HEAD already holds their contents (e.g. a
-            // restore from history about to overwrite a clean file).
-            Some(s.trim().to_owned()).filter(|s| !s.is_empty()).or_else(|| git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).ok().map(|h| h.trim().to_owned()))
-        })
-    };
+    let created = (!tracked.is_empty()).then(|| git::run(dir, &["stash", "create"]).ok()).flatten();
+    let index = matches!(b, Backup::All) && created.as_ref().is_some_and(|s| !s.trim().is_empty());
+    let stash = created.and_then(|s| {
+        // No tracked file changed yet: HEAD already holds their contents (e.g. a
+        // restore from history about to overwrite a clean file).
+        Some(s.trim().to_owned()).filter(|s| !s.is_empty()).or_else(|| git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).ok().map(|h| h.trim().to_owned()))
+    });
     // Copies live in memory, capped so a stray huge file can't exhaust RAM.
     let mut budget: u64 = 256 << 20;
     let mut files = vec![];
-    for p in untracked.into_iter().chain(stash.is_none().then(|| tracked.clone()).into_iter().flatten()) {
-        let path = dir.join(&p);
+    let copied: std::collections::HashSet<&String> = untracked.iter().collect();
+    // With a stash, tracked copies are optional: they only keep the exact bytes, which the
+    // stash's clean/smudge round trip may change (autocrlf, eol, filters).
+    let optional = tracked.iter().filter(|p| !copied.contains(p)).map(|p| (p, stash.is_some()));
+    for (p, optional) in untracked.iter().map(|p| (p, false)).chain(optional) {
+        let path = dir.join(p);
         let meta = match std::fs::symlink_metadata(&path) {
             // Not there yet (a file restored from history): nothing to lose.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             m => m.map_err(|e| refuse(format!("{p}: {e}")))?,
         };
+        if optional && (!meta.is_file() || meta.len() > budget) {
+            continue;
+        }
         if !meta.is_file() {
             return Err(refuse(format!("{p} is not a regular file")));
         }
         budget = budget.checked_sub(meta.len()).ok_or_else(|| refuse(format!("{p} is too large")))?;
         files.push((p.clone(), std::fs::read(&path).map_err(|e| refuse(format!("{p}: {e}")))?));
     }
-    Ok(Saved { stash, tracked, files, overwrite: matches!(b, Backup::Overwrite(_)) })
+    Ok(Saved { stash, tracked, files, overwrite: matches!(b, Backup::Overwrite(_)), index, after: vec![] })
 }
 
 pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
+    if let Some((p, _)) = s.after.iter().find(|(p, f)| fingerprint(&dir.join(p)) != *f) {
+        return Err(format!("{p} changed since the discard, and undoing it would overwrite that. Move the file aside, then undo again."));
+    }
+    let tracked: std::collections::HashSet<&String> = s.tracked.iter().collect();
+    // Only the discarded paths, so other edits made since don't block the restore.
+    if let Some(sha) = s.stash.as_ref().filter(|_| !s.tracked.is_empty()) {
+        let paths = s.tracked.join("\0");
+        let restore = |source: &str, what: &str| {
+            git::run_input(dir, &["--literal-pathspecs", "restore", "--source", source, what, "--pathspec-from-file=-", "--pathspec-file-nul"], Some(paths.as_bytes()))
+        };
+        restore(sha, "--worktree")?;
+        // The index too, unless it changed since for these paths (that staging would be lost).
+        let staged = if s.index { split_z(git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", &format!("{sha}^1")])?) } else { vec![] };
+        if s.index && !staged.iter().any(|p| tracked.contains(p)) {
+            restore(&format!("{sha}^2"), "--staged")?;
+        }
+    }
     for (p, bytes) in &s.files {
         let path = dir.join(p);
+        let meta = std::fs::symlink_metadata(&path);
         // Copied tracked files (and `Backup::Overwrite` copies) overwrite what's there now.
-        if s.overwrite || !path.exists() || (s.stash.is_none() && s.tracked.contains(p)) {
+        if s.overwrite || meta.is_err() || tracked.contains(p) {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
+            // Never write through a symlink the op left there: replace the link itself.
+            if meta.is_ok_and(|m| m.is_symlink()) {
+                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+            }
             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
         }
-    }
-    // Only the discarded paths, so other edits made since don't block the restore.
-    if let Some(sha) = s.stash.as_ref().filter(|_| !s.tracked.is_empty()) {
-        let mut args = vec!["--literal-pathspecs", "restore", "--source", sha, "--worktree", "--"];
-        args.extend(s.tracked.iter().map(String::as_str));
-        git::run(dir, &args)?;
     }
     Ok(())
 }
@@ -318,6 +366,195 @@ mod tests {
         assert_eq!(step(&mut t, Action::Undo), None);
         let second = step(&mut t, Action::Git(Op::new("Branch", &["branch", "y"]).undo(Undo::Keep)));
         assert!(second.is_some() && second != first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo of a discard refuses (and keeps its backup) when the path changed since.
+    #[test]
+    fn undo_discard_refuses_over_newer_edits() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, View};
+        let dir = scratch("undo-newer");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let step = |t: &mut RepoTab, a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, t)
+        };
+        let discard = |args: &[&str], p: &str| Action::Git(Op::new("Discard", args).light().backup(Backup::Paths(vec![p.into()])));
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
+
+        std::fs::write(dir.join("a"), "E1\n").unwrap();
+        step(&mut t, discard(&["checkout", "--", "a"], "a"));
+        std::fs::write(dir.join("a"), "E2\n").unwrap();
+        let msgs = step(&mut t, Action::Undo);
+        assert_eq!(read("a"), "E2\n");
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("changed since")) && t.undo_label() == Some("Discard"));
+        std::fs::write(dir.join("a"), "base\n").unwrap();
+        step(&mut t, Action::Undo);
+        assert_eq!(read("a"), "E1\n");
+        sh(&dir, &["checkout", "--", "a"]);
+
+        std::fs::write(dir.join("notes.txt"), "A\n").unwrap();
+        step(&mut t, discard(&["clean", "-fq", "--", "notes.txt"], "notes.txt"));
+        std::fs::write(dir.join("notes.txt"), "B\n").unwrap();
+        let msgs = step(&mut t, Action::Undo);
+        assert_eq!(read("notes.txt"), "B\n");
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("changed since")) && t.undo_label() == Some("Discard"));
+        std::fs::remove_file(dir.join("notes.txt")).unwrap();
+        step(&mut t, Action::Undo);
+        assert_eq!(read("notes.txt"), "A\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed ref undo drops ref snapshots only: a force-deleted branch stays restorable.
+    #[test]
+    fn failed_ref_undo_keeps_op_entries() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, Undo, View};
+        let dir = scratch("undo-keep-op");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "main\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "x", "only on x\n");
+        let x = sh(&dir, &["rev-parse", "x"]).trim().to_owned();
+        sh(&dir, &["checkout", "-q", "-b", "y", "main"]);
+        commit(&dir, "a", "y\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let step = |t: &mut RepoTab, a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, t);
+        };
+        step(&mut t, Action::Git(Op::new("Delete x", &["branch", "-D", "x"]).revert(Op::new("Restore x", &["branch", "x", &x]))));
+        step(&mut t, Action::Git(Op::new("Checkout y", &["checkout", "-q", "y"]).undo(Undo::Keep)));
+        std::fs::write(dir.join("a"), "local edit\n").unwrap();
+        step(&mut t, Action::Undo);
+        assert_eq!(t.undo_label(), Some("Delete x"));
+        step(&mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "x"]).trim(), x);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Thousands of long paths don't fit on a command line: they go through stdin.
+    #[test]
+    fn undo_discard_of_many_files() {
+        use crate::repo::testutil::*;
+        let dir = scratch("undo-many");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let sub = dir.join("d".repeat(190));
+        std::fs::create_dir_all(&sub).unwrap();
+        let write = |text: &str| (0..12000).for_each(|i| std::fs::write(sub.join(format!("f{i}")), text).unwrap());
+        write("v1\n");
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "init"]);
+        write("v2\n");
+        let saved = save_worktree(&dir, &Backup::All).unwrap();
+        sh(&dir, &["reset", "--hard", "-q"]);
+        restore_worktree(&dir, &saved).unwrap();
+        assert_eq!(std::fs::read_to_string(sub.join("f11999")).unwrap(), "v2\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo replaces a symlink the restore created instead of writing through it.
+    #[cfg(unix)]
+    #[test]
+    fn undo_restore_does_not_write_through_a_symlink() {
+        use crate::repo::testutil::*;
+        let dir = scratch("undo-symlink");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "real.env", "TRACKED=1\n");
+        std::os::unix::fs::symlink("real.env", dir.join(".env")).unwrap();
+        sh(&dir, &["add", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "link"]);
+        let c = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["rm", "-q", "--cached", ".env"]);
+        std::fs::write(dir.join(".gitignore"), ".env\n").unwrap();
+        sh(&dir, &["add", ".gitignore"]);
+        sh(&dir, &["commit", "-q", "-m", "ignore"]);
+        std::fs::remove_file(dir.join(".env")).unwrap();
+        std::fs::write(dir.join(".env"), "SECRET=mine\n").unwrap();
+
+        let saved = save_worktree(&dir, &Backup::Overwrite(vec![".env".into()])).unwrap();
+        sh(&dir, &["restore", "--source", &c, "--worktree", "--", ".env"]);
+        assert!(std::fs::symlink_metadata(dir.join(".env")).unwrap().is_symlink());
+        restore_worktree(&dir, &saved).unwrap();
+        assert!(!std::fs::symlink_metadata(dir.join(".env")).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "SECRET=mine\n");
+        assert_eq!(std::fs::read_to_string(dir.join("real.env")).unwrap(), "TRACKED=1\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo never moves or deletes a branch another worktree has checked out.
+    #[test]
+    fn undo_leaves_other_worktrees_branches_alone() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, Undo, View};
+        let dir = scratch("undo-worktree");
+        let wt = scratch("undo-worktree-w");
+        let _ = std::fs::remove_dir_all(&wt);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Create branch", &["branch", "x"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        sh(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "x"]);
+        t.apply(&ctx, Action::Undo);
+        assert!(settle(&ctx, &mut t).iter().any(|m| m.error && m.text.contains("another worktree")));
+        assert!(git::run(&dir, &["rev-parse", "--verify", "x"]).is_ok());
+        let _ = std::fs::remove_dir_all(&wt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name that isn't valid UTF-8 comes back from git with U+FFFD: refuse to discard it.
+    #[test]
+    fn discard_refuses_undecodable_names() {
+        use crate::repo::testutil::*;
+        let dir = scratch("undo-fffd");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        std::fs::write(dir.join("caf\u{FFFD}.txt"), "x\n").unwrap();
+        assert!(save_worktree(&dir, &Backup::All).err().is_some_and(|e| e.contains("UTF-8")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo of "Discard all" brings back the staged changes and the exact bytes.
+    #[test]
+    fn undo_discard_all_restores_index_and_line_endings() {
+        use crate::repo::testutil::*;
+        let dir = scratch("undo-index");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "core.autocrlf", "true"]);
+        commit(&dir, "b", "one\n");
+        commit(&dir, "c", "c0\n");
+        std::fs::write(dir.join("b"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("c"), "c1\n").unwrap();
+        sh(&dir, &["add", "c"]);
+        std::fs::write(dir.join("c"), "c1\nc2\n").unwrap();
+        std::fs::write(dir.join("new"), "n\n").unwrap();
+        sh(&dir, &["add", "new"]);
+        let before = sh(&dir, &["status", "--porcelain"]);
+        let saved = save_worktree(&dir, &Backup::All).unwrap();
+        sh(&dir, &["reset", "--hard", "-q"]);
+        sh(&dir, &["clean", "-fdq"]);
+        restore_worktree(&dir, &saved).unwrap();
+        assert_eq!(std::fs::read(dir.join("b")).unwrap(), b"one\ntwo\n");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), before);
+        assert_eq!(sh(&dir, &["show", ":c"]).replace('\r', ""), "c1\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

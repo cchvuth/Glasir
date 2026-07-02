@@ -27,12 +27,13 @@ pub(super) fn commit(dir: &Path, file: &str, text: &str) {
     sh(dir, &["commit", "-q", "-m", text]);
 }
 
-/// Polls until the running op and the reload after it are done.
-pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) {
+/// Polls until the running op and the reload after it are done; returns the toasts.
+pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) -> Vec<super::Msg> {
+    let mut msgs = vec![];
     for _ in 0..1000 {
-        t.poll(ctx, &mut vec![]);
+        t.poll(ctx, &mut msgs);
         if t.running.is_none() && !t.loading() && t.data.is_some() {
-            return;
+            return msgs;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
