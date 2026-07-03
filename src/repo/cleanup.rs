@@ -11,10 +11,16 @@ impl RepoTab {
         let base = if d.refs.iter().any(|r| r.name == format!("origin/{def}")) { format!("origin/{def}") } else { def.clone() };
         let merged = git::run(&self.dir, &["branch", "--format=%(refname:short)", "--merged", &base]).unwrap_or_default();
         let merged: std::collections::HashSet<&str> = merged.lines().collect();
+        // A branch being rebased or bisected has no HEAD marker, but git refuses to delete it.
+        let busy: Vec<String> = ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"]
+            .iter()
+            .filter_map(|f| std::fs::read_to_string(d.git_dir.join(f)).ok())
+            .map(|s| s.trim().trim_start_matches("refs/heads/").to_owned())
+            .collect();
         let list: Vec<(String, String, bool)> = d
             .refs
             .iter()
-            .filter(|r| r.kind == RefKind::Local && !r.head && r.worktree.is_none() && !is_trunk(&r.name) && r.name != def)
+            .filter(|r| r.kind == RefKind::Local && !r.head && r.worktree.is_none() && !is_trunk(&r.name) && r.name != def && !busy.contains(&r.name))
             .filter_map(|r| {
                 if merged.contains(r.name.as_str()) {
                     Some((r.name.clone(), format!("merged into {base}"), true))

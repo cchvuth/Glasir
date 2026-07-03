@@ -2,7 +2,7 @@
 //! stash markers in the graph).
 
 use super::{matches, section};
-use crate::repo::{Action, RepoData, Sel, drop_stashes, op};
+use crate::repo::{Action, RepoData, Sel, drop_stashes, op, pop_stash};
 use egui::{Id, Ui};
 
 /// The stashes ⌘/⇧-clicked together (egui memory: sidebar-only state).
@@ -48,7 +48,7 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
                 acts.push(Action::Select(Sel::Commit(shown)));
             }
             if resp.double_clicked() {
-                acts.push(op("Apply stash", &["stash", "apply", &s.name]));
+                acts.push(op("Apply stash", &["stash", "apply", &s.id]));
             }
             resp.context_menu(|ui| {
                 if picked {
@@ -68,10 +68,10 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
 /// Right-click menu for a stash (sidebar and graph markers).
 pub fn stash_menu(ui: &mut Ui, d: &RepoData, s: &crate::git::Stash, acts: &mut Vec<Action>) {
     if ui.button("Apply stash").clicked() {
-        acts.push(op("Apply stash", &["stash", "apply", &s.name]));
+        acts.push(op("Apply stash", &["stash", "apply", &s.id]));
     }
     if ui.button("Pop stash").clicked() {
-        acts.push(op("Pop stash", &["stash", "pop", &s.name]));
+        acts.push(Action::Git(pop_stash(s)));
     }
     if ui.button("Delete stash").clicked() {
         acts.push(Action::Git(drop_stashes(&d.stashes, std::slice::from_ref(&s.id))));

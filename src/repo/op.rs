@@ -131,7 +131,8 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
             out = match a.as_slice() {
                 [super::tools::SHELL, line] => git::run_shell(dir, line),
-                [STASH_LIST | STASH_DROP | STASH_HAS, ..] => stash_cmd(dir, &a),
+                [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
+                [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
                 _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
             };
             if out.is_err() {
@@ -157,7 +158,8 @@ pub fn pull_op(mode: PullMode) -> Op {
     let (label, flag) = match mode {
         PullMode::Merge => ("Pull", "--no-rebase"),
         PullMode::FfOnly => ("Pull (fast-forward only)", "--ff-only"),
-        PullMode::Rebase => ("Pull (rebase)", "--rebase"),
+        // Bare `--rebase` would flatten local merge commits, even over `pull.rebase=merges`.
+        PullMode::Rebase => ("Pull (rebase)", "--rebase=merges"),
     };
     Op::new(label, &["pull", flag, "--autostash", "--progress"]).undo(Undo::Keep)
 }
@@ -207,27 +209,71 @@ pub fn stash_op() -> Op {
 /// `git branch -d` (or `-D`) of local branches. ⌘Z recreates them with their
 /// `branch.<name>.*` config (upstream, description), which git drops and a ref snapshot lacks.
 pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool) -> Op {
-    let mut args = vec!["branch", if force { "-D" } else { "-d" }];
-    args.extend(names);
-    let mut back = Op::new(format!("Restore {}", names.join(", ")), &[]);
-    back.cmds.clear();
-    for (n, r) in names.iter().filter_map(|n| Some((n, d.local(n)?))) {
-        back.cmds.push(vec!["branch".into(), n.to_string(), r.target.clone()]);
+    let flag = if force { "-D" } else { "-d" };
+    let (mut op, mut back) = (Op::new(label, &[]), Op::new(format!("Restore {}", names.join(", ")), &[]));
+    (op.cmds, back.cmds) = (vec![], vec![]);
+    for n in names {
+        // A branch gone since it was shown (oid "") refuses the delete.
+        op.cmds.push([BRANCH_DELETE, n, d.local(n).map_or("", |r| &r.target), flag].map(String::from).to_vec());
+        let Some(r) = d.local(n) else { continue };
         let prefix = format!("branch.{n}.");
         // Only this branch's own keys, not those of a branch `<n>.x`.
         let own = d.config.iter().filter(|(k, _)| k.strip_prefix(&prefix).is_some_and(|v| !v.contains('.')));
-        back.cmds.extend(own.map(|(k, v)| vec!["config".into(), "--add".into(), k.clone(), v.clone()]));
+        back.cmds.push([BRANCH_RESTORE, n, &r.target].map(String::from).into_iter().chain(own.flat_map(|(k, v)| [k.clone(), v.clone()])).collect());
     }
-    Op::new(label, &args).revert(back)
+    op.revert(back)
+}
+
+/// `exec` pseudo-commands of a branch delete, one per branch so a partly failed delete
+/// knows what it deleted: `BRANCH_DELETE name oid flag` deletes the branch only if it is
+/// still at `oid` (undo would bring back that commit); `BRANCH_RESTORE name oid key value..`
+/// recreates it with its config.
+const BRANCH_DELETE: &str = "!branch-delete";
+const BRANCH_RESTORE: &str = "!branch-restore";
+
+fn branch_cmd(dir: &Path, a: &[&str]) -> Res<String> {
+    match a {
+        [BRANCH_DELETE, n, oid, flag] => {
+            let now = git::run(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{n}")]).unwrap_or_default();
+            if now.trim() != *oid {
+                return Err(format!("{n} changed since it was shown, so it wasn't deleted. Check it and try again."));
+            }
+            git::run(dir, &["branch", flag, n])
+        }
+        [BRANCH_RESTORE, n, oid, kv @ ..] => {
+            let out = git::run(dir, &["branch", n, oid])?;
+            for p in kv.chunks(2) {
+                if let [k, v] = p {
+                    git::run(dir, &["config", "--add", k, v])?;
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(format!("bad branch command {a:?}")),
+    }
+}
+
+/// After a failed branch delete: undo and redo cover just the branches it did delete
+/// before the failure (none: no undo), which are gone with their reflogs.
+fn keep_deleted(dir: &Path, op: &mut Op) {
+    let Some(back) = op.revert.as_mut().filter(|b| b.cmds.first().is_some_and(|c| c[0] == BRANCH_RESTORE)) else { return };
+    back.cmds.retain(|c| git::run(dir, &["show-ref", "--verify", "-q", &format!("refs/heads/{}", c[1])]).is_err());
+    let gone: Vec<String> = back.cmds.iter().map(|c| c[1].clone()).collect();
+    if gone.is_empty() {
+        op.revert = None;
+    } else {
+        op.cmds.retain(|c| gone.contains(&c[1]));
+    }
 }
 
 /// `exec` pseudo-commands that name stashes by commit id, since `stash@{n}` shifts whenever
 /// a stash is made or dropped (CLI, another tab): `STASH_LIST n ids..` fails unless the
-/// first `n` stashes are exactly `ids`, `STASH_DROP id` drops wherever `id` is now, and
+/// first `n` stashes are exactly `ids`, `STASH_DROP id` / `STASH_POP id` drop / pop wherever `id` is now, and
 /// `STASH_HAS ids..` fails unless every commit still exists.
 const STASH_LIST: &str = "!stash-list";
 const STASH_DROP: &str = "!stash-drop";
 const STASH_HAS: &str = "!stash-has";
+const STASH_POP: &str = "!stash-pop";
 
 fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
     let short = |id: &str| id[..7.min(id.len())].to_owned();
@@ -241,8 +287,8 @@ fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
                 Err("The stash list changed since, so no stash was touched. Check the stashes and try again.".into())
             }
         }
-        [STASH_DROP, id] => match git::stashes(dir)?.into_iter().find(|s| s.id == *id) {
-            Some(s) => git::run(dir, &["stash", "drop", &s.name]),
+        [cmd @ (STASH_DROP | STASH_POP), id] => match git::stashes(dir)?.into_iter().find(|s| s.id == *id) {
+            Some(s) => git::run(dir, &["stash", if *cmd == STASH_POP { "pop" } else { "drop" }, &s.name]),
             None => Err(format!("Stash {} is no longer in the stash list.", short(id))),
         },
         [STASH_HAS, ids @ ..] => match ids.iter().find(|id| git::run(dir, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_err()) {
@@ -251,6 +297,13 @@ fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
         },
         _ => Err(format!("bad stash command {a:?}")),
     }
+}
+
+/// Pop this stash wherever it is in the list now.
+pub fn pop_stash(s: &git::Stash) -> Op {
+    let mut op = Op::new("Pop stash", &[]);
+    op.cmds = vec![vec![STASH_POP.into(), s.id.clone()]];
+    op
 }
 
 /// Drop these stashes in one op, by commit id, after checking the list is still the one shown.
@@ -339,6 +392,10 @@ impl RepoTab {
                 };
                 let before = (op.undo != Undo::No).then(|| git::snapshot(&dir).ok()).flatten();
                 let out = cancel.scope(|| exec(&dir, &op));
+                let mut op = op;
+                if out.is_err() {
+                    keep_deleted(&dir, &mut op);
+                }
                 let saved = saved.map(|mut s| {
                     s.seal(&dir);
                     s
@@ -391,7 +448,9 @@ impl RepoTab {
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash }));
                     self.redo.clear();
                 }
-                if let (Ok(_), Some(undo)) = (&res, &op.revert) {
+                // `keep_deleted` left a failed branch delete's revert only if it deleted some.
+                let partial = op.revert.as_ref().is_some_and(|u| u.cmds.first().is_some_and(|c| c[0] == BRANCH_RESTORE));
+                if let (true, Some(undo)) = (res.is_ok() || partial, &op.revert) {
                     let redo = Op { confirm: None, revert: None, ..op.clone() };
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) }));
                     self.redo.clear();
@@ -500,19 +559,28 @@ impl RepoTab {
 }
 
 impl RepoData {
-    /// Push the current branch, setting an upstream on first push. A force push
-    /// leases the remote branch at the commit shown, so a (background) fetch can't
-    /// make it overwrite commits you haven't seen.
+    /// Pushes the current branch, setting an upstream on first push. A force push leases the remote branch at the
+    /// commit shown, so a background fetch can't make it overwrite unseen commits. Goes where a bare `git push` goes
+    /// (pushRemote / pushDefault, not the upstream's remote).
     pub fn push_op(&self, force: bool) -> Option<Op> {
         let branch = self.status.branch.as_deref()?;
-        let Some((remote, rb)) = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up)) else {
-            let remote = &self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first())?.0;
+        let fork = self.cfg(&format!("branch.{branch}.pushremote")).or(self.cfg("remote.pushdefault"));
+        let Some((up_remote, up_rb)) = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up)) else {
+            let remote = fork.or(self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first()).map(|r| r.0.as_str()))?;
             return Some(Op::new("Push", &["push", "--progress", "-u", remote, branch]));
+        };
+        // Triangular: push.default simple/current push to the same name on the fork.
+        let (remote, rb) = match fork {
+            Some(f) if f != up_remote => (f, branch),
+            _ => (up_remote, up_rb),
         };
         let up = format!("{remote}/{rb}");
         if !force {
             // A bare push keeps push.default / pushRemote, but `simple` refuses a differently named upstream.
-            return Some(if self.status.upstream.as_deref() != Some(up.as_str()) {
+            // To a fork that's a bare push too: `-u` would retarget the upstream at the fork.
+            return Some(if remote != up_remote {
+                Op::new("Push", &["push", "--progress"])
+            } else if self.status.upstream.as_deref() != Some(up.as_str()) {
                 Op::new("Push", &["push", "--progress", "-u", remote, branch])
             } else if rb == branch {
                 Op::new("Push", &["push", "--progress"])
@@ -535,7 +603,10 @@ impl RepoData {
 #[cfg(test)]
 mod tests {
     use super::super::testutil::{commit, identity, scratch, settle, sh};
+    use super::super::data::load_all;
     use super::super::{Action, RepoTab, View};
+    use super::exec;
+    use crate::git;
 
     /// Unstaging a `git mv` rename unstages both halves: no lone deletion left staged.
     #[test]
@@ -696,5 +767,137 @@ mod tests {
         super::exec(&dir, &super::discard_op(&crate::git::status(&dir).unwrap().unstaged[0])).unwrap();
         assert!(!dir.join("n.txt").exists() && crate::git::status(&dir).unwrap().unstaged.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Fork setup (`remote.pushDefault=origin`, upstream on `upstream`): the force push the
+    /// rejected push offers replaces the fork's branch, never the shared upstream's.
+    #[test]
+    fn force_push_goes_to_push_remote() {
+        let root = scratch("push-remote");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "up.git"]);
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "fork.git"]);
+        sh(&root, &["clone", "-q", "-o", "upstream", "up.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["checkout", "-q", "-b", "feature"]);
+        commit(&a, "g.txt", "two\n");
+        sh(&a, &["push", "-q", "-u", "upstream", "feature"]);
+        sh(&a, &["remote", "add", "origin", "../fork.git"]);
+        sh(&a, &["push", "-q", "origin", "feature"]);
+        sh(&a, &["config", "remote.pushDefault", "origin"]);
+        sh(&a, &["commit", "-q", "--amend", "-m", "two v2"]);
+        let tip = |r: &str| sh(&root.join(r), &["rev-parse", "feature"]);
+        let up = tip("up.git");
+        let d = load_all(&a, 100, View::default()).unwrap();
+        assert!(exec(&a, &d.push_op(false).unwrap()).is_err(), "the fork rejects a non-fast-forward");
+        exec(&a, &d.push_op(true).unwrap()).unwrap();
+        assert_eq!(tip("fork.git"), sh(&a, &["rev-parse", "HEAD"]));
+        assert_eq!(tip("up.git"), up);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A branch delete that git refuses for one name (it is being rebased) still deletes
+    /// the others: ⌘Z must bring those back. Clean up doesn't offer the rebased branch.
+    #[test]
+    fn partly_failed_branch_delete_is_undoable() {
+        let dir = scratch("partial-delete");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        commit(&dir, "a", "two");
+        for b in ["x", "y", "tmp"] {
+            sh(&dir, &["branch", b]);
+        }
+        sh(&dir, &["config", "branch.x.description", "keep me"]);
+        sh(&dir, &["checkout", "-q", "tmp"]);
+        assert!(git::run(&dir, &["rebase", "--force-rebase", "-x", "false", "HEAD~1"]).is_err());
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.open_cleanup();
+        let names: Vec<String> = t.cleanup.take().unwrap().into_iter().map(|c| c.0).collect();
+        assert_eq!(names, ["x", "y"]);
+        let op = super::delete_branches(t.data.as_ref().unwrap(), "Clean up branches".into(), &["x", "tmp", "y"], true);
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        let branches = || sh(&dir, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+        assert_eq!(branches(), "main\ntmp\ny\n", "stops at the refused branch");
+        assert_eq!(t.undo_label(), Some("Clean up branches"));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(branches(), "main\ntmp\nx\ny\n");
+        assert_eq!(sh(&dir, &["config", "branch.x.description"]), "keep me\n");
+        t.apply(&ctx, Action::Redo);
+        settle(&ctx, &mut t);
+        assert_eq!(branches(), "main\ntmp\ny\n");
+        assert_eq!(t.undo_label(), Some("Clean up branches"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A branch that moved after the delete was built (confirm dialog open) isn't deleted:
+    /// undo would bring it back at the old tip and lose the new commits.
+    #[test]
+    fn branch_delete_refuses_when_branch_moved() {
+        let dir = scratch("delete-moved");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        sh(&dir, &["branch", "feat"]);
+        let op = super::delete_branches(&load_all(&dir, 100, View::default()).unwrap(), "Delete feat".into(), &["feat"], true);
+        sh(&dir, &["checkout", "-q", "feat"]);
+        commit(&dir, "a", "new");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let y = sh(&dir, &["rev-parse", "feat"]);
+        assert!(exec(&dir, &op).is_err());
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), y);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pop names the stash by commit id: a stash made since the list was loaded shifts
+    /// `stash@{n}`, and the clicked stash must still be the one popped.
+    #[test]
+    fn pop_stash_after_list_shifted() {
+        let dir = scratch("pop-shifted");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        let push = |m: &str| {
+            std::fs::write(dir.join("a"), m).unwrap();
+            sh(&dir, &["stash", "push", "-q", "-m", m]);
+        };
+        push("s0");
+        push("s1");
+        let all = load_all(&dir, 100, View::default()).unwrap().stashes;
+        push("new");
+        exec(&dir, &super::pop_stash(&all[1])).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "s0");
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%s"]), "On main: new\nOn main: s1\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pull (rebase) keeps local merge commits (like `pull.rebase=merges`) instead of flattening them.
+    #[test]
+    fn pull_rebase_keeps_merges() {
+        let root = scratch("pull-merges");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "r.git"]);
+        sh(&root, &["clone", "-q", "r.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f", "base");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        sh(&root, &["clone", "-q", "r.git", "b"]);
+        let b = root.join("b");
+        identity(&b);
+        sh(&b, &["checkout", "-q", "-b", "side"]);
+        commit(&b, "s", "side");
+        sh(&b, &["checkout", "-q", "main"]);
+        commit(&b, "m", "mine");
+        sh(&b, &["merge", "-q", "--no-ff", "-m", "Merge side", "side"]);
+        commit(&a, "r", "remote");
+        sh(&a, &["push", "-q"]);
+        exec(&b, &super::pull_op(super::PullMode::Rebase)).unwrap();
+        assert_eq!(sh(&b, &["rev-list", "--count", "--merges", "origin/main..HEAD"]), "1\n");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
