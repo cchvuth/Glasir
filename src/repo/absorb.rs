@@ -170,6 +170,7 @@ impl Plan {
         }
         let targets = self.targets();
         let oldest = *targets.first().ok_or("No hunk has a clear target commit.")?;
+        super::rebase::pending_autosquash(self.cands[..=oldest].iter().map(|c| c.1.as_str()))?;
         let n = targets.len();
         let mut op = Op::new(format!("Absorb into {n} commit{}", if n == 1 { "" } else { "s" }), &["read-tree", "--reset", &self.head]);
         let rank = |t: usize| targets.iter().position(|&x| x == t).unwrap();
@@ -190,13 +191,19 @@ impl Plan {
                 // `fixup! <sha>`: `--fixup` writes the subject, which autosquash matches to the oldest commit with it.
                 .then(&["commit", "-q", "--no-verify", "-m", &format!("fixup! {}", self.cands[t].0)]);
         }
-        // No commutation check beyond adjacent lines; a conflicting
-        // autosquash stops as a normal rebase (Abort, then ⌘Z).
+        // No commutation check beyond adjacent lines. A failure (a conflicting autosquash)
+        // rolls everything back: leftovers' staged versions may exist only in `self.index`.
+        // Nothing before the rebase touches the worktree, and `--abort` reapplies its autostash.
         let base = format!("{}^", self.cands[oldest].0);
-        Ok(op
+        let mut op = op
             .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-q", "-i", "--autosquash", "--autostash", &base])
             .then(&["read-tree", "--reset", &self.index])
-            .undo(Undo::Soft))
+            .undo(Undo::Soft);
+        op.on_fail = [&["rebase", "--abort"][..], &["reset", "-q", "--soft", &self.head], &["read-tree", "--reset", &self.index]]
+            .iter()
+            .map(|a| a.iter().map(|s| s.to_string()).collect())
+            .collect();
+        Ok(op)
     }
 }
 
@@ -336,6 +343,49 @@ mod tests {
         let plan = Plan::load(&dir).unwrap();
         assert_eq!(plan.cands.len(), 2);
         assert!(plan.rows[1].target.as_ref().is_err_and(|e| e.contains("pushed")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A conflicting autosquash rolls back to the original HEAD, index and worktree,
+    /// so a staged-only version of a leftover file isn't lost; the user's own
+    /// pending squash! commit is refused rather than folded in.
+    #[test]
+    fn conflict_rolls_back_and_pending_squash_refused() {
+        let dir = scratch("absorb-conflict");
+        let g = |a: &[&str]| sh(&dir, a);
+        g(&["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let write = |f: &str, s: &str| std::fs::write(dir.join(f), s).unwrap();
+        write("README", "root\n");
+        g(&["add", "README"]);
+        g(&["commit", "-q", "-m", "init"]);
+        let ten = lines(10, |i| format!("l{i}"));
+        write("f", &ten);
+        g(&["add", "f"]);
+        g(&["commit", "-q", "-m", "c1"]);
+        write("f", &ten.replace("l5\n", ""));
+        g(&["commit", "-q", "-am", "c2"]);
+        // HEAD's blame can't see the deleted l5, so the fix goes to c1 and conflicts.
+        write("f", &ten.replace("l5\n", "").replace("l4\n", "l4 fixed\n"));
+        write("README", "root\nroot staged\n");
+        g(&["add", "f", "README"]);
+        write("README", "root\nroot staged, then edited more\n");
+        let (head, index) = (g(&["rev-parse", "HEAD"]), g(&["write-tree"]));
+        let plan = Plan::load(&dir).unwrap();
+        assert_eq!(plan.rows.iter().map(|r| r.target.is_ok()).collect::<Vec<_>>(), [false, true]);
+        assert!(crate::repo::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).is_err());
+        assert_eq!(git::state(&git::git_dir(&dir).unwrap()), git::State::Clean);
+        assert_eq!((g(&["rev-parse", "HEAD"]), g(&["write-tree"])), (head, index));
+        assert_eq!(std::fs::read_to_string(dir.join("README")).unwrap(), "root\nroot staged, then edited more\n");
+
+        g(&["reset", "-q", "--hard"]);
+        write("g", "wip\n");
+        g(&["add", "g"]);
+        g(&["commit", "-q", "-m", "squash! c1"]);
+        write("f", &ten.replace("l5\n", "").replace("l1\n", "l1 fixed\n"));
+        g(&["add", "f"]);
+        let plan = Plan::load(&dir).unwrap();
+        assert!(plan.op(&dir, &git::git_dir(&dir).unwrap()).is_err_and(|e| e.contains("squash!")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -18,6 +18,8 @@ pub struct Split {
     message: String,
     /// Undo entries before the split; the ones after are merged when it ends.
     undo_len: usize,
+    /// `symbolic-ref HEAD` at the start (empty when detached): Abort resets only this branch.
+    branch: String,
 }
 
 /// Label of the ops that end a split (matched in `poll_op`).
@@ -68,7 +70,8 @@ impl RepoTab {
                 let (summary, body) = message.split_once('\n').unwrap_or((&message, ""));
                 (self.summary, self.body, self.amend) = (summary.into(), body.trim().into(), false);
                 let files = files.split('\0').filter(|f| !f.is_empty()).map(String::from).collect();
-                self.split = Some(Split { id: commit, rebase: !is_head, files, message, undo_len: self.undo.len() });
+                let branch = git::run(&self.dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default().trim().to_owned();
+                self.split = Some(Split { id: commit, rebase: !is_head, files, message, undo_len: self.undo.len(), branch });
                 self.run(ctx, op);
             }
             Err(e) => self.notes.push(Msg { text: e, error: true }),
@@ -79,6 +82,19 @@ impl RepoTab {
     /// otherwise offer to commit the rest (or Cancel to stash / discard it first). Abort: back to the original commit.
     pub(super) fn end_split(&mut self, ctx: &egui::Context, abort: bool) {
         let (Some(sp), Some(d)) = (&self.split, &self.data) else { return };
+        // The banner outlives a split finished in a terminal or a checkout elsewhere,
+        // and resetting whatever branch HEAD is on now would drop its commits.
+        let live = if sp.rebase {
+            let name = std::fs::read_to_string(d.git_dir.join("rebase-merge/head-name")).unwrap_or_default();
+            git::state(&d.git_dir) == git::State::Rebasing && name.trim() == if sp.branch.is_empty() { "detached HEAD" } else { sp.branch.as_str() }
+        } else {
+            git::run(&self.dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default().trim() == sp.branch
+                && git::run(&self.dir, &["merge-base", "--is-ancestor", &format!("{}^", sp.id), "HEAD"]).is_ok()
+        };
+        if !live {
+            self.split = None;
+            return self.notes.push(Msg { text: "The split already ended or HEAD moved; nothing was reset.".into(), error: true });
+        }
         let cont = || Op::new(FINISH, &["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep);
         if abort {
             let op = match sp.rebase {
@@ -222,6 +238,55 @@ mod tests {
         settle(&ctx, &mut t);
         assert!(t.split.is_some());
         assert!(t.choice.as_ref().is_some_and(|c| c.text.contains("build.log")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stale banner's Abort (HEAD moved to another branch, or the rebase was
+    /// finished in a terminal) resets nothing.
+    #[test]
+    fn stale_split_abort_resets_nothing() {
+        let dir = scratch("split-stale");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "c1");
+        sh(&dir, &["branch", "feature"]);
+        commit(&dir, "a", "c2");
+        let c2 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["checkout", "-q", "feature"]);
+        commit(&dir, "f", "feature work");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let log = |r: &str| sh(&dir, &["log", "--format=%s", r]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        // HEAD split, then the uncommitted parts are carried to `feature`.
+        t.apply(&ctx, Action::Split(c2.clone()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Checkout feature", &["checkout", "feature", "--"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::SplitEnd { abort: true });
+        settle(&ctx, &mut t);
+        assert_eq!(log("feature"), "feature work\nc1\n");
+        assert!(t.split.is_none());
+
+        // Older-commit split finished in a terminal.
+        sh(&dir, &["checkout", "-q", "-f", "main"]);
+        sh(&dir, &["reset", "-q", "--hard", &c2]);
+        commit(&dir, "b", "c3");
+        t.apply(&ctx, Action::Reload);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Split(c2));
+        settle(&ctx, &mut t);
+        assert!(t.split.as_ref().is_some_and(|s| s.rebase));
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "c2 part"]);
+        sh(&dir, &["-c", "core.editor=true", "rebase", "--continue"]);
+        t.apply(&ctx, Action::Reload);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::SplitEnd { abort: true });
+        settle(&ctx, &mut t);
+        assert_eq!(log("main"), "c3\nc2 part\nc1\n");
+        assert!(t.split.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -53,8 +53,14 @@ fn render(out: &mut String, h: &git::Hunk) {
 
 /// The uncommitted changes the units are made of: `git diff HEAD` and the
 /// untracked files. Submodules with only local edits are left out: `git add`
-/// can't commit those.
+/// can't commit those. Each commit starts from HEAD's tree, so a staged version
+/// that differs from the working tree would be lost: refused.
 fn changes(dir: &Path) -> Res<(String, String)> {
+    let names = |cached: &[&str]| git::run(dir, &[&["diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=dirty"][..], cached].concat());
+    let (staged, unstaged) = (names(&["--cached"])?, names(&[])?);
+    if let Some(p) = staged.split('\0').find(|p| !p.is_empty() && unstaged.split('\0').any(|u| u == *p)) {
+        return Err(format!("{p} has staged changes that differ from the working tree; commit, stage or unstage them first."));
+    }
     let diff = ["diff", "HEAD", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--submodule=short", "--ignore-submodules=dirty", "--src-prefix=a/", "--dst-prefix=b/"];
     Ok((git::run(dir, &diff)?, git::run(dir, &["ls-files", "-z", "--others", "--exclude-standard"])?))
 }
@@ -66,11 +72,6 @@ impl Plan {
         let (raw, untracked) = changes(dir)?;
         let files = git::parse_diff(&raw);
         let names = git::run(dir, &["diff", "HEAD", "--name-only", "-z", "--no-renames", "--ignore-submodules=dirty"])?;
-        // Each commit starts from HEAD's tree, so content only in the index would be lost.
-        let staged = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "--ignore-submodules=dirty"])?;
-        if let Some(p) = staged.split('\0').find(|p| !p.is_empty() && !names.split('\0').any(|n| n == *p)) {
-            return Err(format!("{p} has staged changes that aren't in the working tree; commit or unstage them first."));
-        }
         let (mut units, mut listing) = (vec![], String::new());
         let mut add = |units: &mut Vec<Unit>, path: &str, what: String, hunk, body: &[git::Hunk]| {
             listing += &format!("[{}] {path} ({what})\n", units.len() + 1);
@@ -360,6 +361,20 @@ mod tests {
         assert!(Plan::load(&dir).is_err_and(|e| e.starts_with("new has staged changes")));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&sub);
+    }
+
+    /// A staged version that differs from the working tree would be lost: refused.
+    #[test]
+    fn compose_refuses_partly_staged_file() {
+        let dir = scratch("compose-partly");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "one\n");
+        std::fs::write(dir.join("f"), "staged version\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        std::fs::write(dir.join("f"), "worktree version\n").unwrap();
+        assert!(Plan::load(&dir).is_err_and(|e| e.starts_with("f has staged changes")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A typechange is one whole-file unit; a failed step leaves the rest unstaged, not reverted.

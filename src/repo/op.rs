@@ -53,6 +53,8 @@ pub struct Op {
     /// A Settings → Tools command: its label is the user's free text, so the
     /// label-keyed follow-ups (commit box, split, compose) must not fire.
     pub custom: bool,
+    /// Run (errors ignored, even when cancelled) if a command fails: rolls a multi-step op back.
+    pub on_fail: Vec<Vec<String>>,
 }
 
 /// What a discard is about to destroy.
@@ -81,6 +83,7 @@ impl Op {
             autostash: None,
             revert: None,
             custom: false,
+            on_fail: vec![],
         }
     }
     pub fn revert(mut self, op: Op) -> Self {
@@ -136,6 +139,10 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
             };
             if out.is_err() {
+                if !op.on_fail.is_empty() {
+                    git::Cancel::default().scope(|| op.on_fail.iter().for_each(|a| drop(git::run(dir, &a.iter().map(String::as_str).collect::<Vec<_>>()))));
+                    out = out.map_err(|e| if e == git::CANCELLED { e } else { format!("{e}\nRolled back to where it started.") });
+                }
                 break;
             }
         }

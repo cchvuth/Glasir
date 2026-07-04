@@ -84,12 +84,18 @@ impl Editor {
                 Act::Fixup => "fixup",
                 Act::Drop => "drop",
             };
-            todo += &format!("{verb} {}\n", it.id);
-            if it.act == Act::Reword {
-                let msg = git_dir.join(format!("glasir-msg-{n}"));
-                std::fs::write(&msg, format!("{}\n", it.message.trim())).map_err(|e| e.to_string())?;
-                todo += &format!("exec git commit --amend --allow-empty -F {}\n", sh_quote(&msg));
+            if it.act != Act::Reword {
+                todo += &format!("{verb} {}\n", it.id);
+                continue;
             }
+            let msg = git_dir.join(format!("glasir-msg-{n}"));
+            let pre = git_dir.join(format!("glasir-pre-{n}"));
+            std::fs::write(&msg, format!("{}\n", it.message.trim())).map_err(|e| e.to_string())?;
+            // Amend only if the pick made a commit: one that became empty and was
+            // skipped would leave the amend to reword the commit before it.
+            let (msg, pre) = (sh_quote(&msg), sh_quote(&pre));
+            todo += &format!("exec git rev-parse HEAD > {pre}\n{verb} {}\n", it.id);
+            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then git commit --amend --allow-empty -F {msg}; fi\n");
         }
         let path = git_dir.join("glasir-rebase-todo");
         std::fs::write(&path, todo).map_err(|e| e.to_string())?;
@@ -198,7 +204,7 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     }
     // Same safety checks as the editor: on this branch, with no merges after it.
     on_branch(dir, commit)?;
-    Editor::load(dir, &format!("{commit}^"), short)?;
+    pending_autosquash(Editor::load(dir, &format!("{commit}^"), short)?.items.iter().map(|i| i.message.as_str()))?;
     // Soft: undo puts the folded-in changes back in the index (`--keep` would drop them).
     Ok(Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &format!("{commit}^")])
@@ -220,6 +226,15 @@ pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op>
     let mut op = ed.op(git_dir)?.then(&["reset", "-q", "HEAD^"]);
     op.label = format!("Split {short}");
     Ok(op)
+}
+
+/// `rebase --autosquash` would also fold the user's own fixup!/squash!/amend!
+/// commits among `messages` (the commits it replays), beyond what the op says.
+pub(super) fn pending_autosquash<'a>(mut messages: impl Iterator<Item = &'a str>) -> Res<()> {
+    match messages.find(|m| ["fixup! ", "squash! ", "amend! "].iter().any(|p| m.starts_with(p))) {
+        Some(m) => Err(format!("\"{}\" is a pending autosquash commit; fold or reword it in the rebase editor first.", m.lines().next().unwrap_or(m))),
+        None => Ok(()),
+    }
 }
 
 fn on_branch(dir: &Path, commit: &str) -> Res<()> {
@@ -264,9 +279,10 @@ mod tests {
         let lines: Vec<&str> = todo.lines().collect();
         assert_eq!(lines[0], "pick c3");
         assert_eq!(lines[1], "drop c2");
-        assert_eq!(lines[2], "pick c1");
-        assert!(lines[3].starts_with("exec git commit --amend --allow-empty -F '") && lines[3].ends_with("glasir-msg-1'"));
-        assert_eq!(lines[4], "fixup c0");
+        assert!(lines[2].starts_with("exec git rev-parse HEAD > '") && lines[2].ends_with("glasir-pre-1'"));
+        assert_eq!(lines[3], "pick c1");
+        assert!(lines[4].starts_with("exec if test ") && lines[4].contains("git commit --amend --allow-empty -F '") && lines[4].ends_with("glasir-msg-1'; fi"));
+        assert_eq!(lines[5], "fixup c0");
         assert_eq!(std::fs::read_to_string(dir.join("glasir-msg-1")).unwrap(), "new message\n");
         assert!(op.cmds[0].iter().any(|a| a.starts_with("sequence.editor=cat '")));
         assert_eq!(op.cmds[0].last().unwrap(), "base");
@@ -342,6 +358,45 @@ mod tests {
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c3", "c2", "c1"]);
         assert_eq!(g(&["show", "HEAD~1:b"]), "c2 fixed\n");
         assert_eq!(std::fs::read_to_string(dir.join("c")).unwrap(), "unstaged edit\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reworded pick that became empty and was skipped rewords nothing else.
+    #[test]
+    fn skipped_reword_leaves_head_alone() {
+        let (dir, g) = repo("reword-skip");
+        g(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+        std::fs::write(dir.join("x"), "x\n").unwrap();
+        g(&["add", "x"]);
+        g(&["commit", "-q", "-m", "side x"]);
+        let side = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        g(&["checkout", "-q", "main"]);
+        std::fs::write(dir.join("x"), "x\n").unwrap();
+        g(&["add", "x"]);
+        g(&["commit", "-q", "-m", "my important message"]);
+        let mut e = Editor::cherry_pick(&dir, &[side]).unwrap();
+        e.items[0].act = Act::Reword;
+        e.items[0].message = "picked, reworded".into();
+        let op = e.op(&git::git_dir(&dir).unwrap()).unwrap();
+        let a: Vec<&str> = op.cmds[0].iter().map(String::as_str).collect();
+        assert!(git::run(&dir, &a).is_err(), "the now-empty pick stops");
+        g(&["-c", "core.editor=true", "rebase", "--skip"]);
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["my important message", "c3", "c2", "c1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user's own pending squash!/fixup!/amend! commits aren't folded in on the side.
+    #[test]
+    fn amend_into_refuses_pending_autosquash() {
+        let (dir, g) = repo("amend-pending");
+        let c2 = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        std::fs::write(dir.join("c"), "wip\n").unwrap();
+        g(&["commit", "-q", "-am", "squash! c3"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("b"), "c2 fixed\n").unwrap();
+        g(&["add", "b"]);
+        assert!(amend_into(&dir, &c2, false).is_err());
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
