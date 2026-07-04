@@ -147,17 +147,13 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 }
                 ai::Purpose::Resolve(path) => {
                     if ui.add_enabled(ready, Button::new(format!("{} Apply & mark resolved", icon::CHECK))).clicked() {
-                        let mut content = job.text.clone();
-                        if !content.ends_with('\n') {
-                            content.push('\n');
+                        match crate::repo::merge_editor::apply_reply(&t.dir, path, &job.draft, &job.text) {
+                            Ok(op) => {
+                                acts.push(Action::Git(op));
+                                close = true;
+                            }
+                            Err(e) => acts.push(Action::Error(e)),
                         }
-                        let target = t.dir.join(path);
-                        let regular = std::fs::symlink_metadata(&target).is_ok_and(|m| m.is_file());
-                        match if regular { std::fs::write(&target, content) } else { Err(std::io::Error::other("not a regular file")) } {
-                            Ok(()) => acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", path]).light())),
-                            Err(e) => acts.push(Action::Error(format!("Could not write {path}: {e}"))),
-                        }
-                        close = true;
                     }
                 }
                 _ => {}

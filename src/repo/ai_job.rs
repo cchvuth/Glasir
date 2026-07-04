@@ -21,8 +21,12 @@ impl RepoTab {
                 self.ai_draft = Some((self.summary.clone(), self.body.clone()));
                 format!("{}\n\n{}", self.summary, self.body).trim().to_owned()
             }
-            // The editor's output, with any partial resolution, not the file on disk.
-            ai::Purpose::Resolve(path) => self.merge.as_ref().filter(|m| &m.path == path).map(|m| m.output.clone()).unwrap_or_default(),
+            // The editor's output, with any partial resolution, or the file as read now:
+            // applying the reply later refuses if the file changed meanwhile.
+            ai::Purpose::Resolve(path) => match self.merge.as_ref().filter(|m| &m.path == path) {
+                Some(m) => m.output.clone(),
+                None => std::fs::read_to_string(self.dir.join(path)).unwrap_or_default(),
+            },
             _ => String::new(),
         };
         self.ai = Some(ai::start(ctx, self.ai_cfg.clone(), self.dir.clone(), p, draft));

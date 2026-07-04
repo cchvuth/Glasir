@@ -45,6 +45,8 @@ pub struct Job {
     pub purpose: Purpose,
     pub text: String,
     pub done: Option<Res<()>>,
+    /// The text the prompt was built from (Resolve: the file as sent).
+    pub draft: String,
     rx: Receiver<Ev>,
 }
 
@@ -290,7 +292,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
 pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, draft: String) -> Job {
     let (tx, rx) = channel();
     let ctx = ctx.clone();
-    let p = purpose.clone();
+    let (p, sent) = (purpose.clone(), draft.clone());
     std::thread::spawn(move || {
         let schema = (p == Purpose::Compose).then(compose_schema);
         let res = build(&dir, &p, &draft).and_then(|(prompt, effort)| {
@@ -302,7 +304,7 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
         let _ = tx.send(Ev::Done(res));
         ctx.request_repaint();
     });
-    Job { purpose, text: String::new(), done: None, rx }
+    Job { purpose, text: String::new(), done: None, draft: sent, rx }
 }
 
 /// Quick round-trip used by Settings → Test.

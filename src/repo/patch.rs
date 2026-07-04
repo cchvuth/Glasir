@@ -7,12 +7,17 @@ use std::path::{Path, PathBuf};
 
 /// The commits (newest first, as selected) as one mbox, oldest first.
 pub(super) fn format_patch(dir: &Path, ids: &[String]) -> Res<Vec<u8>> {
+    if ids.is_empty() {
+        return Err("No commits to export.".into());
+    }
+    // `format-patch -1 <merge>` silently exports the first non-merge commit below it.
+    let merges = git::run(dir, &[&["rev-list", "--no-walk", "--min-parents=2"][..], &ids.iter().map(String::as_str).collect::<Vec<_>>()].concat())?;
+    if !merges.trim().is_empty() {
+        return Err("Merge commits can't be exported as patches.".into());
+    }
     let mut out = vec![];
     for id in ids.iter().rev() {
         out.extend(git::run_raw(dir, &["format-patch", "-1", "--stdout", id], None)?);
-    }
-    if out.is_empty() {
-        return Err("Merge commits can't be exported as patches.".into());
     }
     Ok(out)
 }
@@ -44,7 +49,11 @@ impl RepoTab {
             let bytes = format_patch(&dir, &ids)?;
             match path {
                 Some(p) => std::fs::write(&p, bytes).map(|_| (None, format!("Saved {what} to {}", p.display()))).map_err(|e| e.to_string()),
-                None => Ok((Some(String::from_utf8_lossy(&bytes).into_owned()), format!("Copied {what} as a patch"))),
+                // The clipboard takes text only: lossy conversion would corrupt non-UTF-8 lines.
+                None => match String::from_utf8(bytes) {
+                    Ok(s) => Ok((Some(s), format!("Copied {what} as a patch"))),
+                    Err(_) => Err("This patch contains non-UTF-8 content, so it can't be copied as text. Use Save as patch… instead.".into()),
+                },
             }
         }));
     }
@@ -110,5 +119,37 @@ mod tests {
         assert!(format_patch(&dir, &[]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&files);
+    }
+
+    /// A merge would export a parent instead; non-UTF-8 lines can't go on the clipboard intact.
+    #[test]
+    fn merges_and_non_utf8_are_refused() {
+        let dir = scratch("patch-merge");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "side"]);
+        commit(&dir, "s", "side\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "m", "m\n");
+        sh(&dir, &["merge", "-q", "--no-edit", "side"]);
+        let merge = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let side = sh(&dir, &["rev-parse", "side"]).trim().to_owned();
+        assert!(format_patch(&dir, &[merge.clone()]).is_err());
+        assert!(format_patch(&dir, &[merge, side.clone()]).is_err());
+        assert!(format_patch(&dir, &[side]).is_ok());
+
+        std::fs::write(dir.join("l1"), b"caf\xe9\n").unwrap();
+        sh(&dir, &["add", "l1"]);
+        sh(&dir, &["commit", "-q", "-m", "latin-1"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, crate::repo::View::default());
+        t.export_patch(&ctx, vec![sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned()], false);
+        while t.patch_task.is_some() {
+            t.poll_patch(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(t.notes.last().is_some_and(|m| m.error && m.text.contains("non-UTF-8")), "{:?}", t.notes.last().map(|m| &m.text));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

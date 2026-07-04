@@ -208,6 +208,22 @@ pub fn unstage_op(c: &git::Change) -> Op {
     Op::new("Unstage", &args).light()
 }
 
+/// The in-progress banner's Skip / Abort of a merge, rebase, cherry-pick, revert or am.
+/// Only `rebase --skip/--abort` run `reset --hard`, wiping unrelated uncommitted edits too.
+pub fn sequencer_op(cmd: &str, abort: bool) -> Op {
+    let (label, flag) = match (abort, cmd) {
+        (true, _) => (format!("Abort {cmd}"), "--abort"),
+        (false, "am") => ("Skip this patch".into(), "--skip"),
+        _ => ("Skip this commit".into(), "--skip"),
+    };
+    let op = Op::new(label, &[cmd, flag]).undo(Undo::Keep);
+    match (cmd, abort) {
+        ("rebase", false) => op.backup(Backup::All).confirm("Skip discards all uncommitted changes, not just this commit's (⌘Z restores them)."),
+        ("rebase", true) => op.backup(Backup::All).confirm("Abort discards all uncommitted changes (⌘Z restores them)."),
+        _ => op,
+    }
+}
+
 /// Stash everything, untracked files included (toolbar, WIP menu, palette).
 pub fn stash_op() -> Op {
     Op::new("Stash", &["stash", "push", "--include-untracked"])
@@ -631,6 +647,42 @@ mod tests {
         t.apply(&ctx, Action::Git(super::unstage_op(&c)));
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["status", "--porcelain"]), " D old\n?? new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Skipping or aborting a stopped rebase resets hard: unrelated edits come back with ⌘Z.
+    #[test]
+    fn rebase_skip_and_abort_back_up_unrelated_edits() {
+        let dir = scratch("rebase-skip");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "u", "u\n");
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "feat\n");
+        let feat = sh(&dir, &["rev-parse", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        for abort in [false, true] {
+            assert!(crate::git::run(&dir, &["rebase", "main", "feat"]).is_err());
+            std::fs::write(dir.join("u"), "wip\n").unwrap();
+            t.apply(&ctx, Action::Git(super::sequencer_op("rebase", abort)));
+            let mut op = t.confirm.take().expect("asks first");
+            op.confirm = None;
+            t.apply(&ctx, Action::Git(op));
+            settle(&ctx, &mut t);
+            assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "u\n");
+            assert_eq!(t.data.as_ref().unwrap().state, crate::git::State::Clean);
+            t.apply(&ctx, Action::Undo);
+            settle(&ctx, &mut t);
+            assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "wip\n");
+            sh(&dir, &["checkout", "-q", "-f", "main"]);
+            sh(&dir, &["branch", "-f", "feat", feat.trim()]);
+        }
+        assert!(super::sequencer_op("cherry-pick", true).backup.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

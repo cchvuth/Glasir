@@ -1,7 +1,7 @@
 //! 3-way merge editor state (no drawing: `crate::ui::merge_editor`): conflict-marker parsing
 //! (merge, diff3, zdiff3), loading a conflicted file with its side labels, and saving the output.
 
-use super::{Op, Task};
+use super::{Backup, Op, Task};
 use crate::git::{self, Res};
 use std::path::{Path, PathBuf};
 
@@ -170,6 +170,8 @@ pub(crate) struct Loaded {
     pub(crate) original: Vec<u8>,
     /// Why only a whole side can be taken (binary, symlink, deleted, no markers).
     pub(crate) whole: Option<&'static str>,
+    /// A regular file in the working tree (the only kind a backup can copy).
+    pub(crate) file: bool,
     /// The index has a current, incoming version (false: that side deleted the file).
     pub(crate) stages: [bool; 2],
     /// Conflict marker length.
@@ -256,7 +258,8 @@ fn load(dir: &Path, path: &str) -> Loaded {
         // Never offer to stage markers we couldn't read as "resolved".
         whole = Some("No conflict markers found in this file.");
     }
-    Loaded { original, whole, stages, size, labels: labels(dir), orig, sides, width }
+    let file = meta.is_ok_and(|m| m.is_file());
+    Loaded { original, whole, stages, file, size, labels: labels(dir), orig, sides, width }
 }
 
 /// Writes the resolved file, refusing symlinks and files changed since they were loaded.
@@ -266,7 +269,7 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
         return Err(format!("{path} is not a regular file; resolve it manually."));
     }
     if std::fs::read(&p).map_err(|e| format!("{path}: {e}"))? != original {
-        return Err(format!("{path} changed on disk since it was opened here. Close the editor and open it again."));
+        return Err(format!("{path} changed on disk since it was read here. Open it again and resolve it from there."));
     }
     std::fs::write(&p, output).map_err(|e| format!("Could not write {path}: {e}"))
 }
@@ -281,9 +284,30 @@ pub(crate) fn whole_ops(path: &str, d: &Loaded) -> [Op; 2] {
         } else if gone {
             Op::new("Keep file", &["--literal-pathspecs", "add", "--", path]).light()
         } else {
-            Op::new(name, &["--literal-pathspecs", "checkout", side, "--", path]).then(&["--literal-pathspecs", "add", "--", path]).light()
+            take_side(name, side, path, d.file)
         }
     })
+}
+
+/// `checkout --ours|--theirs` and stage. The working file may hold a resolution made
+/// elsewhere: backed up (⌘Z) when it's a regular file; a backup would refuse anything else.
+pub fn take_side(name: &str, side: &str, path: &str, file: bool) -> Op {
+    let op = Op::new(name, &["--literal-pathspecs", "checkout", side, "--", path]).then(&["--literal-pathspecs", "add", "--", path]).light();
+    if file { op.backup(Backup::Paths(vec![path.into()])) } else { op }
+}
+
+/// "Apply & mark resolved" for an AI reply outside the editor: writes it over the
+/// file unless the file changed since it was sent, or the reply still has markers.
+pub fn apply_reply(dir: &Path, path: &str, sent: &str, reply: &str) -> Res<Op> {
+    let mut content = reply.to_owned();
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    if conflicts(&parse(&content, 7)).next().is_some() {
+        return Err(format!("The reply for {path} still has conflict markers; resolve it in the merge editor instead."));
+    }
+    save(dir, path, sent.as_bytes(), &content)?;
+    Ok(stage(path))
 }
 
 pub fn stage(path: &str) -> Op {
@@ -592,6 +616,53 @@ mod tests {
         run(&whole_ops("f.txt", &load(&dir, "f.txt"))[1]);
         assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "a\nB\n");
         assert!(!git::status(&dir).unwrap().conflicted.iter().any(|c| c.path == "f.txt"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An AI reply never overwrites edits made since it was asked for, nor stages markers.
+    #[test]
+    fn ai_reply_is_applied_only_over_the_file_as_sent() {
+        let dir = std::env::temp_dir().join(format!("glasir-merge-ai-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sent = "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
+        std::fs::write(dir.join("f"), "hand resolved\n").unwrap();
+        assert!(apply_reply(&dir, "f", sent, "a\nb").unwrap_err().contains("changed on disk"));
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "hand resolved\n");
+        std::fs::write(dir.join("f"), sent).unwrap();
+        assert!(apply_reply(&dir, "f", sent, sent).unwrap_err().contains("conflict markers"));
+        assert_eq!(apply_reply(&dir, "f", sent, "a\nb").unwrap().cmds[0], ["--literal-pathspecs", "add", "--", "f"]);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "a\nb\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Resolved elsewhere (no markers left), then "Take current": ⌘Z brings the resolution back.
+    #[test]
+    fn taking_a_side_backs_up_a_hand_resolution() {
+        use crate::repo::testutil::{commit, identity, scratch, settle};
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("merge-hand");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "f", "x\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        std::fs::write(dir.join("f"), "hand merged\n").unwrap();
+        let d = load(&dir, "f");
+        assert_eq!(d.whole, Some("No conflict markers found in this file."));
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let [ours, _] = whole_ops("f", &d);
+        t.apply(&ctx, Action::Git(ours));
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "main\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "hand merged\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

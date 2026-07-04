@@ -4,7 +4,7 @@
 use super::{file_items, file_row, lfs_track_item, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::State;
-use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, identity, prompt};
+use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, identity, prompt, sequencer_op};
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
@@ -93,12 +93,13 @@ impl RepoTab {
                         acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep)));
                     }
                     // An empty step (its changes are already in HEAD) can't --continue.
-                    let skip = if cmd == "am" { "Skip this patch" } else { "Skip this commit" };
-                    if cmd != "merge" && ui.button(skip).clicked() {
-                        acts.push(Action::Git(Op::new(skip, &[cmd, "--skip"]).undo(Undo::Keep)));
+                    // At an `edit` stop the commit is already applied: skip would only discard work.
+                    let skip = sequencer_op(cmd, false);
+                    if cmd != "merge" && !d.git_dir.join("rebase-merge/amend").exists() && ui.button(&skip.label).clicked() {
+                        acts.push(Action::Git(skip));
                     }
                     if ui.button("Abort").clicked() {
-                        acts.push(Action::Git(Op::new(format!("Abort {cmd}"), &[cmd, "--abort"]).undo(Undo::Keep)));
+                        acts.push(Action::Git(sequencer_op(cmd, true)));
                     }
                 });
             });
@@ -205,11 +206,11 @@ impl RepoTab {
                             if ui.button("Mark resolved").clicked() {
                                 acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", &c.path]).light()));
                             }
-                            if ui.button("Use ours").clicked() {
-                                acts.push(Action::Git(Op::new("Use ours", &["--literal-pathspecs", "checkout", "--ours", "--", &c.path]).then(&["--literal-pathspecs", "add", "--", &c.path]).light()));
-                            }
-                            if ui.button("Use theirs").clicked() {
-                                acts.push(Action::Git(Op::new("Use theirs", &["--literal-pathspecs", "checkout", "--theirs", "--", &c.path]).then(&["--literal-pathspecs", "add", "--", &c.path]).light()));
+                            for (name, side) in [("Use ours", "--ours"), ("Use theirs", "--theirs")] {
+                                if ui.button(name).clicked() {
+                                    let file = std::fs::symlink_metadata(self.dir.join(&c.path)).is_ok_and(|m| m.is_file());
+                                    acts.push(Action::Git(crate::repo::merge_editor::take_side(name, side, &c.path, file)));
+                                }
                             }
                             if ui.button("Show in file manager").clicked() {
                                 acts.push(Action::Reveal(c.path.clone()));
