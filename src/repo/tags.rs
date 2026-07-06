@@ -2,18 +2,36 @@
 //! locally and on a remote in one go, push every tag.
 
 use super::{Op, Undo};
-use crate::git::Ref;
+use crate::git::{self, Ref};
+use std::path::Path;
 
-/// Point tag `r` at `target`; an annotated tag is re-created with its message.
-pub fn move_tag(r: &Ref, target: &str) -> Op {
-    let annotated = r.annotated;
+/// Point tag `r` at `target`; an annotated tag is re-created with its exact message, read
+/// from the tag object (minus its signature).
+pub fn move_tag(dir: &Path, r: &Ref, target: &str) -> Op {
+    let msg = r.annotated.then(|| match git::run(dir, &["cat-file", "tag", &r.full]) {
+        Ok(o) => tag_message(&o).to_owned(),
+        Err(_) => r.message.clone(),
+    });
     let mut args = vec!["tag", "-f"];
-    if annotated {
+    if msg.is_some() {
         args.extend(["-a", "--cleanup=verbatim", "-F", "-"]);
     }
     args.extend([r.name.as_str(), target]);
     let op = Op::new(format!("Move tag {}", r.name), &args).undo(Undo::Keep);
-    if annotated { op.input(r.message.clone()) } else { op }
+    match msg {
+        Some(m) => op.input(m),
+        None => op,
+    }
+}
+
+/// A tag object's message without its signature, which wouldn't match the moved tag.
+fn tag_message(obj: &str) -> &str {
+    let msg = obj.split_once("\n\n").map_or("", |(_, m)| m);
+    let sig = ["PGP SIGNATURE", "PGP MESSAGE", "SIGNED MESSAGE", "SSH SIGNATURE"].iter().filter_map(|k| {
+        let line = format!("-----BEGIN {k}-----");
+        if msg.starts_with(&line) { Some(0) } else { msg.rfind(&format!("\n{line}")).map(|p| p + 1) }
+    });
+    &msg[..sig.max().unwrap_or(msg.len())]
 }
 
 /// Delete tag `r` here, then on `remote` (only the local half can be undone).
@@ -46,6 +64,10 @@ mod tests {
         commit(&dir, "a.txt", "one\n");
         sh(&dir, &["tag", "--cleanup=verbatim", "-a", "v1", "-m", "Release one\n\n## Notes"]);
         sh(&dir, &["tag", "light"]);
+        // Messages the parsed `Ref::message` can't round-trip: a multi-line subject with
+        // a trailing newline, and an empty one (still an annotated tag).
+        sh(&dir, &["tag", "--cleanup=verbatim", "-a", "v2", "-m", "line1\nline2\n\nbody\n"]);
+        sh(&dir, &["tag", "-a", "empty", "-m", ""]);
         commit(&dir, "a.txt", "two\n");
         sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
         let tag = |n: &str| git::refs(&dir).unwrap().into_iter().find(|r| r.name == n);
@@ -53,8 +75,13 @@ mod tests {
 
         // Moving keeps the annotation (and lightweight stays lightweight); undo moves it back.
         let before = git::snapshot(&dir).unwrap();
-        exec(&dir, &move_tag(&tag("v1").unwrap(), &head)).unwrap();
-        exec(&dir, &move_tag(&tag("light").unwrap(), &head)).unwrap();
+        let obj = |n: &str| sh(&dir, &["cat-file", "-p", n]).split_once("\n\n").unwrap().1.to_owned();
+        let old = [obj("v2"), obj("empty")];
+        for n in ["v1", "light", "v2", "empty"] {
+            exec(&dir, &move_tag(&dir, &tag(n).unwrap(), &head)).unwrap();
+        }
+        assert_eq!([obj("v2"), obj("empty")], old);
+        assert_eq!(sh(&dir, &["cat-file", "-t", "empty"]), "tag\n");
         let (v1, light) = (tag("v1").unwrap(), tag("light").unwrap());
         assert_eq!((v1.target.as_str(), v1.message.as_str()), (head.as_str(), "Release one\n\n## Notes"));
         assert_eq!((light.target.as_str(), light.message.as_str()), (head.as_str(), ""));
@@ -62,10 +89,10 @@ mod tests {
         assert_ne!(tag("v1").unwrap().target, head);
 
         exec(&dir, &push_all("origin")).unwrap();
-        assert_eq!(sh(&remote, &["tag"]), "light\nv1\n");
+        assert_eq!(sh(&remote, &["tag"]), "empty\nlight\nv1\nv2\n");
         exec(&dir, &delete_everywhere(&tag("v1").unwrap(), "origin")).unwrap();
         assert!(tag("v1").is_none());
-        assert_eq!(sh(&remote, &["tag"]), "light\n");
+        assert_eq!(sh(&remote, &["tag"]), "empty\nlight\nv2\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
@@ -83,7 +110,7 @@ mod tests {
         commit(&dir, "a.txt", "two\n");
         let tag = |n: &str| git::refs(&dir).unwrap().into_iter().find(|r| r.name == n).unwrap();
         for t in ["t1", "t2"] {
-            exec(&dir, &move_tag(&tag(t), "HEAD")).unwrap();
+            exec(&dir, &move_tag(&dir, &tag(t), "HEAD")).unwrap();
             assert_eq!(sh(&dir, &["cat-file", "-t", t]), "tag\n");
         }
         assert_eq!(sh(&dir, &["tag", "-l", "--format=%(contents)", "t1"]).trim_end(), msg);

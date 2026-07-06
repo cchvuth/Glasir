@@ -136,6 +136,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 [super::tools::SHELL, line] => git::run_shell(dir, line),
                 [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
                 [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
+                [super::remotes::PR_GUARD, b, seen] => super::remotes::pr_guard(dir, b, seen),
                 _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
             };
             if out.is_err() {
@@ -231,6 +232,8 @@ pub fn stash_op() -> Op {
 
 /// `git branch -d` (or `-D`) of local branches. ⌘Z recreates them with their
 /// `branch.<name>.*` config (upstream, description), which git drops and a ref snapshot lacks.
+/// Refuses if a branch moved since `d` was loaded: a redo, or a delete confirmed on a stale
+/// view, must not delete commits nobody saw.
 pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool) -> Op {
     let flag = if force { "-D" } else { "-d" };
     let (mut op, mut back) = (Op::new(label, &[]), Op::new(format!("Restore {}", names.join(", ")), &[]));
@@ -287,6 +290,17 @@ fn keep_deleted(dir: &Path, op: &mut Op) {
     } else {
         op.cmds.retain(|c| gone.contains(&c[1]));
     }
+}
+
+/// Remove a worktree (`remove`: the `worktree remove` command), then force-delete its branch
+/// `b`; ⌘Z restores the branch with its config (not the folder).
+pub fn remove_worktree_and_branch(d: &RepoData, remove: &[&str], b: &str) -> Op {
+    let mut op = delete_branches(d, "Remove worktree".into(), &[b], true);
+    op.cmds.insert(0, remove.iter().map(|s| s.to_string()).collect());
+    let Some(r) = d.local(b) else { return op };
+    // Check the tip before removing the worktree, not only before the delete.
+    op.cmds.insert(0, vec!["update-ref".into(), "--stdin".into()]);
+    op.input(format!("verify refs/heads/{b} {}\n", r.target))
 }
 
 /// `exec` pseudo-commands that name stashes by commit id, since `stash@{n}` shifts whenever
@@ -957,6 +971,50 @@ mod tests {
         sh(&a, &["push", "-q"]);
         exec(&b, &super::pull_op(super::PullMode::Rebase)).unwrap();
         assert_eq!(sh(&b, &["rev-list", "--count", "--merges", "origin/main..HEAD"]), "1\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Redo of a branch delete (the same op again) after the branch got a new commit
+    /// outside Glasir refuses instead of deleting that commit's only branch.
+    #[test]
+    fn redo_delete_refuses_a_moved_branch() {
+        let dir = scratch("redo-delete");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        sh(&dir, &["branch", "x"]);
+        let d = super::super::data::load_all(&dir, 100, View::default()).unwrap();
+        let del = super::delete_branches(&d, "Delete x".into(), &["x"], true);
+        super::exec(&dir, &del).unwrap();
+        super::exec(&dir, del.revert.as_ref().unwrap()).unwrap();
+        sh(&dir, &["switch", "-q", "x"]);
+        commit(&dir, "a", "new work");
+        let new = sh(&dir, &["rev-parse", "HEAD"]);
+        sh(&dir, &["switch", "-q", "main"]);
+        assert!(super::exec(&dir, &del).is_err());
+        assert_eq!(sh(&dir, &["rev-parse", "x"]), new);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Remove worktree and delete b": ⌘Z brings b back with its upstream.
+    #[test]
+    fn remove_worktree_and_branch_undo_keeps_upstream() {
+        let root = scratch("wt-delete");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f", "one");
+        sh(&a, &["push", "-q", "-u", "origin", "main", "main:b"]);
+        sh(&a, &["branch", "--track", "b", "origin/b"]);
+        let wt = root.join("wt").to_string_lossy().into_owned();
+        sh(&a, &["worktree", "add", "-q", &wt, "b"]);
+        let d = super::super::data::load_all(&a, 100, View::default()).unwrap();
+        let op = super::remove_worktree_and_branch(&d, &["worktree", "remove", &wt], "b");
+        super::exec(&a, &op).unwrap();
+        assert!(crate::git::run(&a, &["rev-parse", "--verify", "-q", "refs/heads/b"]).is_err());
+        super::exec(&a, op.revert.as_ref().expect("undo restores the branch config")).unwrap();
+        assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "b@{u}"]).trim(), "origin/b");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

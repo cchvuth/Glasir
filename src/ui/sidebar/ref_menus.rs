@@ -83,7 +83,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         if let Some((remote, rb)) = r.upstream.split_once('/').filter(|_| !r.gone)
             && ui.button(format!("Pull {name} (fast-forward, without checkout)")).clicked()
         {
-            acts.push(Action::Git(Op::new(format!("Pull {name}"), &["fetch", remote, &format!("{rb}:{name}")]).undo(Undo::Keep)));
+            acts.push(Action::Git(crate::repo::remotes::pull_ff(name, remote, rb)));
         }
         integrate_items(ui, d, name, acts);
         compare_items(ui, d, name, acts);
@@ -163,10 +163,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
     }
     ui.separator();
     if ui.button(format!("Delete {} from {}", r.remote_branch(), r.remote())).clicked() {
-        acts.push(Action::Git(
-            Op::new(format!("Delete {}", r.name), &["push", r.remote(), "--delete", r.remote_branch()])
-                .confirm(format!("Delete branch {} on remote {}?", r.remote_branch(), r.remote())),
-        ));
+        acts.push(Action::Git(crate::repo::remotes::delete_branch(r)));
     }
     web_items(ui, d, r, acts);
     ui.separator();

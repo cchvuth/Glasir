@@ -1,7 +1,7 @@
 //! The WORKTREES section of the sidebar: one row per worktree with its menu.
 
 use super::{matches, section};
-use crate::repo::{Action, Op, RepoData, Undo, op, prompt};
+use crate::repo::{Action, Op, RepoData, op, prompt};
 use crate::theme::{self, icon};
 use egui::{RichText, Ui};
 
@@ -93,9 +93,8 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
             if let Some(b) = &w.branch
                 && ui.button(format!("Remove worktree and delete {b}")).clicked()
             {
-                acts.push(Action::Git(
-                    Op::new("Remove worktree", &args).then(&["branch", "-D", b]).undo(Undo::Keep).confirm(format!("{warn}\nBranch {b} is deleted too (undoable).")),
-                ));
+                let op = crate::repo::remove_worktree_and_branch(d, &args, b);
+                acts.push(Action::Git(op.confirm(format!("{warn}\nBranch {b} is deleted too (undoable)."))));
             }
         }
         ui.separator();

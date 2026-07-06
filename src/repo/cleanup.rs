@@ -25,7 +25,16 @@ impl RepoTab {
                 if merged.contains(r.name.as_str()) {
                     Some((r.name.clone(), format!("merged into {base}"), true))
                 } else if r.gone {
-                    Some((r.name.clone(), "upstream branch was deleted".into(), true))
+                    // Squash-merged branches count too: unticked but labelled, the safe default.
+                    let n = git::run(&self.dir, &["rev-list", "--count", &r.full, "--not", "--remotes", &base])
+                        .ok()
+                        .and_then(|s| s.trim().parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let why = match n {
+                        0 => "upstream branch was deleted".into(),
+                        _ => format!("upstream deleted · {n} commit{} not on any remote", if n == 1 { "" } else { "s" }),
+                    };
+                    Some((r.name.clone(), why, n == 0))
                 } else {
                     None
                 }
@@ -60,6 +69,43 @@ mod tests {
         settle(&ctx, &mut t);
         t.open_cleanup();
         assert_eq!(t.cleanup.unwrap(), [("done".to_owned(), "merged into origin/stable".to_owned(), true)]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A branch whose upstream was deleted is only pre-selected when no commit of it
+    /// would be lost.
+    #[test]
+    fn gone_branch_with_unpushed_work_is_not_preselected() {
+        let root = scratch("cleanup-gone");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        for b in ["feature", "pushed"] {
+            sh(&a, &["switch", "-q", "-c", b]);
+            commit(&a, &format!("{b}.txt"), "pushed\n");
+            // Also kept under another name, so its pushed commit stays on a remote.
+            sh(&a, &["push", "-q", "-u", "origin", b]);
+            sh(&a, &["push", "-q", "origin", &format!("{b}:{b}-copy")]);
+        }
+        sh(&a, &["switch", "-q", "feature"]);
+        commit(&a, "feature.txt", "unpushed\n");
+        sh(&a, &["switch", "-q", "main"]);
+        sh(&a, &["push", "-q", "origin", "--delete", "feature", "pushed"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.open_cleanup();
+        let list = t.cleanup.unwrap();
+        assert_eq!(
+            list,
+            [
+                ("feature".to_owned(), "upstream deleted · 1 commit not on any remote".to_owned(), false),
+                ("pushed".to_owned(), "upstream branch was deleted".to_owned(), true),
+            ]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

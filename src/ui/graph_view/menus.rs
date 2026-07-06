@@ -54,7 +54,7 @@ fn move_tag_menu(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) {
                 let b = ui.button(&r.name);
                 let b = if r.message.is_empty() { b } else { b.on_hover_text(&r.message) };
                 if b.clicked() {
-                    acts.push(Action::Git(crate::repo::tags::move_tag(r, id)));
+                    acts.push(Action::Git(crate::repo::tags::move_tag(&d.git_dir, r, id)));
                 }
             }
         });

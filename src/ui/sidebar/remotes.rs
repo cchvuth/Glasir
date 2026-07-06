@@ -15,7 +15,7 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
         acts.push(op(format!("Prune {name}"), &["remote", "prune", name]));
     }
     ui.separator();
-    if ui.button(format!("{} Check out pull request #…", icon::GIT_PULL_REQUEST)).on_hover_text("Fetches refs/pull/<n>/head into pr/<n> and checks it out (github.com and GitHub Enterprise)").clicked() {
+    if ui.button(format!("{} Check out pull request #…", icon::GIT_PULL_REQUEST)).on_hover_text("Fetches refs/pull/<n>/head, resets pr/<n> to it and checks it out; refuses if pr/<n> has local commits (github.com and GitHub Enterprise)").clicked() {
         acts.push(prompt(format!("Pull request number on {name}"), "", remotes::pr_checkout(name)));
     }
     let mut on = remotes::pr_refs_on(d, name);

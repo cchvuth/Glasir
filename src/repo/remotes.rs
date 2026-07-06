@@ -58,23 +58,26 @@ impl Form {
             cmds.push(vec!["fetch", "--progress", name]);
             return Some(seq(format!("Add remote {name}"), &cmds).revert(Op::new(format!("Remove remote {name}"), &["remote", "remove", name])));
         };
-        let push_key = format!("remote.{old}.pushurl");
-        fn set_push<'a>(old: &'a str, key: &'a str, p: &'a str) -> Vec<&'a str> {
-            if p.is_empty() { vec!["config", "--unset-all", key] } else { vec!["remote", "set-url", "--push", old, p] }
+        let push_key = format!("remote.{name}.pushurl");
+        fn set_push<'a>(name: &'a str, key: &'a str, p: &'a str) -> Vec<&'a str> {
+            if p.is_empty() { vec!["config", "--unset-all", key] } else { vec!["remote", "set-url", "--push", name, p] }
         }
         let (mut fwd, mut back) = (vec![], vec![]);
-        if url != old_url {
-            fwd.push(vec!["remote", "set-url", old, url]);
-            back.push(vec!["remote", "set-url", old, old_url]);
-        }
-        if push != old_push {
-            fwd.push(set_push(old, &push_key, push));
-            back.push(set_push(old, &push_key, old_push));
-        }
-        // Renamed last, so the URL commands above still use the old name (and first on the way back).
+        // Renamed first: a name git rejects then fails before anything changed. The URL
+        // commands use the new name (and the way back renames last).
         if name != old {
             fwd.push(vec!["remote", "rename", old, name]);
-            back.insert(0, vec!["remote", "rename", name, old]);
+        }
+        if url != old_url {
+            fwd.push(vec!["remote", "set-url", name, url]);
+            back.push(vec!["remote", "set-url", name, old_url]);
+        }
+        if push != old_push {
+            fwd.push(set_push(name, &push_key, push));
+            back.push(set_push(name, &push_key, old_push));
+        }
+        if name != old {
+            back.push(vec!["remote", "rename", name, old]);
         }
         (!fwd.is_empty()).then(|| seq(format!("Edit remote {old}"), &fwd).revert(seq(format!("Restore remote {old}"), &back)))
     }
@@ -120,9 +123,46 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
 /// out. Works on github.com and GitHub Enterprise, which publish `refs/pull/<n>/head`.
 pub fn pr_checkout(remote: &str) -> Op {
     // Via FETCH_HEAD and `-B`: running it again updates pr/<n>, even checked out or force-pushed.
+    // `seen` remembers the head last checked out, so a force-push isn't taken for local work.
+    let seen = format!("refs/glasir/pr/{remote}/{{}}");
     Op::new("Check out pull request", &["fetch", "--progress", remote, "refs/pull/{}/head"])
+        .then(&[PR_GUARD, "pr/{}", &seen])
         .then(&["checkout", "-B", "pr/{}", "FETCH_HEAD", "--"])
+        .then(&["update-ref", &seen, "FETCH_HEAD"])
         .undo(Undo::Keep)
+}
+
+/// `exec` pseudo-command `PR_GUARD branch seen`: fails when `branch` has commits that are
+/// neither in FETCH_HEAD nor in ref `seen`, which resetting it would drop.
+pub(super) const PR_GUARD: &str = "!pr-guard";
+
+pub(super) fn pr_guard(dir: &std::path::Path, branch: &str, seen: &str) -> crate::git::Res<String> {
+    let has = |r: &str| crate::git::run(dir, &["rev-parse", "-q", "--verify", r]).is_ok();
+    let full = format!("refs/heads/{branch}");
+    if !has(&full) {
+        return Ok(String::new());
+    }
+    let mut args = vec!["rev-list", "--count", &full, "--not", "FETCH_HEAD"];
+    if has(seen) {
+        args.push(seen);
+    }
+    match crate::git::run(dir, &args)?.trim() {
+        "0" => Ok(String::new()),
+        n => Err(format!("{branch} has {n} commit(s) that are not on the pull request, so it was not reset. Rename {branch} to keep them, then check the pull request out again.")),
+    }
+}
+
+/// Delete remote-tracking branch `r`'s branch on its remote. Qualified: once the branch
+/// is gone there, a short name would delete a same-named tag instead.
+pub fn delete_branch(r: &crate::git::Ref) -> Op {
+    Op::new(format!("Delete {}", r.name), &["push", r.remote(), "--delete", &format!("refs/heads/{}", r.remote_branch())])
+        .confirm(format!("Delete branch {} on remote {}?", r.remote_branch(), r.remote()))
+}
+
+/// Fast-forward local branch `name` to branch `rb` of `remote` without checking it out.
+/// Qualified: git resolves a short source name as a tag before a branch.
+pub fn pull_ff(name: &str, remote: &str, rb: &str) -> Op {
+    Op::new(format!("Pull {name}"), &["fetch", remote, &format!("refs/heads/{rb}:refs/heads/{name}")]).undo(Undo::Keep)
 }
 
 fn pr_refspec(remote: &str) -> String {
@@ -216,6 +256,12 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "fork/feat");
         exec(&dir, op.revert.as_ref().unwrap()).unwrap();
         assert_eq!(cfg(), before);
+        // A name the form allows but git rejects changes nothing (no half-applied edit).
+        let mut bad = Form::edit(&d, "origin");
+        (bad.name, bad.url) = ("a..b".into(), "/new.git".into());
+        assert_eq!(bad.problem(&d), None);
+        assert!(exec(&dir, &bad.op().unwrap()).is_err());
+        assert_eq!(cfg(), before);
 
         // Remove, then undo: config, the branch's upstream, push remotes and the tracking refs
         // come back; a remote whose name starts with `origin.` is left alone.
@@ -287,6 +333,12 @@ mod tests {
         let pr = sh(&up, &["rev-parse", "HEAD"]);
         exec(&dir, &op).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "pr/7"]), pr);
+        // A local commit on pr/7 is not reset away by checking the PR out again.
+        commit(&dir, "mine.txt", "review fixup\n");
+        let mine = sh(&dir, &["rev-parse", "HEAD"]);
+        assert!(exec(&dir, &op).unwrap_err().contains("not on the pull request"));
+        assert_eq!(sh(&dir, &["rev-parse", "pr/7"]), mine);
+        sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
         sh(&up, &["branch", "pr/feature"]);
 
         let load = || load_all(&dir, 100, View::default()).unwrap();
@@ -305,6 +357,37 @@ mod tests {
         sh(&dir, &["fetch", "-q", "origin"]);
         assert_eq!(pr_refs_clash(&load(), "origin"), Some("origin/pr/7"));
         assert_eq!(d.cfg_all("remote.origin.fetch").collect::<Vec<_>>(), ["+refs/heads/*:refs/remotes/origin/*"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
+
+    /// Short names resolve to tags first: deleting a branch already gone on the remote
+    /// must not delete a same-named tag there, and a pull must not take a tag's commit.
+    #[test]
+    fn branch_ops_never_hit_same_named_tags() {
+        let up = scratch("tagclash-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        sh(&up, &["branch", "release-1"]);
+        sh(&up, &["tag", "release-1"]);
+        sh(&up, &["branch", "dev"]);
+        let dir = scratch("tagclash");
+        sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
+        sh(&dir, &["branch", "dev", "origin/dev"]);
+        sh(&up, &["branch", "-D", "release-1"]);
+        let stale = git::refs(&dir).unwrap().into_iter().find(|r| r.name == "origin/release-1").unwrap();
+        exec(&dir, &delete_branch(&stale)).unwrap(); // (git only warns that it is gone)
+        assert_eq!(sh(&up, &["tag"]), "release-1\n");
+
+        sh(&up, &["checkout", "-q", "dev"]);
+        commit(&up, "a.txt", "two\n");
+        let b = sh(&up, &["rev-parse", "HEAD"]);
+        commit(&up, "a.txt", "three\n");
+        sh(&up, &["tag", "dev"]);
+        sh(&up, &["reset", "-q", "--hard", "HEAD~1"]);
+        exec(&dir, &pull_ff("dev", "origin", "dev")).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "refs/heads/dev"]), b);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }
