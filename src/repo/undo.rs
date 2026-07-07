@@ -557,4 +557,57 @@ mod tests {
         assert_eq!(sh(&dir, &["show", ":c"]).replace('\r', ""), "c1\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// ⌘Z on a discard after the file was edited again: refuses instead of overwriting the edit.
+    #[test]
+    fn undo_of_a_discard_keeps_edits_made_since() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, View};
+        let dir = scratch("undo-discard-newer");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        std::fs::write(dir.join("f"), "first edit\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::All)));
+        settle(&ctx, &mut t);
+        std::fs::write(dir.join("f"), "second edit\n").unwrap();
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "second edit\n");
+        assert_eq!(t.undo_label(), Some("Discard all"));
+        // Back to what the discard left: the undo goes through.
+        std::fs::write(dir.join("f"), "base\n").unwrap();
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "first edit\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo never moves a branch that another worktree has checked out.
+    #[test]
+    fn undo_leaves_branches_checked_out_elsewhere() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, View};
+        let (dir, wt) = (scratch("undo-wt"), scratch("undo-wt-other"));
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a");
+        sh(&dir, &["branch", "feat"]);
+        commit(&dir, "b", "b");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Move feat", &["branch", "-f", "feat", "main"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        sh(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "feat"]);
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["rev-parse", "main"]));
+        assert_eq!(sh(&wt, &["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir_all(&wt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

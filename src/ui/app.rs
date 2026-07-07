@@ -37,6 +37,8 @@ pub struct App {
     pub(super) shortcuts: bool,
     /// Screenshot harness: paint the drop hint without a drag.
     pub(super) drop_hint_shot: bool,
+    /// The window was asked to close while an op ran: close once it's done.
+    quit_pending: bool,
 }
 
 impl App {
@@ -76,6 +78,7 @@ impl App {
             glass_backdrop,
             shortcuts: false,
             drop_hint_shot: false,
+            quit_pending: false,
             s,
         };
         let active = app.s.active;
@@ -293,6 +296,10 @@ impl eframe::App for App {
             t.auto_fetch(&ctx, every, i == self.active && focused && !self.focused);
         }
         self.focused = focused;
+        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
+        if hold_close(&ctx, busy.as_deref(), &mut self.quit_pending) {
+            self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.unwrap_or_default()), false);
+        }
         self.shortcuts(&ctx);
 
         theme::canvas(ui.painter(), ui.max_rect(), self.glass_backdrop);
@@ -350,5 +357,47 @@ impl eframe::App for App {
         self.s.open = self.tabs.iter().map(|t| t.dir.clone()).collect();
         self.s.active = self.active;
         eframe::set_value(storage, "settings", &self.s);
+    }
+}
+
+/// Closing while an op runs would leave it half-applied: the rest of its commands and
+/// `poll_op`'s recovery (e.g. a failed Compose's unstage) never run. Holds the window
+/// open until `busy` is None, then closes it. True when the close was first held.
+fn hold_close(ctx: &egui::Context, busy: Option<&str>, pending: &mut bool) -> bool {
+    if busy.is_some() && ctx.input(|i| i.viewport().close_requested()) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        return !std::mem::replace(pending, true);
+    }
+    if busy.is_none() && std::mem::take(pending) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+    false
+}
+
+#[cfg(test)]
+mod close_tests {
+    use egui::{RawInput, ViewportCommand, ViewportEvent, ViewportId};
+
+    #[test]
+    fn close_waits_for_the_running_op() {
+        let ctx = egui::Context::default();
+        let mut pending = false;
+        let frame = |close: bool, busy: Option<&str>, pending: &mut bool| {
+            let mut raw = RawInput::default();
+            if close {
+                raw.viewports.entry(ViewportId::ROOT).or_default().events.push(ViewportEvent::Close);
+            }
+            let mut held = false;
+            let mut out = ctx.run_ui(raw, |ui| held = super::hold_close(ui.ctx(), busy, pending));
+            out.textures_delta.clear();
+            (held, out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default())
+        };
+        let (held, cmds) = frame(true, Some("Compose 2 commits"), &mut pending);
+        assert!(held && cmds.contains(&ViewportCommand::CancelClose));
+        assert_eq!(frame(false, Some("Compose 2 commits"), &mut pending).1, vec![]);
+        let (held, cmds) = frame(false, None, &mut pending);
+        assert!(!held && cmds.contains(&ViewportCommand::Close));
+        let (_, cmds) = frame(true, None, &mut pending);
+        assert!(!cmds.contains(&ViewportCommand::CancelClose));
     }
 }

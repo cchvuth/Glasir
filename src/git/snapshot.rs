@@ -30,7 +30,7 @@ pub fn restore(dir: &Path, to: &Snapshot, mode: &str) -> Res<()> {
     // `update-ref` skips git's checked-out-elsewhere check: moving another worktree's
     // branch would leave its index and files out of step with its HEAD.
     let other = super::read::parse_worktrees(&run(dir, &["worktree", "list", "--porcelain", "-z"])?);
-    if let Some(r) = other.iter().filter_map(|w| Some(format!("refs/heads/{}", w.branch.as_ref()?))).find(|r| *r != cur.head && cur.refs.get(r) != to.refs.get(r)) {
+    if let Some(r) = other.iter().filter(|w| !w.prunable).filter_map(|w| Some(format!("refs/heads/{}", w.branch.as_ref()?))).find(|r| *r != cur.head && cur.refs.get(r) != to.refs.get(r)) {
         return Err(format!("{} is checked out in another worktree; switch that worktree to another branch first, then undo.", &r["refs/heads/".len()..]));
     }
     for (r, oid) in &to.refs {

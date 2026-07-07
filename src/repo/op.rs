@@ -137,6 +137,10 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
                 [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
                 [super::remotes::PR_GUARD, b, seen] => super::remotes::pr_guard(dir, b, seen),
+                [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
+                    true => Ok(String::new()),
+                    false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
+                },
                 _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
             };
             if out.is_err() {
@@ -1016,5 +1020,49 @@ mod tests {
         super::exec(&a, op.revert.as_ref().expect("undo restores the branch config")).unwrap();
         assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "b@{u}"]).trim(), "origin/b");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Force delete waiting for confirmation while the branch moves: refuses, so the new tip
+    /// isn't lost (⌘Z would recreate the branch at the old one).
+    #[test]
+    fn delete_branch_refuses_when_it_moved() {
+        let dir = scratch("stale-delete");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a");
+        sh(&dir, &["branch", "feat"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let op = super::delete_branches(t.data.as_ref().unwrap(), "Force delete feat".into(), &["feat"], true);
+        let b = sh(&dir, &["commit-tree", "-p", "feat", "-m", "B", "feat^{tree}"]);
+        sh(&dir, &["update-ref", "refs/heads/feat", b.trim()]);
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), b);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pop on a stash row shown before another stash was made (CLI, another worktree's
+    /// tab): pops the stash the row shows, not whatever is `stash@{n}` now.
+    #[test]
+    fn pop_stash_by_id_after_the_list_shifted() {
+        let dir = scratch("stale-pop");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        std::fs::write(dir.join("a"), "old").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "old"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let shown = t.data.as_ref().unwrap().stashes[0].clone();
+        std::fs::write(dir.join("a"), "new").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "new"]);
+        t.apply(&ctx, Action::Git(super::pop_stash(&shown)));
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "old");
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%s"]), "On main: new\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

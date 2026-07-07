@@ -110,7 +110,12 @@ impl Editor {
             args.push("--autostash");
         }
         args.push(&self.base);
-        Ok(Op::new(label, &args).undo(Undo::Keep))
+        let mut op = Op::new(label, &args).undo(Undo::Keep);
+        // Checked again when it runs: a confirm dialog may wait while HEAD moves.
+        if !self.head.is_empty() {
+            op.cmds.insert(0, vec![HEAD_IS.into(), self.head.clone()]);
+        }
+        Ok(op)
     }
 }
 
@@ -241,8 +246,11 @@ fn on_branch(dir: &Path, commit: &str) -> Res<()> {
     git::run(dir, &["merge-base", "--is-ancestor", commit, "HEAD"]).map(drop).map_err(|_| "Commit is not on the current branch.".into())
 }
 
+/// `exec` pseudo-command: `HEAD_IS state` fails unless [`head_state`] is still `state`.
+pub(super) const HEAD_IS: &str = "!head-is";
+
 /// `refs/heads/x <sha>` (or just the sha when detached).
-fn head_state(dir: &Path) -> String {
+pub(super) fn head_state(dir: &Path) -> String {
     let sym = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();
     format!("{} {}", sym.trim(), git::run(dir, &["rev-parse", "HEAD"]).unwrap_or_default().trim())
 }
@@ -284,8 +292,9 @@ mod tests {
         assert!(lines[4].starts_with("exec if test ") && lines[4].contains("git commit --amend --allow-empty -F '") && lines[4].ends_with("glasir-msg-1'; fi"));
         assert_eq!(lines[5], "fixup c0");
         assert_eq!(std::fs::read_to_string(dir.join("glasir-msg-1")).unwrap(), "new message\n");
-        assert!(op.cmds[0].iter().any(|a| a.starts_with("sequence.editor=cat '")));
-        assert_eq!(op.cmds[0].last().unwrap(), "base");
+        let rebase = op.cmds.last().unwrap();
+        assert!(rebase.iter().any(|a| a.starts_with("sequence.editor=cat '")));
+        assert_eq!(rebase.last().unwrap(), "base");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -311,11 +320,7 @@ mod tests {
         e.items[1].act = Act::Reword;
         e.items[1].message = "c3 reworded".into();
         e.items[2].act = Act::Drop;
-        let op = e.op(&git::git_dir(&dir).unwrap()).unwrap();
-        for cmd in &op.cmds {
-            let a: Vec<&str> = cmd.iter().map(String::as_str).collect();
-            git::run(&dir, &a).unwrap();
-        }
+        run_op(&dir, &e.op(&git::git_dir(&dir).unwrap()).unwrap());
         let log = g(&["log", "--format=%s"]);
         assert_eq!(log.lines().collect::<Vec<_>>(), ["c3 reworded", "c1"]);
         assert!(dir.join("d").exists() && dir.join("c").exists() && !dir.join("b").exists());
@@ -341,10 +346,7 @@ mod tests {
     }
 
     fn run_op(dir: &Path, op: &Op) {
-        for cmd in &op.cmds {
-            let a: Vec<&str> = cmd.iter().map(String::as_str).collect();
-            git::run(dir, &a).unwrap();
-        }
+        crate::repo::op::exec(dir, op).unwrap();
     }
 
     #[test]
@@ -378,8 +380,7 @@ mod tests {
         e.items[0].act = Act::Reword;
         e.items[0].message = "picked, reworded".into();
         let op = e.op(&git::git_dir(&dir).unwrap()).unwrap();
-        let a: Vec<&str> = op.cmds[0].iter().map(String::as_str).collect();
-        assert!(git::run(&dir, &a).is_err(), "the now-empty pick stops");
+        assert!(crate::repo::op::exec(&dir, &op).is_err(), "the now-empty pick stops");
         g(&["-c", "core.editor=true", "rebase", "--skip"]);
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["my important message", "c3", "c2", "c1"]);
         let _ = std::fs::remove_dir_all(&dir);
@@ -567,5 +568,30 @@ mod tests {
         assert!(ed(&[Act::Squash, Act::Pick]).problem().is_none());
         assert!(ed(&[Act::Pick, Act::Fixup, Act::Drop]).problem().is_some()); // dropped oldest doesn't count
         assert!(ed(&[Act::Drop, Act::Drop]).problem().is_some());
+    }
+
+    /// A drop waiting in its confirm dialog while a commit lands elsewhere: refuses
+    /// instead of running the stale todo (which would drop the new commit too).
+    #[test]
+    fn a_confirmed_rewrite_refuses_once_head_moved() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, MultiOp, RepoTab, View};
+        let dir = scratch("stale-drop");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a", "b", "c", "d"] {
+            commit(&dir, f, f);
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let ids = ["HEAD", "HEAD~1"].map(|r| sh(&dir, &["rev-parse", r]).trim().to_owned()).to_vec();
+        t.apply(&ctx, Action::MultiOp(MultiOp::Drop, ids));
+        let op = t.confirm.take().expect("drop asks first");
+        commit(&dir, "e", "new work");
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..op }));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "new work\nd\nc\nb\na\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
