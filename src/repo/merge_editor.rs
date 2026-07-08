@@ -223,8 +223,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
     let unmerged = git::run(dir, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", path]).unwrap_or_default();
     let has = |n: &str| unmerged.is_empty() || unmerged.split('\0').any(|e| e.split_once('\t').is_some_and(|(m, _)| m.ends_with(n)));
     let stages = [has(" 2"), has(" 3")];
-    let attr = git::run(dir, &["check-attr", "conflict-marker-size", "--", path]).unwrap_or_default();
-    let size = attr.trim().rsplit(": ").next().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7);
+    let size = marker_size(dir, path);
     let mut whole = match (&meta, text) {
         // git leaves the modified version in the tree: it has no markers to edit.
         _ if stages.contains(&false) => Some("The file was deleted on one side."),
@@ -274,6 +273,36 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
     std::fs::write(&p, output).map_err(|e| format!("Could not write {path}: {e}"))
 }
 
+/// Claude's resolution of `path` from the dialog (outside the editor): written
+/// over `original`, the bytes the job read, and the op that marks it resolved.
+/// Refused if the reply kept conflict markers or the file changed since.
+pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> Res<Op> {
+    let out = like(original, reply);
+    if conflicts(&parse(&out, marker_size(dir, path))).next().is_some() {
+        return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
+    }
+    save(dir, path, original, &out)?;
+    Ok(stage(path))
+}
+
+/// `text` ending in a newline, with CRLF line endings when `original` has them
+/// (the reply comes back with LF).
+fn like(original: &[u8], text: &str) -> String {
+    let mut out = text.to_owned();
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if original.windows(2).any(|w| w == b"\r\n") && !out.contains("\r\n") {
+        out = out.replace('\n', "\r\n");
+    }
+    out
+}
+
+fn marker_size(dir: &Path, path: &str) -> usize {
+    let attr = git::run(dir, &["check-attr", "conflict-marker-size", "--", path]).unwrap_or_default();
+    attr.trim().rsplit(": ").next().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7)
+}
+
 /// Whole-file choices for the current and incoming side. A side without a
 /// version deleted the file: "Delete file"; the other side then keeps the working file.
 pub(crate) fn whole_ops(path: &str, d: &Loaded) -> [Op; 2] {
@@ -294,20 +323,6 @@ pub(crate) fn whole_ops(path: &str, d: &Loaded) -> [Op; 2] {
 pub fn take_side(name: &str, side: &str, path: &str, file: bool) -> Op {
     let op = Op::new(name, &["--literal-pathspecs", "checkout", side, "--", path]).then(&["--literal-pathspecs", "add", "--", path]).light();
     if file { op.backup(Backup::Paths(vec![path.into()])) } else { op }
-}
-
-/// "Apply & mark resolved" for an AI reply outside the editor: writes it over the
-/// file unless the file changed since it was sent, or the reply still has markers.
-pub fn apply_reply(dir: &Path, path: &str, sent: &str, reply: &str) -> Res<Op> {
-    let mut content = reply.to_owned();
-    if !content.ends_with('\n') {
-        content.push('\n');
-    }
-    if conflicts(&parse(&content, 7)).next().is_some() {
-        return Err(format!("The reply for {path} still has conflict markers; resolve it in the merge editor instead."));
-    }
-    save(dir, path, sent.as_bytes(), &content)?;
-    Ok(stage(path))
 }
 
 pub fn stage(path: &str) -> Op {
@@ -352,10 +367,7 @@ impl Editor {
 
     /// Replace the output (e.g. with Claude's resolution).
     pub fn fill(&mut self, text: &str) {
-        self.output = text.to_owned();
-        if !self.output.ends_with('\n') {
-            self.output.push('\n');
-        }
+        self.output = like(self.data.as_ref().map_or(&[][..], |d| &d.original[..]), text);
         self.reparse();
     }
 
@@ -404,6 +416,23 @@ mod tests {
 
     fn only(chunks: &[Chunk]) -> Vec<&Conflict> {
         conflicts(chunks).collect()
+    }
+
+    /// Claude's resolution from the dialog: refused over newer edits or leftover markers; keeps CRLF.
+    #[test]
+    fn apply_ai_resolution() {
+        let dir = crate::repo::testutil::scratch("merge-ai-apply");
+        let read = || std::fs::read_to_string(dir.join("f")).unwrap();
+        let original = b"a\r\n<<<<<<< ours\r\nx\r\n=======\r\ny\r\n>>>>>>> theirs\r\n".to_vec();
+        std::fs::write(dir.join("f"), &original).unwrap();
+        assert!(apply_ai(&dir, "f", &original, "a\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs").unwrap_err().contains("conflict markers"));
+        std::fs::write(dir.join("f"), "manual\n").unwrap();
+        assert!(apply_ai(&dir, "f", &original, "a\nxy").unwrap_err().contains("changed on disk"));
+        assert_eq!(read(), "manual\n");
+        std::fs::write(dir.join("f"), &original).unwrap();
+        assert_eq!(apply_ai(&dir, "f", &original, "a\nxy").unwrap().cmds, stage("f").cmds);
+        assert_eq!(read(), "a\r\nxy\r\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -616,23 +645,6 @@ mod tests {
         run(&whole_ops("f.txt", &load(&dir, "f.txt"))[1]);
         assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), "a\nB\n");
         assert!(!git::status(&dir).unwrap().conflicted.iter().any(|c| c.path == "f.txt"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// An AI reply never overwrites edits made since it was asked for, nor stages markers.
-    #[test]
-    fn ai_reply_is_applied_only_over_the_file_as_sent() {
-        let dir = std::env::temp_dir().join(format!("glasir-merge-ai-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let sent = "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
-        std::fs::write(dir.join("f"), "hand resolved\n").unwrap();
-        assert!(apply_reply(&dir, "f", sent, "a\nb").unwrap_err().contains("changed on disk"));
-        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "hand resolved\n");
-        std::fs::write(dir.join("f"), sent).unwrap();
-        assert!(apply_reply(&dir, "f", sent, sent).unwrap_err().contains("conflict markers"));
-        assert_eq!(apply_reply(&dir, "f", sent, "a\nb").unwrap().cmds[0], ["--literal-pathspecs", "add", "--", "f"]);
-        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "a\nb\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

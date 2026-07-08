@@ -85,9 +85,39 @@ fn quote(s: &str) -> String {
     }
 }
 
+/// The first `{key}` inside quotes the user wrote: there ours would end theirs (`''$(…)''`)
+/// or be literal (`"'$(…)'"`), leaving the value open to the shell.
+fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
+    let esc = if cfg!(windows) { '`' } else { '\\' };
+    let (mut open, mut chars) = (None, line.char_indices());
+    while let Some((i, c)) = chars.next() {
+        let c = match c {
+            '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' if cfg!(windows) => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{201E}' if cfg!(windows) => '"',
+            c => c,
+        };
+        match (open, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => open = None,
+            (Some(_), '{') => {
+                if let Some(k) = keys.iter().find(|k| line[i + 1..].strip_prefix(**k).is_some_and(|r| r.starts_with('}'))) {
+                    return Some(k);
+                }
+            }
+            (Some('\''), _) => {}
+            (_, c) if c == esc => {
+                chars.next();
+            }
+            (None, '\'' | '"') => open = Some(c),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The op that runs `c`: plain `git …` lines run without a shell (one word per argument),
 /// anything else through `sh -c` / PowerShell with the values quoted. Ref changes undo with ⌘Z.
-pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Op {
+/// Refuses quoted placeholders in shell lines ([`quoted_key`]).
+pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
     let repo = dir.to_string_lossy();
     let vals = [("repo", &*repo), ("branch", &*v.branch), ("sha", &*v.sha), ("path", &*v.path)];
     let line = c.command.trim();
@@ -96,9 +126,14 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Op {
             let args: Vec<String> = rest.split_whitespace().map(|w| fill(w, &vals, str::to_owned)).collect();
             Op::new(c.name.trim(), &args.iter().map(String::as_str).collect::<Vec<_>>())
         }
-        _ => Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)]),
+        _ => {
+            if let Some(k) = quoted_key(line, &vals.map(|(k, _)| k)) {
+                return Err(format!("Remove the quotes around {{{k}}} in custom command '{}': Glasir quotes values itself.", c.name.trim()));
+            }
+            Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)])
+        }
     };
-    Op { custom: true, ..op.undo(Undo::Keep) }
+    Ok(Op { custom: true, ..op.undo(Undo::Keep) })
 }
 
 /// `prog` on PATH (with Windows' .exe / .cmd), or as given when it is a path.
@@ -207,12 +242,12 @@ mod tests {
     fn git_lines_skip_the_shell() {
         let v = Vars { branch: "feat/x".into(), sha: "abc".into(), path: "a b.txt".into() };
         let dir = Path::new("/r");
-        let o = op(&Custom { name: "Gerrit".into(), command: "git push origin HEAD:refs/for/{branch}".into() }, dir, &v);
+        let o = op(&Custom { name: "Gerrit".into(), command: "git push origin HEAD:refs/for/{branch}".into() }, dir, &v).unwrap();
         assert_eq!(o.cmds, vec![vec!["push", "origin", "HEAD:refs/for/feat/x"]]);
         assert_eq!(o.undo, Undo::Keep);
-        let o = op(&Custom { name: "Log".into(), command: "git log -1 -- {path}".into() }, dir, &v);
+        let o = op(&Custom { name: "Log".into(), command: "git log -1 -- {path}".into() }, dir, &v).unwrap();
         assert_eq!(o.cmds[0].last().unwrap(), "a b.txt");
-        let o = op(&Custom { name: "Count".into(), command: "git log --oneline | wc -l".into() }, dir, &v);
+        let o = op(&Custom { name: "Count".into(), command: "git log --oneline | wc -l".into() }, dir, &v).unwrap();
         assert_eq!(o.cmds[0][0], SHELL);
         assert!(!gui_editor("vim") && !gui_editor("/usr/bin/nano -w") && gui_editor("code --wait") && !gui_editor(" "));
     }
@@ -226,18 +261,32 @@ mod tests {
         let head = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
         let v = Vars { branch: "main".into(), sha: head.clone(), path: "it's here.txt".into() };
         // A git line: a tag named after the branch at {sha}.
-        let o = op(&Custom { name: "Tag".into(), command: "git tag mark-{branch} {sha}".into() }, &dir, &v);
+        let o = op(&Custom { name: "Tag".into(), command: "git tag mark-{branch} {sha}".into() }, &dir, &v).unwrap();
         super::super::op::exec(&dir, &o).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "mark-main^{commit}"]).trim(), head);
         // A shell line; the quote in {path} stays data.
         if !cfg!(windows) {
-            let o = op(&Custom { name: "Note".into(), command: "echo {branch} > {path} && cat {path}".into() }, &dir, &v);
+            let o = op(&Custom { name: "Note".into(), command: "echo {branch} > {path} && cat {path}".into() }, &dir, &v).unwrap();
             assert_eq!(super::super::op::exec(&dir, &o).unwrap().trim(), "main");
             assert_eq!(std::fs::read_to_string(dir.join("it's here.txt")).unwrap(), "main\n");
             let log = crate::git::LOG.lock().unwrap();
             assert!(log.iter().any(|e| e.cwd == dir && e.prog == "sh" && e.stderr.trim() == "main"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Quotes around a placeholder would undo ours (`"'$(…)'"`, `''$(…)''`): refused.
+    #[test]
+    fn quoted_placeholders_are_refused() {
+        let v = Vars { branch: "x$(touch${IFS}PWNED)".into(), sha: "abc".into(), path: "$(touch PWNED2).txt".into() };
+        let dir = Path::new("/r");
+        let run = |command: &str| op(&Custom { name: "C".into(), command: command.into() }, dir, &v);
+        for command in ["echo \"{branch}\"", "prettier --write '{path}'", "echo \"a $(cat '{sha}')\""] {
+            assert!(run(command).is_err_and(|e| e.contains("Remove the quotes")), "{command}");
+        }
+        let esc = if cfg!(windows) { "`" } else { "\\" };
+        let o = run(&format!("echo {{branch}} \"{{nope}}\" {esc}\"{{sha}}")).unwrap();
+        assert_eq!(o.cmds[0][1], format!("echo 'x$(touch${{IFS}}PWNED)' \"{{nope}}\" {esc}\"'abc'"));
     }
 
     /// A custom command's free-text name must not trigger the label-keyed follow-ups.

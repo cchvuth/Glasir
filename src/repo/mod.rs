@@ -415,8 +415,10 @@ impl RepoTab {
                 }
             }
             Action::Custom(c, v) => {
-                let op = tools::op(&c, &self.dir, &v);
-                self.run(ctx, op)
+                match tools::op(&c, &self.dir, &v) {
+                    Ok(op) => self.run(ctx, op),
+                    Err(e) => self.notes.push(Msg { text: e, error: true }),
+                }
             }
             Action::Jump(id) => {
                 self.scroll_to = self.data.as_ref().and_then(|d| d.row_of.get(&id).copied());

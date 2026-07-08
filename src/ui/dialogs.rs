@@ -147,7 +147,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 }
                 ai::Purpose::Resolve(path) => {
                     if ui.add_enabled(ready, Button::new(format!("{} Apply & mark resolved", icon::CHECK))).clicked() {
-                        match crate::repo::merge_editor::apply_reply(&t.dir, path, &job.draft, &job.text) {
+                        match crate::repo::merge_editor::apply_ai(&t.dir, path, job.draft.as_bytes(), &job.text) {
                             Ok(op) => {
                                 acts.push(Action::Git(op));
                                 close = true;

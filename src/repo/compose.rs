@@ -96,7 +96,8 @@ impl Plan {
                 add(&mut units, path, format!("{status}, hunk {}/{n}", hi + 1), Some((fi, hi)), std::slice::from_ref(h));
             }
         }
-        for path in untracked.split('\0').filter(|p| !p.is_empty()) {
+        // Also listed by `diff HEAD` after `git rm --cached`: its deletion unit covers it.
+        for path in untracked.split('\0').filter(|p| !p.is_empty() && !names.split('\0').any(|n| n == *p)) {
             let c = git::Change { path: path.into(), old_path: None, code: '?' };
             let f = git::worktree_diff(dir, &c, false, Default::default()).unwrap_or_default();
             let body = if f.binary || f.lossy { &[][..] } else { &f.hunks[..] };
@@ -363,17 +364,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
     }
 
-    /// A staged version that differs from the working tree would be lost: refused.
+    /// Staged content that differs from the working tree would be dropped by
+    /// `read-tree --reset`: refused when planning and when committing.
     #[test]
-    fn compose_refuses_partly_staged_file() {
-        let dir = scratch("compose-partly");
-        sh(&dir, &["init", "-q", "-b", "main"]);
+    fn compose_refuses_staged_content_not_in_the_worktree() {
+        let dir = scratch("compose-split-stage");
+        let g = |a: &[&str]| sh(&dir, a);
+        g(&["init", "-q", "-b", "main"]);
         identity(&dir);
-        commit(&dir, "f", "one\n");
-        std::fs::write(dir.join("f"), "staged version\n").unwrap();
-        sh(&dir, &["add", "f"]);
-        std::fs::write(dir.join("f"), "worktree version\n").unwrap();
+        commit(&dir, "f", "a\n");
+        std::fs::write(dir.join("f"), "a\nstaged-only precious\n").unwrap();
+        g(&["add", "f"]);
+        std::fs::write(dir.join("f"), "a\nworktree\n").unwrap();
         assert!(Plan::load(&dir).is_err_and(|e| e.starts_with("f has staged changes")));
+        // Staged after the plan was made: the op refuses.
+        g(&["add", "f"]);
+        let (mut plan, _) = Plan::load(&dir).unwrap();
+        plan.fill(r#"{"commits":[{"message":"one","units":[1]}]}"#).unwrap();
+        std::fs::write(dir.join("f"), "a\nstaged-only precious\n").unwrap();
+        g(&["add", "f"]);
+        std::fs::write(dir.join("f"), "a\nworktree\n").unwrap();
+        assert!(plan.op(&dir, &git::git_dir(&dir).unwrap()).is_err_and(|e| e.starts_with("f has staged changes")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file untracked with `git rm --cached` is one deletion unit, committed
+    /// as removed and left on disk.
+    #[test]
+    fn compose_keeps_a_file_untracked() {
+        let dir = scratch("compose-rm-cached");
+        let g = |a: &[&str]| sh(&dir, a);
+        g(&["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "secret.env", "k=v\n");
+        g(&["rm", "-q", "--cached", "secret.env"]);
+        let (mut plan, _) = Plan::load(&dir).unwrap();
+        let what: Vec<String> = plan.units.iter().map(|u| format!("{} {}", u.path, u.what)).collect();
+        assert_eq!(what, ["secret.env deleted, hunk 1/1"]);
+        plan.fill(r#"{"commits":[{"message":"Untrack secret","units":[1]}]}"#).unwrap();
+        super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
+        assert_eq!(g(&["ls-tree", "--name-only", "HEAD"]), "");
+        assert_eq!(std::fs::read_to_string(dir.join("secret.env")).unwrap(), "k=v\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -347,7 +347,7 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
     ui.add_space(8.0);
     ui.label(RichText::new("Custom commands").strong());
     ui.label(
-        RichText::new("git arguments (run without a shell) or a shell line, run in the repository. Placeholders: {repo} {branch} {sha} {path}. With {path} a command shows in file menus, with {sha} in commit menus, the rest in ⌘P; output goes to a toast and the command log.")
+        RichText::new("git arguments (run without a shell) or a shell line, run in the repository. Placeholders (quoted for you; leave them outside quotes): {repo} {branch} {sha} {path}. With {path} a command shows in file menus, with {sha} in commit menus, the rest in ⌘P; output goes to a toast and the command log.")
             .small()
             .color(theme::dim(ui)),
     );
