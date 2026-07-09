@@ -78,12 +78,16 @@ pub fn parse_diff(text: &str) -> Vec<FileDiff> {
 /// Patch with only the selected change lines of `file`, for `git apply --cached`
 /// (`reverse == false`, staging) or `git apply [--cached] --reverse`
 /// (`reverse == true`, unstaging / discarding). `None` if nothing is selected.
+/// Whether `selected` picks every changed line of `file`.
+pub fn selects_all(file: &FileDiff, selected: impl Fn(usize, usize) -> bool) -> bool {
+    file.hunks.iter().enumerate().all(|(hi, h)| h.lines.iter().enumerate().all(|(li, l)| !matches!(l.kind, b'+' | b'-') || selected(hi, li)))
+}
+
 pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, reverse: bool) -> Option<String> {
     if file.lossy || file.binary {
         return None;
     }
-    let changes = || file.hunks.iter().enumerate().flat_map(|(hi, h)| h.lines.iter().enumerate().filter(|l| matches!(l.1.kind, b'+' | b'-')).map(move |(li, _)| (hi, li)));
-    let whole = changes().all(|(h, l)| selected(h, l));
+    let whole = selects_all(file, &selected);
     let mut out: String = if whole {
         file.header.iter().map(|h| format!("{h}\n")).collect()
     } else {

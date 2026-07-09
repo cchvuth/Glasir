@@ -81,7 +81,7 @@ pub enum Action {
     /// Open the 3-way merge editor for a conflicted file.
     MergeEditor(String),
     FileView(String, super::history::Mode),
-    /// A branch was dropped onto another: offer merge / rebase / push.
+    /// A branch was dropped onto another (full refs): offer merge / rebase / push.
     DropBranch { src: String, dst: String },
     Cleanup,
     /// Rewrite one commit on the current branch: reword / squash / drop.

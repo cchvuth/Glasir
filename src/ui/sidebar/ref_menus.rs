@@ -85,7 +85,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         {
             acts.push(Action::Git(crate::repo::remotes::pull_ff(name, remote, rb)));
         }
-        integrate_items(ui, d, name, acts);
+        integrate_items(ui, d, name, d.rev(r), acts);
         compare_items(ui, d, name, acts);
     }
     if r.head
@@ -151,14 +151,14 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
     if ui.button(format!("Checkout {}", r.name)).clicked() {
         acts.extend(branch_checkout(d, r));
     }
-    integrate_items(ui, d, &r.name, acts);
+    integrate_items(ui, d, &r.name, d.rev(r), acts);
     compare_items(ui, d, &r.name, acts);
     let local = r.remote_branch().to_owned();
     if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
         acts.push(prompt(
             format!("Worktree folder for {local}"),
             d.worktree_path(&local),
-            Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.name]).then_open("{}"),
+            Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.full]).then_open("{}"),
         ));
     }
     ui.separator();

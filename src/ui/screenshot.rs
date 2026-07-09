@@ -173,7 +173,8 @@ impl App {
                     q if q.starts_with("drop:") => {
                         let mut it = q[5..].splitn(2, ':');
                         if let (Some(src), Some(dst), Some(t)) = (it.next(), it.next(), self.tabs.get_mut(self.active)) {
-                            t.drop_menu = Some((src.into(), dst.into(), egui::pos2(600.0, 300.0)));
+                            let full = |n: &str| t.data.as_ref().and_then(|d| d.refs.iter().find(|r| r.name == n)).map_or(n.into(), |r| r.full.clone());
+                            t.drop_menu = Some((full(src), full(dst), egui::pos2(600.0, 300.0)));
                         }
                     }
                     // Graph views: `hover:<ref name>`, `view:fp`, `view:hide:<full ref>`, `view:solo:<full ref>`, `stash`.

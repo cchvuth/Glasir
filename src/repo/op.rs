@@ -37,7 +37,7 @@ impl Undo {
 pub struct Op {
     pub label: String,
     pub cmds: Vec<Vec<String>>,
-    pub input: Option<String>,
+    pub input: Option<Vec<u8>>,
     pub confirm: Option<String>,
     pub undo: Undo,
     /// Staging-type op: no toast, refresh status only.
@@ -115,8 +115,8 @@ impl Op {
         self.light = true;
         self
     }
-    pub fn input(mut self, s: String) -> Self {
-        self.input = Some(s);
+    pub fn input(mut self, s: impl Into<Vec<u8>>) -> Self {
+        self.input = Some(s.into());
         self
     }
 }
@@ -141,7 +141,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                     true => Ok(String::new()),
                     false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
                 },
-                _ => git::run_input(dir, &a, op.input.as_deref().map(str::as_bytes)),
+                _ => git::run_input(dir, &a, op.input.as_deref()),
             };
             if out.is_err() {
                 if !op.on_fail.is_empty() {
@@ -202,7 +202,9 @@ pub fn discard_op(c: &git::Change) -> Op {
         }
         _ => Op::new("Discard", &["--literal-pathspecs", "checkout", "--", &c.path]),
     };
-    o.light().backup(Backup::Paths(vec![c.path.clone()])).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))
+    // A rename's old path too, so undo deletes it again.
+    let paths = c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path]).cloned().collect();
+    o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))
 }
 
 /// Unstage one file; a staged rename needs its old path reset too, or its deletion stays staged.
@@ -390,7 +392,7 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
             Some(Action::Git(if d.local(local).is_some() {
                 Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep)
             } else {
-                Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.name]).undo(Undo::Keep)
+                Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.full]).undo(Undo::Keep)
             }))
         }
         RefKind::Tag => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--detach", &r.full]).undo(Undo::Keep))),
@@ -843,6 +845,29 @@ mod tests {
         sh(&dir, &["add", "-N", "n.txt"]);
         super::exec(&dir, &super::discard_op(&crate::git::status(&dir).unwrap().unstaged[0])).unwrap();
         assert!(!dir.join("n.txt").exists() && crate::git::status(&dir).unwrap().unstaged.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undo of a worktree-rename discard brings back the rename: new file's bytes, old one gone.
+    #[test]
+    fn undo_worktree_rename_discard() {
+        let dir = scratch("wt-rename-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let text = "1\n2\n3\n4\n5\n6\n7\n8\n";
+        commit(&dir, "old.txt", text);
+        std::fs::rename(dir.join("old.txt"), dir.join("new.txt")).unwrap();
+        std::fs::write(dir.join("new.txt"), format!("{text}edit\n")).unwrap();
+        sh(&dir, &["add", "-N", "new.txt"]);
+        let c = crate::git::status(&dir).unwrap().unstaged.remove(0);
+        assert_eq!((c.code, c.old_path.as_deref()), ('R', Some("old.txt")));
+        let op = super::discard_op(&c);
+        let saved = super::super::undo::save_worktree(&dir, op.backup.as_ref().unwrap()).unwrap();
+        super::exec(&dir, &op).unwrap();
+        assert!(!dir.join("new.txt").exists());
+        super::super::undo::restore_worktree(&dir, &saved).unwrap();
+        assert!(!dir.join("old.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), format!("{text}edit\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -96,10 +96,12 @@ impl RepoData {
         if self.wip && row == 0 { None } else { self.log.get(row - self.wip as usize) }
     }
 
-    /// The full ref of branch `name` (local first, like git), else `name` itself (a commit id).
-    /// Pass this, not the short name, as a revision: git resolves `x` to tag `x` before branch `x`.
-    pub fn branch_rev<'a>(&'a self, name: &'a str) -> &'a str {
-        self.refs.iter().find(|r| r.kind != RefKind::Tag && r.name == name).map_or(name, |r| &r.full)
+    /// `r` as a revision: its short name (that's what merge messages quote), or its full ref when
+    /// git would read the short one as something else (tag `x` beats branch `x`, local branch
+    /// `origin/x` beats the remote's, `stash` / `ORIG_HEAD`-style names beat every branch).
+    pub fn rev<'a>(&self, r: &'a Ref) -> &'a str {
+        let special = !r.name.contains('/') && (r.name == "stash" || r.name.ends_with("HEAD"));
+        if special || self.refs.iter().any(|o| o.name == r.name && o.full != r.full) { &r.full } else { &r.name }
     }
 
     pub fn local(&self, name: &str) -> Option<&Ref> {
@@ -413,13 +415,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A tag (or a local `origin/x`) with a branch's short name must not stand in for it.
+    /// A tag (or a local `origin/x`) with a branch's short name must not stand in for it, and an
+    /// unambiguous branch keeps its short name (it ends up in the merge message).
     #[test]
-    fn branch_rev_beats_same_named_tag() {
-        let dir = scratch("branch-rev");
-        sh(&dir, &["init", "-q", "-b", "main"]);
+    fn rev_beats_same_named_tag_and_branch() {
+        let up = scratch("rev-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "base\n");
+        commit(&up, "u.txt", "upstream\n");
+        let dir = scratch("rev");
+        sh(&up, &["clone", "-q", &up.to_string_lossy(), &dir.to_string_lossy()]);
         identity(&dir);
-        commit(&dir, "a.txt", "base\n");
+        sh(&dir, &["branch", "origin/main", "HEAD~1"]);
         sh(&dir, &["checkout", "-q", "-b", "release-1"]);
         commit(&dir, "r.txt", "r1\n");
         sh(&dir, &["tag", "release-1"]);
@@ -427,16 +435,23 @@ mod tests {
         let tip = sh(&dir, &["rev-parse", "refs/heads/release-1"]);
         sh(&dir, &["checkout", "-q", "-b", "feat", "main"]);
         commit(&dir, "f.txt", "feat\n");
-        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["checkout", "-q", "-b", "work", "main~1"]);
+        commit(&dir, "w.txt", "work\n");
         let d = load_all(&dir, 100, View::default()).unwrap();
-        exec(&dir, &Op::new("Merge", &["merge", "--no-edit", d.branch_rev("release-1")])).unwrap();
-        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        let rev = |kind, name: &str| d.rev(d.refs.iter().find(|r| r.kind == kind && r.name == name).unwrap()).to_owned();
+
+        exec(&dir, &Op::new("Merge", &["merge", "--no-edit", &rev(RefKind::Remote, "origin/main")])).unwrap();
+        assert!(git::run(&dir, &["merge-base", "--is-ancestor", "refs/remotes/origin/main", "HEAD"]).is_ok());
+        exec(&dir, &Op::new("Merge", &["merge", "--no-edit", &rev(RefKind::Local, "feat")])).unwrap();
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%s"]), "Merge branch 'feat' into work\n");
+        exec(&dir, &Op::new("Merge", &["merge", "--no-edit", &rev(RefKind::Local, "release-1")])).unwrap();
+        assert!(git::run(&dir, &["merge-base", "--is-ancestor", tip.trim(), "HEAD"]).is_ok());
         // `rebase <onto> <branch>` takes the short name (a branch first); `refs/heads/feat` would detach.
         sh(&dir, &["tag", "feat", "main~1"]);
-        exec(&dir, &Op::new("Rebase", &["rebase", d.branch_rev("release-1"), "feat"])).unwrap();
+        exec(&dir, &Op::new("Rebase", &["rebase", &rev(RefKind::Local, "release-1"), "feat"])).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "refs/heads/feat~1"]), tip);
         assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/feat\n");
-        assert_eq!(d.branch_rev("abc123"), "abc123");
+        let _ = std::fs::remove_dir_all(&up);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

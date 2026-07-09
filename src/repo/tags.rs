@@ -5,33 +5,39 @@ use super::{Op, Undo};
 use crate::git::{self, Ref};
 use std::path::Path;
 
-/// Point tag `r` at `target`; an annotated tag is re-created with its exact message, read
-/// from the tag object (minus its signature).
-pub fn move_tag(dir: &Path, r: &Ref, target: &str) -> Op {
-    let msg = r.annotated.then(|| match git::run(dir, &["cat-file", "tag", &r.full]) {
-        Ok(o) => tag_message(&o).to_owned(),
-        Err(_) => r.message.clone(),
-    });
+/// Point tag `r` at `target`; an annotated tag is re-created with its exact message bytes,
+/// read from the tag object. A signature can't be kept, so a signed tag asks first.
+pub fn move_tag(dir: &Path, r: &Ref, target: &str) -> Result<Op, String> {
     let mut args = vec!["tag", "-f"];
-    if msg.is_some() {
+    let mut msg = None;
+    if r.annotated {
+        let obj = git::run_raw(dir, &["cat-file", "tag", &r.full], None).map_err(|e| format!("Can't read tag {}: {e}", r.name))?;
+        msg = Some(tag_message(&obj));
         args.extend(["-a", "--cleanup=verbatim", "-F", "-"]);
     }
     args.extend([r.name.as_str(), target]);
-    let op = Op::new(format!("Move tag {}", r.name), &args).undo(Undo::Keep);
-    match msg {
-        Some(m) => op.input(m),
-        None => op,
+    let mut op = Op::new(format!("Move tag {}", r.name), &args).undo(Undo::Keep);
+    if let Some((m, signed)) = msg {
+        if signed {
+            op = op.confirm(format!("Tag {} is signed. The moved tag will be unsigned (undo restores the signed one). Move it?", r.name));
+        }
+        op = op.input(m);
     }
+    Ok(op)
 }
 
-/// A tag object's message without its signature, which wouldn't match the moved tag.
-fn tag_message(obj: &str) -> &str {
-    let msg = obj.split_once("\n\n").map_or("", |(_, m)| m);
+/// A tag object's message without its signature (which wouldn't match the moved tag), and
+/// whether it had one.
+fn tag_message(obj: &[u8]) -> (Vec<u8>, bool) {
+    let msg = obj.windows(2).position(|w| w == b"\n\n").map_or(&[][..], |p| &obj[p + 2..]);
     let sig = ["PGP SIGNATURE", "PGP MESSAGE", "SIGNED MESSAGE", "SSH SIGNATURE"].iter().filter_map(|k| {
         let line = format!("-----BEGIN {k}-----");
-        if msg.starts_with(&line) { Some(0) } else { msg.rfind(&format!("\n{line}")).map(|p| p + 1) }
+        if msg.starts_with(line.as_bytes()) { Some(0) } else { msg.windows(line.len() + 1).rposition(|w| w[0] == b'\n' && &w[1..] == line.as_bytes()).map(|p| p + 1) }
     });
-    &msg[..sig.max().unwrap_or(msg.len())]
+    match sig.max() {
+        Some(end) => (msg[..end].to_vec(), true),
+        None => (msg.to_vec(), false),
+    }
 }
 
 /// Delete tag `r` here, then on `remote` (only the local half can be undone).
@@ -78,7 +84,7 @@ mod tests {
         let obj = |n: &str| sh(&dir, &["cat-file", "-p", n]).split_once("\n\n").unwrap().1.to_owned();
         let old = [obj("v2"), obj("empty")];
         for n in ["v1", "light", "v2", "empty"] {
-            exec(&dir, &move_tag(&dir, &tag(n).unwrap(), &head)).unwrap();
+            exec(&dir, &move_tag(&dir, &tag(n).unwrap(), &head).unwrap()).unwrap();
         }
         assert_eq!([obj("v2"), obj("empty")], old);
         assert_eq!(sh(&dir, &["cat-file", "-t", "empty"]), "tag\n");
@@ -110,12 +116,47 @@ mod tests {
         commit(&dir, "a.txt", "two\n");
         let tag = |n: &str| git::refs(&dir).unwrap().into_iter().find(|r| r.name == n).unwrap();
         for t in ["t1", "t2"] {
-            exec(&dir, &move_tag(&dir, &tag(t), "HEAD")).unwrap();
+            exec(&dir, &move_tag(&dir, &tag(t), "HEAD").unwrap()).unwrap();
             assert_eq!(sh(&dir, &["cat-file", "-t", t]), "tag\n");
         }
         assert_eq!(sh(&dir, &["tag", "-l", "--format=%(contents)", "t1"]).trim_end(), msg);
         assert_eq!(tag("t1").message, msg);
         assert_eq!(sh(&dir, &["rev-parse", "t2^{commit}"]), sh(&dir, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Non-UTF-8 bytes survive; a signed tag asks first (it comes back unsigned); an unreadable one is refused.
+    #[test]
+    fn move_tag_raw_bytes_signature_and_missing() {
+        let dir = scratch("tags-raw");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        let f = dir.join("msg");
+        std::fs::write(&f, b"caf\xe9\n\n").unwrap();
+        sh(&dir, &["tag", "--cleanup=verbatim", "-a", "latin", "-F", &f.to_string_lossy()]);
+        std::fs::write(&f, "Signed\n-----BEGIN SSH SIGNATURE-----\nAAAA\n-----END SSH SIGNATURE-----\n").unwrap();
+        sh(&dir, &["tag", "--cleanup=verbatim", "-a", "signed", "-F", &f.to_string_lossy()]);
+        commit(&dir, "a.txt", "two\n");
+        let tag = |n: &str| git::refs(&dir).unwrap().into_iter().find(|r| r.name == n).unwrap();
+        let body = |n: &str| {
+            let o = git::run_raw(&dir, &["cat-file", "tag", n], None).unwrap();
+            o[o.windows(2).position(|w| w == b"\n\n").unwrap() + 2..].to_vec()
+        };
+
+        let op = move_tag(&dir, &tag("latin"), "HEAD").unwrap();
+        assert!(op.confirm.is_none());
+        exec(&dir, &op).unwrap();
+        assert_eq!(body("latin"), b"caf\xe9\n\n");
+
+        let op = move_tag(&dir, &tag("signed"), "HEAD").unwrap();
+        assert!(op.confirm.as_deref().is_some_and(|c| c.contains("unsigned")));
+        exec(&dir, &op).unwrap();
+        assert_eq!(body("signed"), b"Signed\n");
+
+        let mut gone = tag("latin");
+        gone.full = "refs/tags/missing".into();
+        assert!(move_tag(&dir, &gone, "HEAD").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

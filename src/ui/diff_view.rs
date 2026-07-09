@@ -2,7 +2,7 @@
 //! working-directory diffs, whitespace / context options, change navigation
 //! (F7 / ⇧F7) and a change minimap. Only visible lines are painted.
 
-use crate::git::{DiffOpts, FileDiff, partial_patch};
+use crate::git::{Change, DiffOpts, FileDiff, partial_patch, selects_all};
 use crate::repo::{Action, Backup, DiffSrc, DiffState, Op};
 use crate::theme::{self, icon};
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui, UiBuilder, pos2, vec2};
@@ -132,6 +132,15 @@ fn apply_op(label: &str, patch: Option<String>, args: &[&str], path: &str) -> Ac
     })
 }
 
+/// Discard the `selected` lines of an unstaged diff. All of an intent-to-add file (or worktree
+/// rename): `apply --reverse` would leave its index entry behind, so the file is discarded.
+fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, change: &Change) -> Action {
+    if matches!(change.code, 'A' | 'R' | 'C') && selects_all(f, &selected) {
+        return Action::Git(crate::repo::discard_op(change));
+    }
+    apply_op(label, partial_patch(f, selected, true), &["--reverse"], &change.path)
+}
+
 pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Action>) {
     let change = ds.src.change().clone();
     let (worktree, staged) = match &ds.src {
@@ -189,7 +198,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                 }
             } else {
                 if ui.button(format!("Discard {n} line(s)")).clicked() {
-                    acts.push(apply_op("Discard lines", partial_patch(f, pick, true), &["--reverse"], &change.path));
+                    acts.push(discard("Discard lines", f, pick, &change));
                 }
                 if ui.button(format!("Stage {n} line(s)")).clicked() {
                     acts.push(apply_op("Stage lines", partial_patch(f, pick, false), &["--cached"], &change.path));
@@ -297,7 +306,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                         acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &change.path));
                                 }
                                 if btn(ui, "Discard hunk") {
-                        acts.push(apply_op("Discard hunk", partial_patch(f, all, true), &["--reverse"], &change.path));
+                        acts.push(discard("Discard hunk", f, all, &change));
                                 }
                             }
                         }
@@ -580,5 +589,37 @@ mod tests {
         let d = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n-c\n+B\n d\n";
         let h = &parse_diff(d)[0].hunks[0];
         assert_eq!(partners(h), [None, Some(3), None, Some(1), None]);
+    }
+
+    /// Discarding all of a worktree rename's diff runs the file discard: `apply --reverse` would
+    /// keep the intent-to-add entry (` D new.txt`). Part of it stays a patch.
+    #[test]
+    fn whole_discard_of_intent_to_add_rename() {
+        let dir = std::env::temp_dir().join(format!("glasir-dv-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        for kv in [["user.email", "t@t"], ["user.name", "T"], ["commit.gpgsign", "false"]] {
+            g(&["config", kv[0], kv[1]]);
+        }
+        let text = "1\n2\n3\n4\n5\n6\n7\n8\n";
+        std::fs::write(dir.join("old.txt"), text).unwrap();
+        g(&["add", "old.txt"]);
+        g(&["commit", "-q", "-m", "i"]);
+        std::fs::remove_file(dir.join("old.txt")).unwrap();
+        std::fs::write(dir.join("new.txt"), format!("{text}edit\nmore\n")).unwrap();
+        g(&["add", "-N", "new.txt"]);
+        let c = crate::git::status(&dir).unwrap().unstaged.remove(0);
+        assert_eq!(c.code, 'R');
+        let f = crate::git::worktree_diff(&dir, &c, false, DiffOpts::default()).unwrap();
+        let Action::Git(op) = discard("Discard hunk", &f, |h, _| h == 0, &c) else { panic!() };
+        for cmd in &op.cmds {
+            crate::git::run_input(&dir, &cmd.iter().map(String::as_str).collect::<Vec<_>>(), op.input.as_deref()).unwrap();
+        }
+        assert_eq!(g(&["status", "--porcelain"]), "");
+        assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), text);
+        assert!(matches!(discard("Discard lines", &f, |_, l| l == 3, &c), Action::Git(o) if o.cmds[0][0] == "apply"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

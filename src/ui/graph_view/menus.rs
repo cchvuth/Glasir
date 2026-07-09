@@ -54,7 +54,7 @@ fn move_tag_menu(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) {
                 let b = ui.button(&r.name);
                 let b = if r.message.is_empty() { b } else { b.on_hover_text(&r.message) };
                 if b.clicked() {
-                    acts.push(Action::Git(crate::repo::tags::move_tag(&d.git_dir, r, id)));
+                    acts.push(crate::repo::tags::move_tag(&d.git_dir, r, id).map_or_else(Action::Error, Action::Git));
                 }
             }
         });
@@ -68,13 +68,13 @@ pub(super) fn checkout_action(d: &RepoData, c: &Commit) -> Option<Action> {
     branch_checkout(d, r)
 }
 
-/// Merge/rebase/cherry-pick style actions targeting `target` (branch name or commit id).
-pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, acts: &mut Vec<Action>) {
+/// Merge/rebase/cherry-pick style actions targeting `target` (branch name or commit id) at
+/// revision `rev` (`RepoData::rev`, or the commit id).
+pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, rev: &str, acts: &mut Vec<Action>) {
     let Some(head) = d.status.branch.as_deref() else { return };
     if target == head {
         return;
     }
-    let rev = d.branch_rev(target);
     if ui.button(format!("Merge {target} into {head}")).clicked() {
         acts.push(Action::Git(Op::new(format!("Merge {target}"), &["merge", "--no-edit", rev]).undo(Undo::Keep)));
     }
@@ -127,10 +127,10 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     }
     move_tag_menu(ui, d, &c.id, acts);
     ui.separator();
-    let target = refs.iter().find(|r| r.kind != RefKind::Tag).map_or(c.id.as_str(), |r| r.name.as_str());
+    let (target, rev) = refs.iter().find(|r| r.kind != RefKind::Tag).map_or((c.id.as_str(), c.id.as_str()), |r| (r.name.as_str(), d.rev(r)));
     let is_head = d.status.head.as_deref() == Some(&c.id);
     if !is_head {
-        integrate_items(ui, d, target, acts);
+        integrate_items(ui, d, target, rev, acts);
         let mut pick = vec!["cherry-pick"];
         if c.parents.len() > 1 {
             pick.extend(["-m", "1"]);

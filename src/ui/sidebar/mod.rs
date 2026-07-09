@@ -93,7 +93,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     rt = rt.strong();
                 }
                 let resp = ui.add(row(ui, r.head, view_style(ui, d, r, rt)));
-                branch_dnd(ui, &resp, &r.name, acts);
+                branch_dnd(ui, &resp, &r.name, &r.full, acts);
                 hover_ref(ui, &resp, &r.target);
                 let resp = resp.on_hover_text(if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() });
                 if resp.clicked() {
@@ -121,7 +121,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                         pinned_separator(ui, d, i, &names);
                         let text = view_style(ui, d, r, RichText::new(r.remote_branch()));
                         let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
-                        branch_dnd(ui, &resp, &r.name, acts);
+                        branch_dnd(ui, &resp, &r.name, &r.full, acts);
                         hover_ref(ui, &resp, &r.target);
                         if resp.clicked() {
                             acts.push(Action::Jump(r.target.clone()));

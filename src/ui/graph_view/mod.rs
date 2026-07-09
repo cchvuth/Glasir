@@ -230,13 +230,13 @@ pub fn show(
                 }
                 // Dropping a branch onto a row targets that row's branch.
                 if let Some(dst) = commit.and_then(|c| d.refs_at.get(&c.id)).and_then(|v| v.iter().map(|&i| &d.refs[i]).find(|r| r.kind != RefKind::Tag)) {
-                    if resp.dnd_hover_payload::<BranchDrag>().is_some_and(|p| p.0 != dst.name) {
+                    if resp.dnd_hover_payload::<BranchDrag>().is_some_and(|p| p.1 != dst.full) {
                         ui.painter().rect_stroke(rect.shrink2(vec2(2.0, 1.5)), 9.0, Stroke::new(2.0, theme::accent()), egui::StrokeKind::Inside);
                     }
                     if let Some(p) = resp.dnd_release_payload::<BranchDrag>()
-                        && p.0 != dst.name
+                        && p.1 != dst.full
                     {
-                        acts.push(Action::DropBranch { src: p.0.clone(), dst: dst.name.clone() });
+                        acts.push(Action::DropBranch { src: p.1.clone(), dst: dst.full.clone() });
                     }
                 }
                 resp.context_menu(|ui| match commit {
@@ -353,7 +353,7 @@ pub fn show(
                     let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag()).on_hover_text(names.join("\n"));
                     hover_ref(ui, &pill_resp, &rf.target);
                     if rf.kind != RefKind::Tag {
-                        pill_resp.dnd_set_drag_payload(BranchDrag(rf.name.clone()));
+                        pill_resp.dnd_set_drag_payload(BranchDrag(rf.name.clone(), rf.full.clone()));
                     }
                     if pill_resp.clicked() {
                         acts.extend(commit.map(|c| Action::Select(Sel::Commit(c.id.clone()))));

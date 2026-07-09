@@ -153,6 +153,16 @@ pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
             std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
         }
     }
+    // Without a stash every tracked path present then was copied: one without a copy was
+    // absent before the op (a discarded rename's old path), so it goes again.
+    if s.stash.is_none() {
+        for p in s.tracked.iter().filter(|p| !s.files.iter().any(|(f, _)| f == *p)) {
+            match std::fs::remove_file(dir.join(p)) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{p}: {e}")),
+                _ => {}
+            }
+        }
+    }
     Ok(())
 }
 
