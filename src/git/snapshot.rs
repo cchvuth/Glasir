@@ -29,9 +29,8 @@ pub fn restore(dir: &Path, to: &Snapshot, mode: &str) -> Res<()> {
     let cur = snapshot(dir)?;
     // `update-ref` skips git's checked-out-elsewhere check: moving another worktree's
     // branch would leave its index and files out of step with its HEAD.
-    let other = super::read::parse_worktrees(&run(dir, &["worktree", "list", "--porcelain", "-z"])?);
-    if let Some(r) = other.iter().filter(|w| !w.prunable).filter_map(|w| Some(format!("refs/heads/{}", w.branch.as_ref()?))).find(|r| *r != cur.head && cur.refs.get(r) != to.refs.get(r)) {
-        return Err(format!("{} is checked out in another worktree; switch that worktree to another branch first, then undo.", &r["refs/heads/".len()..]));
+    if let Some(r) = used_elsewhere(dir)?.into_iter().find(|r| *r != cur.head && cur.refs.get(r) != to.refs.get(r)) {
+        return Err(format!("{} is in use in another worktree (checked out, or being rebased or bisected there); finish there or switch that worktree to another branch first, then undo.", r.strip_prefix("refs/heads/").unwrap_or(&r)));
     }
     for (r, oid) in &to.refs {
         if !cur.refs.contains_key(r) {
@@ -70,4 +69,20 @@ pub fn restore(dir: &Path, to: &Snapshot, mode: &str) -> Res<()> {
         }
     }
     Ok(())
+}
+
+/// Branches other worktrees have checked out, or are rebasing or bisecting (those show as detached).
+fn used_elsewhere(dir: &Path) -> Res<Vec<String>> {
+    let wts = super::read::parse_worktrees(&run(dir, &["worktree", "list", "--porcelain", "-z"])?);
+    let mut refs: Vec<String> = wts.iter().filter(|w| !w.prunable).filter_map(|w| Some(format!("refs/heads/{}", w.branch.as_ref()?))).collect();
+    let out = run(dir, &["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"])?;
+    let mut l = out.lines().map(|l| std::fs::canonicalize(l).unwrap_or_else(|_| l.into()));
+    let (own, common) = (l.next().unwrap_or_default(), l.next().unwrap_or_default());
+    let linked = std::fs::read_dir(common.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path());
+    for g in std::iter::once(common.clone()).chain(linked).filter(|g| std::fs::canonicalize(g).ok().as_ref() != Some(&own)) {
+        let read = |f: &str| std::fs::read_to_string(g.join(f)).ok().map(|s| s.trim().to_owned());
+        refs.extend(read("rebase-merge/head-name").into_iter().chain(read("rebase-apply/head-name")));
+        refs.extend(read("BISECT_START").map(|b| format!("refs/heads/{b}")));
+    }
+    Ok(refs)
 }

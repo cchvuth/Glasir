@@ -500,7 +500,7 @@ impl RepoTab {
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) }));
                     self.redo.clear();
                 }
-                if let Some(saved) = saved.filter(|s| (s.stash.is_some() && !s.tracked.is_empty()) || !s.files.is_empty()) {
+                if let Some(saved) = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty()) {
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Discard(saved)));
                     self.redo.clear();
                     // Light ops toast nothing, but a discard deserves a visible way back.
