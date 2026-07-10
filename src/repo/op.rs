@@ -137,6 +137,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
                 [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
                 [super::remotes::PR_GUARD, b, seen] => super::remotes::pr_guard(dir, b, seen),
+                [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
                 [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
                     true => Ok(String::new()),
                     false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
@@ -207,10 +208,11 @@ pub fn discard_op(c: &git::Change) -> Op {
     o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))
 }
 
-/// Unstage one file; a staged rename needs its old path reset too, or its deletion stays staged.
+/// Unstage one file; a staged rename needs its old path reset too, or its deletion stays
+/// staged. A copy's source is a separate change: resetting it would drop its staged content.
 pub fn unstage_op(c: &git::Change) -> Op {
     let mut args = vec!["--literal-pathspecs", "reset", "-q", "--"];
-    args.extend(c.old_path.as_deref());
+    args.extend(c.old_path.as_deref().filter(|_| c.code == 'R'));
     args.push(&c.path);
     Op::new("Unstage", &args).light()
 }
@@ -667,6 +669,30 @@ mod tests {
         t.apply(&ctx, Action::Git(super::unstage_op(&c)));
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["status", "--porcelain"]), " D old\n?? new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unstaging a copy (`status.renames=copies`) leaves its source's staged content alone.
+    #[test]
+    fn unstage_copy_keeps_source() {
+        let dir = scratch("unstage-copy");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "status.renames", "copies"]);
+        commit(&dir, "old", "a\nb\nc\nd\n");
+        std::fs::copy(dir.join("old"), dir.join("new")).unwrap();
+        std::fs::write(dir.join("old"), "STAGED 1\n").unwrap();
+        sh(&dir, &["add", "old", "new"]);
+        std::fs::write(dir.join("old"), "WORKTREE 1\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let c = t.data.as_ref().unwrap().status.staged.iter().find(|c| c.path == "new").unwrap().clone();
+        assert_eq!((c.code, c.old_path.as_deref()), ('C', Some("old")));
+        t.apply(&ctx, Action::Git(super::unstage_op(&c)));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["show", ":old"]), "STAGED 1\n");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "MM old\n?? new\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -2,8 +2,8 @@
 //! working-directory diffs, whitespace / context options, change navigation
 //! (F7 / ⇧F7) and a change minimap. Only visible lines are painted.
 
-use crate::git::{Change, DiffOpts, FileDiff, partial_patch, selects_all};
-use crate::repo::{Action, Backup, DiffSrc, DiffState, Op};
+use crate::git::{DiffOpts, FileDiff, partial_patch, selects_all};
+use crate::repo::{Action, DiffSrc, DiffState, Op};
 use crate::theme::{self, icon};
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui, UiBuilder, pos2, vec2};
 
@@ -115,34 +115,28 @@ pub fn changed_span(a: &str, b: &str) -> Option<(usize, usize)> {
 use crate::highlight::display as expand;
 
 /// `git apply` of a partial patch; `None` (an unsafe partial selection) becomes an explanation.
-fn apply_op(label: &str, patch: Option<String>, args: &[&str], path: &str) -> Action {
-    let Some(patch) = patch else {
-        return Action::Error(format!(
+fn apply_op(label: &str, patch: Option<String>, args: &[&str], src: &DiffSrc, opts: DiffOpts, f: &FileDiff) -> Action {
+    match patch {
+        Some(patch) => Action::Git(crate::repo::patch_op(label, src, opts, f, patch, args)),
+        None => Action::Error(format!(
             "{label}: this selection can't be applied on its own (the hunk touches the end of a file without a final newline, or the file isn't plain UTF-8 text). Select the whole hunk, or stage/discard the whole file."
-        ));
-    };
-    let mut a = vec!["apply", "--recount", "--whitespace=nowarn"];
-    a.extend_from_slice(args);
-    a.push("-");
-    let op = Op::new(label, &a).input(patch).light();
-    Action::Git(if label.starts_with("Discard") {
-        op.backup(Backup::Paths(vec![path.to_owned()])).confirm("Discard the selected changes? (Undo with ⌘Z.)")
-    } else {
-        op
-    })
+        )),
+    }
 }
 
 /// Discard the `selected` lines of an unstaged diff. All of an intent-to-add file (or worktree
 /// rename): `apply --reverse` would leave its index entry behind, so the file is discarded.
-fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, change: &Change) -> Action {
+fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, src: &DiffSrc, opts: DiffOpts) -> Action {
+    let change = src.change();
     if matches!(change.code, 'A' | 'R' | 'C') && selects_all(f, &selected) {
         return Action::Git(crate::repo::discard_op(change));
     }
-    apply_op(label, partial_patch(f, selected, true), &["--reverse"], &change.path)
+    apply_op(label, partial_patch(f, selected, true), &["--reverse"], src, opts, f)
 }
 
 pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Action>) {
-    let change = ds.src.change().clone();
+    let (src, ds_opts) = (ds.src.clone(), ds.opts);
+    let change = src.change().clone();
     let (worktree, staged) = match &ds.src {
         DiffSrc::Worktree { staged, .. } => (true, *staged),
         DiffSrc::Commit { .. } => (false, false),
@@ -194,14 +188,14 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
             let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
             if staged {
                 if ui.button(format!("Unstage {n} line(s)")).clicked() {
-                    acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &change.path));
+                    acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &src, ds_opts, f));
                 }
             } else {
                 if ui.button(format!("Discard {n} line(s)")).clicked() {
-                    acts.push(discard("Discard lines", f, pick, &change));
+                    acts.push(discard("Discard lines", f, pick, &src, ds_opts));
                 }
                 if ui.button(format!("Stage {n} line(s)")).clicked() {
-                    acts.push(apply_op("Stage lines", partial_patch(f, pick, false), &["--cached"], &change.path));
+                    acts.push(apply_op("Stage lines", partial_patch(f, pick, false), &["--cached"], &src, ds_opts, f));
                 }
             }
         }
@@ -299,14 +293,14 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                             };
                             if staged {
                                 if btn(ui, "Unstage hunk") {
-                        acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &change.path));
+                        acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &src, ds_opts, f));
                                 }
                             } else {
                                 if btn(ui, "Stage hunk") {
-                        acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &change.path));
+                        acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &src, ds_opts, f));
                                 }
                                 if btn(ui, "Discard hunk") {
-                        acts.push(discard("Discard hunk", f, all, &change));
+                        acts.push(discard("Discard hunk", f, all, &src, ds_opts));
                                 }
                             }
                         }
@@ -613,13 +607,15 @@ mod tests {
         let c = crate::git::status(&dir).unwrap().unstaged.remove(0);
         assert_eq!(c.code, 'R');
         let f = crate::git::worktree_diff(&dir, &c, false, DiffOpts::default()).unwrap();
-        let Action::Git(op) = discard("Discard hunk", &f, |h, _| h == 0, &c) else { panic!() };
+        let src = DiffSrc::Worktree { change: c.clone(), staged: false };
+        let Action::Git(op) = discard("Discard hunk", &f, |h, _| h == 0, &src, DiffOpts::default()) else { panic!() };
         for cmd in &op.cmds {
             crate::git::run_input(&dir, &cmd.iter().map(String::as_str).collect::<Vec<_>>(), op.input.as_deref()).unwrap();
         }
         assert_eq!(g(&["status", "--porcelain"]), "");
         assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), text);
-        assert!(matches!(discard("Discard lines", &f, |_, l| l == 3, &c), Action::Git(o) if o.cmds[0][0] == "apply"));
+        let part = discard("Discard lines", &f, |_, l| l == 3, &src, DiffOpts::default());
+        assert!(matches!(part, Action::Git(o) if o.cmds.iter().any(|c| c[0] == "apply")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

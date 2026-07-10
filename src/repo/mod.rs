@@ -57,7 +57,7 @@ mod watch;
 
 pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt};
 pub use data::{RepoData, View};
-pub use diff::DiffState;
+pub use diff::{DiffState, patch_op};
 pub use files::reveal;
 pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_op, drop_stashes, fetch_op, pop_stash, pull_op, remove_worktree_and_branch, sequencer_op, stage_all_op, stash_op, unstage_op};
 pub use search::Search;
