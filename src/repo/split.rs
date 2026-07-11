@@ -100,7 +100,8 @@ impl RepoTab {
             let op = match sp.rebase {
                 // Track the commit's files again first: `rebase --abort` won't overwrite its now-untracked added files.
                 true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).backup(changed_since(&self.dir, &sp.id)),
-                false => Op::new(ABORT, &["reset", "-q", &sp.id, "--"]),
+                // Undoable: it also drops whatever was committed on top since, in the app or not.
+                false => Op::new(ABORT, &["reset", "-q", &sp.id, "--"]).undo(Undo::Mixed),
             };
             return self.run(ctx, op);
         }
@@ -130,11 +131,12 @@ impl RepoTab {
         self.choice = Some(Choice { title: "Changes left over".into(), text, ops });
     }
 
-    /// Aborted: back to where the split started, so the steps in between are moot.
+    /// Aborted: back to where the split started, so the steps in between are moot
+    /// (the abort's own entry stays).
     pub(super) fn split_aborted(&mut self) {
         let Some(sp) = self.split.take() else { return };
         let steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
-        self.undo.extend(steps.into_iter().filter(|e| matches!(e.kind, UndoKind::Discard(_))));
+        self.undo.extend(steps.into_iter().filter(|e| matches!(e.kind, UndoKind::Discard(_)) || e.label == ABORT));
     }
 
     /// The split is done: merge its undo entries into one.
@@ -287,6 +289,46 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!(log("main"), "c3\nc2 part\nc1\n");
         assert!(t.split.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Aborting a HEAD split also drops commits made after the parts (in a
+    /// terminal, say): ⌘Z brings the branch back as it was.
+    #[test]
+    fn head_split_abort_is_undoable() {
+        let dir = scratch("split-head-abort");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "c1");
+        for f in ["x", "y"] {
+            std::fs::write(dir.join(f), f).unwrap();
+        }
+        sh(&dir, &["add", "x", "y"]);
+        sh(&dir, &["commit", "-q", "-m", "xy"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Split(sh(&dir, &["rev-parse", "HEAD"]).trim().into()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Stage", &["add", "x"]).light()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Commit", &["commit", "-q", "-m", "x"]).undo(Undo::Soft)));
+        settle(&ctx, &mut t);
+        sh(&dir, &["add", "y"]);
+        sh(&dir, &["commit", "-q", "-m", "y"]);
+        commit(&dir, "later", "later work");
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        t.apply(&ctx, Action::Reload);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::SplitEnd { abort: true });
+        settle(&ctx, &mut t);
+        assert!(t.split.is_none());
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "xy\nc1\n");
+        assert_eq!(t.undo_label(), Some(ABORT));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

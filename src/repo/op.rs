@@ -53,7 +53,7 @@ pub struct Op {
     /// A Settings → Tools command: its label is the user's free text, so the
     /// label-keyed follow-ups (commit box, split, compose) must not fire.
     pub custom: bool,
-    /// Run (errors ignored, even when cancelled) if a command fails: rolls a multi-step op back.
+    /// Run (even when cancelled) if a command fails: rolls a multi-step op back, stopping at a failing step.
     pub on_fail: Vec<Vec<String>>,
 }
 
@@ -128,26 +128,38 @@ pub(super) enum Done {
 
 /// Runs an op's commands in order, stopping at the first failure.
 pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
+    let one = |args: &Vec<String>| {
+        let a: Vec<&str> = args.iter().map(String::as_str).collect();
+        match a.as_slice() {
+            [super::tools::SHELL, line] => git::run_shell(dir, line),
+            [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
+            [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
+            [super::remotes::PR_GUARD, b, seen] => super::remotes::pr_guard(dir, b, seen),
+            [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
+            [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
+                true => Ok(String::new()),
+                false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
+            },
+            [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
+                git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
+                _ => Ok(String::new()),
+            },
+            _ => git::run_input(dir, &a, op.input.as_deref()),
+        }
+    };
     let all = || {
         let mut out = Ok(String::new());
         for args in &op.cmds {
-            let a: Vec<&str> = args.iter().map(String::as_str).collect();
-            out = match a.as_slice() {
-                [super::tools::SHELL, line] => git::run_shell(dir, line),
-                [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
-                [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
-                [super::remotes::PR_GUARD, b, seen] => super::remotes::pr_guard(dir, b, seen),
-                [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
-                [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
-                    true => Ok(String::new()),
-                    false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
-                },
-                _ => git::run_input(dir, &a, op.input.as_deref()),
-            };
+            out = one(args);
             if out.is_err() {
                 if !op.on_fail.is_empty() {
-                    git::Cancel::default().scope(|| op.on_fail.iter().for_each(|a| drop(git::run(dir, &a.iter().map(String::as_str).collect::<Vec<_>>()))));
-                    out = out.map_err(|e| if e == git::CANCELLED { e } else { format!("{e}\nRolled back to where it started.") });
+                    // A later step after a failed one could hit the wrong ref (a still-detached rebase HEAD).
+                    let back = git::Cancel::default().scope(|| op.on_fail.iter().try_for_each(|a| one(a).map(drop)));
+                    out = out.map_err(|e| match back {
+                        Err(b) => format!("{e}\nRolling back failed too, so the repository may be left part-way:\n{b}"),
+                        Ok(()) if e == git::CANCELLED => e,
+                        Ok(()) => format!("{e}\nRolled back to where it started."),
+                    });
                 }
                 break;
             }
@@ -650,7 +662,7 @@ mod tests {
     use super::super::testutil::{commit, identity, scratch, settle, sh};
     use super::super::data::load_all;
     use super::super::{Action, RepoTab, View};
-    use super::exec;
+    use super::{exec, Op};
     use crate::git;
 
     /// Unstaging a `git mv` rename unstages both halves: no lone deletion left staged.
@@ -923,6 +935,21 @@ mod tests {
         assert_eq!(tip("fork.git"), sh(&a, &["rev-parse", "HEAD"]));
         assert_eq!(tip("up.git"), up);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A rollback step that fails stops the rollback and says so, instead of claiming success.
+    #[test]
+    fn failed_rollback_is_reported() {
+        let dir = scratch("rollback-fail");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "c1");
+        let mut op = Op::new("X", &["rev-parse", "-q", "--verify", "nope"]);
+        op.on_fail = vec![vec!["read-tree".into(), "--reset".into(), "nope".into()], vec!["tag".into(), "ran".into()]];
+        let e = exec(&dir, &op).unwrap_err();
+        assert!(!e.contains("Rolled back") && e.contains("Rolling back failed"), "{e}");
+        assert_eq!(sh(&dir, &["tag", "-l"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A branch delete that git refuses for one name (it is being rebased) still deletes

@@ -249,6 +249,9 @@ fn on_branch(dir: &Path, commit: &str) -> Res<()> {
 /// `exec` pseudo-command: `HEAD_IS state` fails unless [`head_state`] is still `state`.
 pub(super) const HEAD_IS: &str = "!head-is";
 
+/// `exec` pseudo-command: `rebase --abort` if a rebase is in progress, else nothing.
+pub(super) const ABORT_ANY: &str = "!abort-rebase";
+
 /// `refs/heads/x <sha>` (or just the sha when detached).
 pub(super) fn head_state(dir: &Path) -> String {
     let sym = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();

@@ -199,7 +199,7 @@ impl Plan {
             .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-q", "-i", "--autosquash", "--autostash", &base])
             .then(&["read-tree", "--reset", &self.index])
             .undo(Undo::Soft);
-        op.on_fail = [&["rebase", "--abort"][..], &["reset", "-q", "--soft", &self.head], &["read-tree", "--reset", &self.index]]
+        op.on_fail = [&[super::rebase::ABORT_ANY][..], &["reset", "-q", "--soft", &self.head], &["read-tree", "--reset", &self.index]]
             .iter()
             .map(|a| a.iter().map(|s| s.to_string()).collect())
             .collect();
@@ -375,8 +375,15 @@ mod tests {
         assert_eq!(plan.rows.iter().map(|r| r.target.is_ok()).collect::<Vec<_>>(), [false, true]);
         assert!(crate::repo::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).is_err());
         assert_eq!(git::state(&git::git_dir(&dir).unwrap()), git::State::Clean);
-        assert_eq!((g(&["rev-parse", "HEAD"]), g(&["write-tree"])), (head, index));
+        assert_eq!((g(&["rev-parse", "HEAD"]), g(&["write-tree"])), (head.clone(), index.clone()));
         assert_eq!(std::fs::read_to_string(dir.join("README")).unwrap(), "root\nroot staged, then edited more\n");
+        // A fixup commit that fails (before any rebase) rolls back too.
+        g(&["config", "commit.gpgSign", "true"]);
+        g(&["config", "gpg.program", "false"]);
+        let e = crate::repo::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap_err();
+        assert!(e.contains("Rolled back"), "{e}");
+        assert_eq!((g(&["rev-parse", "HEAD"]), g(&["write-tree"])), (head, index));
+        g(&["config", "--unset", "commit.gpgSign"]);
 
         g(&["reset", "-q", "--hard"]);
         write("g", "wip\n");
