@@ -157,8 +157,14 @@ impl RepoData {
     /// differently named long-lived branch it was started from (`checkout -b feat origin/main`),
     /// which must not get its commits: then a branch of its own name.
     pub fn push_dest<'a>(&self, branch: &'a str, upstream: &'a str) -> Option<(&'a str, &'a str)> {
-        let (remote, rb) = upstream.split_once('/')?;
+        let (remote, rb) = self.split_remote(upstream)?;
         Some(if rb != branch && self.branch_rank(rb) < 2 { (remote, branch) } else { (remote, rb) })
+    }
+
+    /// `origin/feature/x` -> `("origin", "feature/x")`. A remote's name may contain `/`
+    /// (`a/b/x` is x on remote a/b), so it is the longest remote `name` starts with.
+    pub fn split_remote<'a>(&self, name: &'a str) -> Option<(&'a str, &'a str)> {
+        split_remote(&self.remotes, name)
     }
 
     pub fn default_branch(&self) -> String {
@@ -203,7 +209,7 @@ impl RepoData {
                 RefKind::Local if r.head => 0,
                 RefKind::Local if is_trunk(&r.name) => 1,
                 RefKind::Local => 2,
-                RefKind::Remote if is_trunk(r.remote_branch()) => 3,
+                RefKind::Remote if split_remote(&remotes, &r.name).is_some_and(|(_, b)| is_trunk(b)) => 3,
                 RefKind::Remote => 4,
                 RefKind::Tag => 5,
             };
@@ -254,6 +260,12 @@ impl RepoData {
             reach: Default::default(),
         }
     }
+}
+
+fn split_remote<'a>(remotes: &[(String, String)], name: &'a str) -> Option<(&'a str, &'a str)> {
+    let has = |r: &&str| name.strip_prefix(r).and_then(|b| b.strip_prefix('/')).is_some_and(|b| !b.is_empty());
+    let n = remotes.iter().map(|r| r.0.as_str()).filter(has).map(str::len).max()?;
+    Some((&name[..n], &name[n + 1..]))
 }
 
 pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {

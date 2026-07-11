@@ -114,12 +114,13 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                 // Headers never truncate their text themselves; hand them a galley cut to their width.
                 let title = egui::WidgetText::from(rem).into_galley(ui, None, ui.available_width() - ui.spacing().indent, egui::TextStyle::Button);
                 let resp = egui::CollapsingHeader::new(title).id_salt(("remote", rem)).default_open(true).show(ui, |ui| {
-                    let mut list: Vec<_> = remote_refs.iter().copied().filter(|r| r.remote() == rem).collect();
-                    list.sort_by_key(|r| d.branch_rank(r.remote_branch()));
-                    let names: Vec<&str> = list.iter().map(|r| r.remote_branch()).collect();
+                    let mut list: Vec<_> = remote_refs.iter().copied().filter(|r| d.split_remote(&r.name).is_some_and(|s| s.0 == rem)).collect();
+                    let n = rem.len() + 1;
+                    list.sort_by_key(|r| d.branch_rank(&r.name[n..]));
+                    let names: Vec<&str> = list.iter().map(|r| &r.name[n..]).collect();
                     for (i, r) in list.iter().copied().enumerate() {
                         pinned_separator(ui, d, i, &names);
-                        let text = view_style(ui, d, r, RichText::new(r.remote_branch()));
+                        let text = view_style(ui, d, r, RichText::new(&r.name[n..]));
                         let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
                         branch_dnd(ui, &resp, &r.name, &r.full, acts);
                         hover_ref(ui, &resp, &r.target);

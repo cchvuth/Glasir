@@ -317,8 +317,11 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 };
                 pick(ui, format!("{} Merge {src} into {dst}", icon::GIT_MERGE), Action::Git(merge.undo(Undo::Keep)));
             }
-            if dr.kind == git::RefKind::Remote && local(s) {
-                let push = Op::new(format!("Push {src}"), &["push", dr.remote(), &format!("{}:refs/heads/{}", s.full, dr.remote_branch())]);
+            if dr.kind == git::RefKind::Remote
+                && local(s)
+                && let Some((remote, branch)) = d.split_remote(dst)
+            {
+                let push = Op::new(format!("Push {src}"), &["push", remote, &format!("{}:refs/heads/{branch}", s.full)]);
                 pick(ui, format!("{} Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
             }
             // `git rebase <dst> <remote ref>` (or `refs/heads/<src>`) would rebase a detached HEAD

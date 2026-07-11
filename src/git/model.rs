@@ -42,16 +42,6 @@ pub struct Ref {
     pub annotated: bool,
 }
 
-impl Ref {
-    pub fn remote(&self) -> &str {
-        self.name.split('/').next().unwrap_or("")
-    }
-    /// `origin/feature/x` -> `feature/x`
-    pub fn remote_branch(&self) -> &str {
-        self.name.split_once('/').map_or(&*self.name, |(_, b)| b)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct Change {
     pub path: String,

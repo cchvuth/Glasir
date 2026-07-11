@@ -122,27 +122,29 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
 /// Fetch pull request `{}` (filled in by a prompt) from `remote` into `pr/{}` and check it
 /// out. Works on github.com and GitHub Enterprise, which publish `refs/pull/<n>/head`.
 pub fn pr_checkout(remote: &str) -> Op {
-    // Via FETCH_HEAD and `-B`: running it again updates pr/<n>, even checked out or force-pushed.
+    // Via `-B`: running it again updates pr/<n>, even checked out or force-pushed.
     // `seen` remembers the head last checked out, so a force-push isn't taken for local work.
+    // Into a ref of its own, not FETCH_HEAD: a background fetch may rewrite that meanwhile.
     let seen = format!("refs/glasir/pr/{remote}/{{}}");
-    Op::new("Check out pull request", &["fetch", "--progress", remote, "refs/pull/{}/head"])
-        .then(&[PR_GUARD, "pr/{}", &seen])
-        .then(&["checkout", "-B", "pr/{}", "FETCH_HEAD", "--"])
-        .then(&["update-ref", &seen, "FETCH_HEAD"])
+    let fetched = format!("{seen}-fetched");
+    Op::new("Check out pull request", &["fetch", "--progress", remote, &format!("+refs/pull/{{}}/head:{fetched}")])
+        .then(&[PR_GUARD, "pr/{}", &fetched, &seen])
+        .then(&["checkout", "-B", "pr/{}", &fetched, "--"])
+        .then(&["update-ref", &seen, &fetched])
         .undo(Undo::Keep)
 }
 
-/// `exec` pseudo-command `PR_GUARD branch seen`: fails when `branch` has commits that are
-/// neither in FETCH_HEAD nor in ref `seen`, which resetting it would drop.
+/// `exec` pseudo-command `PR_GUARD branch fetched seen`: fails when `branch` has commits that
+/// are neither in `fetched` nor in ref `seen`, which resetting it would drop.
 pub(super) const PR_GUARD: &str = "!pr-guard";
 
-pub(super) fn pr_guard(dir: &std::path::Path, branch: &str, seen: &str) -> crate::git::Res<String> {
+pub(super) fn pr_guard(dir: &std::path::Path, branch: &str, fetched: &str, seen: &str) -> crate::git::Res<String> {
     let has = |r: &str| crate::git::run(dir, &["rev-parse", "-q", "--verify", r]).is_ok();
     let full = format!("refs/heads/{branch}");
     if !has(&full) {
         return Ok(String::new());
     }
-    let mut args = vec!["rev-list", "--count", &full, "--not", "FETCH_HEAD"];
+    let mut args = vec!["rev-list", "--count", &full, "--not", fetched];
     if has(seen) {
         args.push(seen);
     }
@@ -152,11 +154,11 @@ pub(super) fn pr_guard(dir: &std::path::Path, branch: &str, seen: &str) -> crate
     }
 }
 
-/// Delete remote-tracking branch `r`'s branch on its remote. Qualified: once the branch
-/// is gone there, a short name would delete a same-named tag instead.
-pub fn delete_branch(r: &crate::git::Ref) -> Op {
-    Op::new(format!("Delete {}", r.name), &["push", r.remote(), "--delete", &format!("refs/heads/{}", r.remote_branch())])
-        .confirm(format!("Delete branch {} on remote {}?", r.remote_branch(), r.remote()))
+/// Delete `branch` on `remote`. Qualified: once the branch is gone there, a short name
+/// would delete a same-named tag instead.
+pub fn delete_branch(remote: &str, branch: &str) -> Op {
+    Op::new(format!("Delete {remote}/{branch}"), &["push", remote, "--delete", &format!("refs/heads/{branch}")])
+        .confirm(format!("Delete branch {branch} on remote {remote}?"))
 }
 
 /// Fast-forward local branch `name` to branch `rb` of `remote` without checking it out.
@@ -376,8 +378,7 @@ mod tests {
         sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
         sh(&dir, &["branch", "dev", "origin/dev"]);
         sh(&up, &["branch", "-D", "release-1"]);
-        let stale = git::refs(&dir).unwrap().into_iter().find(|r| r.name == "origin/release-1").unwrap();
-        exec(&dir, &delete_branch(&stale)).unwrap(); // (git only warns that it is gone)
+        exec(&dir, &delete_branch("origin", "release-1")).unwrap(); // (git only warns that it is gone)
         assert_eq!(sh(&up, &["tag"]), "release-1\n");
 
         sh(&up, &["checkout", "-q", "dev"]);
@@ -388,6 +389,62 @@ mod tests {
         sh(&up, &["reset", "-q", "--hard", "HEAD~1"]);
         exec(&dir, &pull_ff("dev", "origin", "dev")).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "refs/heads/dev"]), b);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
+
+    /// A remote's name may contain `/`: "Delete x from a/b" deletes x on remote a/b,
+    /// never branch b/x on a remote named a.
+    #[test]
+    fn remote_names_with_slashes() {
+        let (up1, up2) = (scratch("slash-up1"), scratch("slash-up2"));
+        for up in [&up1, &up2] {
+            sh(up, &["init", "-q", "-b", "main"]);
+            identity(up);
+            commit(up, "a.txt", "one\n");
+        }
+        sh(&up1, &["branch", "x"]);
+        sh(&up2, &["branch", "b/x"]);
+        let dir = scratch("slash");
+        sh(&dir, &["clone", "-q", "-o", "a/b", &up1.to_string_lossy(), "."]);
+        sh(&dir, &["remote", "add", "a", &up2.to_string_lossy()]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(d.push_dest("main", "a/b/main"), Some(("a/b", "main")));
+        let (remote, branch) = d.split_remote("a/b/x").unwrap();
+        exec(&dir, &delete_branch(remote, branch)).unwrap();
+        assert_eq!(sh(&up2, &["branch", "--list", "b/x"]).trim(), "b/x");
+        assert_eq!(sh(&up1, &["branch", "--list", "x"]), "");
+        for p in [dir, up1, up2] {
+            let _ = std::fs::remove_dir_all(p);
+        }
+    }
+
+    /// The background fetch rewrites FETCH_HEAD; one finishing mid-checkout must not
+    /// reset pr/<n> to some other branch.
+    #[test]
+    fn pr_checkout_survives_a_concurrent_fetch() {
+        let up = scratch("prrace-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        commit(&up, "a.txt", "pr work\n");
+        sh(&up, &["update-ref", "refs/pull/7/head", "HEAD"]);
+        let pr = sh(&up, &["rev-parse", "HEAD"]);
+        sh(&up, &["reset", "-q", "--hard", "HEAD~1"]);
+        let dir = scratch("prrace");
+        sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
+        let mut op = pr_checkout("origin");
+        for a in op.cmds.iter_mut().flatten() {
+            *a = a.replace("{}", "7");
+        }
+        let mut first = op.clone();
+        first.cmds.truncate(1);
+        op.cmds.remove(0);
+        exec(&dir, &first).unwrap();
+        git::fetch_quiet(&dir).unwrap();
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "pr/7"]), pr);
+        assert_eq!(sh(&dir, &["rev-parse", "refs/glasir/pr/origin/7"]), pr);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }

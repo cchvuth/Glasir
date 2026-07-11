@@ -134,7 +134,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::tools::SHELL, line] => git::run_shell(dir, line),
             [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP, ..] => stash_cmd(dir, &a),
             [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
-            [super::remotes::PR_GUARD, b, seen] => super::remotes::pr_guard(dir, b, seen),
+            [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
             [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
             [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
                 true => Ok(String::new()),
@@ -402,7 +402,7 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
         RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::OpenTab),
         RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
-            let local = r.remote_branch();
+            let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1);
             Some(Action::Git(if d.local(local).is_some() {
                 Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep)
             } else {

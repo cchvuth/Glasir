@@ -51,10 +51,11 @@ fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) 
 
 /// `r` is the branch (local or remote-tracking) whose PR / web pages these open.
 fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
-    let (remote, branch) = match r.kind {
-        RefKind::Remote => (r.remote().to_owned(), r.remote_branch().to_owned()),
-        _ => d.push_dest(&r.name, &r.upstream).map_or(("origin".into(), r.name.clone()), |(a, b)| (a.to_owned(), b.to_owned())),
+    let dest = match r.kind {
+        RefKind::Remote => d.split_remote(&r.name),
+        _ => d.push_dest(&r.name, &r.upstream),
     };
+    let (remote, branch) = dest.map_or(("origin".into(), r.name.clone()), |(a, b)| (a.to_owned(), b.to_owned()));
     ui.separator();
     if crate::ai::enabled() && ui.button(format!("{} Write pull request with AI…", icon::SPARKLE)).clicked() {
         let def = d.default_branch();
@@ -80,7 +81,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         if !r.upstream.is_empty() && r.behind > 0 && r.ahead == 0 && ui.button(format!("Fast-forward {name} to {}", r.upstream)).clicked() {
             acts.push(Action::Git(Op::new(format!("Fast-forward {name}"), &["fetch", ".", &format!("{}:{name}", r.upstream)]).undo(Undo::Keep)));
         }
-        if let Some((remote, rb)) = r.upstream.split_once('/').filter(|_| !r.gone)
+        if let Some((remote, rb)) = d.split_remote(&r.upstream).filter(|_| !r.gone)
             && ui.button(format!("Pull {name} (fast-forward, without checkout)")).clicked()
         {
             acts.push(Action::Git(crate::repo::remotes::pull_ff(name, remote, rb)));
@@ -153,7 +154,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
     }
     integrate_items(ui, d, &r.name, d.rev(r), acts);
     compare_items(ui, d, &r.name, acts);
-    let local = r.remote_branch().to_owned();
+    let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
     if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
         acts.push(prompt(
             format!("Worktree folder for {local}"),
@@ -162,8 +163,10 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
         ));
     }
     ui.separator();
-    if ui.button(format!("Delete {} from {}", r.remote_branch(), r.remote())).clicked() {
-        acts.push(Action::Git(crate::repo::remotes::delete_branch(r)));
+    if let Some((remote, branch)) = d.split_remote(&r.name)
+        && ui.button(format!("Delete {branch} from {remote}")).clicked()
+    {
+        acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch)));
     }
     web_items(ui, d, r, acts);
     ui.separator();
