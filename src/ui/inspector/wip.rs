@@ -208,7 +208,7 @@ impl RepoTab {
                             }
                             for (name, side) in [("Use ours", "--ours"), ("Use theirs", "--theirs")] {
                                 if ui.button(name).clicked() {
-                                    let file = std::fs::symlink_metadata(self.dir.join(&c.path)).is_ok_and(|m| m.is_file());
+                                    let file = std::fs::symlink_metadata(self.dir.join(&c.path)).map_or(true, |m| m.is_file());
                                     acts.push(Action::Git(crate::repo::merge_editor::take_side(name, side, &c.path, file)));
                                 }
                             }

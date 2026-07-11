@@ -170,7 +170,7 @@ pub(crate) struct Loaded {
     pub(crate) original: Vec<u8>,
     /// Why only a whole side can be taken (binary, symlink, deleted, no markers).
     pub(crate) whole: Option<&'static str>,
-    /// A regular file in the working tree (the only kind a backup can copy).
+    /// A regular file in the working tree, or none: what a backup can cover.
     pub(crate) file: bool,
     /// The index has a current, incoming version (false: that side deleted the file).
     pub(crate) stages: [bool; 2],
@@ -257,7 +257,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
         // Never offer to stage markers we couldn't read as "resolved".
         whole = Some("No conflict markers found in this file.");
     }
-    let file = meta.is_ok_and(|m| m.is_file());
+    let file = meta.as_ref().map_or(true, |m| m.is_file());
     Loaded { original, whole, stages, file, size, labels: labels(dir), orig, sides, width }
 }
 
@@ -277,7 +277,7 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
 /// over `original`, the bytes the job read, and the op that marks it resolved.
 /// Refused if the reply kept conflict markers or the file changed since.
 pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> Res<Op> {
-    let out = like(original, reply);
+    let out = like(original, reply)?;
     if conflicts(&parse(&out, marker_size(dir, path))).next().is_some() {
         return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
     }
@@ -286,16 +286,21 @@ pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> 
 }
 
 /// `text` ending in a newline, with CRLF line endings when `original` has them
-/// (the reply comes back with LF).
-fn like(original: &[u8], text: &str) -> String {
+/// (the reply comes back with LF). Refused when `original` mixes both: which
+/// line had which can't be told from the reply.
+fn like(original: &[u8], text: &str) -> Res<String> {
     let mut out = text.to_owned();
     if !out.ends_with('\n') {
         out.push('\n');
     }
-    if original.windows(2).any(|w| w == b"\r\n") && !out.contains("\r\n") {
+    let crlf = original.windows(2).filter(|w| w == b"\r\n").count();
+    if crlf > 0 && !out.contains("\r\n") {
+        if crlf != original.iter().filter(|&&b| b == b'\n').count() {
+            return Err(format!("The file mixes CRLF and LF line endings, which {}'s answer can't keep; resolve it with the merge editor's per-conflict choices.", crate::ai::name()));
+        }
         out = out.replace('\n', "\r\n");
     }
-    out
+    Ok(out)
 }
 
 fn marker_size(dir: &Path, path: &str) -> usize {
@@ -309,7 +314,7 @@ pub(crate) fn whole_ops(path: &str, d: &Loaded) -> [Op; 2] {
     let gone = d.stages.contains(&false);
     [(0, "--ours", "Take current"), (1, "--theirs", "Take incoming")].map(|(i, side, name)| {
         if !d.stages[i] {
-            Op::new("Delete file", &["--literal-pathspecs", "rm", "-q", "--", path]).light()
+            overwrites(Op::new("Delete file", &["--literal-pathspecs", "rm", "-q", "--", path]).light(), path, d.file)
         } else if gone {
             Op::new("Keep file", &["--literal-pathspecs", "add", "--", path]).light()
         } else {
@@ -318,11 +323,21 @@ pub(crate) fn whole_ops(path: &str, d: &Loaded) -> [Op; 2] {
     })
 }
 
-/// `checkout --ours|--theirs` and stage. The working file may hold a resolution made
-/// elsewhere: backed up (⌘Z) when it's a regular file; a backup would refuse anything else.
+/// `checkout --ours|--theirs` and stage.
 pub fn take_side(name: &str, side: &str, path: &str, file: bool) -> Op {
-    let op = Op::new(name, &["--literal-pathspecs", "checkout", side, "--", path]).then(&["--literal-pathspecs", "add", "--", path]).light();
-    if file { op.backup(Backup::Paths(vec![path.into()])) } else { op }
+    overwrites(Op::new(name, &["--literal-pathspecs", "checkout", side, "--", path]).then(&["--literal-pathspecs", "add", "--", path]).light(), path, file)
+}
+
+/// `op` replaces the working `path`, which may hold a resolution made elsewhere:
+/// backed up (⌘Z) when `file` (a regular file, or none); a backup would refuse
+/// anything else (symlink, submodule), so that is confirmed instead.
+fn overwrites(op: Op, path: &str, file: bool) -> Op {
+    if file {
+        op.backup(Backup::Paths(vec![path.into()]))
+    } else {
+        let what = op.label.clone();
+        op.confirm(format!("{what} replaces {path} in the working tree. It isn't a regular file, so this can't be undone."))
+    }
 }
 
 pub fn stage(path: &str) -> Op {
@@ -367,7 +382,13 @@ impl Editor {
 
     /// Replace the output (e.g. with Claude's resolution).
     pub fn fill(&mut self, text: &str) {
-        self.output = like(self.data.as_ref().map_or(&[][..], |d| &d.original[..]), text);
+        match like(self.data.as_ref().map_or(&[][..], |d| &d.original[..]), text) {
+            Ok(out) => self.output = out,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        }
         self.reparse();
     }
 
@@ -432,6 +453,11 @@ mod tests {
         std::fs::write(dir.join("f"), &original).unwrap();
         assert_eq!(apply_ai(&dir, "f", &original, "a\nxy").unwrap().cmds, stage("f").cmds);
         assert_eq!(read(), "a\r\nxy\r\n");
+        // Mixed line endings: which line keeps which can't be told from the reply.
+        let mixed = b"a\r\nb\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n".to_vec();
+        std::fs::write(dir.join("f"), &mixed).unwrap();
+        assert!(apply_ai(&dir, "f", &mixed, "a\nb\nxy").unwrap_err().contains("line endings"));
+        assert_eq!(std::fs::read(dir.join("f")).unwrap(), mixed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -675,6 +701,59 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "hand merged\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Modify/delete: "Delete file" over an edited survivor is undoable; a symlink side is confirmed.
+    #[test]
+    fn whole_file_choices_never_lose_the_working_file() {
+        use crate::repo::testutil::{commit, identity, scratch, settle};
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("merge-du-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "f", "x\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["rm", "-q", "f"]);
+        sh(&dir, &["commit", "-q", "-m", "rm"]);
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        std::fs::write(dir.join("f"), "edited\n").unwrap();
+        let [del, _] = whole_ops("f", &load(&dir, "f"));
+        assert_eq!(del.label, "Delete file");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(del));
+        settle(&ctx, &mut t);
+        assert!(!dir.join("f").exists());
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "edited\n");
+
+        #[cfg(unix)]
+        {
+            sh(&dir, &["merge", "--abort"]);
+            let link = |to: &str| {
+                let _ = std::fs::remove_file(dir.join("l"));
+                std::os::unix::fs::symlink(to, dir.join("l")).unwrap();
+            };
+            link("base");
+            sh(&dir, &["add", "l"]);
+            sh(&dir, &["commit", "-q", "-m", "l"]);
+            sh(&dir, &["checkout", "-q", "-b", "y"]);
+            link("y");
+            sh(&dir, &["commit", "-q", "-am", "y"]);
+            sh(&dir, &["checkout", "-q", "main"]);
+            link("main");
+            sh(&dir, &["commit", "-q", "-am", "main"]);
+            assert!(git::run(&dir, &["merge", "y"]).is_err());
+            link("merged");
+            let d = load(&dir, "l");
+            assert!(d.whole.is_some());
+            assert!(whole_ops("l", &d).iter().all(|op| op.confirm.is_some()));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
