@@ -60,6 +60,8 @@ impl App {
         let glass_backdrop = s.native_glass && native_glass(cc);
         #[cfg(not(target_os = "macos"))]
         let glass_backdrop = false;
+        #[cfg(all(target_os = "macos", not(test)))]
+        mac_quit::install(&cc.egui_ctx);
         let mut app =
             App {
             shot,
@@ -138,8 +140,7 @@ impl App {
             self.active = self.tabs.len();
         }
         if cmd && pressed(Key::W) && self.active < self.tabs.len() {
-            self.tabs.remove(self.active);
-            self.active = self.active.min(self.tabs.len().saturating_sub(1));
+            self.close_tab(ctx, self.active);
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Tab)) && !self.tabs.is_empty() {
             self.active = (self.active + 1) % self.tabs.len();
@@ -170,6 +171,18 @@ impl App {
         }
         if let Some(a) = act {
             t.apply(ctx, a);
+        }
+    }
+
+    /// Dropping a tab mid-op drops the op's result: its recovery (e.g. a failed Compose's
+    /// unstage) and its undo step would never happen.
+    pub(super) fn close_tab(&mut self, ctx: &egui::Context, i: usize) {
+        if let Some(b) = self.tabs.get(i).and_then(RepoTab::busy).map(str::to_owned) {
+            return self.toast(ctx, format!("Close this tab once '{b}' finishes (or cancel it)."), true);
+        }
+        self.tabs.remove(i);
+        if self.active > i || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
         }
     }
 
@@ -343,6 +356,8 @@ impl eframe::App for App {
         if self.shortcuts {
             self.shortcuts = super::shortcuts::show(&ctx);
         }
+        #[cfg(target_os = "macos")]
+        mac_quit::BUSY.store(self.tabs.iter().any(|t| t.busy().is_some()), std::sync::atomic::Ordering::SeqCst);
         drop_hint(&ctx, self.drop_hint_shot);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
@@ -374,6 +389,60 @@ fn hold_close(ctx: &egui::Context, busy: Option<&str>, pending: &mut bool) -> bo
     false
 }
 
+/// ⌘Q, the app menu's and the Dock's Quit, and logout send `terminate:`, which winit turns
+/// into an exit without a close request, so `hold_close` never sees it. While an op runs,
+/// cancel the termination and request a close instead, which `hold_close` holds.
+#[cfg(target_os = "macos")]
+mod mac_quit {
+    use objc2::runtime::{AnyObject, Sel};
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub static BUSY: AtomicBool = AtomicBool::new(false);
+    static CTX: OnceLock<egui::Context> = OnceLock::new();
+
+    /// `applicationShouldTerminate:` → NSTerminateCancel (0) or NSTerminateNow (1).
+    extern "C-unwind" fn should_terminate(_: *mut AnyObject, _: Sel, _: *mut AnyObject) -> usize {
+        match CTX.get() {
+            Some(ctx) if BUSY.load(Ordering::SeqCst) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                0
+            }
+            _ => 1,
+        }
+    }
+
+    #[cfg(not(test))]
+    pub fn install(ctx: &egui::Context) {
+        use objc2::runtime::{AnyClass, Imp};
+        let _ = CTX.set(ctx.clone());
+        // SAFETY: main thread; winit's delegate class lacks this method, so this only adds it.
+        unsafe {
+            let app: *mut AnyObject = objc2::msg_send![objc2::class!(NSApplication), sharedApplication];
+            let delegate: *mut AnyObject = objc2::msg_send![app, delegate];
+            let Some(d) = delegate.as_ref() else { return };
+            let imp: Imp = std::mem::transmute(should_terminate as extern "C-unwind" fn(_, _, _) -> usize);
+            objc2::ffi::class_addMethod(d.class() as *const AnyClass as *mut AnyClass, objc2::sel!(applicationShouldTerminate:), imp, c"Q@:@".as_ptr());
+            // AppKit may cache which delegate methods exist when the delegate is set.
+            let _: () = objc2::msg_send![app, setDelegate: delegate];
+        }
+    }
+
+    #[test]
+    fn quit_mid_op_becomes_a_held_close() {
+        let ctx = egui::Context::default();
+        let _ = CTX.set(ctx.clone());
+        let null = std::ptr::null_mut();
+        BUSY.store(true, Ordering::SeqCst);
+        assert_eq!(should_terminate(null, objc2::sel!(applicationShouldTerminate:), null), 0);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        assert!(out.viewport_output[&egui::ViewportId::ROOT].commands.contains(&egui::ViewportCommand::Close));
+        BUSY.store(false, Ordering::SeqCst);
+        assert_eq!(should_terminate(null, objc2::sel!(applicationShouldTerminate:), null), 1);
+    }
+}
+
 #[cfg(test)]
 mod close_tests {
     use egui::{RawInput, ViewportCommand, ViewportEvent, ViewportId};
@@ -399,5 +468,21 @@ mod close_tests {
         assert!(!held && cmds.contains(&ViewportCommand::Close));
         let (_, cmds) = frame(true, None, &mut pending);
         assert!(!cmds.contains(&ViewportCommand::CancelClose));
+    }
+
+    #[test]
+    fn closing_a_tab_waits_for_its_op() {
+        use crate::repo::{Action, Op};
+        let dir = std::env::temp_dir().join(format!("glasir-close-tab-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        app.tabs[0].apply(&ctx, Action::Git(Op::new("Slow", &["-c", "alias.slow=!sleep 1", "slow"])));
+        assert!(app.tabs[0].busy().is_some());
+        app.close_tab(&ctx, 0);
+        assert_eq!(app.tabs.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

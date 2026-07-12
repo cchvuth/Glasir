@@ -745,4 +745,30 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wt);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A branch another worktree is rebasing shows there as detached: still never move it,
+    /// since finishing that rebase would overwrite what the undo restored.
+    #[test]
+    fn undo_leaves_branches_rebasing_elsewhere() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, View};
+        let (dir, wt) = (scratch("undo-wt-rebasing"), scratch("undo-wt-rebasing-other"));
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a");
+        sh(&dir, &["branch", "feat"]);
+        commit(&dir, "b", "b");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Move feat", &["branch", "-f", "feat", "main"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        sh(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "feat"]);
+        assert!(git::run(&wt, &["rebase", "-q", "--exec", "false", "HEAD~1"]).is_err());
+        t.apply(&ctx, Action::Undo);
+        assert!(settle(&ctx, &mut t).iter().any(|m| m.error && m.text.contains("another worktree")));
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["rev-parse", "main"]));
+        let _ = std::fs::remove_dir_all(&wt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

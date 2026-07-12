@@ -61,10 +61,7 @@ impl App {
                     }
                 }
                 if let Some(i) = close {
-                    self.tabs.remove(i);
-                    if self.active > i || self.active >= self.tabs.len() {
-                        self.active = self.active.saturating_sub(1);
-                    }
+                    self.close_tab(ui.ctx(), i);
                 }
             });
         });
