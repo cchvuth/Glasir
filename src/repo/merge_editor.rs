@@ -279,7 +279,10 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
 pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> Res<Op> {
     let out = like(original, reply)?;
     let n = marker_size(dir, path);
-    if conflicts(&parse(&out, n)).next().is_some() || stray(&out, n) > stray(&String::from_utf8_lossy(original), n) {
+    // Every marker line the reply keeps must be one the file already had outside its conflicts.
+    let mut had = stray(&String::from_utf8_lossy(original), n);
+    let new = stray(&out, n).into_iter().any(|l| had.iter().position(|h| *h == l).map(|i| had.swap_remove(i)).is_none());
+    if conflicts(&parse(&out, n)).next().is_some() || new {
         return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
     }
     save(dir, path, original, &out)?;
@@ -287,9 +290,9 @@ pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> 
 }
 
 /// Marker lines outside well-formed conflict blocks.
-fn stray(text: &str, n: usize) -> usize {
+fn stray(text: &str, n: usize) -> Vec<String> {
     let text = parse(text, n).into_iter().filter_map(|c| if let Chunk::Text(t) = c { Some(t) } else { None }).collect::<String>();
-    text.split_inclusive('\n').filter(|l| b"<|=>".iter().any(|&c| is_marker(l, c, n))).count()
+    text.lines().filter(|l| b"<|=>".iter().any(|&c| is_marker(l, c, n))).map(str::to_owned).collect()
 }
 
 /// `text` ending in a newline, with CRLF line endings when `original` has them
@@ -462,7 +465,7 @@ mod tests {
         assert_eq!(read(), "a\r\nxy\r\n");
         // A lone marker line left in the reply is refused; one the file already had outside its conflicts is kept.
         let original = b"T\n=======\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n".to_vec();
-        for reply in ["T\n=======\nOURS\n<<<<<<< HEAD\nx\n=======\n", "T\n=======\n<<<<<<< HEAD\nOURS\n", "T\n=======\na\n=======\nc", "T\n=======\nx\n>>>>>>> theirs"] {
+        for reply in ["T\n=======\nOURS\n<<<<<<< HEAD\nx\n=======\n", "T\n=======\n<<<<<<< HEAD\nOURS\n", "T\n=======\na\n=======\nc", "T\n=======\nx\n>>>>>>> theirs", "T\n<<<<<<< HEAD\nx\n"] {
             std::fs::write(dir.join("f"), &original).unwrap();
             assert!(apply_ai(&dir, "f", &original, reply).unwrap_err().contains("conflict markers"), "{reply}");
         }
@@ -745,10 +748,20 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "edited\n");
+        // The conflict comes back too, not a staged deletion beside an untracked copy.
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "DU f\n");
+        // Once the merge is committed, the file comes back untracked: no conflict without a merge.
+        let [del, _] = whole_ops("f", &load(&dir, "f"));
+        t.apply(&ctx, Action::Git(del));
+        settle(&ctx, &mut t);
+        sh(&dir, &["commit", "-q", "-m", "merged"]);
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "?? f\n");
 
         #[cfg(unix)]
         {
-            sh(&dir, &["merge", "--abort"]);
+            std::fs::remove_file(dir.join("f")).unwrap();
             let link = |to: &str| {
                 let _ = std::fs::remove_file(dir.join("l"));
                 std::os::unix::fs::symlink(to, dir.join("l")).unwrap();

@@ -87,15 +87,20 @@ impl RepoTab {
     }
 }
 
-/// `exec` pseudo-command: `DIFF_IS staged context code path old_path hunks` fails unless
-/// the file's diff still has exactly these hunks.
+/// `exec` pseudo-command: `DIFF_IS staged context code path old_path diff` fails unless
+/// the file's diff is still exactly `diff` ([`shape`]).
 pub(super) const DIFF_IS: &str = "!diff-is";
+
+/// Header (mode changes, which a whole-hunk patch copies) and hunks.
+fn shape(f: &FileDiff) -> String {
+    format!("{:?}{:?}", f.header, f.hunks)
+}
 
 pub(super) fn diff_is(dir: &std::path::Path, a: &[&str]) -> Res<String> {
     let [_, staged, context, code, path, old, want] = a else { return Err("bad diff guard".into()) };
     let c = git::Change { path: path.to_string(), old_path: (!old.is_empty()).then(|| old.to_string()), code: code.chars().next().unwrap_or('M') };
     let o = DiffOpts { ignore_ws: false, context: context.parse().unwrap_or(3) };
-    match format!("{:?}", git::worktree_diff(dir, &c, *staged == "1", o)?.hunks) == *want {
+    match shape(&git::worktree_diff(dir, &c, *staged == "1", o)?) == *want {
         true => Ok(String::new()),
         false => Err("The file changed since this diff was shown, so nothing was applied. Check the updated diff and try again.".into()),
     }
@@ -106,7 +111,7 @@ pub(super) fn diff_is(dir: &std::path::Path, a: &[&str]) -> Res<String> {
 /// and `--recount` would land the hunk on an identical block elsewhere.
 pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch: String, args: &[&str]) -> Op {
     let DiffSrc::Worktree { change: c, staged } = src else { unreachable!("patches apply to worktree diffs") };
-    let (context, code, hunks) = (opts.context.to_string(), c.code.to_string(), format!("{:?}", f.hunks));
+    let (context, code, hunks) = (opts.context.to_string(), c.code.to_string(), shape(f));
     let guard = [DIFF_IS, if *staged { "1" } else { "0" }, &context, &code, &c.path, c.old_path.as_deref().unwrap_or(""), &hunks];
     let mut a = vec!["apply", "--recount", "--whitespace=nowarn"];
     a.extend_from_slice(args);
@@ -162,6 +167,30 @@ mod tests {
         std::fs::write(dir.join("f"), file("EDIT", "x")).unwrap();
         super::super::op::exec(&dir, &stage).unwrap();
         assert_eq!(sh(&dir, &["show", ":f"]), file("EDIT", "x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard covers the diff's header too: a mode change undone since isn't staged.
+    #[cfg(unix)]
+    #[test]
+    fn stale_mode_change_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("stale-mode");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        let chmod = |m| std::fs::set_permissions(dir.join("f"), std::fs::Permissions::from_mode(m)).unwrap();
+        std::fs::write(dir.join("f"), "b\n").unwrap();
+        chmod(0o755);
+        let c = git::Change { path: "f".into(), old_path: None, code: 'M' };
+        let o = DiffOpts { ignore_ws: false, context: 3 };
+        let f = git::worktree_diff(&dir, &c, false, o).unwrap();
+        assert!(f.header.iter().any(|h| h == "new mode 100755"), "{:?}", f.header);
+        let src = DiffSrc::Worktree { change: c, staged: false };
+        let stage = patch_op("Stage hunk", &src, o, &f, git::partial_patch(&f, |_, _| true, false).unwrap(), &["--cached"]);
+        chmod(0o644);
+        assert!(super::super::op::exec(&dir, &stage).is_err());
+        assert_eq!(sh(&dir, &["diff", "--cached"]), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

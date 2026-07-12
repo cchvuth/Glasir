@@ -123,7 +123,8 @@ impl Op {
 
 pub(super) enum Done {
     Op(Op, Res<String>, Option<(Snapshot, Snapshot)>, Option<Saved>),
-    Undo(bool, Res<()>),
+    /// Undo or redo, its result, and whether a failed one moved refs.
+    Undo(bool, Res<()>, bool),
 }
 
 /// Runs an op's commands in order, stopping at the first failure.
@@ -539,14 +540,16 @@ impl RepoTab {
                 self.refresh_diff(ctx);
                 self.reload(ctx, !op.light);
             }
-            Done::Undo(was_undo, res) => {
+            Done::Undo(was_undo, res, moved) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
                 match res {
                     Ok(()) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_)))),
                     Err(e) => {
-                        // Ref snapshots are unreliable now. Discards and reverting ops (deleted
-                        // branches, dropped stashes) stay: they check the state before acting.
-                        from.retain(|e| !matches!(e.kind, UndoKind::Refs { .. }));
+                        // Ref snapshots are unreliable once refs moved (a refusal moves none). Discards
+                        // and reverting ops (deleted branches, dropped stashes) stay: they check the state before acting.
+                        if moved {
+                            from.retain(|e| !matches!(e.kind, UndoKind::Refs { .. }));
+                        }
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
                 }
@@ -886,7 +889,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Undo of a worktree-rename discard brings back the rename: new file's bytes, old one gone.
+    /// Undo of a worktree-rename discard brings back the new file's bytes and removes the old
+    /// one again (the new file comes back untracked, not intent-to-add).
     #[test]
     fn undo_worktree_rename_discard() {
         let dir = scratch("wt-rename-undo");

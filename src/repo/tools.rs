@@ -100,13 +100,18 @@ fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
         match (open, c) {
             (Some('\''), '\'') | (Some('"'), '"') => open = None,
             (Some(_), '{') if key(i).is_some() => return key(i),
-            (Some('\''), _) => {}
+            (Some('\'' | '$'), _) => {}
             (_, c) if c == esc => {
                 if let Some((j, '{')) = chars.next()
                     && key(j).is_some()
                 {
                     return key(j);
                 }
+            }
+            // ANSI-C `$'…'`: where it ends depends on the shell (`\'`), so every later key counts as quoted.
+            (None, '$') if !cfg!(windows) && line[i + 1..].starts_with('\'') => {
+                chars.next();
+                open = Some('$');
             }
             (None, '\'' | '"') => open = Some(c),
             _ => {}
@@ -287,6 +292,11 @@ mod tests {
         let escaped = [format!("echo {esc}{{path}}{esc}'"), format!("echo \"{esc}{{path}}\"")];
         for command in ["echo \"{branch}\"", "prettier --write '{path}'", "echo \"a $(cat '{sha}')\"", &escaped[0], &escaped[1]] {
             assert!(run(command).is_err_and(|e| e.contains("Remove the quotes")), "{command}");
+        }
+        // ANSI-C quoting: `\'` ends it in some shells only, so ours may land inside.
+        #[cfg(unix)]
+        for command in ["echo $'\\'{path}", "echo $'\\'' {path}'"] {
+            assert!(run(command).is_err(), "{command}");
         }
         let o = run(&format!("echo {{branch}} \"{{nope}}\" {esc}\"{{sha}}")).unwrap();
         assert_eq!(o.cmds[0][1], format!("echo 'x$(touch${{IFS}}PWNED)' \"{{nope}}\" {esc}\"'abc'"));

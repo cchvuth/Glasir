@@ -15,6 +15,8 @@ pub(super) struct Saved {
     pub(super) tracked: Vec<String>,
     /// `Backup::All`: paths whose index differs from HEAD (some only there: "MM" back to HEAD, "AD").
     pub(super) staged: Vec<String>,
+    /// `Backup::Paths`: paths that were conflicted; undo brings the conflict back.
+    pub(super) unmerged: Vec<String>,
     /// Untracked files' bytes, and tracked files' exact bytes (line endings) when they fit.
     pub(super) files: Vec<(String, Vec<u8>)>,
     /// `Backup::Overwrite`: put `files` back even if the path exists.
@@ -102,6 +104,10 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         Backup::All => git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]).map(split_z).unwrap_or_default(),
         _ => vec![],
     };
+    let unmerged = match b {
+        Backup::All => vec![],
+        _ => split_z(git::run(dir, &["diff", "--name-only", "-z", "--diff-filter=U"]).map_err(refuse)?).into_iter().filter(|p| tracked.contains(p)).collect(),
+    };
     // git prints raw bytes; a name that isn't UTF-8 decodes lossily and would match no file.
     if let Some(p) = tracked.iter().chain(&staged).chain(&untracked).find(|p| p.contains('\u{FFFD}')) {
         return Err(refuse(format!("{p}: file name isn't valid UTF-8")));
@@ -138,7 +144,7 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         budget = budget.checked_sub(meta.len()).ok_or_else(|| refuse(format!("{p} is too large")))?;
         files.push((p.clone(), std::fs::read(&path).map_err(|e| refuse(format!("{p}: {e}")))?));
     }
-    Ok(Saved { stash, tracked, staged, files, overwrite: matches!(b, Backup::Overwrite(_)), index, after: Default::default() })
+    Ok(Saved { stash, tracked, staged, unmerged, files, overwrite: matches!(b, Backup::Overwrite(_)), index, after: Default::default() })
 }
 
 pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
@@ -182,11 +188,20 @@ pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
             res.map_err(|e| e.to_string())?;
         }
     }
+    // A resolution the op made (take a side, delete) is undone too: git keeps the stages (resolve-undo).
+    // Only while that merge (rebase, pick) is still going: the stages outlive its commit.
+    if !s.unmerged.is_empty() && !matches!(git::state(&git::git_dir(dir)?), git::State::Clean | git::State::Bisecting) {
+        let mut a = vec!["update-index", "--unresolve", "--"];
+        a.extend(s.unmerged.iter().map(String::as_str));
+        git::run(dir, &a)?;
+    }
     // Without a stash every tracked path present then was copied: one without a copy was
     // absent before the op (a discarded rename's old path), so it goes again.
     if s.stash.is_none() {
         for p in s.tracked.iter().filter(|p| !s.files.iter().any(|(f, _)| f == *p)) {
-            match std::fs::remove_file(dir.join(p)) {
+            let res = std::fs::remove_file(dir.join(p));
+            reseal(&[p]);
+            match res {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{p}: {e}")),
                 _ => {}
             }
@@ -196,9 +211,10 @@ pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
 }
 
 /// Undo/redo: move refs from `expect` back to `target`, carrying uncommitted
-/// changes along when the op did (`autostash`).
-pub(super) fn move_refs(dir: &Path, expect: &Snapshot, target: &Snapshot, mode: &str, autostash: Option<&str>) -> Res<()> {
-    let cur = git::snapshot(dir)?;
+/// changes along when the op did (`autostash`). Err's flag: refused before anything moved
+/// (a branch in use in another worktree), so the step can be retried.
+pub(super) fn move_refs(dir: &Path, expect: &Snapshot, target: &Snapshot, mode: &str, autostash: Option<&str>) -> Result<(), (String, bool)> {
+    let cur = git::snapshot(dir).map_err(|e| (e, false))?;
     let (mut expect, mut target) = (expect.clone(), target.clone());
     // Tags a Fetch brought in since are unrelated to this entry: keep them, they're no change.
     for (r, o) in &cur.refs {
@@ -209,13 +225,14 @@ pub(super) fn move_refs(dir: &Path, expect: &Snapshot, target: &Snapshot, mode: 
         target.refs.insert(r.clone(), o.clone());
     }
     if cur != expect {
-        return Err("The repository changed outside Glasir since this action; undo history cleared.".into());
+        return Err(("The repository changed outside Glasir since this action; undo history cleared.".into(), false));
     }
     let restore = || git::restore(dir, &target, mode).map(|_| String::new());
-    match autostash {
+    let res = match autostash {
         Some(msg) => git::with_autostash(dir, msg, restore).map(drop),
         None => restore().map(drop),
-    }
+    };
+    res.map_err(|e| (e, git::snapshot(dir).is_ok_and(|s| s == cur)))
 }
 
 impl RepoTab {
@@ -243,7 +260,8 @@ impl RepoTab {
         }
         let dir = self.dir.clone();
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
-        let job: Box<dyn FnOnce() -> Res<()> + Send> = match &e.kind {
+        // Err's flag: the refs didn't move, so the ref steps still hold.
+        let job: Box<dyn FnOnce() -> Result<(), (String, bool)> + Send> = match &e.kind {
             UndoKind::Refs { before, after, mode, autostash } => {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
                 let (mode, autostash) = (mode.mode(), autostash.clone());
@@ -251,16 +269,22 @@ impl RepoTab {
             }
             UndoKind::Op { undo: u, redo } => {
                 let op = if undo { u.clone() } else { redo.clone() };
-                Box::new(move || super::op::exec(&dir, &op).map(drop))
+                Box::new(move || super::op::exec(&dir, &op).map(drop).map_err(|e| (e, false)))
             }
             // Restoring discarded work has no meaningful redo.
             UndoKind::Discard(_) if !undo => return,
             UndoKind::Discard(saved) => {
                 let saved = saved.clone();
-                Box::new(move || restore_worktree(&dir, &saved))
+                Box::new(move || restore_worktree(&dir, &saved).map_err(|e| (e, false)))
             }
         };
-        self.running = Some((label, Task::spawn(ctx, move || Done::Undo(undo, job()))));
+        self.running = Some((
+            label,
+            Task::spawn(ctx, move || match job() {
+                Ok(()) => Done::Undo(undo, Ok(()), false),
+                Err((e, kept)) => Done::Undo(undo, Err(e), !kept),
+            }),
+        ));
     }
 }
 
@@ -450,7 +474,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A failed ref undo drops ref snapshots only: a force-deleted branch stays restorable.
+    /// A failed ref undo drops ref snapshots only (and only once refs moved or changed outside):
+    /// a force-deleted branch stays restorable.
     #[test]
     fn failed_ref_undo_keeps_op_entries() {
         use crate::repo::testutil::*;
@@ -474,7 +499,12 @@ mod tests {
         };
         step(&mut t, Action::Git(Op::new("Delete x", &["branch", "-D", "x"]).revert(Op::new("Restore x", &["branch", "x", &x]))));
         step(&mut t, Action::Git(Op::new("Checkout y", &["checkout", "-q", "y"]).undo(Undo::Keep)));
+        // Refused before anything moved (a local edit in the way): the step stays.
         std::fs::write(dir.join("a"), "local edit\n").unwrap();
+        step(&mut t, Action::Undo);
+        assert_eq!(t.undo_label(), Some("Checkout y"));
+        sh(&dir, &["checkout", "--", "a"]);
+        sh(&dir, &["branch", "outside"]);
         step(&mut t, Action::Undo);
         assert_eq!(t.undo_label(), Some("Delete x"));
         step(&mut t, Action::Undo);
@@ -553,6 +583,12 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         assert!(settle(&ctx, &mut t).iter().any(|m| m.error && m.text.contains("another worktree")));
         assert!(git::run(&dir, &["rev-parse", "--verify", "x"]).is_ok());
+        // Nothing moved: the step stays for a retry once that worktree lets go.
+        assert_eq!(t.undo_label(), Some("Create branch"));
+        sh(&dir, &["worktree", "remove", wt.to_str().unwrap()]);
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert!(git::run(&dir, &["rev-parse", "--verify", "x"]).is_err());
         let _ = std::fs::remove_dir_all(&wt);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -673,6 +709,26 @@ mod tests {
         restore_worktree(&dir, &saved).unwrap();
         assert_eq!(sh(&dir, &["status", "--porcelain", "-uall"]), before);
         assert_eq!(std::fs::read_to_string(dir.join("d/u")).unwrap(), "u\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A removal that fails partway reseals what it removed, so the retry isn't refused.
+    #[cfg(unix)]
+    #[test]
+    fn undo_removal_retries_after_a_partial_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::repo::testutil::scratch("undo-rm-half");
+        std::fs::create_dir(dir.join("z")).unwrap();
+        std::fs::write(dir.join("a"), "a\n").unwrap();
+        std::fs::write(dir.join("z/b"), "b\n").unwrap();
+        let mut saved = Saved { stash: None, tracked: vec!["a".into(), "z/b".into()], staged: vec![], unmerged: vec![], files: vec![], overwrite: false, index: false, after: Default::default() };
+        saved.seal(&dir);
+        let mode = |m| std::fs::set_permissions(dir.join("z"), std::fs::Permissions::from_mode(m)).unwrap();
+        mode(0o555);
+        assert!(restore_worktree(&dir, &saved).is_err());
+        mode(0o755);
+        restore_worktree(&dir, &saved).unwrap();
+        assert!(!dir.join("a").exists() && !dir.join("z/b").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
