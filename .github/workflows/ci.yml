@@ -16,9 +16,51 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked
       - run: cargo build --release --locked
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          case "$RUNNER_OS" in
+            macOS)
+              scripts/macos-app.sh
+              ditto -c -k --keepParent target/release/Glasir.app dist/Glasir-macos-arm64.zip ;;
+            Linux)
+              tar -czf dist/Glasir-linux-x86_64.tar.gz -C target/release Glasir ;;
+            Windows)
+              7z a dist/Glasir-windows-x86_64.zip ./target/release/Glasir.exe ;;
+          esac
       - uses: actions/upload-artifact@v4
         with:
           name: glasir-${{ runner.os }}-${{ runner.arch }}
-          path: |
-            target/release/Glasir
-            target/release/Glasir.exe
+          path: dist/*
+
+  # Every push to master becomes a GitHub release and a ghcr.io package.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Version
+        run: echo "TAG=v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-${{ github.run_number }}" >> "$GITHUB_ENV"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "Glasir $TAG" --generate-notes --latest
+      - uses: oras-project/setup-oras@v1
+      - name: Package (ghcr.io)
+        run: |
+          echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          cd dist
+          oras push "ghcr.io/${GITHUB_REPOSITORY,,}:$TAG,latest" \
+            --artifact-type application/vnd.glasir.release \
+            --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "org.opencontainers.image.description=Glasir builds for macOS, Linux and Windows" \
+            *
