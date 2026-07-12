@@ -85,10 +85,11 @@ fn quote(s: &str) -> String {
     }
 }
 
-/// The first `{key}` inside quotes the user wrote: there ours would end theirs (`''$(…)''`)
-/// or be literal (`"'$(…)'"`), leaving the value open to the shell.
+/// The first `{key}` inside quotes the user wrote or right after an escape: there ours would
+/// end theirs (`''$(…)''`) or be literal (`"'$(…)'"`, `\'$(…)'`), leaving the value open to the shell.
 fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
     let esc = if cfg!(windows) { '`' } else { '\\' };
+    let key = |i: usize| keys.iter().find(|k| line[i + 1..].strip_prefix(**k).is_some_and(|r| r.starts_with('}'))).copied();
     let (mut open, mut chars) = (None, line.char_indices());
     while let Some((i, c)) = chars.next() {
         let c = match c {
@@ -98,14 +99,14 @@ fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
         };
         match (open, c) {
             (Some('\''), '\'') | (Some('"'), '"') => open = None,
-            (Some(_), '{') => {
-                if let Some(k) = keys.iter().find(|k| line[i + 1..].strip_prefix(**k).is_some_and(|r| r.starts_with('}'))) {
-                    return Some(k);
-                }
-            }
+            (Some(_), '{') if key(i).is_some() => return key(i),
             (Some('\''), _) => {}
             (_, c) if c == esc => {
-                chars.next();
+                if let Some((j, '{')) = chars.next()
+                    && key(j).is_some()
+                {
+                    return key(j);
+                }
             }
             (None, '\'' | '"') => open = Some(c),
             _ => {}
@@ -128,7 +129,7 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
         }
         _ => {
             if let Some(k) = quoted_key(line, &vals.map(|(k, _)| k)) {
-                return Err(format!("Remove the quotes around {{{k}}} in custom command '{}': Glasir quotes values itself.", c.name.trim()));
+                return Err(format!("Remove the quotes or escape around {{{k}}} in custom command '{}': Glasir quotes values itself.", c.name.trim()));
             }
             Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)])
         }
@@ -281,10 +282,12 @@ mod tests {
         let v = Vars { branch: "x$(touch${IFS}PWNED)".into(), sha: "abc".into(), path: "$(touch PWNED2).txt".into() };
         let dir = Path::new("/r");
         let run = |command: &str| op(&Custom { name: "C".into(), command: command.into() }, dir, &v);
-        for command in ["echo \"{branch}\"", "prettier --write '{path}'", "echo \"a $(cat '{sha}')\""] {
+        let esc = if cfg!(windows) { "`" } else { "\\" };
+        // An escape right before ours turns its opening quote into a literal one.
+        let escaped = [format!("echo {esc}{{path}}{esc}'"), format!("echo \"{esc}{{path}}\"")];
+        for command in ["echo \"{branch}\"", "prettier --write '{path}'", "echo \"a $(cat '{sha}')\"", &escaped[0], &escaped[1]] {
             assert!(run(command).is_err_and(|e| e.contains("Remove the quotes")), "{command}");
         }
-        let esc = if cfg!(windows) { "`" } else { "\\" };
         let o = run(&format!("echo {{branch}} \"{{nope}}\" {esc}\"{{sha}}")).unwrap();
         assert_eq!(o.cmds[0][1], format!("echo 'x$(touch${{IFS}}PWNED)' \"{{nope}}\" {esc}\"'abc'"));
     }

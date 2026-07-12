@@ -12,7 +12,7 @@ pub struct Unit {
     pub path: String,
     /// "modified, hunk 2/3" or "new file, whole file".
     pub what: String,
-    /// (file, hunk) in `Plan::files`; `None` = the whole file, staged with `git add`.
+    /// (file, hunk) in `Plan::files`; `None` = the whole file, staged with `git add` (or removed, when deleted).
     hunk: Option<(usize, usize)>,
 }
 
@@ -177,7 +177,9 @@ impl Plan {
                 let sel = |hi: usize| done.iter().any(|&u| self.units[u].hunk == Some((fi, hi)));
                 patch += &git::partial_patch(f, |hi, _| sel(hi), false).unwrap_or_default();
             }
-            let whole: Vec<&str> = done.iter().filter(|&&u| self.units[u].hunk.is_none()).map(|&u| self.units[u].path.as_str()).collect();
+            // A deletion may still be on disk (`git rm --cached`): `add` would track it again.
+            let whole = |del: bool| -> Vec<&str> { done.iter().map(|&u| &self.units[u]).filter(|u| u.hunk.is_none() && u.what.starts_with("deleted") == del).map(|u| u.path.as_str()).collect() };
+            let (whole, gone) = (whole(false), whole(true));
             if k > 0 {
                 op = op.then(&["read-tree", "--reset", &self.head]);
             }
@@ -188,6 +190,9 @@ impl Plan {
             }
             if !whole.is_empty() {
                 op = op.then(&[&["--literal-pathspecs", "add", "--"][..], &whole].concat());
+            }
+            if !gone.is_empty() {
+                op = op.then(&[&["update-index", "--force-remove", "--"][..], &gone].concat());
             }
             let msg = git_dir.join(format!("glasir-compose-{k}.msg"));
             std::fs::write(&msg, c.message.trim()).map_err(|e| e.to_string())?;
@@ -405,6 +410,22 @@ mod tests {
         super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
         assert_eq!(g(&["ls-tree", "--name-only", "HEAD"]), "");
         assert_eq!(std::fs::read_to_string(dir.join("secret.env")).unwrap(), "k=v\n");
+        // Whole-file deletions (binary, empty) stay untracked too, next to another change.
+        std::fs::remove_file(dir.join("secret.env")).unwrap();
+        std::fs::write(dir.join("key.bin"), b"\0\x01").unwrap();
+        std::fs::write(dir.join(".token"), "").unwrap();
+        g(&["add", "key.bin", ".token"]);
+        g(&["commit", "-q", "-m", "keys"]);
+        g(&["rm", "-q", "--cached", "key.bin", ".token"]);
+        std::fs::write(dir.join("o"), "o\n").unwrap();
+        let (mut plan, _) = Plan::load(&dir).unwrap();
+        let what: Vec<String> = plan.units.iter().map(|u| format!("{} {}", u.path, u.what)).collect();
+        assert_eq!(what, [".token deleted, whole file", "key.bin deleted, binary, whole file", "o new file, untracked"]);
+        plan.fill(r#"{"commits":[{"message":"o","units":[3]},{"message":"Untrack keys","units":[1,2]}]}"#).unwrap();
+        super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
+        assert_eq!(g(&["ls-tree", "--name-only", "HEAD"]), "o\n");
+        assert_eq!(g(&["show", "--format=", "--name-status", "HEAD"]), "D\t.token\nD\tkey.bin\n");
+        assert_eq!(std::fs::read(dir.join("key.bin")).unwrap(), b"\0\x01");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -278,11 +278,18 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
 /// Refused if the reply kept conflict markers or the file changed since.
 pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> Res<Op> {
     let out = like(original, reply)?;
-    if conflicts(&parse(&out, marker_size(dir, path))).next().is_some() {
+    let n = marker_size(dir, path);
+    if conflicts(&parse(&out, n)).next().is_some() || stray(&out, n) > stray(&String::from_utf8_lossy(original), n) {
         return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
     }
     save(dir, path, original, &out)?;
     Ok(stage(path))
+}
+
+/// Marker lines outside well-formed conflict blocks.
+fn stray(text: &str, n: usize) -> usize {
+    let text = parse(text, n).into_iter().filter_map(|c| if let Chunk::Text(t) = c { Some(t) } else { None }).collect::<String>();
+    text.split_inclusive('\n').filter(|l| b"<|=>".iter().any(|&c| is_marker(l, c, n))).count()
 }
 
 /// `text` ending in a newline, with CRLF line endings when `original` has them
@@ -453,6 +460,13 @@ mod tests {
         std::fs::write(dir.join("f"), &original).unwrap();
         assert_eq!(apply_ai(&dir, "f", &original, "a\nxy").unwrap().cmds, stage("f").cmds);
         assert_eq!(read(), "a\r\nxy\r\n");
+        // A lone marker line left in the reply is refused; one the file already had outside its conflicts is kept.
+        let original = b"T\n=======\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n".to_vec();
+        for reply in ["T\n=======\nOURS\n<<<<<<< HEAD\nx\n=======\n", "T\n=======\n<<<<<<< HEAD\nOURS\n", "T\n=======\na\n=======\nc", "T\n=======\nx\n>>>>>>> theirs"] {
+            std::fs::write(dir.join("f"), &original).unwrap();
+            assert!(apply_ai(&dir, "f", &original, reply).unwrap_err().contains("conflict markers"), "{reply}");
+        }
+        assert!(apply_ai(&dir, "f", &original, "T\n=======\nxy").is_ok());
         // Mixed line endings: which line keeps which can't be told from the reply.
         let mixed = b"a\r\nb\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n".to_vec();
         std::fs::write(dir.join("f"), &mixed).unwrap();
