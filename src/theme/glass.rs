@@ -229,12 +229,12 @@ pub fn rest<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// Compact button (header actions such as "AI message", "Stage all", "+ Add
-/// remote…"): low like egui's small buttons, but with wider side padding so the
-/// label doesn't hug the capsule's ends.
+/// remote…"): lower than a normal button, with roomy side padding. egui's small
+/// buttons drop vertical padding, so the height comes from a minimum size.
 pub fn small<'a>(ui: &mut Ui, enabled: bool, text: impl egui::IntoAtoms<'a>) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding.x = 18.0;
-        ui.add_enabled(enabled, egui::Button::new(text).small())
+        ui.add_enabled(enabled, egui::Button::new(text).small().min_size(egui::vec2(0.0, 24.0)))
     })
     .inner
 }
