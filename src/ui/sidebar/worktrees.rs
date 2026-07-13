@@ -17,7 +17,6 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
             worktree_row(ui, d, w, here.as_deref() == Some(w.path.as_str()), acts);
         }
         ui.horizontal_wrapped(|ui| {
-            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons; the row wraps instead
             if theme::small(ui, true, format!("{} New worktree…", icon::PLUS)).on_hover_text("New branch from HEAD in its own folder").clicked() {
                 acts.push(prompt(
                     "New branch and worktree from HEAD",

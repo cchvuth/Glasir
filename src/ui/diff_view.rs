@@ -211,7 +211,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     });
     if ds.image.is_none() {
         ui.add_space(4.0);
-        ui.horizontal(|ui| view_controls(ui, ds, split, worktree && change.code != '?', &starts, anchor, &mut nav, acts));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.y = 30.0; // the glass groups draw beyond their row height
+            view_controls(ui, ds, split, worktree && change.code != '?', &starts, anchor, &mut nav, acts)
+        });
     }
     ui.add_space(6.0);
 
@@ -287,9 +290,11 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                             let all = |hh: usize, _: usize| hh == hi;
                             let mut x = ui.clip_rect().right() - 8.0;
                             let mut btn = |ui: &mut Ui, text: &str| {
-                                let w = text.len() as f32 * 6.6 + 14.0;
+                                let font = egui::TextStyle::Small.resolve(ui.style());
+                                let w = ui.fonts_mut(|fo| fo.layout_no_wrap(text.into(), font, Color32::WHITE).size().x) + 2.0 * ui.spacing().button_padding.x;
                                 x -= w + 6.0;
-                                ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), egui::Button::new(RichText::new(text).small())).clicked()
+                                let b = egui::Button::new(RichText::new(text).small()).wrap_mode(egui::TextWrapMode::Extend);
+                                ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), b).clicked()
                             };
                             if staged {
                                 if btn(ui, "Unstage hunk") {
@@ -349,7 +354,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
 #[allow(clippy::too_many_arguments)]
 fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, stageable: bool, starts: &[usize], anchor: usize, nav: &mut Option<bool>, acts: &mut Vec<Action>) {
     let o = ds.pending;
-    theme::group(ui, |ui| {
+    wrap_group(ui, "layout", |ui| {
         for (v, text) in [(false, "Unified"), (true, "Split")] {
             if ui.add(egui::Button::selectable(*split == v, text)).clicked() {
                 *split = v;
@@ -357,35 +362,57 @@ fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, stageable: bool,
         }
     });
     ui.add_space(6.0);
-    theme::group(ui, |ui| {
+    wrap_group(ui, "ws", |ui| {
         let hint = if stageable { "Ignore whitespace changes (git diff -w).\nLine and hunk staging are off while this is on." } else { "Ignore whitespace changes (git diff -w)" };
         if ui.add(egui::Button::selectable(o.ignore_ws, format!("{} Ignore whitespace", icon::PARAGRAPH))).on_hover_text(hint).clicked() {
             acts.push(Action::DiffOpts(DiffOpts { ignore_ws: !o.ignore_ws, ..o }));
         }
     });
     ui.add_space(6.0);
-    theme::group(ui, |ui| {
+    wrap_group(ui, "context", |ui| {
+        ui.add_space(8.0);
         ui.label(RichText::new("Context").small().color(theme::dim(ui)));
+        ui.add_space(8.0);
         for (n, text, hint) in [(3, "3", "3 lines around each change"), (10, "10", "10 lines around each change"), (DiffOpts::FILE, "File", "The whole file")] {
             if ui.add(egui::Button::selectable(o.context == n, text)).on_hover_text(hint).clicked() && o.context != n {
                 acts.push(Action::DiffOpts(DiffOpts { context: n, ..o }));
             }
         }
     });
-    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        theme::group(ui, |ui| {
-            let next = ui.add_enabled(step(starts, anchor, true).is_some(), egui::Button::new(icon::ARROW_DOWN).frame_when_inactive(false).corner_radius(255));
-            if next.on_hover_text("Next change (F7)").clicked() {
-                *nav = Some(true);
-            }
-            let prev = ui.add_enabled(step(starts, anchor, false).is_some(), egui::Button::new(icon::ARROW_UP).frame_when_inactive(false).corner_radius(255));
-            if prev.on_hover_text("Previous change (⇧F7)").clicked() {
-                *nav = Some(false);
-            }
-        });
-        let n = starts.len();
-        ui.label(RichText::new(format!("{n} change{}", if n == 1 { "" } else { "s" })).small().color(theme::dim(ui)));
-    });
+    wrap_before(ui, "nav");
+    let w = ui
+        .with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            theme::group(ui, |ui| {
+                let next = ui.add_enabled(step(starts, anchor, true).is_some(), egui::Button::new(icon::ARROW_DOWN).frame_when_inactive(false).corner_radius(255));
+                if next.on_hover_text("Next change (F7)").clicked() {
+                    *nav = Some(true);
+                }
+                let prev = ui.add_enabled(step(starts, anchor, false).is_some(), egui::Button::new(icon::ARROW_UP).frame_when_inactive(false).corner_radius(255));
+                if prev.on_hover_text("Previous change (⇧F7)").clicked() {
+                    *nav = Some(false);
+                }
+            });
+            let n = starts.len();
+            ui.label(RichText::new(format!("{n} change{}", if n == 1 { "" } else { "s" })).small().color(theme::dim(ui)));
+            ui.min_rect().width() + 12.0
+        })
+        .inner;
+    ui.data_mut(|d| d.insert_temp(ui.id().with("nav"), w));
+}
+
+/// In a wrapping row: starts a new row when `key`'s width from the last frame no
+/// longer fits on this one (egui only learns a group's width after drawing it).
+fn wrap_before(ui: &mut Ui, key: &str) {
+    let need = ui.data(|d| d.get_temp::<f32>(ui.id().with(key))).unwrap_or(0.0);
+    if need > ui.available_size_before_wrap().x && ui.cursor().min.x > ui.max_rect().left() + 1.0 {
+        ui.end_row();
+    }
+}
+
+fn wrap_group(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui)) {
+    wrap_before(ui, key);
+    let w = ui.scope(|ui| theme::group(ui, add)).response.rect.width();
+    ui.data_mut(|d| d.insert_temp(ui.id().with(key), w));
 }
 
 /// Rail of added / removed / changed rows across the whole diff, with the viewport.

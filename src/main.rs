@@ -31,7 +31,7 @@ fn main() -> eframe::Result {
     git::import_login_env();
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1440.0, 880.0])
+            .with_inner_size([std::env::var("GLASIR_SCREENSHOT_WIDTH").ok().and_then(|w| w.parse().ok()).unwrap_or(1440.0), 880.0])
             .with_min_inner_size([900.0, 520.0])
             .with_title("Glasir")
             .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon-512.png")).expect("bundled icon is a valid PNG"))

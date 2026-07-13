@@ -158,7 +158,7 @@ pub fn group<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// Frameless capsule button for use inside a `group`.
 pub fn pill(ui: &mut Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
-    ui.add(egui::Button::new(text).frame_when_inactive(false).corner_radius(255))
+    ui.add(egui::Button::new(text).frame_when_inactive(false).corner_radius(255).wrap_mode(egui::TextWrapMode::Extend))
 }
 
 /// 0..=1 slider with a solid macOS-style knob (egui's knob shares the
@@ -180,7 +180,8 @@ pub fn primary(ui: &mut Ui, enabled: bool, text: &str, width: f32) -> egui::Resp
     let b = egui::Button::new(egui::RichText::new(text).strong().color(Color32::WHITE))
         .fill(if enabled { accent() } else { accent().gamma_multiply(0.35) })
         .corner_radius(255)
-        .min_size(vec2(width, 32.0));
+        .min_size(vec2(width, 32.0))
+        .wrap_mode(egui::TextWrapMode::Extend);
     ui.add_enabled(enabled, b)
 }
 
@@ -230,11 +231,12 @@ pub fn rest<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 /// Compact button (header actions such as "AI message", "Stage all", "+ Add
 /// remote…"): lower than a normal button, with roomy side padding. egui's small
-/// buttons drop vertical padding, so the height comes from a minimum size.
+/// buttons drop vertical padding, so the height comes from a minimum size. The
+/// label stays on one line; a wrapping row moves the whole button down instead.
 pub fn small<'a>(ui: &mut Ui, enabled: bool, text: impl egui::IntoAtoms<'a>) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding.x = 18.0;
-        ui.add_enabled(enabled, egui::Button::new(text).small().min_size(egui::vec2(0.0, 24.0)))
+        ui.add_enabled(enabled, egui::Button::new(text).small().min_size(egui::vec2(0.0, 24.0)).wrap_mode(egui::TextWrapMode::Extend))
     })
     .inner
 }

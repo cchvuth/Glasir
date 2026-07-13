@@ -13,6 +13,7 @@ impl RepoTab {
         ui.label(RichText::new("⌘-click to add or remove, ⇧-click for a range.").small().color(theme::dim(ui)));
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons move to the next row
             for (kind, label, hint) in [
                 (MultiOp::CherryPick, format!("{} Cherry-pick", icon::GIT_COMMIT), "Apply them onto the current branch, oldest first"),
                 (MultiOp::CherryPickEdit, format!("{} Cherry-pick…", icon::CHERRIES), "Pick, reword, squash, drop or reorder them, then apply onto the current branch"),
@@ -26,6 +27,7 @@ impl RepoTab {
             }
         });
         ui.horizontal_wrapped(|ui| {
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons move to the next row
             if ui.button(format!("{} Compare oldest ↔ newest", icon::GIT_DIFF)).clicked() {
                 let (newest, oldest) = (ids[0].clone(), ids[ids.len() - 1].clone());
                 acts.push(Action::Select(Sel::Compare { from: format!("{oldest}^"), to: newest, three_dot: false }));
