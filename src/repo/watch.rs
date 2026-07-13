@@ -52,7 +52,8 @@ mod tests {
     /// A linked worktree's refs, stashes and HEAD live in the main repo's `.git`.
     #[test]
     fn a_linked_worktree_sees_ref_changes_in_the_main_repo() {
-        let canon = |p: std::path::PathBuf| std::fs::canonicalize(p).unwrap();
+        // macOS reports /private/var for /var; Windows canonical paths are \\?\ ones git can't use.
+        let canon = |p: std::path::PathBuf| if cfg!(windows) { p } else { std::fs::canonicalize(p).unwrap() };
         let (dir, wt) = (canon(scratch("watch-main")), canon(scratch("watch-wt")));
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);

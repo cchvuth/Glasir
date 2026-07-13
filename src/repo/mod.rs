@@ -557,7 +557,8 @@ mod tests {
         let dir = scratch("stage-all");
         conflicted_merge(&dir);
         std::fs::write(dir.join("other"), "y\n").unwrap();
-        std::fs::write(dir.join("new*"), "n\n").unwrap();
+        // A glob character in the name; Windows forbids '*' in file names.
+        std::fs::write(dir.join(if cfg!(windows) { "new[1]" } else { "new*" }), "n\n").unwrap();
         let s = git::status(&dir).unwrap();
         assert!(op::stage_all_op(&git::Status { unstaged: vec![], ..s.clone() }).is_none());
         let o = op::stage_all_op(&s).unwrap();
@@ -566,7 +567,7 @@ mod tests {
         assert_eq!(s.conflicted.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["f"]);
         assert!(s.unstaged.is_empty());
         let staged: Vec<&str> = s.staged.iter().map(|c| c.path.as_str()).collect();
-        assert!(staged.contains(&"other") && staged.contains(&"new*"));
+        assert!(staged.contains(&"other") && staged.contains(&if cfg!(windows) { "new[1]" } else { "new*" }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

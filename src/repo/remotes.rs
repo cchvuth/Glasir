@@ -407,7 +407,10 @@ mod tests {
         sh(&up2, &["branch", "b/x"]);
         let dir = scratch("slash");
         sh(&dir, &["clone", "-q", "-o", "a/b", &up1.to_string_lossy(), "."]);
-        sh(&dir, &["remote", "add", "a", &up2.to_string_lossy()]);
+        // git 2.46+ refuses names where one is a prefix directory of the other.
+        if crate::git::run(&dir, &["remote", "add", "a", &up2.to_string_lossy()]).is_err_and(|e| e.contains("superset")) {
+            return;
+        }
         let d = load_all(&dir, 100, View::default()).unwrap();
         assert_eq!(d.push_dest("main", "a/b/main"), Some(("a/b", "main")));
         let (remote, branch) = d.split_remote("a/b/x").unwrap();
