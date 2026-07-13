@@ -378,6 +378,8 @@ impl RepoTab {
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
         match a {
             Action::Select(s) => self.select(ctx, s),
+            // Clicking the file that is already open closes it again.
+            Action::Diff(src) if self.merge.is_none() && self.diff.as_ref().is_some_and(|d| d.src == src) => self.diff = None,
             Action::Diff(src) => {
                 self.merge = None;
                 self.open_diff(ctx, src)
@@ -596,6 +598,26 @@ mod tests {
         std::fs::write(dir.join("f"), "a\nbar\n").unwrap();
         t.reload(&ctx, false);
         wait(&ctx, &mut t, |t| has(t, "bar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clicking_the_open_file_again_closes_its_diff() {
+        let dir = scratch("toggle-diff");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        std::fs::write(dir.join("f"), "b\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let src = DiffSrc::Worktree { change: t.data.as_ref().unwrap().status.unstaged[0].clone(), staged: false };
+        t.apply(&ctx, Action::Diff(src.clone()));
+        assert!(t.diff.is_some());
+        t.apply(&ctx, Action::Diff(src.clone()));
+        assert!(t.diff.is_none());
+        t.apply(&ctx, Action::Diff(src));
+        assert!(t.diff.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
