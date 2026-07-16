@@ -27,19 +27,13 @@ fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action
     }
     if let Some(head) = d.status.branch.as_deref().filter(|_| d.status.head.as_deref() != Some(&e.id)) {
         // The branch name goes in the hover text: a long one would push the other buttons off-screen.
-        ui.menu_button(format!("{} Reset branch here", icon::ARROW_U_UP_LEFT), |ui| {
-            for (mode, undo, hint) in [
-                ("--soft", Undo::Soft, "keep all changes staged"),
-                ("--mixed", Undo::Mixed, "keep changes in working directory"),
-                ("--keep", Undo::Keep, "update files, keep uncommitted changes"),
-            ] {
-                if ui.button(format!("{} — {hint}", &mode[2..])).clicked() {
-                    acts.push(Action::Git(Op::new(format!("Reset {head} to {short}"), &["reset", mode, &e.id]).undo(undo)));
-                }
-            }
-        })
-        .response
-        .on_hover_text(format!("Reset {head} to {short}"));
+        let label = format!("{} Reset branch here", icon::ARROW_U_UP_LEFT);
+        let busy = crate::ui::graph_view::menus::reset_busy(d);
+        ui.add_enabled_ui(busy.is_none(), |ui| ui.menu_button(label, |ui| crate::ui::graph_view::menus::reset_items(ui, d, &e.id, acts)))
+            .inner
+            .response
+            .on_disabled_hover_text(busy.unwrap_or_default())
+            .on_hover_text(format!("Reset {head} to {short}"));
     }
     if theme::pill(ui, format!("{} Check out", icon::ARROW_BEND_UP_RIGHT)).on_hover_text("Check out this commit (detached HEAD)").clicked() {
         acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &e.id]).undo(Undo::Keep)));

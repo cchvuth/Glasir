@@ -5,7 +5,7 @@ use crate::ai::Purpose;
 use crate::git::RefKind;
 use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, delete_branches, op, prompt};
 use crate::theme::icon;
-use crate::ui::graph_view::menus::integrate_items;
+use crate::ui::graph_view::menus::{integrate_items, reset_menu};
 use egui::Ui;
 
 pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
@@ -87,6 +87,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
             acts.push(Action::Git(crate::repo::remotes::pull_ff(name, remote, rb)));
         }
         integrate_items(ui, d, name, d.rev(r), acts);
+        reset_menu(ui, d, &r.target, name, acts);
         compare_items(ui, d, name, acts);
     }
     if r.head
@@ -153,6 +154,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
         acts.extend(branch_checkout(d, r));
     }
     integrate_items(ui, d, &r.name, d.rev(r), acts);
+    reset_menu(ui, d, &r.target, &r.name, acts);
     compare_items(ui, d, &r.name, acts);
     let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
     if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
@@ -179,6 +181,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
     if ui.button(format!("Checkout {}", r.name)).clicked() {
         acts.extend(branch_checkout(d, r));
     }
+    reset_menu(ui, d, &r.target, &r.name, acts);
     if let Some((remote, _)) = d.remotes.first() {
         if ui.button(format!("Push tag to {remote}")).clicked() {
             acts.push(op(format!("Push tag {}", r.name), &["push", remote, &r.full]));

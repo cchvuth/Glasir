@@ -67,6 +67,9 @@ pub enum Backup {
     Overwrite(Vec<String>),
     /// Every uncommitted change, including untracked files.
     All,
+    /// What `reset --hard <rev>` overwrites: like `All`, but only the untracked files in `rev`'s way.
+    /// Refuses unless HEAD is still the second string ([`super::rebase::head_state`]).
+    Reset(String, String),
 }
 
 impl Op {
@@ -244,6 +247,42 @@ pub fn sequencer_op(cmd: &str, abort: bool) -> Op {
         ("rebase", true) => op.backup(Backup::All).confirm("Abort discards all uncommitted changes (⌘Z restores them)."),
         _ => op,
     }
+}
+
+/// `git reset <mode>` of the checked-out branch to commit `id` (commit, branch and tag menus).
+/// Refuses if HEAD moved since `d` was loaded. A hard reset backs up uncommitted work first
+/// (one ⌘Z brings back the refs and the files) and its confirmation lists the files it discards.
+pub fn reset_op(d: &RepoData, id: &str, mode: &str) -> Op {
+    let head = d.status.branch.as_deref().unwrap_or("HEAD");
+    let short = &id[..id.len().min(7)];
+    let undo = match mode {
+        "--soft" => Undo::Soft,
+        "--mixed" => Undo::Mixed,
+        _ => Undo::Keep,
+    };
+    let want = format!("refs/heads/{head} {}", d.status.head.as_deref().unwrap_or(""));
+    let op = Op::new(format!("Reset {head} to {short} ({})", &mode[2..]), &[super::rebase::HEAD_IS, &want]).then(&["reset", "-q", mode, id, "--"]).undo(undo);
+    if mode != "--hard" {
+        return op;
+    }
+    // Untracked files survive a hard reset (backed up anyway, in case the target tracks one).
+    let mut lost: Vec<&str> = d.status.staged.iter().chain(&d.status.unstaged).chain(&d.status.conflicted).filter(|c| c.code != '?').map(|c| c.path.as_str()).collect();
+    lost.sort_unstable();
+    lost.dedup();
+    let text = match lost.len() {
+        0 => format!("Hard reset {head} to {short}? No uncommitted changes to tracked files (⌘Z undoes it)."),
+        n => {
+            let mut t = format!("Hard reset {head} to {short}? Uncommitted changes to {n} file{} are discarded (⌘Z restores them):", if n == 1 { "" } else { "s" });
+            for p in lost.iter().take(10) {
+                t += &format!("\n  {p}");
+            }
+            if n > 10 {
+                t += &format!("\n  …and {} more", n - 10);
+            }
+            t
+        }
+    };
+    op.backup(Backup::Reset(id.into(), want)).confirm(text)
 }
 
 /// Stash everything, untracked files included (toolbar, WIP menu, palette).
@@ -498,12 +537,16 @@ impl RepoTab {
                     self.body.clear();
                     self.amend = false;
                 }
+                let mut saved = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty());
                 if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
                     // Git's own `--autostash` (pull, cherry-pick): `reset --keep` would refuse edits the op merged into.
                     let autostash = op.autostash.clone().or_else(|| {
                         (op.undo == Undo::Keep && op.cmds.iter().flatten().any(|a| a == "--autostash")).then(|| format!("autostash to undo {}", op.label))
                     });
-                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash }));
+                    // A hard reset's files come back in the same step, after the refs: restored first,
+                    // they'd block the `reset --keep` back.
+                    let saved = saved.take_if(|_| op.cmds.iter().any(|c| c.first().is_some_and(|a| a == "reset")));
+                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash, saved }));
                     self.redo.clear();
                 }
                 // `keep_deleted` left a failed branch delete's revert only if it deleted some.
@@ -513,7 +556,7 @@ impl RepoTab {
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) }));
                     self.redo.clear();
                 }
-                if let Some(saved) = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty()) {
+                if let Some(saved) = saved {
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Discard(saved)));
                     self.redo.clear();
                     // Light ops toast nothing, but a discard deserves a visible way back.
@@ -543,12 +586,24 @@ impl RepoTab {
             Done::Undo(was_undo, res, moved) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
                 match res {
-                    Ok(()) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_)))),
+                    Ok(()) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_))).map(|mut e| {
+                        // Restored: a redo (`reset --keep`) carries the files along instead.
+                        if let UndoKind::Refs { saved, .. } = &mut e.kind {
+                            *saved = None;
+                        }
+                        e
+                    })),
                     Err(e) => {
                         // Ref snapshots are unreliable once refs moved (a refusal moves none). Discards
                         // and reverting ops (deleted branches, dropped stashes) stay: they check the state before acting.
                         if moved {
+                            // A hard reset's backup outlives its ref step, as a discard to retry.
+                            let kept = from.last_mut().and_then(|e| match &mut e.kind {
+                                UndoKind::Refs { saved, .. } => saved.take().map(|s| UndoEntry::new(e.label.clone(), UndoKind::Discard(s))),
+                                _ => None,
+                            });
                             from.retain(|e| !matches!(e.kind, UndoKind::Refs { .. }));
+                            from.extend(kept);
                         }
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
@@ -910,6 +965,73 @@ mod tests {
         super::super::undo::restore_worktree(&dir, &saved).unwrap();
         assert!(!dir.join("old.txt").exists());
         assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), format!("{text}edit\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hard reset lists what it discards, backs it up (also untracked and ignored files the
+    /// target tracks) and one ⌘Z brings back refs and files; a stale or edited-since state refuses.
+    #[test]
+    fn hard_reset_undo_restores_files() {
+        let dir = scratch("hard-reset");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        commit(&dir, "u", "theirs\n");
+        commit(&dir, "x.log", "theirs\n");
+        let c1 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["rm", "-q", "u", "x.log"]);
+        commit(&dir, ".gitignore", "*.log\n");
+        commit(&dir, "a", "two\n");
+        let c2 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let w = |p: &str, t: &str| std::fs::write(dir.join(p), t).unwrap();
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_default();
+        w("a", "edited\n");
+        w("s", "staged\n");
+        sh(&dir, &["add", "s"]);
+        w("u", "mine\n");
+        w("x.log", "mine\n");
+        w("keep", "keep\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let op = super::reset_op(t.data.as_ref().unwrap(), &c1, "--hard");
+        let text = op.confirm.clone().unwrap();
+        assert!(text.contains("2 files") && text.contains("\n  a") && text.contains("\n  s"), "{text}");
+
+        // HEAD moved since the menu was drawn: nothing happens.
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "outside"]);
+        let mut stale = op.clone();
+        stale.confirm = None;
+        t.apply(&ctx, Action::Git(stale));
+        settle(&ctx, &mut t);
+        assert_eq!(read("a"), "edited\n");
+        sh(&dir, &["reset", "-q", "--soft", &c2]);
+        settle(&ctx, &mut t);
+
+        t.apply(&ctx, Action::Git(op));
+        let mut op = t.confirm.take().expect("asks first");
+        op.confirm = None;
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]).trim(), c1);
+        assert_eq!((read("a"), read("u"), read("x.log"), read("keep")), ("one\n".into(), "theirs\n".into(), "theirs\n".into(), "keep\n".into()));
+        assert!(!dir.join("s").exists());
+
+        // Edited since: undo refuses and keeps its step.
+        w("a", "later\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]).trim(), c1);
+        assert!(t.undo_label().is_some_and(|l| l.starts_with("Reset main")));
+        w("a", "one\n");
+
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]).trim(), c2);
+        assert_eq!((read("a"), read("s"), read("u"), read("x.log"), read("keep")), ("edited\n".into(), "staged\n".into(), "mine\n".into(), "mine\n".into(), "keep\n".into()));
+        assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "s");
+        assert!(sh(&dir, &["status", "--porcelain"]).contains("?? u"));
+        assert!(t.undo_label().is_none() && t.redo_label().is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

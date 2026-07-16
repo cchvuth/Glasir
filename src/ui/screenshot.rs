@@ -197,6 +197,14 @@ impl App {
                             }
                         }
                     }
+                    // The hard-reset confirmation (to the second commit), with its list of files.
+                    "reset-hard" => {
+                        if let Some(t) = self.tabs.get_mut(self.active)
+                            && let Some(o) = t.data.as_ref().and_then(|d| d.log.get(1).map(|c| crate::repo::reset_op(d, &c.id, "--hard")))
+                        {
+                            t.apply(&ctx.clone(), Action::Git(o));
+                        }
+                    }
                     "stash" => {
                         if let Some(t) = self.tabs.get_mut(self.active)
                             && let Some(id) = t.data.as_ref().and_then(|d| d.stashes.first()).map(|s| s.id.clone())

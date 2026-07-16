@@ -32,6 +32,8 @@ pub fn restore(dir: &Path, to: &Snapshot, mode: &str) -> Res<()> {
     if let Some(r) = used_elsewhere(dir)?.into_iter().find(|r| *r != cur.head && cur.refs.get(r) != to.refs.get(r)) {
         return Err(format!("{} is in use in another worktree (checked out, or being rebased or bisected there); finish there or switch that worktree to another branch first, then undo.", r.strip_prefix("refs/heads/").unwrap_or(&r)));
     }
+    // `reset --keep` trusts stale stat info: a file rewritten with the same bytes would block it.
+    let _ = run(dir, &["update-index", "-q", "--refresh"]);
     for (r, oid) in &to.refs {
         if !cur.refs.contains_key(r) {
             run(dir, &["update-ref", r, oid, ""])?;

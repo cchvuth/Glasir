@@ -79,7 +79,10 @@ The name fits a Git client:
   pinned on top, above a separator.
 - Checkout, create, rename, delete (undoable), set / unset upstream, fast-forward
   or pull a branch **without checking it out**.
-- Merge, rebase, cherry-pick, revert and soft / mixed / hard reset from menus.
+- Merge, rebase, cherry-pick, revert and soft / mixed / keep / hard reset from menus.
+  **Reset the current branch to any commit, branch or tag**; a hard reset lists
+  the files it discards and backs them up, so ⌘Z brings back refs *and* files.
+  Reset is disabled (with the reason) while a merge / rebase / cherry-pick runs.
 - **Interactive rebase editor**: pick, reword, squash, fixup, drop and reorder,
   with single-key shortcuts.
 - **One-click history edits**: reword, squash into parent, drop, or
@@ -158,7 +161,7 @@ The name fits a Git client:
 ### History tools
 - **Reflog browser** with one-click recovery: see everywhere HEAD has been, with
   commits no branch reaches flagged; create a branch there, reset (soft / mixed /
-  keep, undoable) or check it out.
+  keep / hard, undoable) or check it out.
 - **Restore a file from history**: as it is in a commit, or as it was before it
   (undoable like a discard).
 - **Move unpushed commits to a new branch** ("oops, I committed on main"): one

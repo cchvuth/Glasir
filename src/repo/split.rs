@@ -146,7 +146,7 @@ impl RepoTab {
         let steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
         let refs: Vec<_> = steps.iter().filter_map(|e| if let UndoKind::Refs { before, after, .. } = &e.kind { Some((before, after)) } else { None }).collect();
         if let (Some(first), Some(last)) = (refs.first(), refs.last()) {
-            let kind = UndoKind::Refs { before: first.0.clone(), after: last.1.clone(), mode: Undo::Keep, autostash: None };
+            let kind = UndoKind::Refs { before: first.0.clone(), after: last.1.clone(), mode: Undo::Keep, autostash: None, saved: None };
             self.undo.push(UndoEntry::new(format!("Split {}", &sp.id[..7.min(sp.id.len())]), kind));
         }
         // Backed-up discards stay undoable on their own.

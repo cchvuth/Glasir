@@ -1,7 +1,7 @@
 //! Context menus of the graph rows (commit, WIP, multi-selection) and the
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
-use crate::git::{Commit, Ref, RefKind};
+use crate::git::{Commit, Ref, RefKind, State};
 use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_checkout, prompt, stash_op};
 use crate::theme::{self, icon};
 use egui::Ui;
@@ -184,23 +184,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     if ui.button("Revert commit").clicked() {
         acts.push(Action::Git(Op::new(format!("Revert {short}"), &revert).undo(Undo::Keep)));
     }
-    if let Some(head) = d.status.branch.as_deref().filter(|_| !is_head) {
-        ui.menu_button(format!("Reset {head} to this commit"), |ui| {
-            for (mode, undo, hint) in [
-                ("--soft", Undo::Soft, "keep all changes staged"),
-                ("--mixed", Undo::Mixed, "keep changes in working directory"),
-                ("--hard", Undo::Keep, "discard all changes"),
-            ] {
-                if ui.button(format!("{} — {hint}", &mode[2..])).clicked() {
-                    let mut o = Op::new(format!("Reset {}", &mode[2..]), &["reset", mode, &c.id]).undo(undo);
-                    if mode == "--hard" {
-                        o = o.confirm(format!("Hard reset {head} to {short}? Uncommitted changes will be lost."));
-                    }
-                    acts.push(Action::Git(o));
-                }
-            }
-        });
-    }
+    reset_menu(ui, d, &c.id, "this commit", acts);
     crate::ui::bisect::commit_items(ui, d, c, acts);
     ui.separator();
     if ui.button("Copy commit SHA").clicked() {
@@ -231,6 +215,46 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
         let branch = refs.iter().find(|r| r.kind == RefKind::Local).map(|r| r.name.clone()).or_else(|| d.status.branch.clone()).unwrap_or_default();
         let vars = crate::repo::tools::Vars { branch, sha: c.id.clone(), path: String::new() };
         crate::ui::inspector::custom_items(ui, cmds, &vars, acts);
+    }
+}
+
+/// "Reset <current branch> to <what>" (commit, branch and tag menus); `id` is the commit.
+pub fn reset_menu(ui: &mut Ui, d: &RepoData, id: &str, what: &str, acts: &mut Vec<Action>) {
+    let Some(head) = d.status.branch.as_deref().filter(|_| d.status.head.as_deref().is_some_and(|h| h != id)) else { return };
+    let label = format!("{} Reset {head} to {what}", icon::ARROW_U_UP_LEFT);
+    if let Some(busy) = reset_busy(d) {
+        ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(busy);
+        return;
+    }
+    ui.menu_button(label, |ui| reset_items(ui, d, id, acts));
+}
+
+/// Why resetting is off now (an operation in progress), if it is.
+pub fn reset_busy(d: &RepoData) -> Option<String> {
+    let busy = match d.state {
+        State::Clean => return None,
+        State::Merging => "merge",
+        State::Rebasing => "rebase",
+        State::CherryPicking => "cherry-pick",
+        State::Reverting => "revert",
+        State::Bisecting => "bisect",
+        State::Applying => "patch (git am)",
+    };
+    Some(format!("Finish or abort the {busy} in progress first"))
+}
+
+/// The soft / mixed / keep / hard choices of resetting the current branch to `id`.
+pub fn reset_items(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) {
+    for (mode, hint) in [
+        ("--soft", "keep all changes staged"),
+        ("--mixed", "keep changes, unstaged"),
+        ("--keep", "update files, keep uncommitted changes"),
+        ("--hard", "discard all changes (⌘Z restores them)"),
+    ] {
+        let text = egui::RichText::new(format!("{} — {hint}", &mode[2..]));
+        if ui.button(if mode == "--hard" { text.color(theme::DEL) } else { text }).clicked() {
+            acts.push(Action::Git(crate::repo::reset_op(d, id, mode)));
+        }
     }
 }
 

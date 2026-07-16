@@ -62,7 +62,8 @@ fn fingerprint(path: &Path) -> Option<u64> {
 
 pub(super) enum UndoKind {
     /// `autostash`: the op carried uncommitted changes along; undo/redo carries them back.
-    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String> },
+    /// `saved`: a hard reset's backup, restored once the refs are back (undo only).
+    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String>, saved: Option<Saved> },
     Discard(Saved),
     /// A config-only op (remotes) and the op that reverts it.
     Op { undo: Box<super::Op>, redo: Box<super::Op> },
@@ -89,23 +90,41 @@ fn split_z(s: String) -> Vec<String> {
 /// Back up everything a discard will destroy. Any failure aborts the discard.
 pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     let refuse = |why: String| format!("Nothing was discarded: couldn't back it up first ({why}).");
+    // Checked first: a refused reset leaves no backup behind as a bogus undo step.
+    if let Backup::Reset(_, want) = b {
+        if super::rebase::head_state(dir) != *want {
+            return Err("The branch changed since this was prepared, so nothing was reset. Try again.".into());
+        }
+    }
     let (tracked, untracked): (Vec<String>, Vec<String>) = match b {
-        Backup::All => (
+        Backup::All | Backup::Reset(..) => (
             // No HEAD yet (unborn branch): every index entry is a staged new file.
             split_z(git::run(dir, &["diff", "--name-only", "-z", "HEAD"]).or_else(|_| git::run(dir, &["ls-files", "-z"])).map_err(refuse)?),
-            split_z(git::run(dir, &["ls-files", "-z", "--others", "--exclude-standard"]).map_err(refuse)?),
+            // `reset --hard` overwrites ignored files in its way too.
+            split_z(git::run(dir, &["ls-files", "-z", "--others", if matches!(b, Backup::Reset(..)) { "--" } else { "--exclude-standard" }]).map_err(refuse)?),
         ),
         Backup::Paths(ps) | Backup::Overwrite(ps) => ps.iter().cloned().partition(|p| {
             git::run(dir, &["--literal-pathspecs", "ls-files", "-z", "--", p]).is_ok_and(|o| !o.is_empty())
         }),
     };
+    let untracked = match b {
+        // Only where `rev` has an entry at the path, or a file above it: the rest survives the reset.
+        Backup::Reset(rev, _) if !untracked.is_empty() => {
+            let tree = split_z(git::run(dir, &["ls-tree", "-r", "-t", "-z", rev]).map_err(refuse)?);
+            // `<mode> <type> <oid>\t<path>`: path -> is a folder.
+            let tree: std::collections::HashMap<&str, bool> = tree.iter().filter_map(|l| l.split_once('\t').map(|(m, p)| (p, m.contains(" tree ")))).collect();
+            let hit = |p: &str| tree.contains_key(p) || p.match_indices('/').any(|(i, _)| tree.get(&p[..i]) == Some(&false));
+            untracked.into_iter().filter(|p| hit(p)).collect()
+        }
+        _ => untracked,
+    };
     // Unborn branch: `tracked` already lists every index entry.
     let staged = match b {
-        Backup::All => git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]).map(split_z).unwrap_or_default(),
+        Backup::All | Backup::Reset(..) => git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]).map(split_z).unwrap_or_default(),
         _ => vec![],
     };
     let unmerged = match b {
-        Backup::All => vec![],
+        Backup::All | Backup::Reset(..) => vec![],
         _ => split_z(git::run(dir, &["diff", "--name-only", "-z", "--diff-filter=U"]).map_err(refuse)?).into_iter().filter(|p| tracked.contains(p)).collect(),
     };
     // git prints raw bytes; a name that isn't UTF-8 decodes lossily and would match no file.
@@ -115,7 +134,7 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     // `stash create` fails before the first commit and while the index has conflicts:
     // then the tracked files' bytes are copied like untracked ones (`stash` = None).
     let created = (!tracked.is_empty() || !staged.is_empty()).then(|| git::run(dir, &["stash", "create"]).ok()).flatten();
-    let index = matches!(b, Backup::All) && created.as_ref().is_some_and(|s| !s.trim().is_empty());
+    let index = matches!(b, Backup::All | Backup::Reset(..)) && created.as_ref().is_some_and(|s| !s.trim().is_empty());
     let stash = created.and_then(|s| {
         // No tracked file changed yet: HEAD already holds their contents (e.g. a
         // restore from history about to overwrite a clean file).
@@ -147,11 +166,17 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     Ok(Saved { stash, tracked, staged, unmerged, files, overwrite: matches!(b, Backup::Overwrite(_)), index, after: Default::default() })
 }
 
-pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
-    let mut after = s.after.lock().unwrap();
-    if let Some((p, _)) = after.iter().find(|(p, f)| fingerprint(&dir.join(p)) != *f) {
-        return Err(format!("{p} changed since the discard, and undoing it would overwrite that. Move the file aside, then undo again."));
+/// Err if a backed-up path changed since the discard: restoring would overwrite that.
+fn unchanged(dir: &Path, s: &Saved) -> Res<()> {
+    match s.after.lock().unwrap().iter().find(|(p, f)| fingerprint(&dir.join(p)) != *f) {
+        Some((p, _)) => Err(format!("{p} changed since the discard, and undoing it would overwrite that. Move the file aside, then undo again.")),
+        None => Ok(()),
     }
+}
+
+pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
+    unchanged(dir, s)?;
+    let mut after = s.after.lock().unwrap();
     // What this undo itself changed is no "change since" for a retry after a later step fails.
     let mut reseal = |ps: &[&String]| after.iter_mut().filter(|(p, _)| ps.contains(&p)).for_each(|(p, f)| *f = fingerprint(&dir.join(&*p)));
     let tracked: std::collections::HashSet<&String> = s.tracked.iter().collect();
@@ -262,10 +287,19 @@ impl RepoTab {
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         // Err's flag: the refs didn't move, so the ref steps still hold.
         let job: Box<dyn FnOnce() -> Result<(), (String, bool)> + Send> = match &e.kind {
-            UndoKind::Refs { before, after, mode, autostash } => {
+            UndoKind::Refs { before, after, mode, autostash, saved } => {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
-                let (mode, autostash) = (mode.mode(), autostash.clone());
-                Box::new(move || move_refs(&dir, &expect, &target, mode, autostash.as_deref()))
+                let (mode, autostash, saved) = (mode.mode(), autostash.clone(), saved.clone().filter(|_| undo));
+                Box::new(move || {
+                    // Checked before the refs move, which changes the files: then the restore can't tell.
+                    if let Some(s) = &saved {
+                        unchanged(&dir, s).map_err(|e| (e, true))?;
+                    }
+                    move_refs(&dir, &expect, &target, mode, autostash.as_deref())?;
+                    let Some(mut s) = saved else { return Ok(()) };
+                    s.seal(&dir);
+                    restore_worktree(&dir, &s).map_err(|e| (e, false))
+                })
             }
             UndoKind::Op { undo: u, redo } => {
                 let op = if undo { u.clone() } else { redo.clone() };
