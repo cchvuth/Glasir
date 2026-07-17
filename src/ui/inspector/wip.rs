@@ -10,6 +10,14 @@ use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
 /// Who commits here (effective user.name / user.email), and a warning with a fix when a
 /// Settings rule expects another email domain for one of the remotes' hosts.
+/// "Stash this file": its staged and unstaged changes (a rename with its old path), ⌘Z pops it back.
+fn stash_file_item(ui: &mut Ui, c: &crate::git::Change, acts: &mut Vec<Action>) {
+    if ui.button(format!("{} Stash this file", icon::TRAY_ARROW_DOWN)).clicked() {
+        let paths: Vec<&str> = c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path]).map(String::as_str).collect();
+        acts.push(Action::Git(crate::repo::stash_paths_op(&paths)));
+    }
+}
+
 fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) {
     let user = (d.cfg("user.name").unwrap_or_default(), d.cfg("user.email").unwrap_or_default());
     let (name, email) = if d.author.1.is_empty() { user } else { (d.author.0.as_str(), d.author.1.as_str()) };
@@ -255,6 +263,7 @@ impl RepoTab {
                         if ui.button("Discard changes").clicked() {
                             acts.push(Action::Git(crate::repo::discard_op(c)));
                         }
+                        stash_file_item(ui, c, acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         if c.code == '?' && ui.button("Add to .gitignore").clicked() {
                             match crate::repo::files::append_gitignore(&self.dir, &c.path) {
@@ -302,6 +311,7 @@ impl RepoTab {
                         if ui.button("Unstage").clicked() {
                             acts.push(Action::Git(crate::repo::unstage_op(c)));
                         }
+                        stash_file_item(ui, c, acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {

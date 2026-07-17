@@ -39,7 +39,7 @@ impl Saved {
 }
 
 /// A hash of what's at `path` (None = nothing), to tell whether it changed.
-fn fingerprint(path: &Path) -> Option<u64> {
+pub(super) fn fingerprint(path: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     use std::io::Read;
     let meta = std::fs::symlink_metadata(path).ok()?;
@@ -83,7 +83,7 @@ impl UndoEntry {
     }
 }
 
-fn split_z(s: String) -> Vec<String> {
+pub(super) fn split_z(s: String) -> Vec<String> {
     s.split('\0').filter(|p| !p.is_empty()).map(String::from).collect()
 }
 
@@ -286,7 +286,7 @@ impl RepoTab {
         let dir = self.dir.clone();
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         // Err's flag: the refs didn't move, so the ref steps still hold.
-        let job: Box<dyn FnOnce() -> Result<(), (String, bool)> + Send> = match &e.kind {
+        let job: Box<dyn FnOnce() -> Result<Option<Box<super::Op>>, (String, bool)> + Send> = match &e.kind {
             UndoKind::Refs { before, after, mode, autostash, saved } => {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
                 let (mode, autostash, saved) = (mode.mode(), autostash.clone(), saved.clone().filter(|_| undo));
@@ -296,26 +296,30 @@ impl RepoTab {
                         unchanged(&dir, s).map_err(|e| (e, true))?;
                     }
                     move_refs(&dir, &expect, &target, mode, autostash.as_deref())?;
-                    let Some(mut s) = saved else { return Ok(()) };
+                    let Some(mut s) = saved else { return Ok(None) };
                     s.seal(&dir);
-                    restore_worktree(&dir, &s).map_err(|e| (e, false))
+                    restore_worktree(&dir, &s).map(|_| None).map_err(|e| (e, false))
                 })
             }
             UndoKind::Op { undo: u, redo } => {
-                let op = if undo { u.clone() } else { redo.clone() };
-                Box::new(move || super::op::exec(&dir, &op).map(drop).map_err(|e| (e, false)))
+                let mut op = if undo { u.clone() } else { redo.clone() };
+                Box::new(move || match undo {
+                    true => super::op::exec(&dir, &op).map(|_| None).map_err(|e| (e, false)),
+                    // A redone stash save made a new stash: its undo pops that one.
+                    false => super::op::exec_stash(&dir, &mut op).map(|_| op.revert.take()).map_err(|e| (e, false)),
+                })
             }
             // Restoring discarded work has no meaningful redo.
             UndoKind::Discard(_) if !undo => return,
             UndoKind::Discard(saved) => {
                 let saved = saved.clone();
-                Box::new(move || restore_worktree(&dir, &saved).map_err(|e| (e, false)))
+                Box::new(move || restore_worktree(&dir, &saved).map(|_| None).map_err(|e| (e, false)))
             }
         };
         self.running = Some((
             label,
             Task::spawn(ctx, move || match job() {
-                Ok(()) => Done::Undo(undo, Ok(()), false),
+                Ok(fresh) => Done::Undo(undo, Ok(fresh), false),
                 Err((e, kept)) => Done::Undo(undo, Err(e), !kept),
             }),
         ));

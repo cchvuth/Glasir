@@ -212,6 +212,12 @@ impl App {
                             t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(id)));
                         }
                     }
+                    // The toolbar Stash button's message prompt.
+                    "stash-prompt" => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.apply(&ctx.clone(), crate::repo::stash_prompt());
+                        }
+                    }
                     // The first and third stashes ⌘-clicked in the sidebar.
                     "stashes" => {
                         if let Some(t) = self.tabs.get_mut(self.active)

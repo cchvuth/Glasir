@@ -139,9 +139,14 @@ The name fits a Git client:
 - **Worktrees**: list with change counts and lock state, create (new or existing
   branch), open in a new tab, lock / unlock, remove (with force / with its
   branch), prune.
-- **Stashes**: stash all, staged only, or with an AI-written message; apply, pop,
-  delete (⌘/⇧-click several to delete them at once; ⌘Z brings them back in
-  place); apply a single file from a stash.
+- **Stashes**: stash all (with your own message, or git's default), staged only,
+  a single file (right-click it in the WIP lists), or with an AI-written message;
+  ⌘Z pops a fresh stash back. Apply and pop bring staged changes back staged
+  (or say why they came back unstaged); ⌘Z after a pop puts the stash back and
+  its files as they were. Rename a stash, create a branch from it (at the
+  commit it was made on, stash popped; one ⌘Z undoes it all), delete
+  (⌘/⇧-click several to delete them at once; ⌘Z brings them back in place);
+  apply a single file from a stash.
 - **Tags**: create (lightweight or annotated), push one or all, delete locally, on
   the remote or both at once, **move a tag** to another commit (undoable, keeps its
   annotation); annotated tag messages show on hover.

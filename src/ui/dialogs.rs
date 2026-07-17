@@ -34,7 +34,9 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     if let Some(ok) = done {
         let p = t.prompt.take().unwrap();
         let v = p.value.trim();
-        if ok && !v.is_empty() {
+        // `-m ""` gives git's default message (a stash).
+        let optional = p.op.cmds.iter().any(|c| c.windows(2).any(|w| w == ["-m", "{}"]));
+        if ok && (!v.is_empty() || optional) {
             let mut op = p.op;
             let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
             let revert = op.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());

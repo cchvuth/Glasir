@@ -4,7 +4,7 @@
 
 use crate::ai;
 use crate::git;
-use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pull_op, stash_op};
+use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pop_stash, pull_op, stash_prompt};
 use crate::theme::{self, icon};
 use crate::ui::settings::Settings;
 use egui::{Button, RichText, Ui};
@@ -69,7 +69,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                     }
                 });
                 theme::group(ui, |ui| toolbar_remote(ui, t, s, acts));
-                theme::group(ui, |ui| toolbar_local(ui, acts));
+                theme::group(ui, |ui| toolbar_local(ui, t.data.as_ref().and_then(|d| d.stashes.first()), acts));
             });
             if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
                 let chip = RichText::new(format!("{} {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
@@ -198,7 +198,7 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
     }
 }
 
-fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
+fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, acts: &mut Vec<Action>) {
     {
         {
             if theme::pill(ui, format!("{} Branch", icon::GIT_BRANCH)).on_hover_text("Create a branch from HEAD and check it out").clicked() {
@@ -209,8 +209,8 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                 second: None,
                 }));
             }
-            if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).on_hover_text("Stash all changes, untracked files included").clicked() {
-                acts.push(Action::Git(stash_op()));
+            if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).on_hover_text("Stash all changes, untracked files included (⌘Z pops it back)").clicked() {
+                acts.push(stash_prompt());
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
                 if ai::enabled() && ui.button(format!("{} Stash with AI message", icon::SPARKLE)).clicked() {
@@ -222,8 +222,9 @@ fn toolbar_local(ui: &mut Ui, acts: &mut Vec<Action>) {
                     ui.close();
                 }
             }).response.on_hover_text("More stash options");
-            if theme::pill(ui, format!("{} Pop", icon::TRAY_ARROW_UP)).on_hover_text("Apply the newest stash and drop it").clicked() {
-                acts.push(op("Pop stash", &["stash", "pop"]));
+            let pop = ui.add_enabled_ui(newest.is_some(), |ui| theme::pill(ui, format!("{} Pop", icon::TRAY_ARROW_UP))).inner;
+            if let Some(s) = newest.filter(|_| pop.on_hover_text("Apply the newest stash and drop it (⌘Z puts it back)").on_disabled_hover_text("No stashes").clicked()) {
+                acts.push(Action::Git(pop_stash(s)));
             }
         }
     }

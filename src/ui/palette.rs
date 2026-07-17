@@ -2,7 +2,7 @@
 //! branch, open recent repositories, app commands.
 
 use crate::git::RefKind;
-use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, branch_checkout, op, pull_op, stash_op};
+use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, branch_checkout, op, pop_stash, pull_op, stash_prompt};
 use crate::theme::{self, icon};
 use egui::{Key, RichText, TextEdit};
 use std::path::PathBuf;
@@ -93,8 +93,10 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
                 second: None,
             })),
         ));
-        v.push(git("Stash all changes", Action::Git(stash_op())));
-        v.push(git("Pop stash", op("Pop stash", &["stash", "pop"])));
+        v.push(git("Stash all changes…", stash_prompt()));
+        if let Some(s) = d.stashes.first() {
+            v.push(git("Pop stash", Action::Git(pop_stash(s))));
+        }
         if let Some(o) = crate::repo::stage_all_op(&d.status) {
             v.push(git("Stage all changes", Action::Git(o)));
         }

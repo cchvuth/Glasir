@@ -2,7 +2,7 @@
 //! stash markers in the graph).
 
 use super::{matches, section};
-use crate::repo::{Action, RepoData, Sel, drop_stashes, op, pop_stash};
+use crate::repo::{Action, RepoData, Sel, apply_stash_op, drop_stashes, pop_stash, prompt, rename_stash, stash_branch};
 use egui::{Id, Ui};
 
 /// The stashes ⌘/⇧-clicked together (egui memory: sidebar-only state).
@@ -48,7 +48,7 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
                 acts.push(Action::Select(Sel::Commit(shown)));
             }
             if resp.double_clicked() {
-                acts.push(op("Apply stash", &["stash", "apply", &s.id]));
+                acts.push(Action::Git(apply_stash_op(s)));
             }
             resp.context_menu(|ui| {
                 if picked {
@@ -67,11 +67,17 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
 
 /// Right-click menu for a stash (sidebar and graph markers).
 pub fn stash_menu(ui: &mut Ui, d: &RepoData, s: &crate::git::Stash, acts: &mut Vec<Action>) {
-    if ui.button("Apply stash").clicked() {
-        acts.push(op("Apply stash", &["stash", "apply", &s.id]));
+    if ui.button("Apply stash").on_hover_text("Restores staged changes as staged when it can; the stash is kept").clicked() {
+        acts.push(Action::Git(apply_stash_op(s)));
     }
-    if ui.button("Pop stash").clicked() {
+    if ui.button("Pop stash").on_hover_text("Apply, then delete the stash (⌘Z puts it back)").clicked() {
         acts.push(Action::Git(pop_stash(s)));
+    }
+    if ui.button("Rename stash…").clicked() {
+        acts.push(prompt("Rename stash", s.message.as_str(), rename_stash(s)));
+    }
+    if ui.button("Create branch from stash…").on_hover_text("A new branch at the commit the stash was made on, with the stash popped onto it").clicked() {
+        acts.push(prompt("New branch from stash", "", stash_branch(d, s)));
     }
     if ui.button("Delete stash").clicked() {
         acts.push(Action::Git(drop_stashes(&d.stashes, std::slice::from_ref(&s.id))));

@@ -2,7 +2,7 @@
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
 use crate::git::{Commit, Ref, RefKind, State};
-use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_checkout, prompt, stash_op};
+use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_checkout, prompt, stash_prompt};
 use crate::theme::{self, icon};
 use egui::Ui;
 
@@ -260,7 +260,7 @@ pub fn reset_items(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) 
 
 pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {
     if ui.button("Stash all changes").clicked() {
-        acts.push(Action::Git(stash_op()));
+        acts.push(stash_prompt());
     }
     if ui.button("Discard all changes").clicked() {
         acts.push(Action::Git(
