@@ -57,7 +57,10 @@ The name fits a Git client:
   several commits, compare oldest ↔ newest, copy SHAs.
 
 ### Staging, diffs and commits
-- Stage, unstage and discard by **file, hunk or individual line**.
+- Stage, unstage and discard by **file, hunk or individual line**: a **Stage / Unstage
+  button** appears on each file row on hover, ⌘/⇧-click selects several files (S / U or
+  the buttons act on all; a multi-file discard is one backup), drag across diff lines to
+  select them, and untracked files can be staged in part too (via intent-to-add).
 - Unified or split diffs with **syntax highlighting** and **word-level** change marks.
 - Diff controls: **ignore whitespace** (`-w`; line staging pauses while it is on),
   **context** of 3 / 10 lines or the whole file, **previous / next change**
@@ -263,10 +266,11 @@ token saved by an older version may ask once: choose **Always Allow**).
 | ⌘Z / ⇧⌘Z | Undo / redo |
 | ⌘↩ | Commit |
 | ⇧⌘S / ⇧⌘U | Stage all / unstage all |
+| S / U | Stage / unstage the selected files |
 | ⌘L | Fetch |
 | ⇧⌘L | Command log |
 | ↑ ↓ / J K | Move through commits |
-| ⌘-click / ⇧-click | Select several commits |
+| ⌘-click / ⇧-click | Select several commits, or WIP files to stage / unstage / discard |
 | ⌘O / ⌘T / ⌘W | Open repo / new tab / close tab |
 | ⌃Tab | Next tab |
 | ⌘, | Settings |

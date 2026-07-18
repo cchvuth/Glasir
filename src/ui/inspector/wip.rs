@@ -1,23 +1,27 @@
 //! Inspector for the WIP row: operation-in-progress banner, conflicted /
 //! unstaged / staged file lists and the commit box.
 
-use super::{file_items, file_row, lfs_track_item, open_items, permalink_items};
+use super::{file_items, file_row, lfs_track_item, open_items, permalink_items, row_button};
 use crate::ai::Purpose;
-use crate::git::State;
-use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, identity, prompt, sequencer_op};
+use crate::git::{Change, State};
+use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, discard_files_op, identity, prompt, sequencer_op, stage_files_op, unstage_files_op};
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 
-/// Who commits here (effective user.name / user.email), and a warning with a fix when a
-/// Settings rule expects another email domain for one of the remotes' hosts.
-/// "Stash this file": its staged and unstaged changes (a rename with its old path), ⌘Z pops it back.
-fn stash_file_item(ui: &mut Ui, c: &crate::git::Change, acts: &mut Vec<Action>) {
-    if ui.button(format!("{} Stash this file", icon::TRAY_ARROW_DOWN)).clicked() {
-        let paths: Vec<&str> = c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path]).map(String::as_str).collect();
+/// "Stash this file" (or the selected files): their staged and unstaged changes (a rename
+/// with its old path), ⌘Z pops them back. True when clicked.
+fn stash_files_item(ui: &mut Ui, cs: &[Change], acts: &mut Vec<Action>) -> bool {
+    let what = if cs.len() == 1 { "this file".to_owned() } else { format!("{} files", cs.len()) };
+    let clicked = ui.button(format!("{} Stash {what}", icon::TRAY_ARROW_DOWN)).clicked();
+    if clicked {
+        let paths: Vec<&str> = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).map(String::as_str).collect();
         acts.push(Action::Git(crate::repo::stash_paths_op(&paths)));
     }
+    clicked
 }
 
+/// Who commits here (effective user.name / user.email), and a warning with a fix when a
+/// Settings rule expects another email domain for one of the remotes' hosts.
 fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) {
     let user = (d.cfg("user.name").unwrap_or_default(), d.cfg("user.email").unwrap_or_default());
     let (name, email) = if d.author.1.is_empty() { user } else { (d.author.0.as_str(), d.author.1.as_str()) };
@@ -53,7 +57,47 @@ fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) 
     });
 }
 
+/// A click on row `i` of a WIP list (`staged` picks which): a plain click selects just it (true: open
+/// its diff), ⌘ toggles it, ⇧ selects the range from the selection's first row of that list.
+fn pick_file(sel: &mut Vec<(bool, String)>, list: &[Change], staged: bool, i: usize, m: egui::Modifiers) -> bool {
+    let path = list[i].path.clone();
+    if m.shift {
+        let from = sel.first().filter(|(s, _)| *s == staged).and_then(|(_, p)| list.iter().position(|c| c.path == *p)).unwrap_or(i);
+        let anchor = list[from].path.clone();
+        *sel = list[from.min(i)..=from.max(i)].iter().map(|c| (staged, c.path.clone())).collect();
+        sel.sort_by_key(|(_, p)| *p != anchor);
+    } else if m.command {
+        sel.retain(|(s, _)| *s == staged);
+        match sel.iter().position(|(_, p)| *p == path) {
+            Some(k) => drop(sel.remove(k)),
+            None => sel.push((staged, path)),
+        }
+    } else {
+        *sel = vec![(staged, path)];
+        return true;
+    }
+    false
+}
+
+fn picked(sel: &[(bool, String)], staged: bool, path: &str) -> bool {
+    sel.iter().any(|(s, p)| *s == staged && p == path)
+}
+
 impl RepoTab {
+    /// S / U with WIP files selected: stage the selected unstaged files / unstage the selected staged ones.
+    pub fn file_key(&mut self, stage: bool) -> Option<Action> {
+        let d = self.data.as_ref().filter(|_| self.sel == Some(crate::repo::Sel::Wip) && self.multi.len() < 2 && self.busy().is_none())?;
+        // The rebase editor and other center views have their own S / U / letter keys.
+        if self.rebase.is_some() || self.merge.is_some() || self.file_view.is_some() || self.reflog.is_some() {
+            return None;
+        }
+        let list = if stage { &d.status.unstaged } else { &d.status.staged };
+        let cs: Vec<Change> = list.iter().filter(|c| picked(&self.file_sel, !stage, &c.path)).cloned().collect();
+        let op = if stage { stage_files_op("Stage", &cs) } else { unstage_files_op(&cs) }?;
+        self.file_sel.clear();
+        Some(Action::Git(op))
+    }
+
     /// Guided split: Continue / Abort, above whatever the inspector shows.
     pub(super) fn split_banner(&self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let Some(sp) = &self.split else { return };
@@ -234,10 +278,23 @@ impl RepoTab {
                     }
                     ui.add_space(6.0);
                 }
+                let mods = ui.input(|i| i.modifiers);
+                let mut clear = false;
+                let sel_un: Vec<Change> = s.unstaged.iter().filter(|c| picked(&self.file_sel, false, &c.path)).cloned().collect();
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if let Some(o) = crate::repo::stage_all_op(s)
+                        if sel_un.len() > 1 {
+                            let n = sel_un.len();
+                            if theme::small(ui, true, format!("Stage {n}")).on_hover_text("Stage the selected files (S)").clicked() {
+                                acts.extend(stage_files_op("Stage", &sel_un).map(Action::Git));
+                                clear = true;
+                            }
+                            if theme::small(ui, true, format!("Discard {n}")).on_hover_text("Discard changes to the selected files (one confirmation, one ⌘Z)").clicked() {
+                                acts.extend(discard_files_op(&sel_un).map(Action::Git));
+                                clear = true;
+                            }
+                        } else if let Some(o) = crate::repo::stage_all_op(s)
                             && theme::small(ui, true, "Stage all").clicked()
                         {
                             acts.push(Action::Git(o));
@@ -247,23 +304,40 @@ impl RepoTab {
                 if s.unstaged.is_empty() {
                     ui.label(RichText::new("No unstaged changes").small().color(theme::dim(ui)));
                 }
-                for c in &s.unstaged {
+                for (i, c) in s.unstaged.iter().enumerate() {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: false };
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src), d.lfs.files.contains(&c.path));
-                    if resp.clicked() {
+                    let in_sel = picked(&self.file_sel, false, &c.path);
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path));
+                    let stage_one = || stage_files_op("Stage", std::slice::from_ref(c)).map(Action::Git);
+                    if !busy && row_button(ui, &resp, icon::PLUS, "Stage") {
+                        acts.extend(stage_one());
+                    } else if resp.clicked() && pick_file(&mut self.file_sel, &s.unstaged, false, i, mods) {
                         acts.push(Action::Diff(src));
                     }
                     if resp.double_clicked() {
-                        acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", &c.path]).light()));
+                        acts.extend(stage_one());
                     }
                     resp.context_menu(|ui| {
+                        if in_sel && sel_un.len() > 1 {
+                            let n = sel_un.len();
+                            if ui.button(format!("Stage {n} files")).clicked() {
+                                acts.extend(stage_files_op("Stage", &sel_un).map(Action::Git));
+                                clear = true;
+                            }
+                            if ui.button(format!("Discard {n} files")).clicked() {
+                                acts.extend(discard_files_op(&sel_un).map(Action::Git));
+                                clear = true;
+                            }
+                            clear |= stash_files_item(ui, &sel_un, acts);
+                            return;
+                        }
                         if ui.button("Stage").clicked() {
-                            acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", &c.path]).light()));
+                            acts.extend(stage_one());
                         }
                         if ui.button("Discard changes").clicked() {
                             acts.push(Action::Git(crate::repo::discard_op(c)));
                         }
-                        stash_file_item(ui, c, acts);
+                        stash_files_item(ui, std::slice::from_ref(c), acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         if c.code == '?' && ui.button("Add to .gitignore").clicked() {
                             match crate::repo::files::append_gitignore(&self.dir, &c.path) {
@@ -287,10 +361,16 @@ impl RepoTab {
                     });
                 }
                 ui.add_space(6.0);
+                let sel_st: Vec<Change> = s.staged.iter().filter(|c| picked(&self.file_sel, true, &c.path)).cloned().collect();
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Staged files  {}", s.staged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if !s.staged.is_empty() && theme::small(ui, true, "Unstage all").clicked() {
+                        if sel_st.len() > 1 {
+                            if theme::small(ui, true, format!("Unstage {}", sel_st.len())).on_hover_text("Unstage the selected files (U)").clicked() {
+                                acts.extend(unstage_files_op(&sel_st).map(Action::Git));
+                                clear = true;
+                            }
+                        } else if !s.staged.is_empty() && theme::small(ui, true, "Unstage all").clicked() {
                             acts.push(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));
                         }
                     });
@@ -298,20 +378,31 @@ impl RepoTab {
                 if s.staged.is_empty() {
                     ui.label(RichText::new("Nothing staged yet: double-click a file above, or Stage all").small().color(theme::dim(ui)));
                 }
-                for c in &s.staged {
+                for (i, c) in s.staged.iter().enumerate() {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: true };
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src), d.lfs.files.contains(&c.path));
-                    if resp.clicked() {
+                    let in_sel = picked(&self.file_sel, true, &c.path);
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path));
+                    if !busy && row_button(ui, &resp, icon::MINUS, "Unstage") {
+                        acts.push(Action::Git(crate::repo::unstage_op(c)));
+                    } else if resp.clicked() && pick_file(&mut self.file_sel, &s.staged, true, i, mods) {
                         acts.push(Action::Diff(src));
                     }
                     if resp.double_clicked() {
                         acts.push(Action::Git(crate::repo::unstage_op(c)));
                     }
                     resp.context_menu(|ui| {
+                        if in_sel && sel_st.len() > 1 {
+                            if ui.button(format!("Unstage {} files", sel_st.len())).clicked() {
+                                acts.extend(unstage_files_op(&sel_st).map(Action::Git));
+                                clear = true;
+                            }
+                            clear |= stash_files_item(ui, &sel_st, acts);
+                            return;
+                        }
                         if ui.button("Unstage").clicked() {
                             acts.push(Action::Git(crate::repo::unstage_op(c)));
                         }
-                        stash_file_item(ui, c, acts);
+                        stash_files_item(ui, std::slice::from_ref(c), acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {
@@ -324,6 +415,9 @@ impl RepoTab {
                             acts.push(Action::Copy(c.path.clone()));
                         }
                     });
+                }
+                if clear {
+                    self.file_sel.clear();
                 }
             });
         }

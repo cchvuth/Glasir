@@ -241,7 +241,8 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
 }
 
 fn untracked_diff(dir: &Path, path: &str) -> Res<FileDiff> {
-    let mut f = FileDiff { header: vec![format!("new file {path}")], ..Default::default() };
+    // The ---/+++ pair lets `partial_patch` write a patch for part of it (after `add -N`).
+    let mut f = FileDiff { header: vec![format!("new file {path}"), "--- /dev/null".into(), format!("+++ b/{path}")], ..Default::default() };
     let meta = std::fs::symlink_metadata(dir.join(path)).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > 8 << 20 {
         f.binary = true;

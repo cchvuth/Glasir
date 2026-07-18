@@ -34,6 +34,17 @@ impl DiffState {
 
 impl RepoTab {
     pub(super) fn refresh_diff(&mut self, ctx: &egui::Context) {
+        // Part of an untracked file was staged: the rest is now an ordinary unstaged change.
+        if let (Some(d), Some(data)) = (&mut self.diff, &self.data)
+            && let DiffSrc::Worktree { change, staged: false } = &mut d.src
+            && change.code == '?'
+            && !data.status.unstaged.iter().any(|c| c.path == change.path && c.code == '?')
+        {
+            match data.status.unstaged.iter().find(|c| c.path == change.path) {
+                Some(c) => *change = c.clone(),
+                None => self.diff = None,
+            }
+        }
         if let Some(d) = &self.diff
             && matches!(d.src, DiffSrc::Worktree { .. })
         {
@@ -100,6 +111,10 @@ pub(super) fn diff_is(dir: &std::path::Path, a: &[&str]) -> Res<String> {
     let [_, staged, context, code, path, old, want] = a else { return Err("bad diff guard".into()) };
     let c = git::Change { path: path.to_string(), old_path: (!old.is_empty()).then(|| old.to_string()), code: code.chars().next().unwrap_or('M') };
     let o = DiffOpts { ignore_ws: false, context: context.parse().unwrap_or(3) };
+    // Untracked when shown: staged or tracked since means the patch (and its rollback) is not ours to apply.
+    if c.code == '?' && !git::run(dir, &["--literal-pathspecs", "ls-files", "--cached", "--", path])?.trim().is_empty() {
+        return Err("The file is no longer untracked, so nothing was applied. Check the updated diff and try again.".into());
+    }
     match shape(&git::worktree_diff(dir, &c, *staged == "1", o)?) == *want {
         true => Ok(String::new()),
         false => Err("The file changed since this diff was shown, so nothing was applied. Check the updated diff and try again.".into()),
@@ -116,7 +131,14 @@ pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch:
     let mut a = vec!["apply", "--recount", "--whitespace=nowarn"];
     a.extend_from_slice(args);
     a.push("-");
-    let op = Op::new(label, &guard).then(&a).input(patch).light();
+    let mut op = Op::new(label, &guard);
+    if c.code == '?' {
+        // Untracked: record an empty intent-to-add entry for the patch to fill in. If anything fails
+        // after that, drop the entry again so the file is untracked as before.
+        op = op.then(&["--literal-pathspecs", "add", "-N", "--", &c.path]);
+        op.on_fail = vec![["--literal-pathspecs", "reset", "-q", "--", &c.path].map(String::from).to_vec()];
+    }
+    let op = op.then(&a).input(patch).light();
     match label.starts_with("Discard") {
         true => op.backup(Backup::Paths(vec![c.path.clone()])).confirm("Discard the selected changes? (Undo with ⌘Z.)"),
         false => op,
@@ -167,6 +189,50 @@ mod tests {
         std::fs::write(dir.join("f"), file("EDIT", "x")).unwrap();
         super::super::op::exec(&dir, &stage).unwrap();
         assert_eq!(sh(&dir, &["show", ":f"]), file("EDIT", "x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Part of an untracked file is staged via intent-to-add; a failure puts it back untracked, a
+    /// stale or no-longer-untracked file is refused, and the rest shows as an ordinary unstaged edit.
+    #[test]
+    fn untracked_line_staging() {
+        let dir = scratch("untracked-lines");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "base", "b\n");
+        let name = "new [1].txt";
+        std::fs::write(dir.join(name), "one\ntwo\nthree\nfour\n").unwrap();
+        let c = git::Change { path: name.into(), old_path: None, code: '?' };
+        let o = DiffOpts::default();
+        let f = git::worktree_diff(&dir, &c, false, o).unwrap();
+        let src = DiffSrc::Worktree { change: c.clone(), staged: false };
+        let op = |keep: &[usize]| patch_op("Stage lines", &src, o, &f, git::partial_patch(&f, |_, l| keep.contains(&l), false).unwrap(), &["--cached"]);
+
+        // A patch that no longer applies (the lines changed under the guard's feet) rolls the entry back.
+        let mut bad = op(&[0, 2]);
+        bad.input = Some(b"not a patch".to_vec());
+        assert!(super::super::op::exec(&dir, &bad).is_err());
+        assert_eq!(sh(&dir, &["status", "--porcelain", "-z"]), format!("?? {name}\0"));
+
+        // File edited meanwhile: refused, nothing recorded.
+        std::fs::write(dir.join(name), "one\nTWO\nthree\nfour\n").unwrap();
+        assert!(super::super::op::exec(&dir, &op(&[0, 2])).is_err());
+        assert_eq!(sh(&dir, &["ls-files", "--", name]), "");
+        std::fs::write(dir.join(name), "one\ntwo\nthree\nfour\n").unwrap();
+
+        super::super::op::exec(&dir, &op(&[0, 2])).unwrap();
+        assert_eq!(sh(&dir, &["show", &format!(":{name}")]), "one\nthree\n");
+        assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), "one\ntwo\nthree\nfour\n");
+        // No longer untracked: the same op is refused (and its rollback must not unstage anything).
+        assert!(super::super::op::exec(&dir, &op(&[1])).is_err());
+        assert_eq!(sh(&dir, &["show", &format!(":{name}")]), "one\nthree\n");
+        let st = git::status(&dir).unwrap();
+        assert_eq!((st.staged[0].code, st.unstaged[0].code), ('A', 'M'));
+        // The rest is an ordinary diff now; unstaging it all makes the file untracked again.
+        let f2 = git::worktree_diff(&dir, &st.unstaged[0], false, o).unwrap();
+        assert_eq!(f2.hunks[0].lines.iter().filter(|l| l.kind == b'+').count(), 2);
+        sh(&dir, &["reset", "-q", "--", name]);
+        assert_eq!(git::status(&dir).unwrap().unstaged[0].code, '?');
         let _ = std::fs::remove_dir_all(&dir);
     }
 

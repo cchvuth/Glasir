@@ -59,7 +59,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt}
 pub use data::{RepoData, View};
 pub use diff::{DiffState, patch_op};
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, rename_stash, reset_op, sequencer_op, stage_all_op, stash_branch, stash_paths_op, stash_prompt, unstage_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_files_op, unstage_op};
 pub use search::Search;
 pub use task::Task;
 
@@ -118,6 +118,8 @@ pub struct RepoTab {
     pub search: Option<Search>,
     /// Extra selected commits (⌘/⇧-click), newest first; empty = single selection.
     pub multi: Vec<String>,
+    /// Selected files of the WIP lists (⌘/⇧-click) as (staged, path): the target of S / U / Discard.
+    pub file_sel: Vec<(bool, String)>,
     pub rebase: Option<crate::repo::rebase::Editor>,
     pub merge: Option<merge_editor::Editor>,
     pub file_view: Option<history::FileView>,
@@ -195,6 +197,7 @@ impl RepoTab {
             changed: None,
             search: None,
             multi: vec![],
+            file_sel: vec![],
             rebase: None,
             merge: None,
             file_view: None,

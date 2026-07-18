@@ -265,6 +265,12 @@ impl App {
                         self.toast_undo(ctx, "Discard ✔ changes backed up".into(), false, undo);
                         self.toast(ctx, "Fetch ✔ From github.com:org/repo".into(), false);
                     }
+                    // `row-hover:XxY`: a pointer pinned there (the WIP file rows' Stage button).
+                    q if q.starts_with("row-hover:") => {
+                        if let Some((x, y)) = q[10..].split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
+                            ctx.data_mut(|m| m.insert_temp(Id::new("shot_pointer"), egui::pos2(x, y)));
+                        }
+                    }
                     "drop-hint" => self.drop_hint_shot = true,
                     // Keeps scrolling the graph (with GLASIR_PERF=1 and many GLASIR_SCREENSHOT_FRAMES).
                     "scroll-bench" => self.bench = Some(0),

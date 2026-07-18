@@ -169,6 +169,13 @@ impl App {
         if cmd && shift && pressed(Key::U) {
             act = Some(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));
         }
+        // S / U: stage / unstage the files selected in the WIP lists (not while typing or in a dialog).
+        let plain = ctx.input(|i| !i.modifiers.any()) && ctx.memory(|m| m.top_modal_layer().is_none());
+        for (key, stage) in [(Key::S, true), (Key::U, false)] {
+            if !typing && plain && pressed(key) {
+                act = t.file_key(stage).or(act);
+            }
+        }
         if let Some(a) = act {
             t.apply(ctx, a);
         }

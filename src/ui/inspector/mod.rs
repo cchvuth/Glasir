@@ -96,6 +96,26 @@ pub fn lfs_track_item(ui: &mut Ui, d: &RepoData, path: &str, acts: &mut Vec<Acti
     }
 }
 
+/// Pointer over `rect`; the screenshot harness can pin a pointer position (`row-hover:x,y`).
+fn hovering(ui: &Ui, rect: egui::Rect) -> bool {
+    ui.rect_contains_pointer(rect) || ui.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new("shot_pointer"))).is_some_and(|p| rect.contains(p))
+}
+
+/// The hover button at a file row's right edge ("Stage" / "Unstage"): drawn only while the pointer
+/// is over the row, true when clicked. Takes the click from the row beneath.
+pub fn row_button(ui: &Ui, row: &egui::Response, glyph: &str, label: &str) -> bool {
+    if !hovering(ui, row.rect) {
+        return false;
+    }
+    let g = ui.painter().layout_no_wrap(format!("{glyph} {label}"), egui::FontId::proportional(11.5), egui::Color32::PLACEHOLDER);
+    let rect = egui::Rect::from_center_size(egui::pos2(row.rect.right() - 6.0 - (g.size().x + 14.0) / 2.0, row.rect.center().y), g.size() + egui::vec2(14.0, 6.0));
+    let resp = ui.interact(rect, row.id.with("quick"), Sense::click());
+    let fill = theme::accent().gamma_multiply(if resp.hovered() { 1.0 } else { 0.8 });
+    ui.painter().rect_filled(rect, 255.0, fill);
+    ui.painter().galley(rect.center() - g.size() / 2.0, g, egui::Color32::WHITE);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
 /// A file row: colored status letter, file name, an LFS badge, dimmed directory.
 pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool) -> egui::Response {
     let (dir, file) = c.path.rsplit_once('/').map_or(("", c.path.as_str()), |(d, f)| (d, f));
@@ -103,7 +123,7 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool) -> egui::Res
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::click());
     if selected {
         ui.painter().rect_filled(rect, 8.0, theme::selection(ui));
-    } else if resp.hovered() {
+    } else if hovering(ui, rect) {
         ui.painter().rect_filled(rect, 8.0, theme::hover(ui));
     }
     let p = ui.painter().with_clip_rect(rect);

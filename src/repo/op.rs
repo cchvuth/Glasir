@@ -156,7 +156,8 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
         for args in &op.cmds {
             out = one(args);
             if out.is_err() {
-                if !op.on_fail.is_empty() {
+                // A failed guard means nothing ran yet: there is nothing to roll back.
+                if !op.on_fail.is_empty() && args.first().map(String::as_str) != Some(super::diff::DIFF_IS) {
                     // A later step after a failed one could hit the wrong ref (a still-detached rebase HEAD).
                     let back = git::Cancel::default().scope(|| op.on_fail.iter().try_for_each(|a| one(a).map(drop)));
                     out = out.map_err(|e| match back {
@@ -201,8 +202,37 @@ pub fn fetch_op() -> Op {
 /// would mark it resolved, markers and all. None when there's nothing to stage (an
 /// empty pathspec list would stage everything). Paths go over stdin: no argv limit.
 pub fn stage_all_op(s: &git::Status) -> Option<Op> {
-    let paths: String = s.unstaged.iter().flat_map(|c| c.old_path.iter().chain([&c.path])).map(|p| format!("{p}\0")).collect();
-    (!paths.is_empty()).then(|| Op::new("Stage all", &["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
+    stage_files_op("Stage all", &s.unstaged)
+}
+
+/// Stage these unstaged changes in one op (a rename's old path too, so its deletion is staged).
+pub fn stage_files_op(label: &str, cs: &[git::Change]) -> Option<Op> {
+    let paths: String = cs.iter().flat_map(|c| c.old_path.iter().chain([&c.path])).map(|p| format!("{p}\0")).collect();
+    (!paths.is_empty()).then(|| Op::new(label, &["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
+}
+
+/// Unstage these staged changes in one op; None for an empty list (no pathspec would reset everything).
+pub fn unstage_files_op(cs: &[git::Change]) -> Option<Op> {
+    let paths: String = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).map(|p| format!("{p}\0")).collect();
+    (!paths.is_empty()).then(|| Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
+}
+
+/// Discard several unstaged changes as one op: a single confirmation and one backup, so one ⌘Z
+/// brings them all back.
+pub fn discard_files_op(cs: &[git::Change]) -> Option<Op> {
+    let mut ops = cs.iter().map(discard_op);
+    let mut o = ops.next()?;
+    if cs.len() == 1 {
+        return Some(o);
+    }
+    for n in ops {
+        o.cmds.extend(n.cmds);
+        if let (Some(Backup::Paths(a)), Some(Backup::Paths(b))) = (&mut o.backup, n.backup) {
+            a.extend(b);
+        }
+    }
+    o.label = format!("Discard {} files", cs.len());
+    Some(o.confirm(format!("Discard changes to {} files? (Undo with ⌘Z.)", cs.len())))
 }
 
 /// Discard one unstaged change (WIP list), backed up so ⌘Z brings the bytes back.
@@ -917,6 +947,50 @@ mod tests {
     use super::super::{Action, RepoTab, View};
     use super::{exec, Op};
     use crate::git;
+
+    /// Multi-file stage / unstage / discard touch exactly the chosen files (glob characters, a
+    /// leading dash, a rename), and the discard is one backup for all of them.
+    #[test]
+    fn multi_file_ops_hit_exact_files() {
+        let dir = scratch("multi-files");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["we*ird[1].txt", "weirdA.txt", "./-dash.txt", "old.txt"] {
+            commit(&dir, f, "base\n");
+        }
+        for f in ["we*ird[1].txt", "weirdA.txt", "-dash.txt"] {
+            std::fs::write(dir.join(f), "edit\n").unwrap();
+        }
+        std::fs::rename(dir.join("old.txt"), dir.join("new.txt")).unwrap();
+        sh(&dir, &["add", "-N", "new.txt"]);
+        std::fs::write(dir.join("untracked u.txt"), "u\n").unwrap();
+        let pick = |list: Vec<git::Change>, names: &[&str]| -> Vec<git::Change> { list.into_iter().filter(|c| names.contains(&c.path.as_str())).collect() };
+        let unstaged = |names: &[&str]| pick(git::status(&dir).unwrap().unstaged, names);
+        let staged = |names: &[&str]| pick(git::status(&dir).unwrap().staged, names);
+        assert!(super::stage_files_op("Stage", &[]).is_none() && super::unstage_files_op(&[]).is_none() && super::discard_files_op(&[]).is_none());
+
+        exec(&dir, &super::stage_files_op("Stage", &unstaged(&["we*ird[1].txt", "-dash.txt", "new.txt"])).unwrap()).unwrap();
+        let s = git::status(&dir).unwrap();
+        let mut names: Vec<&str> = s.staged.iter().map(|c| c.path.as_str()).collect();
+        names.sort();
+        assert_eq!(names, ["-dash.txt", "new.txt", "we*ird[1].txt"]);
+        assert!(s.unstaged.iter().any(|c| c.path == "weirdA.txt") && s.unstaged.iter().any(|c| c.path == "untracked u.txt"));
+        assert_eq!(s.staged.iter().find(|c| c.path == "new.txt").unwrap().old_path.as_deref(), Some("old.txt"));
+
+        exec(&dir, &super::unstage_files_op(&staged(&["we*ird[1].txt", "new.txt"])).unwrap()).unwrap();
+        let s = git::status(&dir).unwrap();
+        assert_eq!(s.staged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["-dash.txt"]);
+
+        let both = unstaged(&["weirdA.txt", "untracked u.txt"]);
+        let op = super::discard_files_op(&both).unwrap();
+        assert_eq!((op.label.as_str(), op.confirm.is_some()), ("Discard 2 files", true));
+        assert!(matches!(&op.backup, Some(super::Backup::Paths(p)) if p.len() == 2));
+        exec(&dir, &op).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("weirdA.txt")).unwrap(), "base\n");
+        assert!(!dir.join("untracked u.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("we*ird[1].txt")).unwrap(), "edit\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Unstaging a `git mv` rename unstages both halves: no lone deletion left staged.
     #[test]

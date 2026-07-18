@@ -124,6 +124,16 @@ fn apply_op(label: &str, patch: Option<String>, args: &[&str], src: &DiffSrc, op
     }
 }
 
+/// Stage the `selected` lines of an unstaged diff. All of an untracked file is a plain `add`:
+/// a part goes through `patch_op`, which first records the file as intent-to-add.
+fn stage(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, src: &DiffSrc, opts: DiffOpts) -> Action {
+    let change = src.change();
+    if change.code == '?' && selects_all(f, &selected) {
+        return Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", &change.path]).light());
+    }
+    apply_op(label, partial_patch(f, selected, false), &["--cached"], src, opts, f)
+}
+
 /// Discard the `selected` lines of an unstaged diff. All of an intent-to-add file (or worktree
 /// rename): `apply --reverse` would leave its index entry behind, so the file is discarded.
 fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, src: &DiffSrc, opts: DiffOpts) -> Action {
@@ -143,7 +153,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     };
     let lossy = ds.file.as_ref().is_some_and(|f| f.as_ref().is_ok_and(|f| f.lossy));
     // Partial staging patches the shown diff, which must be a plain (no -w), current one.
-    let partial = worktree && change.code != '?' && !lossy && !ds.opts.ignore_ws && !ds.loading();
+    // An untracked file's diff is never filtered, and only staged from (intent-to-add first).
+    let untracked = change.code == '?';
+    let partial = worktree && !lossy && (untracked || !ds.opts.ignore_ws) && !ds.loading();
     let file = ds.file.as_ref().and_then(|f| f.as_ref().ok());
     let rows = file.map_or(vec![], |f| rows(f, *split));
     let kinds: Vec<u8> = file.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
@@ -191,11 +203,11 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                     acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &src, ds_opts, f));
                 }
             } else {
-                if ui.button(format!("Discard {n} line(s)")).clicked() {
+                if !untracked && ui.button(format!("Discard {n} line(s)")).clicked() {
                     acts.push(discard("Discard lines", f, pick, &src, ds_opts));
                 }
                 if ui.button(format!("Stage {n} line(s)")).clicked() {
-                    acts.push(apply_op("Stage lines", partial_patch(f, pick, false), &["--cached"], &src, ds_opts, f));
+                    acts.push(stage("Stage lines", f, pick, &src, ds_opts));
                 }
             }
         }
@@ -302,9 +314,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                                 }
                             } else {
                                 if btn(ui, "Stage hunk") {
-                        acts.push(apply_op("Stage hunk", partial_patch(f, all, false), &["--cached"], &src, ds_opts, f));
+                        acts.push(stage("Stage hunk", f, all, &src, ds_opts));
                                 }
-                                if btn(ui, "Discard hunk") {
+                                if !untracked && btn(ui, "Discard hunk") {
                         acts.push(discard("Discard hunk", f, all, &src, ds_opts));
                                 }
                             }
@@ -313,9 +325,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                     Row::Line(hi, li) => {
                         let l = &f.hunks[hi].lines[li];
                         let picked = ds.picked.contains(&(hi, li));
-                        let resp = ui.interact(rect, ui.id().with(("dl", r)), Sense::click());
-                        if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
-                            ds.picked.insert((hi, li));
+                        let pick = partial && l.kind != b' ';
+                        let resp = ui.interact(rect, ui.id().with(("dl", r)), if pick { Sense::click_and_drag() } else { Sense::click() });
+                        if pick {
+                            pick_lines(ui, mem, &mut ds.picked, &rows, f, &resp, r, None, (hi, li));
                         }
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
                         paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), cw, colors);
@@ -331,9 +344,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
                                 continue;
                             };
                             let l = &h.lines[li];
-                            let resp = ui.interact(side, ui.id().with(("sl", r, old)), Sense::click());
-                            if partial && l.kind != b' ' && resp.clicked() && !ds.picked.remove(&(hi, li)) {
-                                ds.picked.insert((hi, li));
+                            let pick = partial && l.kind != b' ';
+                            let resp = ui.interact(side, ui.id().with(("sl", r, old)), if pick { Sense::click_and_drag() } else { Sense::click() });
+                            if pick {
+                                pick_lines(ui, mem, &mut ds.picked, &rows, f, &resp, r, Some(old), (hi, li));
                             }
                             let no = if old { l.old } else { l.new };
                             let colors = ds.hl.get(hi).and_then(|h| h.get(li));
@@ -348,6 +362,38 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, acts: &mut Vec<Ac
     let (off, view_h) = (out.inner.state.offset.y, out.inner.inner_rect.height());
     ui.data_mut(|m| m.insert_temp(mem, (off, view_h)));
     minimap(ui, rail, &kinds, off, view_h);
+}
+
+/// Change lines of a row; a split row gives only the `old` (left) or new side.
+fn row_changes(f: &FileDiff, row: &Row, old: Option<bool>) -> Vec<(usize, usize)> {
+    let at = |hi: usize, li: usize| (f.hunks[hi].lines[li].kind != b' ').then_some((hi, li));
+    match *row {
+        Row::Hunk(_) => vec![],
+        Row::Line(hi, li) => at(hi, li).into_iter().collect(),
+        Row::Pair(hi, a, b) => [(true, a), (false, b)].into_iter().filter(|(o, _)| old.is_none_or(|s| s == *o)).filter_map(|(_, li)| at(hi, li?)).collect(),
+    }
+}
+
+/// Click toggles a change line; dragging from one selects (or, starting on a picked line,
+/// deselects) every change line down to the pointer, relative to the picks at the drag's start.
+#[allow(clippy::too_many_arguments)]
+fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(usize, usize)>, rows: &[Row], f: &FileDiff, resp: &egui::Response, r: usize, old: Option<bool>, at: (usize, usize)) {
+    if resp.clicked() && !picked.remove(&at) {
+        picked.insert(at);
+    }
+    let key = mem.with("drag");
+    if resp.drag_started() {
+        ui.data_mut(|m| m.insert_temp(key, (picked.clone(), !picked.contains(&at))));
+    }
+    if let (true, Some(p), Some((base, add))) = (resp.dragged(), resp.interact_pointer_pos(), ui.data(|m| m.get_temp::<(std::collections::BTreeSet<(usize, usize)>, bool)>(key))) {
+        let end = (r as f32 + ((p.y - resp.rect.top()) / LINE_H).floor()).clamp(0.0, (rows.len() - 1) as f32) as usize;
+        *picked = base;
+        for row in &rows[r.min(end)..=r.max(end)] {
+            for l in row_changes(f, row, old) {
+                if add { picked.insert(l) } else { picked.remove(&l) };
+            }
+        }
+    }
 }
 
 /// The second header row: layout, whitespace, context, change navigation.
