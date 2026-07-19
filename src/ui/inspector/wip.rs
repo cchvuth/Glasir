@@ -7,6 +7,8 @@ use crate::git::{Change, State};
 use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, discard_files_op, identity, prompt, sequencer_op, stage_files_op, unstage_files_op};
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 /// "Stash this file" (or the selected files): their staged and unstaged changes (a rename
 /// with its old path), ⌘Z pops them back. True when clicked.
@@ -18,6 +20,47 @@ fn stash_files_item(ui: &mut Ui, cs: &[Change], acts: &mut Vec<Action>) -> bool 
         acts.push(Action::Git(crate::repo::stash_paths_op(&paths)));
     }
     clicked
+}
+
+/// Menu of people from the loaded log to credit with `Co-authored-by` trailers.
+fn coauthors_menu(ui: &mut Ui, d: &RepoData, coauthors: &mut Vec<(String, String)>) {
+    {
+        let n = coauthors.len();
+        ui.menu_button(if n == 0 { "Co-authors".to_owned() } else { format!("Co-authors ({n})") }, |ui| {
+            let q = ui.id().with(("coauthor-filter", Arc::as_ptr(&d.log) as usize));
+            // Most active first, cached per loaded log: the scan is too slow for every frame.
+            let people: Arc<Vec<(String, String)>> = ui.data_mut(|m| {
+                m.get_temp_mut_or_insert_with(q.with("people"), || {
+                    let mut by: HashMap<&str, (&str, usize)> = HashMap::new();
+                    for c in d.log.iter() {
+                        by.entry(c.email.as_str()).or_insert((c.author.as_str(), 0)).1 += 1;
+                    }
+                    let mut v: Vec<_> = by.into_iter().filter(|(e, _)| !e.is_empty() && *e != d.author.1).collect();
+                    v.sort_by(|a, b| b.1.1.cmp(&a.1.1).then(a.0.cmp(b.0)));
+                    Arc::new(v.into_iter().map(|(e, (n, _))| (n.to_owned(), e.to_owned())).collect::<Vec<_>>())
+                })
+                .clone()
+            });
+            let mut filter: String = ui.data_mut(|m| m.get_temp(q).unwrap_or_default());
+            ui.add(TextEdit::singleline(&mut filter).hint_text("Find a person").desired_width(220.0));
+            let f = filter.to_lowercase();
+            ui.data_mut(|m| m.insert_temp(q, filter));
+            let shown = people.iter().filter(|(n, e)| f.is_empty() || n.to_lowercase().contains(&f) || e.to_lowercase().contains(&f)).take(12);
+            // Picked people stay listed even when the filter hides them.
+            let list: Vec<(String, String)> = coauthors.iter().cloned().chain(shown.filter(|p| !coauthors.contains(p)).cloned()).collect();
+            for p in &list {
+                let mut on = coauthors.contains(p);
+                if ui.checkbox(&mut on, format!("{} <{}>", p.0, p.1)).changed() {
+                    coauthors.retain(|c| c != p);
+                    if on {
+                        coauthors.push(p.clone());
+                    }
+                }
+            }
+        })
+        .response
+        .on_hover_text("Adds a Co-authored-by trailer for each person (GitHub credits them)");
+    }
 }
 
 /// Who commits here (effective user.name / user.email), and a warning with a fix when a
@@ -160,7 +203,7 @@ impl RepoTab {
 
         let generating = matches!(self.ai_busy(), Some(Purpose::CommitMessage { .. }));
         let ai_on = crate::ai::enabled();
-        let mut commit = false;
+        let (mut commit, mut stage_commit) = (false, false);
         egui::Panel::bottom("commit_box").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Commit").small().strong());
@@ -190,10 +233,22 @@ impl RepoTab {
                     }
                 });
             });
+            // A rebase or bisect detaches HEAD on purpose; only a plain detached checkout loses commits.
+            if s.branch.is_none() && s.head.is_some() && d.state == State::Clean {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(format!("{} Detached HEAD: commits made here are easy to lose.", icon::WARNING)).small().color(theme::MOD));
+                    if theme::pill(ui, format!("{} Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at HEAD; your staged changes come along").clicked() {
+                        acts.push(prompt("New branch at HEAD", "", Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep)));
+                    }
+                });
+            }
             identity_row(ui, d, &self.email_rules, acts);
             ui.horizontal(|ui| {
                 let n = self.summary.chars().count();
-                ui.add(TextEdit::singleline(&mut self.summary).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
+                let r = ui.add(TextEdit::singleline(&mut self.summary).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
+                if std::mem::take(&mut self.focus_summary) {
+                    r.request_focus();
+                }
                 ui.label(RichText::new(format!("{n}")).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
             });
             // Capped: a long message (amend, split, AI) must not push the Commit button off the card.
@@ -205,23 +260,54 @@ impl RepoTab {
             if s.head.is_some() {
                 ui.checkbox(&mut self.amend, "Amend previous commit");
             }
-            if self.amend && !was && self.summary.is_empty() {
+            // An untouched template counts as empty.
+            let untouched = self.template.as_ref().is_some_and(|t| (&t.summary, &t.body) == (&self.summary, &self.body));
+            if self.amend && !was && (self.summary.is_empty() || untouched) {
                 if let Ok(msg) = crate::git::run(&self.dir, &["log", "-1", "--format=%B"]) {
                     let (s, b) = msg.trim().split_once('\n').unwrap_or((msg.trim(), ""));
                     self.summary = s.into();
                     self.body = b.trim().into();
                 }
             }
+            ui.horizontal_wrapped(|ui| {
+                ui.checkbox(&mut self.no_verify, "Skip hooks").on_hover_text("git commit --no-verify: skips the pre-commit and commit-msg hooks");
+                let can_push = !self.amend && d.push_op(false).is_some();
+                ui.add_enabled(can_push, egui::Checkbox::new(&mut self.push_after, "Push after commit"))
+                    .on_disabled_hover_text("Needs a branch with a remote, and isn't offered for an amend (that push would need a force)");
+                coauthors_menu(ui, d, &mut self.coauthors);
+            });
             let n = s.staged.len();
-            let can = (n > 0 || self.amend) && !self.summary.trim().is_empty() && !busy;
-            let label = if self.amend { "Amend commit".to_owned() } else { format!("Commit changes to {n} file{}", if n == 1 { "" } else { "s" }) };
-            let btn = theme::primary(ui, can, &label, ui.available_width());
+            let named = !self.summary.trim().is_empty() && !busy;
+            let can = (n > 0 || self.amend) && named;
+            let push = self.push_after && !self.amend && d.push_op(false).is_some();
+            let label = if self.amend {
+                "Amend commit".to_owned()
+            } else {
+                format!("Commit{} changes to {n} file{}", if push { " and push" } else { "" }, if n == 1 { "" } else { "s" })
+            };
+            let btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text("⌘↩ commits; ⇧⌘↩ stages everything first, then commits");
             // Not while a dialog is open: ⌘↩ there confirms the dialog (e.g. an annotated tag).
-            let shortcut = ui.ctx().memory(|m| m.top_modal_layer().is_none()) && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
-            if can && (btn.clicked() || shortcut) {
+            let (enter, shift) = match ui.ctx().memory(|m| m.top_modal_layer().is_none()) {
+                true => ui.input(|i| (i.modifiers.command && i.key_pressed(egui::Key::Enter), i.modifiers.shift)),
+                false => (false, false),
+            };
+            if can && (btn.clicked() || (enter && !shift)) {
                 commit = true;
             }
+            // Stage everything first; a conflicted file would be committed with its markers.
+            if enter && shift && named && s.conflicted.is_empty() && (n > 0 || self.amend || !s.unstaged.is_empty()) {
+                stage_commit = true;
+            }
         });
+        if stage_commit {
+            match crate::repo::stage_all_op(s) {
+                Some(o) => {
+                    self.commit_next = true;
+                    acts.push(Action::Git(o));
+                }
+                None => commit = true,
+            }
+        }
         if commit {
             acts.push(Action::Git(self.commit_op()));
         }

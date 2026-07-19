@@ -7,7 +7,7 @@ use super::toasts::Toast;
 use super::welcome::CloneDlg;
 use super::{command_log, graph_view, palette, repo_view};
 use crate::git;
-use crate::repo::{Action, Msg, Op, RepoTab, Search, Task, fetch_op};
+use crate::repo::{Action, Msg, Op, RepoTab, Search, Sel, Task, fetch_op};
 use crate::theme::{self, icon};
 use egui::{Frame, Key, Margin, RichText, Ui};
 use std::path::{Path, PathBuf};
@@ -165,6 +165,10 @@ impl App {
         }
         if cmd && shift && pressed(Key::S) {
             act = t.data.as_ref().and_then(|d| crate::repo::stage_all_op(&d.status)).map(Action::Git).or(act);
+        }
+        if cmd && shift && pressed(Key::M) && t.data.as_ref().is_some_and(|d| d.wip) {
+            t.focus_summary = true;
+            act = Some(Action::Select(Sel::Wip));
         }
         if cmd && shift && pressed(Key::U) {
             act = Some(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));

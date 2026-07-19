@@ -67,7 +67,11 @@ The name fits a Git client:
   (↑ ↓ or F7 / ⇧F7) and a clickable change minimap.
 - **Image diffs** (PNG, JPEG, GIF, WebP, BMP): before / after side by side with
   dimensions and size, or a **swipe** slider; added / deleted images show one preview.
-- Commit and amend, with a 72-character guide; ⌘↩ to commit.
+- Commit and amend, with a 72-character guide; ⌘↩ to commit, ⇧⌘↩ to stage everything
+  and commit, ⇧⌘M to focus the summary. The commit box also has **Skip hooks**
+  (`--no-verify`), **Push after commit**, a **co-authors** picker (people from the log
+  become `Co-authored-by` trailers), `commit.template` prefill (comment lines are stripped),
+  and a detached-HEAD warning with **Create branch here**.
 - **Blame** with an age heatmap and **file history** that follows renames.
 - Compare a branch with the current one, or any commit with HEAD.
 
@@ -264,7 +268,8 @@ token saved by an older version may ask once: choose **Always Allow**).
 | ? / ⌘/ | Keyboard shortcuts |
 | ⌘F | Search commits |
 | ⌘Z / ⇧⌘Z | Undo / redo |
-| ⌘↩ | Commit |
+| ⌘↩ / ⇧⌘↩ | Commit / stage all and commit |
+| ⇧⌘M | Focus the commit summary |
 | ⇧⌘S / ⇧⌘U | Stage all / unstage all |
 | S / U | Stage / unstage the selected files |
 | ⌘L | Fetch |

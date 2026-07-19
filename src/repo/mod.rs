@@ -37,6 +37,7 @@ pub mod history;
 pub mod identity;
 pub mod image_diff;
 pub mod merge_editor;
+pub mod message;
 mod offer;
 mod op;
 mod patch;
@@ -98,6 +99,16 @@ pub struct RepoTab {
     pub summary: String,
     pub body: String,
     pub amend: bool,
+    /// Commit box options: skip hooks, push right after, `Co-authored-by` (name, email) trailers.
+    pub no_verify: bool,
+    pub push_after: bool,
+    pub coauthors: Vec<(String, String)>,
+    /// `commit.template` prefilled into the box: comment lines are stripped on commit.
+    pub template: Option<message::Template>,
+    /// ⇧⌘↩: commit once the stage-all op finished.
+    pub commit_next: bool,
+    /// ⇧⌘M: focus the summary field.
+    pub focus_summary: bool,
     pub filter: String,
     pub prompt: Option<Prompt>,
     pub confirm: Option<Op>,
@@ -181,6 +192,12 @@ impl RepoTab {
             summary: String::new(),
             body: String::new(),
             amend: false,
+            no_verify: false,
+            push_after: false,
+            coauthors: vec![],
+            template: None,
+            commit_next: false,
+            focus_summary: false,
             filter: String::new(),
             prompt: None,
             confirm: None,
@@ -307,6 +324,9 @@ impl RepoTab {
                         self.merge = None;
                     }
                     self.data = Some(d);
+                    if first {
+                        self.prefill_template();
+                    }
                     if bisect_moved && let Some(h) = &head {
                         self.apply(ctx, Action::Jump(h.clone()));
                     }

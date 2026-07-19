@@ -15,7 +15,7 @@ pub struct RepoData {
     pub submodules: Arc<Vec<git::Submodule>>,
     pub lfs: Arc<git::Lfs>,
     pub remotes: Arc<Vec<(String, String)>>,
-    /// `remote.*`, `branch.*` and `user.*` config, all scopes in git's order (`cfg` looks keys up).
+    /// `remote.*`, `branch.*`, `user.*`, `commit.template` and `core.comment*` config, all scopes in git's order (`cfg` looks keys up).
     pub config: Arc<Vec<(String, String)>>,
     /// (name, email) new commits are authored with (`git::author`).
     pub author: (String, String),

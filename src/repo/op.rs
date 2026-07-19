@@ -3,6 +3,7 @@
 
 use super::action::{Action, Msg, MultiOp};
 use super::data::RepoData;
+use super::message;
 use super::offer::offer;
 use super::undo::{UndoEntry, UndoKind, save_worktree, split_z, Saved};
 use super::task::Task;
@@ -123,6 +124,8 @@ impl Op {
         self
     }
 }
+
+const PUSH_AFTER: &str = "Commit & push";
 
 pub(super) enum Done {
     Op(Op, Res<String>, Option<(Snapshot, Snapshot)>, Option<Saved>),
@@ -733,6 +736,7 @@ impl RepoTab {
         self.cancel = None;
         match done {
             Done::Op(op, res, snaps, saved) => {
+                let commit_next = std::mem::take(&mut self.commit_next) && res.is_ok() && !op.custom && op.label == "Stage all";
                 match &res {
                     Ok(out) if !op.light => {
                         // A custom shell command's output is the point: show its last lines.
@@ -754,10 +758,10 @@ impl RepoTab {
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
                     self.open_tab = Some(PathBuf::from(p));
                 }
-                if res.is_ok() && !op.custom && op.label.starts_with("Commit") {
-                    self.summary.clear();
-                    self.body.clear();
-                    self.amend = false;
+                // A failed push after the commit went through must not leave the message to commit twice.
+                let moved = snaps.as_ref().is_some_and(|(b, a)| b != a);
+                if (res.is_ok() || (moved && op.label == PUSH_AFTER)) && !op.custom && op.label.starts_with("Commit") {
+                    self.reset_message();
                 }
                 let mut saved = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty());
                 if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
@@ -805,6 +809,9 @@ impl RepoTab {
                 // or a second click re-applies the old patch wherever its context still matches.
                 self.refresh_diff(ctx);
                 self.reload(ctx, !op.light);
+                if commit_next {
+                    self.run(ctx, self.commit_op());
+                }
             }
             Done::Undo(was_undo, res, moved) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
@@ -879,18 +886,50 @@ impl RepoTab {
         }
     }
 
-    /// Op that commits the message in the editor.
+    /// Op that commits the message in the editor (and pushes, if asked).
     pub fn commit_op(&self) -> Op {
-        let msg = if self.body.trim().is_empty() {
+        let mut msg = if self.body.trim().is_empty() {
             self.summary.trim().to_owned()
         } else {
             format!("{}\n\n{}", self.summary.trim(), self.body.trim())
         };
+        if let (Some(t), false) = (&self.template, self.amend) {
+            msg = message::strip_comments(&msg, &t.prefix);
+        }
+        let msg = message::add_coauthors(&msg, &self.coauthors);
         let mut args = vec!["commit", "-F", "-"];
         if self.amend {
             args.push("--amend");
         }
-        Op::new(if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft)
+        if self.no_verify {
+            args.push("--no-verify");
+        }
+        let op = Op::new(if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
+        // Not after an amend: that push would need a force.
+        match self.push_op(false).filter(|_| self.push_after && !self.amend) {
+            Some(p) => Op { label: PUSH_AFTER.into(), cmds: [op.cmds, p.cmds].concat(), ..op },
+            None => op,
+        }
+    }
+
+    /// Empties the message fields for the next commit (and prefills the template again).
+    fn reset_message(&mut self) {
+        self.summary.clear();
+        self.body.clear();
+        self.amend = false;
+        self.coauthors.clear();
+        self.prefill_template();
+    }
+
+    /// Fills an empty commit box from `commit.template`.
+    pub(super) fn prefill_template(&mut self) {
+        self.template = None;
+        if self.summary.is_empty() && self.body.is_empty() {
+            self.template = self.data.as_ref().and_then(|d| message::template(d, &self.dir));
+            if let Some(t) = &self.template {
+                (self.summary, self.body) = (t.summary.clone(), t.body.clone());
+            }
+        }
     }
 
     pub fn push_op(&self, force: bool) -> Option<Op> {
