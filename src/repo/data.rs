@@ -119,6 +119,11 @@ impl RepoData {
         self.config.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
 
+    /// A boolean config value (keys as `--get-regexp` prints them: lowercase).
+    pub fn cfg_bool(&self, key: &str) -> bool {
+        self.cfg(key).is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "" | "true" | "yes" | "on" | "1"))
+    }
+
     pub fn cfg_all<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a str> {
         self.config.iter().filter(move |(k, _)| k == key).map(|(_, v)| v.as_str())
     }

@@ -91,6 +91,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
                 value: String::new(),
                 op: Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep),
                 second: None,
+                sign: None,
             })),
         ));
         v.push(git("Stash all changes…", stash_prompt()));

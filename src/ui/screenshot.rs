@@ -281,6 +281,14 @@ impl App {
                             ctx.data_mut(|m| m.insert_temp(egui::Id::new(("graph_x", &d.git_dir)), px));
                         }
                     }
+                    // HEAD's details (e.g. its signature badge) even with a WIP row.
+                    "head" => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            if let Some(h) = t.data.as_ref().and_then(|d| d.status.head.clone()) {
+                                t.apply(&ctx.clone(), Action::Select(crate::repo::Sel::Commit(h)));
+                            }
+                        }
+                    }
                     "deselect" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.sel = None;

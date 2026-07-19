@@ -207,6 +207,7 @@ fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, acts: &mut Vec<Action
                     value: String::new(),
                     op: Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep),
                 second: None,
+                sign: None,
                 }));
             }
             if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).on_hover_text("Stash all changes, untracked files included (⌘Z pops it back)").clicked() {

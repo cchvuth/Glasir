@@ -193,6 +193,9 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
             ));
         }
     }
+    if r.annotated && ui.button(format!("{} Verify signature", icon::SEAL_CHECK)).on_hover_text("Check the tag's signature (git verify-tag)").clicked() {
+        acts.push(Action::VerifyTag(r.full.clone()));
+    }
     if ui.button("Delete tag").clicked() {
         acts.push(Action::Git(Op::new(format!("Delete tag {}", r.name), &["tag", "-d", &r.name]).undo(Undo::Keep)));
     }

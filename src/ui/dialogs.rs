@@ -21,6 +21,9 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         } else {
             first.request_focus();
         }
+        if let Some(sign) = &mut p.sign {
+            ui.checkbox(sign, "Sign tag").on_hover_text("git tag --sign, with your configured key (gpg.format, user.signingkey); default from tag.gpgSign");
+        }
         ui.horizontal(|ui| {
             let enter = ui.input(|i| i.key_pressed(Key::Enter) && (p.second.is_none() || i.modifiers.command));
             if ui.button("OK").clicked() || enter {
@@ -38,6 +41,9 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         let optional = p.op.cmds.iter().any(|c| c.windows(2).any(|w| w == ["-m", "{}"]));
         if ok && (!v.is_empty() || optional) {
             let mut op = p.op;
+            if let Some(sign) = p.sign {
+                op.cmds[0].insert(1, if sign { "--sign" } else { "--no-sign" }.into());
+            }
             let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
             let revert = op.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());
             for a in op.cmds.iter_mut().flatten().chain(op.then_open.as_mut()).chain(revert) {

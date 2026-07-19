@@ -107,6 +107,12 @@ pub struct CommitInfo {
     pub files: Vec<Change>,
     /// A stash's untracked files (its third parent), shown after `files`.
     pub untracked: Vec<Change>,
+    /// Signature check (`%G?`): G good, U good but untrusted/unknown signer, X/Y expired
+    /// signature/key, R revoked key, B bad, E can't be checked, N none; '\0' not checked.
+    pub sig: char,
+    /// Signer (`%GS`) and key (`%GK`).
+    pub signer: String,
+    pub key: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

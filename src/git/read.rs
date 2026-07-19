@@ -194,9 +194,10 @@ pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
         .collect())
 }
 
-/// `remote.*`, `branch.*` and `user.*` settings from every config scope, in git's order (last wins).
+/// `remote.*`, `branch.*` and `user.*` settings, plus the commit template, comment char and
+/// signing defaults, from every config scope, in git's order (last wins).
 pub fn config(dir: &Path) -> Vec<(String, String)> {
-    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote\.|branch\.|user\.|commit\.template$|core\.comment(char|string)$)"]).unwrap_or_default())
+    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\.|^(commit\.template|core\.comment(char|string)|(commit|tag)\.gpgsign|gpg\.format)$"]).unwrap_or_default())
 }
 
 /// The (name, email) git authors commits with: author.* and GIT_AUTHOR_* beat user.*.
@@ -235,10 +236,10 @@ fn parse_name_status(out: &str) -> Vec<Change> {
 pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {
     let out = run(
         dir,
-        &["show", "-s", DATE_FORMAT, "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd%x1f%B", id, "--"],
+        &["show", "-s", DATE_FORMAT, "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd%x1f%G?%x1f%GS%x1f%GK%x1f%B", id, "--"],
     )?;
-    let f: Vec<&str> = out.splitn(9, '\x1f').collect();
-    if f.len() < 9 {
+    let f: Vec<&str> = out.splitn(12, '\x1f').collect();
+    if f.len() < 12 {
         return Err(format!("unexpected output for {id}"));
     }
     let parents: Vec<String> = f[1].split_whitespace().map(Into::into).collect();
@@ -257,15 +258,36 @@ pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {
         date: f[4].into(),
         committer: f[5].into(),
         committer_date: f[7].into(),
-        message: f[8].trim_end().into(),
+        message: f[11].trim_end().into(),
         files,
         untracked: vec![],
+        sig: sig_code(f[8], || run(dir, &["cat-file", "commit", f[0]]).unwrap_or_default()),
+        signer: f[9].into(),
+        key: f[10].into(),
     })
+}
+
+/// `%G?`, except 'E' for a signed commit git didn't check (SSH without
+/// gpg.ssh.allowedSignersFile reports 'N'); `raw` is the `cat-file commit` text.
+fn sig_code(code: &str, raw: impl FnOnce() -> String) -> char {
+    match code.chars().next().unwrap_or('N') {
+        'N' if raw().split("\n\n").next().unwrap_or("").lines().any(|l| l.starts_with("gpgsig")) => 'E',
+        c => c,
+    }
+}
+
+/// `git verify-tag`: whether the signature is good, and what gpg / ssh-keygen said (on stderr).
+pub fn verify_tag(dir: &Path, full: &str) -> (bool, String) {
+    match cmd(dir).args(["verify-tag", full]).stdin(std::process::Stdio::null()).output() {
+        Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stderr).trim().into()),
+        Err(e) => (false, e.to_string()),
+    }
 }
 
 /// `commit_info` for a stash, plus the untracked files it saved (`<stash>^3`).
 pub fn stash_info(dir: &Path, id: &str) -> Res<CommitInfo> {
     let mut info = commit_info(dir, id)?;
+    info.sig = '\0';
     if info.parents.len() > 2 {
         info.untracked = parse_name_status(&run(dir, &["diff-tree", "-r", "-z", "--no-commit-id", "--name-status", "--root", &info.parents[2]])?);
     }

@@ -109,6 +109,8 @@ pub struct RepoTab {
     pub commit_next: bool,
     /// ⇧⌘M: focus the summary field.
     pub focus_summary: bool,
+    /// The commit box's "Sign" toggle; `None` follows commit.gpgSign.
+    pub sign: Option<bool>,
     pub filter: String,
     pub prompt: Option<Prompt>,
     pub confirm: Option<Op>,
@@ -141,6 +143,8 @@ pub struct RepoTab {
     /// Predicted conflicts with the target branch: (target, files).
     pub conflicts: Option<(String, Vec<String>)>,
     conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
+    /// `git verify-tag` running for the tag menu, its result toasted.
+    verify_task: Option<Task<Msg>>,
     /// A failed op offering fixes (autostash, diverged pull, rejected push).
     pub choice: Option<Choice>,
     bg_fetch: Option<Task<Res<String>>>,
@@ -198,6 +202,7 @@ impl RepoTab {
             template: None,
             commit_next: false,
             focus_summary: false,
+            sign: None,
             filter: String::new(),
             prompt: None,
             confirm: None,
@@ -222,6 +227,7 @@ impl RepoTab {
             cleanup: None,
             conflicts: None,
             conflict_task: None,
+            verify_task: None,
             choice: None,
             bg_fetch: None,
             last_fetch: f64::NEG_INFINITY,
@@ -353,6 +359,7 @@ impl RepoTab {
         if let Some(c) = Task::poll(&mut self.conflict_task) {
             self.conflicts = c;
         }
+        msgs.extend(Task::poll(&mut self.verify_task));
         if let Some(r) = Task::poll(&mut self.info_task) {
             self.info = Some(r);
         }
@@ -420,6 +427,14 @@ impl RepoTab {
             }
             Action::Git(op) => self.run(ctx, op),
             Action::Prompt(p) => self.prompt = Some(p),
+            Action::VerifyTag(full) => {
+                let dir = self.dir.clone();
+                self.verify_task = Some(Task::spawn(ctx, move || {
+                    let (ok, out) = git::verify_tag(&dir, &full);
+                    let name = full.strip_prefix("refs/tags/").unwrap_or(&full);
+                    Msg { text: format!("Tag {name}: {}\n{out}", if ok { "good signature" } else { "not verified" }), error: !ok }
+                }));
+            }
             Action::Copy(s) => ctx.copy_text(s),
             Action::Url(u) => {
                 let _ = open::that_detached(u);

@@ -256,10 +256,17 @@ impl RepoTab {
                 ui.add(TextEdit::multiline(&mut self.body).margin(crate::theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
             });
             let was = self.amend;
-            // Nothing to amend before the first commit.
-            if s.head.is_some() {
-                ui.checkbox(&mut self.amend, "Amend previous commit");
-            }
+            ui.horizontal(|ui| {
+                // Nothing to amend before the first commit.
+                if s.head.is_some() {
+                    ui.checkbox(&mut self.amend, "Amend previous commit");
+                }
+                let mut sign = self.sign.unwrap_or_else(|| d.cfg_bool("commit.gpgsign"));
+                let how = d.cfg("gpg.format").unwrap_or("openpgp");
+                if ui.checkbox(&mut sign, "Sign commit").on_hover_text(format!("Sign the commit ({how} key from user.signingkey; default from commit.gpgSign). Keys are set up in git, not in Glasir.")).changed() {
+                    self.sign = Some(sign);
+                }
+            });
             // An untouched template counts as empty.
             let untouched = self.template.as_ref().is_some_and(|t| (&t.summary, &t.body) == (&self.summary, &self.body));
             if self.amend && !was && (self.summary.is_empty() || untouched) {

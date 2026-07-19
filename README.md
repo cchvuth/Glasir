@@ -141,6 +141,12 @@ The name fits a Git client:
   `ls-remote` and explains failures (sign-in, SAML SSO, SSH key or host key,
   DNS / VPN, proxy, TLS CA) with concrete fixes, plus the credential helper and
   proxy settings git uses.
+- **Commit and tag signing** (GPG, SSH or X.509, as configured in git): commit
+  details show a signature badge (good, unknown signer, expired, revoked, bad,
+  unverifiable, unsigned) with signer and key on hover; **Sign commit** in the
+  commit box and **Sign tag** for annotated tags follow `commit.gpgSign` /
+  `tag.gpgSign`; **Verify signature** on a tag; signing failures explain why and
+  offer to retry unsigned.
 
 ### Worktrees, stashes and tags
 - **Worktrees**: list with change counts and lock state, create (new or existing

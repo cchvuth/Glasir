@@ -901,6 +901,11 @@ impl RepoTab {
         if self.amend {
             args.push("--amend");
         }
+        match self.sign {
+            Some(true) => args.push("-S"),
+            Some(false) => args.push("--no-gpg-sign"),
+            None => {}
+        }
         if self.no_verify {
             args.push("--no-verify");
         }
@@ -1721,7 +1726,7 @@ mod tests {
         run(&ctx, &mut t, Action::Reload);
         let s = t.data.as_ref().unwrap().stashes[1].clone();
         let list = || sh(&dir, &["stash", "list", "--format=%H %gs"]);
-        run(&ctx, &mut t, Action::Git(fill(Action::Prompt(super::super::Prompt { title: String::new(), value: String::new(), op: super::rename_stash(&s), second: None }), "renamed")));
+        run(&ctx, &mut t, Action::Git(fill(Action::Prompt(super::super::Prompt { title: String::new(), value: String::new(), op: super::rename_stash(&s), second: None, sign: None }), "renamed")));
         assert!(list().starts_with(&format!("{} renamed\n", s.id)) && list().lines().count() == 2, "{}", list());
         run(&ctx, &mut t, Action::Undo);
         assert!(list().starts_with(&format!("{} On main: old\n", s.id)) && list().lines().count() == 2, "{}", list());

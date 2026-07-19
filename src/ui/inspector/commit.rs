@@ -3,7 +3,7 @@
 
 use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
-use crate::git::Change;
+use crate::git::{Change, CommitInfo};
 use crate::repo::restore::restore_file;
 use crate::repo::{Action, DiffSrc, RepoData, RepoTab, Sel};
 use crate::theme::{self, icon};
@@ -50,6 +50,28 @@ fn restore_items(ui: &mut Ui, d: &RepoData, id: &str, parent: Option<&str>, c: &
         acts.push(Action::Git(restore_file(d, format!("Restore {path}"), p, path, &format!("the version before {short}"))));
     }
     ui.separator();
+}
+
+/// The signature badge (`%G?`) with its tooltip: what git concluded, then signer and key.
+fn sig_badge(ui: &mut Ui, info: &CommitInfo) {
+    let (ic, text, color, why) = match info.sig {
+        'G' => (icon::SEAL_CHECK, "Good signature", theme::ADD, "Git verified the signature with a trusted key."),
+        'U' => (icon::SEAL_QUESTION, "Signed, unknown signer", theme::MOD, "The signature is valid, but the key isn't trusted (GPG) or isn't in gpg.ssh.allowedSignersFile (SSH)."),
+        'X' => (icon::SEAL_WARNING, "Signed, signature expired", theme::MOD, "The signature is valid but has expired."),
+        'Y' => (icon::SEAL_WARNING, "Signed, key expired", theme::MOD, "The signature is valid, made by a key that has since expired."),
+        'R' => (icon::SEAL_WARNING, "Signed, key revoked", theme::DEL, "The signature was made by a revoked key."),
+        'B' => (icon::SEAL_WARNING, "Bad signature", theme::DEL, "The signature doesn't match the commit: it was changed after signing, or forged."),
+        'E' => (icon::SEAL_QUESTION, "Signed, can't verify", theme::dim(ui), "Git couldn't check the signature: the public key isn't in your keyring (GPG), or gpg.ssh.allowedSignersFile isn't set (SSH)."),
+        'N' => (icon::SEAL, "Not signed", theme::dim(ui), "This commit has no signature."),
+        _ => return,
+    };
+    let mut tip = why.to_owned();
+    for (k, v) in [("Signer", &info.signer), ("Key", &info.key)] {
+        if !v.is_empty() {
+            tip += &format!("\n{k}: {v}");
+        }
+    }
+    ui.label(RichText::new(format!("{ic} {text}")).small().color(color)).on_hover_text(tip);
 }
 
 impl RepoTab {
@@ -137,6 +159,7 @@ impl RepoTab {
                     if info.committer != info.author {
                         ui.label(RichText::new(format!("committed by {} {}", info.committer, info.committer_date)).small().color(theme::dim(ui)));
                     }
+                    sig_badge(ui, info);
                 });
             }); }
             ui.add_space(8.0);

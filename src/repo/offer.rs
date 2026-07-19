@@ -50,6 +50,21 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
             };
             Some(Choice { title: "Push rejected".into(), text: text.into(), ops })
         }
+        // gpg / ssh-keygen failed (no key, pinentry cancelled, locked agent): say so, offer to go unsigned.
+        verb @ ("commit" | "tag") if ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
+            let (on, off) = if verb == "commit" { ("-S", "--no-gpg-sign") } else { ("--sign", "--no-sign") };
+            let mut o = op.clone();
+            o.cmds[0].retain(|a| a != on);
+            o.cmds[0].insert(1, off.into());
+            Some(Choice {
+                title: "Signing failed".into(),
+                text: format!(
+                    "Git couldn't sign this {verb}:\n\n{}\n\nCheck your signing setup (user.signingkey, gpg.format, the GPG agent / pinentry or your SSH agent); Glasir uses git's configuration and doesn't manage keys.",
+                    err.trim()
+                ),
+                ops: vec![(format!("{} without signing", if verb == "commit" { "Commit" } else { "Create tag" }), o)],
+            })
+        }
         _ => None,
     }
 }
@@ -241,5 +256,76 @@ mod tests {
         let op = checkout("adds");
         assert!(offer(&op, &exec(&dir, &op).unwrap_err(), None).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SSH signing end to end: signed/unsigned commits and tags, the badge codes, and a failing key.
+    #[test]
+    fn ssh_signing() {
+        let dir = scratch("signing");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let key = dir.join("key");
+        let made = std::process::Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "t@t", "-f"]).arg(&key).status();
+        if !made.is_ok_and(|s| s.success()) {
+            eprintln!("ssh-keygen unavailable: skipping");
+            return;
+        }
+        std::fs::write(dir.join(".gitignore"), "key*\nallowed\n").unwrap();
+        let pubkey = std::fs::read_to_string(dir.join("key.pub")).unwrap();
+        sh(&dir, &["config", "gpg.format", "ssh"]);
+        sh(&dir, &["config", "user.signingkey", &dir.join("key.pub").to_string_lossy()]);
+        let ctx = egui::Context::default();
+        let mut t = crate::repo::RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        let info = || git::commit_info(&dir, "HEAD").unwrap();
+
+        // Signed via the toggle; without an allowed-signers file git can't check it.
+        sh(&dir, &["add", ".gitignore"]);
+        t.summary = "signed".into();
+        t.sign = Some(true);
+        exec(&dir, &t.commit_op()).unwrap();
+        assert_eq!(info().sig, 'E');
+        std::fs::write(dir.join("allowed"), format!("t@t {pubkey}")).unwrap();
+        sh(&dir, &["config", "gpg.ssh.allowedSignersFile", &dir.join("allowed").to_string_lossy()]);
+        let i = info();
+        assert_eq!((i.sig, i.signer.as_str()), ('G', "t@t"));
+        assert!(i.key.starts_with("SHA256:"), "{}", i.key);
+
+        // Unsigned despite commit.gpgSign.
+        sh(&dir, &["config", "commit.gpgsign", "true"]);
+        t.sign = Some(false);
+        t.summary = "plain".into();
+        std::fs::write(dir.join("a"), "a").unwrap();
+        sh(&dir, &["add", "a"]);
+        exec(&dir, &t.commit_op()).unwrap();
+        assert_eq!(info().sig, 'N');
+
+        // Tags as the tag dialog builds them; verify-tag tells signed from not.
+        for (name, flag) in [("v1", "--sign"), ("v0", "--no-sign")] {
+            exec(&dir, &Op::new("Create tag", &["tag", flag, "-a", name, "-m", "m", "HEAD"])).unwrap();
+        }
+        assert!(git::verify_tag(&dir, "refs/tags/v1").0);
+        assert!(!git::verify_tag(&dir, "refs/tags/v0").0);
+
+        // A missing key fails loudly and offers to go unsigned.
+        sh(&dir, &["config", "user.signingkey", &dir.join("nope.pub").to_string_lossy()]);
+        let head = sh(&dir, &["rev-parse", "HEAD"]);
+        t.sign = Some(true);
+        std::fs::write(dir.join("a"), "b").unwrap();
+        sh(&dir, &["add", "a"]);
+        op_unsigned(&dir, &t.commit_op(), "Commit without signing");
+        assert_ne!(sh(&dir, &["rev-parse", "HEAD"]), head);
+        assert_eq!(info().sig, 'N');
+        op_unsigned(&dir, &Op::new("Create tag", &["tag", "--sign", "-a", "v2", "-m", "m", "HEAD"]), "Create tag without signing");
+        assert!(!git::verify_tag(&dir, "refs/tags/v2").0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `op` fails to sign; the offered fix runs.
+    fn op_unsigned(dir: &std::path::Path, op: &Op, label: &str) {
+        let err = exec(dir, op).unwrap_err();
+        let c = offer(op, &err, None).unwrap_or_else(|| panic!("no offer for {err}"));
+        assert_eq!(c.title, "Signing failed");
+        assert_eq!(c.ops[0].0, label);
+        exec(dir, &c.ops[0].1).unwrap();
     }
 }

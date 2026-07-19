@@ -53,6 +53,8 @@ pub struct Prompt {
     pub op: Op,
     /// Optional second field (e.g. a tag message), substituted for `{2}`.
     pub second: Option<(String, String)>,
+    /// A "Sign tag" checkbox: adds `--sign` / `--no-sign` after the first command's verb.
+    pub sign: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +66,8 @@ pub enum Action {
     DiffOpts(crate::git::DiffOpts),
     Git(Op),
     Prompt(Prompt),
+    /// Check a tag's signature (`git verify-tag`, full ref) and toast the result.
+    VerifyTag(String),
     Copy(String),
     Url(String),
     /// Show a file in the file manager ("" = open the repo folder).
@@ -119,7 +123,7 @@ pub fn op(label: impl Into<String>, args: &[&str]) -> Action {
 }
 
 pub fn prompt(title: impl Into<String>, value: impl Into<String>, op: Op) -> Action {
-    Action::Prompt(Prompt { title: title.into(), value: value.into(), op, second: None })
+    Action::Prompt(Prompt { title: title.into(), value: value.into(), op, second: None, sign: None })
 }
 
 pub struct Msg {

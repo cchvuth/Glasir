@@ -123,6 +123,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
             value: String::new(),
             op: Op::new("Create tag", &["tag", "-a", "{}", "-m", "{2}", &c.id]).undo(Undo::Keep),
             second: Some(("Tag message (⌘↩ to create)".into(), String::new())),
+            sign: Some(d.cfg_bool("tag.gpgsign")),
         }));
     }
     move_tag_menu(ui, d, &c.id, acts);
