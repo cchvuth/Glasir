@@ -147,6 +147,9 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 true => Ok(String::new()),
                 false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
             },
+            [super::merge_opts::CLEAN] => super::merge_opts::clean(dir),
+            [super::merge_opts::TREE_IS, ..] => super::merge_opts::tree_is(dir, &a),
+            [super::merge_opts::PICK_NEW, ..] => super::merge_opts::pick_new(dir, &a),
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
                 git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
                 _ => Ok(String::new()),
@@ -717,6 +720,8 @@ impl RepoTab {
                 let out = cancel.scope(|| exec_stash(&dir, &mut op));
                 if out.is_err() {
                     keep_deleted(&dir, &mut op);
+                } else {
+                    super::merge_opts::seal(&dir, &mut op);
                 }
                 let saved = saved.map(|mut s| {
                     s.seal(&dir);
@@ -757,6 +762,18 @@ impl RepoTab {
                 }
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
                     self.open_tab = Some(PathBuf::from(p));
+                }
+                // A squash merge leaves git's prepared message: put it in the commit box (never over typed text).
+                if res.is_ok() && !op.custom && op.cmds.iter().any(|c| c[0] == "merge" && c.iter().any(|a| a == "--squash")) {
+                    let untouched = (self.summary.trim().is_empty() && self.body.trim().is_empty())
+                        || self.template.as_ref().is_some_and(|t| t.summary == self.summary && t.body == self.body);
+                    if let (Some(d), true) = (&self.data, untouched)
+                        && let Some((s, b)) = super::merge_opts::squash_message(&d.git_dir)
+                    {
+                        (self.summary, self.body) = (s, b);
+                        self.template = None;
+                    }
+                    self.sel = None;
                 }
                 // A failed push after the commit went through must not leave the message to commit twice.
                 let moved = snaps.as_ref().is_some_and(|(b, a)| b != a);
@@ -864,9 +881,8 @@ impl RepoTab {
                 return;
             }
             MultiOp::CherryPick => {
-                let mut args = vec!["cherry-pick"];
-                args.extend(ids.iter().rev().map(String::as_str)); // oldest first
-                Ok(Op::new(format!("Cherry-pick {n} commits"), &args).undo(Undo::Keep))
+                let oldest_first: Vec<&str> = ids.iter().rev().map(String::as_str).collect();
+                Ok(super::merge_opts::pick_op(format!("Cherry-pick {n} commits"), &oldest_first, false, false))
             }
             MultiOp::Revert => {
                 let mut args = vec!["revert", "--no-edit"];

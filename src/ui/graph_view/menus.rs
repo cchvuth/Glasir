@@ -3,6 +3,7 @@
 
 use crate::git::{Commit, Ref, RefKind, State};
 use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_checkout, prompt, stash_prompt};
+use crate::repo::merge_opts::{Merge, merge_op, pick_op};
 use crate::theme::{self, icon};
 use egui::Ui;
 
@@ -76,8 +77,21 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, rev: &str, acts:
         return;
     }
     if ui.button(format!("Merge {target} into {head}")).clicked() {
-        acts.push(Action::Git(Op::new(format!("Merge {target}"), &["merge", "--no-edit", rev]).undo(Undo::Keep)));
+        acts.push(Action::Git(merge_op(target, rev, None)));
     }
+    ui.menu_button(format!("Merge {target} into {head} with options"), |ui| {
+        for how in Merge::ALL {
+            let hint = match how {
+                Merge::Squash => "one staged change, commit it yourself (needs no uncommitted changes)",
+                Merge::NoFf => "always create a merge commit",
+                Merge::FfOnly => "only move the branch forward, never create a commit",
+            };
+            if ui.button(format!("Merge ({})", how.name())).on_hover_text(hint).clicked() {
+                acts.push(Action::Git(merge_op(target, rev, Some(how))));
+                ui.close();
+            }
+        }
+    });
     if ui.button(format!("Rebase {head} onto {target}")).clicked() {
         acts.push(Action::Git(Op::new(format!("Rebase onto {target}"), &["rebase", rev]).undo(Undo::Keep)));
     }
@@ -132,13 +146,16 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     let is_head = d.status.head.as_deref() == Some(&c.id);
     if !is_head {
         integrate_items(ui, d, target, rev, acts);
-        let mut pick = vec!["cherry-pick"];
-        if c.parents.len() > 1 {
-            pick.extend(["-m", "1"]);
-        }
-        pick.push(&c.id);
+        let merge = c.parents.len() > 1;
         if ui.button("Cherry-pick commit").clicked() {
-            acts.push(Action::Git(Op::new(format!("Cherry-pick {short}"), &pick).undo(Undo::Keep)));
+            acts.push(Action::Git(pick_op(format!("Cherry-pick {short}"), &[&c.id], merge, false)));
+        }
+        if ui
+            .button("Cherry-pick without committing")
+            .on_hover_text("Stage its change and commit it yourself (needs no uncommitted changes)")
+            .clicked()
+        {
+            acts.push(Action::Git(pick_op(format!("Cherry-pick {short} (no commit)"), &[&c.id], merge, true)));
         }
     }
     // Only HEAD's own history: for another branch's commit it would be a rebase onto it.
@@ -183,7 +200,15 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     }
     revert.push(&c.id);
     if ui.button("Revert commit").clicked() {
-        acts.push(Action::Git(Op::new(format!("Revert {short}"), &revert).undo(Undo::Keep)));
+        let mut op = Op::new(format!("Revert {short}"), &revert).undo(Undo::Keep);
+        if let Some(first) = c.parents.first().filter(|_| c.parents.len() > 1) {
+            op.label = format!("Revert merge {short}");
+            op = op.confirm(format!(
+                "{short} is a merge commit. Revert it against parent 1 ({})? That undoes what the merge brought in from its other side(s); the first parent's side stays. (Undo with ⌘Z.)",
+                &first[..first.len().min(7)]
+            ));
+        }
+        acts.push(Action::Git(op));
     }
     reset_menu(ui, d, &c.id, "this commit", acts);
     crate::ui::bisect::commit_items(ui, d, c, acts);

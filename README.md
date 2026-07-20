@@ -90,6 +90,12 @@ The name fits a Git client:
   **Reset the current branch to any commit, branch or tag**; a hard reset lists
   the files it discards and backs them up, so ⌘Z brings back refs *and* files.
   Reset is disabled (with the reason) while a merge / rebase / cherry-pick runs.
+- **Merge options** (menus, drag-and-drop, ⌘P): squash (result staged, message
+  prefilled from `SQUASH_MSG`), no fast-forward, fast-forward only. **Cherry-pick
+  without committing**, an optional `-x` "(cherry picked from …)" line (Settings),
+  a warning before picking a commit whose change is already in HEAD, and reverting
+  a merge commit says it goes against parent 1. All undoable; the staged variants
+  need a clean tree and refuse to undo over later edits.
 - **Interactive rebase editor**: pick, reword, squash, fixup, drop and reorder,
   with single-key shortcuts.
 - **One-click history edits**: reword, squash into parent, drop, or

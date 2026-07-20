@@ -288,6 +288,7 @@ impl eframe::App for App {
         }
         crate::repo::tools::set(&self.s.tools);
         crate::repo::avatars::set_enabled(self.s.avatars);
+        crate::repo::merge_opts::set_pick_x(self.s.cherry_pick_x);
         self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here
         // An op that added an undo step gets an Undo button on its toast.
         let mut msgs: Vec<(Msg, Option<(PathBuf, u64)>)> = vec![];

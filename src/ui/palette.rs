@@ -3,6 +3,7 @@
 
 use crate::git::RefKind;
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, branch_checkout, op, pop_stash, pull_op, stash_prompt};
+use crate::repo::merge_opts::{Merge, merge_op};
 use crate::theme::{self, icon};
 use egui::{Key, RichText, TextEdit};
 use std::path::PathBuf;
@@ -178,8 +179,11 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
                 v.push(item(ic, format!("Checkout {}", r.name), kind, Cmd::Tab(a)));
             }
             if r.kind != RefKind::Tag && !head.is_empty() && r.name != head {
-                let m = Op::new(format!("Merge {}", r.name), &["merge", "--no-edit", &r.name]).undo(Undo::Keep);
-                v.push(item(icon::GIT_MERGE, format!("Merge {} into {head}", r.name), kind, Cmd::Tab(Action::Git(m))));
+                for how in [None, Some(Merge::Squash), Some(Merge::NoFf), Some(Merge::FfOnly)] {
+                    let how_label = how.map_or(String::new(), |h| format!(" ({})", h.name()));
+                    let m = merge_op(&r.name, &r.name, how);
+                    v.push(item(icon::GIT_MERGE, format!("Merge {} into {head}{how_label}", r.name), kind, Cmd::Tab(Action::Git(m))));
+                }
                 let rb = Op::new(format!("Rebase onto {}", r.name), &["rebase", &r.name]).undo(Undo::Keep);
                 v.push(item(icon::GIT_COMMIT, format!("Rebase {head} onto {}", r.name), kind, Cmd::Tab(Action::Git(rb))));
             }

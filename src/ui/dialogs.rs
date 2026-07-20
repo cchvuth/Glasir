@@ -5,6 +5,7 @@
 use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, RepoTab, Undo};
+use crate::repo::merge_opts::{Merge, merge_op};
 use crate::theme::{self, icon};
 use egui::{Button, Frame, Id, Key, RichText, TextEdit, Ui, vec2};
 
@@ -318,12 +319,18 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             };
             // Merging needs a local target branch (checking out a remote ref would detach HEAD).
             if local(dr) {
-                let merge = if dr.head {
-                    Op::new(format!("Merge {src}"), &["merge", "--no-edit", src_rev])
-                } else {
-                    Op::new(format!("Merge {src} into {dst}"), &["checkout", dst, "--"]).then(&["merge", "--no-edit", src_rev])
-                };
-                pick(ui, format!("{} Merge {src} into {dst}", icon::GIT_MERGE), Action::Git(merge.undo(Undo::Keep)));
+                let hows = [None, Some(Merge::NoFf), Some(Merge::FfOnly), Some(Merge::Squash)];
+                // A squash merge stays staged on the checked-out branch, so only there.
+                for how in hows.into_iter().filter(|h| dr.head || *h != Some(Merge::Squash)) {
+                    let mut merge = merge_op(src, src_rev, how);
+                    if !dr.head {
+                        let mut o = Op::new(format!("Merge {src} into {dst}"), &["checkout", dst, "--"]).undo(Undo::Keep);
+                        o.cmds.extend(merge.cmds);
+                        merge = o;
+                    }
+                    let how = how.map_or(String::new(), |h| format!(" ({})", h.name()));
+                    pick(ui, format!("{} Merge {src} into {dst}{how}", icon::GIT_MERGE), Action::Git(merge));
+                }
             }
             if dr.kind == git::RefKind::Remote
                 && local(s)

@@ -45,6 +45,8 @@ pub struct Settings {
     pub tips: bool,
     /// Commit authors' GitHub / GitHub Enterprise profile pictures (`repo::avatars`).
     pub avatars: bool,
+    /// Cherry-picks add a "(cherry picked from commit …)" line (`-x`).
+    pub cherry_pick_x: bool,
 }
 
 impl Default for Settings {
@@ -71,6 +73,7 @@ impl Default for Settings {
             zoom: 1.0,
             tips: true,
             avatars: true,
+            cherry_pick_x: false,
         }
     }
 }
@@ -152,6 +155,10 @@ impl App {
                     ui.label("Avatars");
                     ui.checkbox(&mut s.avatars, "Show GitHub avatars")
                         .on_hover_text("Authors' profile pictures from the origin remote's GitHub / GitHub Enterprise host, using git's saved credentials for it. Off: no avatar requests at all.");
+                    ui.end_row();
+                    ui.label("Cherry-pick");
+                    ui.checkbox(&mut s.cherry_pick_x, "Add \"(cherry picked from commit …)\" to the message")
+                        .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing'.");
                     ui.end_row();
                     ui.label("Auto-fetch");
                     ui.horizontal(|ui| {

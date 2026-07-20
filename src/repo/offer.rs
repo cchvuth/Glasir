@@ -32,6 +32,15 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
                 ops: vec![("Stash, switch and reapply".into(), o)],
             })
         }
+        super::merge_opts::PICK_NEW => {
+            let mut anyway = op.clone();
+            anyway.cmds.remove(0);
+            Some(Choice {
+                title: "Already applied".into(),
+                text: format!("{err}\n\nCherry-picking anyway may stop on an empty commit or conflicts, which you can skip or abort."),
+                ops: vec![("Cherry-pick anyway".into(), anyway)],
+            })
+        }
         "pull" if has("--ff-only") && err.contains("Not possible to fast-forward") => Some(Choice {
             title: "Branches have diverged".into(),
             text: "Your branch and its upstream both have new commits, so a fast-forward isn't possible. Combine them by rebasing your commits on top, or with a merge commit.".into(),

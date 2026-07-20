@@ -37,6 +37,7 @@ pub mod history;
 pub mod identity;
 pub mod image_diff;
 pub mod merge_editor;
+pub mod merge_opts;
 pub mod message;
 mod offer;
 mod op;
