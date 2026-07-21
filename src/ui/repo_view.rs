@@ -40,6 +40,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .size_range(300.0..=720.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut acts)));
+        let tool = t.data.as_ref().and_then(|d| d.cfg("diff.tool"));
         egui::CentralPanel::default()
             .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 2, bottom: 12 }))
             .show(ui, |ui| {
@@ -60,7 +61,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                             let right = egui::Rect::from_min_max(egui::pos2(r.left() + split + 12.0, r.top()), r.max);
                             ui.scope_builder(UiBuilder::new().max_rect(left), |ui| close = history::show(ui, fv, &mut acts));
                             ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
-                                diff_view::show(ui, t.diff.as_mut().unwrap(), &mut s.split_diff, &mut acts)
+                                diff_view::show(ui, t.diff.as_mut().unwrap(), &mut s.split_diff, tool, &mut acts)
                             });
                         } else {
                             close = history::show(ui, fv, &mut acts);
@@ -80,7 +81,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                     }
                     // A diff opened from the inspector covers the reflog; closing it goes back there.
                     match (&mut t.diff, &mut t.reflog) {
-                        (Some(ds), _) => diff_view::show(ui, ds, &mut s.split_diff, &mut acts),
+                        (Some(ds), _) => diff_view::show(ui, ds, &mut s.split_diff, tool, &mut acts),
                         (None, Some(rl)) => {
                             if reflog::show(ui, rl, t.data.as_ref().unwrap(), &mut acts) {
                                 t.reflog = None;

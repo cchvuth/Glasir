@@ -124,8 +124,10 @@ pub fn parse_status(out: &str) -> Status {
                 }
             }
             'u' => {
-                if let Some(path) = rec.splitn(11, ' ').nth(10) {
-                    s.conflicted.push(Change { path: path.into(), old_path: None, code: 'U' });
+                let f: Vec<&str> = rec.splitn(11, ' ').collect();
+                if let Some(path) = f.get(10) {
+                    s.conflict_xy.insert(path.to_string(), f[1].into());
+                    s.conflicted.push(Change { path: path.to_string(), old_path: None, code: 'U' });
                 }
             }
             '?' => s.unstaged.push(Change { path: rec[2..].into(), old_path: None, code: '?' }),
@@ -133,6 +135,21 @@ pub fn parse_status(out: &str) -> Status {
         }
     }
     s
+}
+
+/// What an unmerged `XY` code means, and whether (current, incoming) still has a version of the file.
+/// X is our side (`D` = we deleted it, `A` = we added it), Y theirs.
+pub fn conflict_kind(xy: &str) -> (&'static str, [bool; 2]) {
+    match xy {
+        "UU" => ("Both modified", [true, true]),
+        "AA" => ("Both added", [true, true]),
+        "DD" => ("Both deleted", [false, false]),
+        "AU" => ("Added by us", [true, false]),
+        "UA" => ("Added by them", [false, true]),
+        "DU" => ("Deleted by us", [false, true]),
+        "UD" => ("Deleted by them", [true, false]),
+        _ => ("Conflicted", [true, true]),
+    }
 }
 
 pub fn status(dir: &Path) -> Res<Status> {
@@ -195,9 +212,9 @@ pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
 }
 
 /// `remote.*`, `branch.*` and `user.*` settings, plus the commit template, comment char and
-/// signing defaults, from every config scope, in git's order (last wins).
+/// signing defaults and merge / diff tools, from every config scope, in git's order (last wins).
 pub fn config(dir: &Path) -> Vec<(String, String)> {
-    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\.|^(commit\.template|core\.comment(char|string)|(commit|tag)\.gpgsign|gpg\.format)$"]).unwrap_or_default())
+    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\.|^(commit\.template|core\.comment(char|string)|(commit|tag)\.gpgsign|gpg\.format|(merge|diff)\.tool)$"]).unwrap_or_default())
 }
 
 /// The (name, email) git authors commits with: author.* and GIT_AUTHOR_* beat user.*.
@@ -406,6 +423,19 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         assert_eq!((s.unstaged[0].old_path.as_deref(), s.unstaged[2].old_path.as_deref()), (None, Some("was.rs")));
         assert_eq!((s.submodules.len(), s.submodules["sub mod"].as_str()), (1, "S.MU"));
         assert_eq!(s.conflicted[0].path, "conf.rs");
+        assert_eq!(s.conflict_xy["conf.rs"], "UU");
+    }
+
+    #[test]
+    fn conflict_codes() {
+        assert_eq!(conflict_kind("UU"), ("Both modified", [true, true]));
+        assert_eq!(conflict_kind("AA").0, "Both added");
+        assert_eq!(conflict_kind("DD"), ("Both deleted", [false, false]));
+        assert_eq!(conflict_kind("DU"), ("Deleted by us", [false, true]));
+        assert_eq!(conflict_kind("UD"), ("Deleted by them", [true, false]));
+        assert_eq!(conflict_kind("AU"), ("Added by us", [true, false]));
+        assert_eq!(conflict_kind("UA"), ("Added by them", [false, true]));
+        assert_eq!(conflict_kind("??").0, "Conflicted");
     }
 
     #[test]

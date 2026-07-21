@@ -111,6 +111,12 @@ The name fits a Git client:
   your target branch *before* you merge or pull.
 - **3-way merge editor**: Current / Incoming / editable Output, per-conflict
   take-current / incoming / both, auto-resolve trivial conflicts, conflict navigation.
+- **Conflict list**: each file shows its type (both modified, deleted by them, added by us, ...);
+  take-side actions are named after the real branch / commit; **Mark all resolved** stages only
+  files with no conflict markers left and lists the rest; Continue stays disabled with a reason
+  while unmerged files remain.
+- **External tools**: open a conflicted file in your `merge.tool` (backed up first, ⌘Z) and any
+  file diff in your `diff.tool`; both are greyed out with a hint when git has no tool configured.
 - **Branch cleanup**: delete merged and orphaned branches in one go.
 - Merge / rebase / cherry-pick / revert banner with Continue, Skip and Abort (undoable
   with ⌘Z), shown even when the resolved tree is clean.

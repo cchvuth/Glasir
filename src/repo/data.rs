@@ -26,6 +26,10 @@ pub struct RepoData {
     pub truncated: bool,
     pub status: Status,
     pub state: git::State,
+    /// While conflicted: names of the current and incoming side (branch / commit).
+    pub conflict_sides: [String; 2],
+    /// Conflicted files with every marker gone, which "Mark all resolved" stages.
+    pub resolvable: Vec<String>,
     /// Bisect progress while `state` is `Bisecting`.
     pub bisect: Option<git::Bisect>,
     /// Row 0 is the uncommitted-changes pseudo commit.
@@ -182,6 +186,13 @@ impl RepoData {
             .unwrap_or_else(|| "main".into())
     }
 
+    pub(super) fn load_conflicts(&mut self, dir: &Path) {
+        if !self.status.conflicted.is_empty() {
+            self.conflict_sides = super::merge_editor::labels(dir);
+            self.resolvable = super::merge_editor::resolvable(dir, &self.status);
+        }
+    }
+
     pub(super) fn load_bisect(&mut self, dir: &Path) {
         self.bisect = (self.state == git::State::Bisecting).then(|| git::bisect(dir).ok()).flatten();
     }
@@ -255,6 +266,8 @@ impl RepoData {
             truncated: false,
             status,
             state,
+            conflict_sides: Default::default(),
+            resolvable: vec![],
             bisect: None,
             wip,
             graph,
@@ -306,6 +319,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.config = Arc::new(config);
     d.author = author;
     d.load_bisect(dir);
+    d.load_conflicts(dir);
     Ok(d)
 }
 

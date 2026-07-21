@@ -1,7 +1,8 @@
 //! External tools: open the repo or a file in the user's editor, a terminal or
 //! the file manager, and the user's custom commands ({repo} {branch} {sha} {path}).
 
-use super::op::{Op, Undo};
+use super::op::{Backup, Op, Undo};
+use super::DiffSrc;
 use crate::git::Res;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -10,6 +11,9 @@ use std::sync::Mutex;
 
 /// Marks an op command that is a shell line rather than git args (`op::exec`).
 pub(super) const SHELL: &str = "!shell";
+
+/// Marks an op command that starts git and returns at once (a merge / diff tool's window).
+pub(super) const DETACH: &str = "!detach";
 
 /// A user-defined command: git args (`git push origin HEAD:refs/for/{branch}`) or a shell line.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -140,6 +144,40 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
         }
     };
     Ok(Op { custom: true, ..op.undo(Undo::Keep) })
+}
+
+pub(super) fn detach(dir: &Path, args: &[&str]) -> Res<String> {
+    let mut c = crate::git::cmd(dir);
+    c.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let mut child = c.spawn().map_err(|e| format!("Could not start git: {e}"))?;
+    std::thread::spawn(move || child.wait()); // reap it
+    Ok(String::new())
+}
+
+/// `git mergetool` for one conflicted file. It rebuilds the working file from the index
+/// stages, dropping any hand edits, so the file is backed up first (⌘Z).
+pub fn mergetool_op(path: &str) -> Op {
+    Op::new("Open in external merge tool", &[DETACH, "--literal-pathspecs", "mergetool", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
+}
+
+/// `git difftool` for the file a diff shows; `None` where there is nothing to compare
+/// (untracked files, root commits).
+pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
+    let mut a = vec![DETACH, "--literal-pathspecs", "difftool", "--no-prompt"];
+    let c = src.change();
+    match src {
+        DiffSrc::Worktree { change, staged } => {
+            if change.code == '?' {
+                return None;
+            }
+            a.extend(staged.then_some("--cached"));
+        }
+        DiffSrc::Commit { id, parent, .. } => a.extend([parent.as_deref()?, id.as_str()]),
+    }
+    a.push("--");
+    a.extend(c.old_path.as_deref());
+    a.push(&c.path);
+    Some(Op::new("Open in external diff tool", &a).light())
 }
 
 /// `prog` on PATH (with Windows' .exe / .cmd), or as given when it is a path.
@@ -323,6 +361,83 @@ mod tests {
         }
         assert_eq!(t.summary, "draft");
         assert_eq!(sh(&dir, &["show", ":a.txt"]), "staged\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn conflict_kinds_bulk_resolve_and_external_tools() {
+        use crate::repo::data::load_all;
+        use crate::repo::op::exec;
+        use crate::repo::View;
+        let dir = scratch("conflict-tools");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a.txt", "b.txt", "c.txt"] {
+            commit(&dir, f, "base\n");
+        }
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        for f in ["a.txt", "b.txt"] {
+            commit(&dir, f, "feature\n");
+        }
+        sh(&dir, &["rm", "-q", "c.txt"]);
+        sh(&dir, &["commit", "-q", "-m", "drop c"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        for f in ["a.txt", "b.txt", "c.txt"] {
+            commit(&dir, f, "main\n");
+        }
+        assert!(crate::git::run(&dir, &["merge", "feature"]).is_err());
+
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let kinds: Vec<_> = ["a.txt", "b.txt", "c.txt"].map(|f| crate::git::conflict_kind(&d.status.conflict_xy[f]).0).to_vec();
+        assert_eq!(kinds, ["Both modified", "Both modified", "Deleted by them"]);
+        assert!(d.conflict_sides[0].starts_with("main ") && d.conflict_sides[1].starts_with("feature "), "{:?}", d.conflict_sides);
+        assert!(d.resolvable.is_empty(), "every file still has markers or a deleted side");
+
+        // b.txt is resolved by hand: only it can be bulk-marked.
+        std::fs::write(dir.join("b.txt"), "both\n").unwrap();
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(d.resolvable, ["b.txt"]);
+        sh(&dir, &["config", "merge.tool", "fake"]);
+        sh(&dir, &["config", "diff.tool", "fake"]);
+        for kv in [["mergetool.fake.cmd", "cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"], ["mergetool.keepBackup", "false"]] {
+            sh(&dir, &["config", kv[0], kv[1]]);
+        }
+        assert_eq!(load_all(&dir, 100, View::default()).unwrap().cfg("merge.tool"), Some("fake"));
+
+        // The merge tool runs detached on a backed-up file and takes the incoming side here.
+        let op = mergetool_op("a.txt");
+        assert!(op.backup.is_some());
+        exec(&dir, &op).unwrap();
+        let wait = |ok: &dyn Fn() -> bool| (0..400).any(|_| ok() || { std::thread::sleep(std::time::Duration::from_millis(25)); false });
+        let unmerged = || crate::git::status(&dir).unwrap().conflicted.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+        assert!(wait(&|| !unmerged().contains(&"a.txt".to_owned())), "{:?}", unmerged());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "feature\n");
+
+        // Bulk resolve stages just the ready file.
+        let mut a = vec!["--literal-pathspecs", "add", "--"];
+        a.extend(d.resolvable.iter().map(String::as_str));
+        exec(&dir, &Op::new("Mark all resolved", &a)).unwrap();
+        assert_eq!(unmerged(), ["c.txt"]);
+
+        // Diff tool: working-tree file against the index, run detached.
+        std::fs::write(dir.join("b.txt"), "edited\n").unwrap();
+        let out = dir.join("seen.out");
+        sh(&dir, &["config", "difftool.fake.cmd", &format!("cp \"$LOCAL\" '{}'", out.display())]);
+        let st = crate::git::status(&dir).unwrap();
+        let change = st.unstaged.iter().find(|c| c.path == "b.txt").unwrap().clone();
+        let op = difftool_op(&DiffSrc::Worktree { change: change.clone(), staged: false }).unwrap();
+        exec(&dir, &op).unwrap();
+        assert!(wait(&|| out.exists()));
+        assert_eq!(&op.cmds[0][2..], ["difftool", "--no-prompt", "--", "b.txt"]);
+        let staged = difftool_op(&DiffSrc::Worktree { change: change.clone(), staged: true }).unwrap();
+        assert_eq!(staged.cmds[0][4], "--cached");
+        let new = crate::git::Change { code: '?', ..change.clone() };
+        assert!(difftool_op(&DiffSrc::Worktree { change: new, staged: false }).is_none());
+        let id = "abc".to_owned();
+        assert!(difftool_op(&DiffSrc::Commit { id: id.clone(), parent: None, change: change.clone() }).is_none());
+        let c = difftool_op(&DiffSrc::Commit { id, parent: Some("p".into()), change }).unwrap();
+        assert_eq!(&c.cmds[0][3..], ["--no-prompt", "p", "abc", "--", "b.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

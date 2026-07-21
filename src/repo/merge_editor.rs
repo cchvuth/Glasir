@@ -185,7 +185,7 @@ pub(crate) struct Loaded {
 }
 
 /// Pane titles from the operation state (the markers' own labels are generic).
-fn labels(dir: &Path) -> [String; 2] {
+pub(super) fn labels(dir: &Path) -> [String; 2] {
     let g = |args: &[&str]| git::run(dir, args).map(|s| s.trim().to_owned()).unwrap_or_default();
     // Skips the detached-HEAD pseudo entry ("(no branch, rebasing x)").
     let at = |rev: &str| g(&["branch", "-a", "--points-at", rev, "--format=%(refname:short)"]).lines().find(|l| !l.starts_with('(')).unwrap_or("").to_owned();
@@ -209,6 +209,22 @@ fn labels(dir: &Path) -> [String; 2] {
         if name.is_empty() { what } else { format!("{name} {what}") }
     });
     [current, incoming]
+}
+
+/// Conflicted files "Mark all resolved" may stage: both sides present (a deleted side is a
+/// decision to make), a text file, and no conflict markers left.
+pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
+    st.conflicted
+        .iter()
+        .filter(|c| matches!(st.conflict_xy.get(&c.path).map(String::as_str), Some("UU" | "AA")))
+        .filter(|c| {
+            let p = dir.join(&c.path);
+            let text = std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&p).ok()).and_then(|b| String::from_utf8(b).ok());
+            let n = marker_size(dir, &c.path);
+            text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n)))
+        })
+        .map(|c| c.path.clone())
+        .collect()
 }
 
 fn load(dir: &Path, path: &str) -> Loaded {

@@ -286,6 +286,7 @@ impl RepoTab {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
                 (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated) = (wt, sm, lfs, cfg, au, tr);
                 d.load_bisect(&dir);
+                d.load_conflicts(&dir);
                 Ok(d)
             }
             None => load_all(&dir, limit, view),

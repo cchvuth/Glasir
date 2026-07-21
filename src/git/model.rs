@@ -62,6 +62,8 @@ pub struct Status {
     pub staged: Vec<Change>,
     pub unstaged: Vec<Change>,
     pub conflicted: Vec<Change>,
+    /// Conflicted path -> porcelain v2 `XY` code (`conflict_kind` explains it).
+    pub conflict_xy: std::collections::HashMap<String, String>,
     /// Changed submodules: path -> porcelain v2 `S<c><m><u>` field
     /// (`C` new commit checked out, `M` modified content, `U` untracked content).
     pub submodules: std::collections::HashMap<String, String>,

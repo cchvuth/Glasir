@@ -184,7 +184,8 @@ impl RepoTab {
                     ui.label(format!("{} conflicted file(s) — resolve, then continue.", s.conflicted.len()));
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Continue").clicked() {
+                    let cont = ui.add_enabled(s.conflicted.is_empty(), egui::Button::new("Continue"));
+                    if cont.on_disabled_hover_text(format!("{} file(s) still have unresolved conflicts: resolve them (or mark them resolved) first", s.conflicted.len())).clicked() {
                         acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep)));
                     }
                     // An empty step (its changes are already in HEAD) can't --continue.
@@ -341,9 +342,37 @@ impl RepoTab {
         {
             ScrollArea::vertical().id_salt("wip_files").auto_shrink(false).show(ui, |ui| {
                 if !s.conflicted.is_empty() {
-                    ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let rest: Vec<&str> = s.conflicted.iter().map(|c| c.path.as_str()).filter(|p| !d.resolvable.iter().any(|r| r == p)).collect();
+                            let shown = |v: &[&str]| format!("{}{}", v[..v.len().min(10)].join("\n"), if v.len() > 10 { format!("\n…and {} more", v.len() - 10) } else { String::new() });
+                            let b = theme::small(ui, !d.resolvable.is_empty() && !busy, "Mark all resolved");
+                            let b = if rest.is_empty() {
+                                b.on_hover_text("Stage every conflicted file")
+                            } else {
+                                b.on_hover_text(format!("Only files without conflict markers are marked. Left alone:\n{}", shown(&rest)))
+                            };
+                            if b.on_disabled_hover_text("No conflicted file is free of conflict markers yet").clicked() {
+                                let mut a = vec!["--literal-pathspecs", "add", "--"];
+                                a.extend(d.resolvable.iter().map(String::as_str));
+                                let mut op = Op::new("Mark all resolved", &a).light();
+                                if !rest.is_empty() {
+                                    op = op.confirm(format!("Mark {} file(s) resolved? Not marked (conflict markers left, or a side to choose):\n{}", d.resolvable.len(), shown(&rest)));
+                                }
+                                acts.push(Action::Git(op));
+                            }
+                        });
+                    });
+                    let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0); // type label hugs its row
                     for c in &s.conflicted {
                         let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path));
+                        let (kind, has) = crate::git::conflict_kind(s.conflict_xy.get(&c.path).map_or("", String::as_str));
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0);
+                            ui.label(RichText::new(kind).small().color(theme::dim(ui)));
+                        });
+                        ui.add_space(4.0);
                         resp.context_menu(|ui| {
                             if ai_on && ui.button(format!("{} Resolve with AI…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
@@ -351,11 +380,20 @@ impl RepoTab {
                             if ui.button("Mark resolved").clicked() {
                                 acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", &c.path]).light()));
                             }
-                            for (name, side) in [("Use ours", "--ours"), ("Use theirs", "--theirs")] {
-                                if ui.button(name).clicked() {
+                            for (i, (side, word)) in [("--ours", "current"), ("--theirs", "incoming")].into_iter().enumerate() {
+                                let label = &d.conflict_sides[i];
+                                let name = if label.is_empty() { format!("Use {word}") } else { format!("Use {word} ({})", label.chars().take(40).collect::<String>()) };
+                                let b = ui.add_enabled(has[i], egui::Button::new(&name));
+                                if b.on_disabled_hover_text(format!("{kind}: this side has no version of the file. Open the merge editor to keep or delete it.")).clicked() {
                                     let file = std::fs::symlink_metadata(self.dir.join(&c.path)).map_or(true, |m| m.is_file());
-                                    acts.push(Action::Git(crate::repo::merge_editor::take_side(name, side, &c.path, file)));
+                                    acts.push(Action::Git(crate::repo::merge_editor::take_side(&name, side, &c.path, file)));
                                 }
+                            }
+                            let tool = d.cfg("merge.tool");
+                            let b = ui.add_enabled(tool.is_some() && has == [true, true], egui::Button::new(format!("{} Open in external merge tool", icon::ARROW_SQUARE_OUT)));
+                            let b = b.on_hover_text(format!("git mergetool ({}). Your current file is backed up first (⌘Z).", tool.unwrap_or_default()));
+                            if b.on_disabled_hover_text(if tool.is_none() { "No merge tool configured: git config --global merge.tool <name>" } else { "One side deleted this file; use the merge editor instead." }).clicked() {
+                                acts.push(Action::Git(crate::repo::tools::mergetool_op(&c.path)));
                             }
                             if ui.button("Show in file manager").clicked() {
                                 acts.push(Action::Reveal(c.path.clone()));
@@ -369,6 +407,7 @@ impl RepoTab {
                             acts.push(Action::MergeEditor(c.path.clone()));
                         }
                     }
+                    ui.spacing_mut().item_spacing.y = gap;
                     ui.add_space(6.0);
                 }
                 let mods = ui.input(|i| i.modifiers);
