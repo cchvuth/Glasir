@@ -360,10 +360,15 @@ pub fn predict_conflicts(dir: &Path, other: &str) -> Option<Vec<String>> {
     }
 }
 
+/// `to` of a comparison with the working tree (not a valid ref name, so it can't collide).
+pub const WORKTREE: &str = "(working tree)";
+
 /// Files changed from `from` to `to`, shaped like a commit so the inspector can
 /// show it. `three_dot`: compare against their merge base (what a PR would show).
+/// `to == WORKTREE`: tracked files as they are on disk now (`git diff <from>`).
 pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &str) -> Res<CommitInfo> {
-    let base = match three_dot {
+    let wt = to == WORKTREE;
+    let base = match three_dot && !wt {
         true => run(dir, &["merge-base", from, to])?,
         false => match run(dir, &["rev-parse", "-q", "--verify", from]) {
             // The root commit's `^`: compare against the empty tree.
@@ -372,8 +377,15 @@ pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &s
         },
     };
     let base = base.trim().to_owned();
-    let to_id = run(dir, &["rev-parse", to])?.trim().to_owned();
-    let files = parse_name_status(&run(dir, &["diff-tree", "-r", "-z", "--name-status", "-M", &base, &to_id])?);
+    let (to_id, out) = match wt {
+        true => (to.to_owned(), run(dir, &["diff", "-z", "--name-status", "-M", &base])?),
+        false => {
+            let id = run(dir, &["rev-parse", to])?.trim().to_owned();
+            let out = run(dir, &["diff-tree", "-r", "-z", "--name-status", "-M", &base, &id])?;
+            (id, out)
+        }
+    };
+    let files = parse_name_status(&out);
     Ok(CommitInfo { id: to_id, parents: vec![base], message: label.into(), files, ..Default::default() })
 }
 

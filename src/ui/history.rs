@@ -1,7 +1,7 @@
 //! File history and blame views (blame with an age heatmap). The data and git
 //! queries live in `crate::repo::history`.
 
-use super::format::{ago, initials, relative_time};
+use super::format::{ago, initials, relative_time, text_job, tops, visible, wrapped};
 use crate::repo::history::{Blame, Data, FileView, Mode};
 use crate::repo::{Action, DiffSrc};
 use crate::theme::{self, icon};
@@ -15,7 +15,7 @@ fn heat_color(t: f32) -> Color32 {
 }
 
 /// Draws the file view; returns true when it should close.
-pub fn show(ui: &mut Ui, fv: &mut FileView, acts: &mut Vec<Action>) -> bool {
+pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     fv.poll();
     let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
     ui.horizontal(|ui| {
@@ -27,6 +27,9 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, acts: &mut Vec<Action>) -> bool {
             Mode::Blame => format!("{} Blame", icon::USER_LIST),
         };
         ui.label(RichText::new(title).strong());
+        if fv.mode == Mode::Blame && ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+            *wrap = !*wrap;
+        }
         ui.add(egui::Label::new(RichText::new(&fv.path).monospace().color(theme::dim(ui))).truncate());
     });
     ui.add_space(6.0);
@@ -72,30 +75,35 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, acts: &mut Vec<Action>) -> bool {
                 }
             });
         }
-        Data::Blame(b) => blame_view(ui, b, acts),
+        Data::Blame(b) => blame_view(ui, b, *wrap, acts),
     }
     close
 }
 
-fn blame_view(ui: &mut Ui, b: &Blame, acts: &mut Vec<Action>) {
+fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
     const H: f32 = 18.0;
     let mono = FontId::monospace(12.5);
+    let cw = ui.fonts_mut(|f| f.glyph_width(&mono, 'M'));
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-        egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_rows(ui, H, b.lines.len(), |ui, range| {
-            let max = b.lines.iter().map(|l| l.1.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0;
-            ui.set_min_width(max.max(ui.available_width()));
+        // Wrapped: rows as tall as their lines (the scrollbar's width is left out).
+        let cols = if wrap { (((ui.available_width() - 406.0) / cw) as usize).max(1) } else { usize::MAX };
+        let tops = tops(H, b.lines.iter().map(|l| wrapped(l.1.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
+        egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_viewport(ui, |ui, view| {
+            let max = if wrap { 0.0 } else { b.lines.iter().map(|l| l.1.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0 };
+            ui.set_min_size(vec2(max.max(ui.available_width()), tops[b.lines.len()]));
+            let max = max.max(ui.available_width());
             let left = ui.max_rect().left();
-            let top = ui.max_rect().top() - range.start as f32 * H;
+            let top = ui.max_rect().top();
             let p = ui.painter().clone();
-            for r in range {
+            for r in visible(&tops, view.min.y, view.max.y) {
                 let (ci, text) = &b.lines[r];
                 let c = &b.commits[*ci];
-                let rect = Rect::from_min_size(pos2(left, top + r as f32 * H), vec2(max, H));
-                let y = rect.center().y;
+                let rect = Rect::from_min_size(pos2(left, top + tops[r]), vec2(max, tops[r + 1] - tops[r]));
+                let y = rect.top() + H / 2.0;
                 let heat = heat_color(b.heat[*ci]);
                 let first = r == 0 || b.lines[r - 1].0 != *ci;
-                p.rect_filled(Rect::from_min_size(rect.min, vec2(4.0, H)), 0.0, heat);
+                p.rect_filled(Rect::from_min_size(rect.min, vec2(4.0, rect.height())), 0.0, heat);
                 if first {
                     p.line_segment([pos2(left, rect.top()), pos2(left + max, rect.top())], egui::Stroke::new(1.0, theme::faint(ui)));
                     let uncommitted = c.id.bytes().all(|x| x == b'0');
@@ -111,7 +119,8 @@ fn blame_view(ui: &mut Ui, b: &Blame, acts: &mut Vec<Action>) {
                 }
                 resp.on_hover_text(format!("{}\n{} — {}", c.summary, c.author, ago(c.time)));
                 p.text(pos2(left + 380.0, y), Align2::RIGHT_CENTER, (r + 1).to_string(), FontId::monospace(11.0), theme::dim(ui));
-                p.text(pos2(left + 392.0, y), Align2::LEFT_CENTER, text.replace('\t', "    "), mono.clone(), theme::text(ui));
+                let g = p.layout_job(text_job(&text.replace('\t', "    "), mono.clone(), theme::text(ui), H, cols, cw));
+                p.galley(pos2(left + 392.0, rect.top()), g, theme::text(ui));
             }
         });
     });

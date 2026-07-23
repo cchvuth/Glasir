@@ -26,6 +26,8 @@ pub struct Settings {
     pub max_commits: usize,
     pub pull: PullMode,
     pub split_diff: bool,
+    /// Wrap long lines in the diff, blame and merge editor instead of scrolling sideways.
+    pub wrap: bool,
     pub clone_dir: Option<PathBuf>,
     pub ai: ai::Config,
     /// macOS 26+: real Liquid Glass (NSGlassEffectView) behind the window.
@@ -62,6 +64,7 @@ impl Default for Settings {
             max_commits: crate::repo::PAGE,
             pull: PullMode::Merge,
             split_diff: false,
+            wrap: false,
             clone_dir: None,
             ai: ai::Config::default(),
             native_glass: false,

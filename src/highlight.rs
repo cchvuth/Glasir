@@ -25,6 +25,11 @@ pub fn display(t: &str) -> String {
     }
 }
 
+/// Characters of [`display`]`(t)`.
+pub fn display_len(t: &str) -> usize {
+    t.trim_end_matches('\r').chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().min(2001)
+}
+
 /// `[hunk][line]` spans, or empty when the language is unknown or the diff is huge.
 pub fn highlight(path: &str, f: &FileDiff, dark: bool) -> Vec<Vec<Spans>> {
     let lines: usize = f.hunks.iter().map(|h| h.lines.len()).sum();

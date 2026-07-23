@@ -2,6 +2,7 @@
 //! output below. It works on the working file's conflict markers, so hand edits to the output stay
 //! the source of truth. State and parsing live in `crate::repo::merge_editor`.
 
+use super::format::{text_job, tops, visible, wrapped};
 use crate::ai;
 use crate::repo::merge_editor::{Chunk, Editor, Row, Take, conflicts, parse, parts, rebuild, save, stage, whole_ops};
 use crate::repo::{Action, Task};
@@ -17,7 +18,7 @@ fn tint(c: Color32, strong: bool) -> Color32 {
 }
 
 /// Returns true when the editor should close.
-pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<Action>) -> bool {
+pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     if let Some(d) = Task::poll(&mut ed.task) {
         ed.output = String::from_utf8_lossy(&d.original).into_owned();
         ed.data = Some(d);
@@ -36,6 +37,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
     let mut auto = false;
     let thinking = ai.is_some_and(|j| j.running() && j.purpose == ai::Purpose::Resolve(ed.path.clone()));
     theme::bar(ui, |ui| {
+        if ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+            *wrap = !*wrap;
+        }
         if ed.data.as_ref().is_some_and(|d| d.whole.is_none()) {
             if !ai::enabled() {
             } else if thinking {
@@ -91,6 +95,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
     let scroll = std::mem::take(&mut ed.scroll);
     let mut pick: Option<(usize, Take)> = None;
     let mut select = None;
+    let wrap = *wrap;
 
     ui.columns(2, |cols| {
         for (s, ui) in cols.iter_mut().enumerate() {
@@ -101,16 +106,26 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
             });
             let rows = &d.sides[s];
             let mut area = egui::ScrollArea::both().id_salt(("merge_side", s)).max_height(top_h).auto_shrink(false);
+            // Wrapped: rows as tall as their lines (a column's width, less the frame and scrollbar).
+            let cols = if wrap { (((ui.available_width() - 30.0) / char_w) as usize).max(1) } else { usize::MAX };
+            let tops = tops(row_h, rows.iter().map(|r| match r {
+                Row::Line(t, _) => wrapped(t.chars().count(), cols),
+                Row::Head(_) => 1,
+            }));
             if scroll && let Some(k) = sel_orig {
                 let at = rows.iter().position(|r| matches!(r, Row::Head(h) if *h == k)).unwrap_or(0);
-                area = area.vertical_scroll_offset((at as f32 - 2.0).max(0.0) * row_h);
+                area = area.vertical_scroll_offset(tops[at.saturating_sub(2)]);
             }
             egui::Frame::new().fill(theme::faint(ui)).corner_radius(10).inner_margin(6).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0; // contiguous conflict tints; rows exactly `row_h` apart
-                area.show_rows(ui, row_h, rows.len(), |ui, range| {
-                    let w = (d.width[s] as f32 * char_w + 24.0).max(ui.available_width());
-                    for row in &rows[range] {
-                        let (rect, resp) = ui.allocate_exact_size(vec2(w, row_h), Sense::click());
+                area.show_viewport(ui, |ui, view| {
+                    let range = visible(&tops, view.min.y, view.max.y);
+                    let w = if wrap { ui.available_width() } else { (d.width[s] as f32 * char_w + 24.0).max(ui.available_width()) };
+                    ui.set_min_height(tops[rows.len()]);
+                    ui.add_space(tops[range.start]);
+                    for r in range {
+                        let row = &rows[r];
+                        let (rect, resp) = ui.allocate_exact_size(vec2(w, tops[r + 1] - tops[r]), Sense::click());
                         let p = ui.painter();
                         match row {
                             Row::Head(k) => {
@@ -137,7 +152,8 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
                                         select = ed.orig_of.iter().position(|o| o == &Some(*k));
                                     }
                                 }
-                                p.text(pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, text, mono.clone(), theme::text(ui));
+                                let g = p.layout_job(text_job(text, mono.clone(), theme::text(ui), row_h, cols, char_w));
+                                p.galley(pos2(rect.left() + 4.0, rect.top()), g, theme::text(ui));
                             }
                         }
                     }
@@ -186,14 +202,14 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
         ui.label(RichText::new("Output").strong());
         ui.label(RichText::new("editable — this is what gets saved").small().color(theme::dim(ui)));
     });
-    let mut area = egui::ScrollArea::both().id_salt("merge_out").max_height((ui.available_height() - footer).max(60.0)).auto_shrink(false);
+    let mut area = if wrap { egui::ScrollArea::vertical() } else { egui::ScrollArea::both() }.id_salt("merge_out").max_height((ui.available_height() - footer).max(60.0)).auto_shrink(false);
     if scroll && m > 0 {
         area = area.vertical_scroll_offset((ed.output_line(ed.sel) as f32 - 2.0).max(0.0) * row_h);
     }
     let text_col = theme::text(ui);
     let dim = theme::dim(ui);
     let size = d.size;
-    let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, _wrap: f32| {
+    let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_w: f32| {
         // Re-parses per layout; fine for source files, cache by hash if huge files matter.
         let mut job = LayoutJob::default();
         let fmt = |color: Color32, background: Color32| TextFormat { font_id: mono.clone(), color, background, ..Default::default() };
@@ -213,7 +229,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, acts: &mut Vec<A
                 }
             }
         }
-        job.wrap.max_width = f32::INFINITY;
+        job.wrap.max_width = if wrap { wrap_w } else { f32::INFINITY };
         ui.fonts_mut(|f| f.layout_job(job))
     };
     let changed = egui::Frame::new()

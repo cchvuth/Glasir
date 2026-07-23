@@ -36,7 +36,7 @@ fn sides(src: &DiffSrc) -> [Option<Option<String>>; 2] {
     match src {
         DiffSrc::Worktree { staged: true, .. } => [old("HEAD"), new(Some(format!(":{}", c.path)))],
         DiffSrc::Worktree { staged: false, .. } => [old(""), new(None)],
-        DiffSrc::Commit { id, parent, .. } => [parent.as_deref().and_then(old), new(Some(format!("{id}:{}", c.path)))],
+        DiffSrc::Commit { id, parent, .. } => [parent.as_deref().and_then(old), new((id != git::WORKTREE).then(|| format!("{id}:{}", c.path)))],
     }
 }
 

@@ -222,6 +222,9 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     if !is_head && ui.button("Compare with HEAD").clicked() {
         acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: "HEAD".into(), three_dot: false }));
     }
+    if ui.button("Compare working tree with this commit").on_hover_text("Your uncommitted and committed changes since this commit").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: crate::git::WORKTREE.into(), three_dot: false }));
+    }
     if let Some(web) = d.web() {
         if ui.button("Open commit on remote").clicked() {
             acts.push(Action::Url(format!("{web}/commit/{}", c.id)));

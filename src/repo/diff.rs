@@ -110,7 +110,7 @@ fn shape(f: &FileDiff) -> String {
 pub(super) fn diff_is(dir: &std::path::Path, a: &[&str]) -> Res<String> {
     let [_, staged, context, code, path, old, want] = a else { return Err("bad diff guard".into()) };
     let c = git::Change { path: path.to_string(), old_path: (!old.is_empty()).then(|| old.to_string()), code: code.chars().next().unwrap_or('M') };
-    let o = DiffOpts { ignore_ws: false, context: context.parse().unwrap_or(3) };
+    let o = DiffOpts { ignore_ws: false, context: context.parse().unwrap_or(3), all: true };
     // Untracked when shown: staged or tracked since means the patch (and its rollback) is not ours to apply.
     if c.code == '?' && !git::run(dir, &["--literal-pathspecs", "ls-files", "--cached", "--", path])?.trim().is_empty() {
         return Err("The file is no longer untracked, so nothing was applied. Check the updated diff and try again.".into());
@@ -249,7 +249,7 @@ mod tests {
         std::fs::write(dir.join("f"), "b\n").unwrap();
         chmod(0o755);
         let c = git::Change { path: "f".into(), old_path: None, code: 'M' };
-        let o = DiffOpts { ignore_ws: false, context: 3 };
+        let o = DiffOpts::default();
         let f = git::worktree_diff(&dir, &c, false, o).unwrap();
         assert!(f.header.iter().any(|h| h == "new mode 100755"), "{:?}", f.header);
         let src = DiffSrc::Worktree { change: c, staged: false };
@@ -257,6 +257,80 @@ mod tests {
         chmod(0o644);
         assert!(super::super::op::exec(&dir, &stage).is_err());
         assert_eq!(sh(&dir, &["diff", "--cached"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn repo(name: &str) -> std::path::PathBuf {
+        let dir = scratch(name);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        dir
+    }
+
+    /// A permission change has no hunks but is described; a changed binary file shows both sizes.
+    #[cfg(unix)]
+    #[test]
+    fn mode_and_binary_changes() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = repo("mode-binary");
+        commit(&dir, "f", "a\n");
+        std::fs::write(dir.join("bin"), b"\0\x01\x02").unwrap();
+        sh(&dir, &["add", "bin"]);
+        sh(&dir, &["commit", "-q", "-m", "bin"]);
+        std::fs::set_permissions(dir.join("f"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let change = |p: &str, code| git::Change { path: p.into(), old_path: None, code };
+        let f = git::worktree_diff(&dir, &change("f", 'M'), false, DiffOpts::default()).unwrap();
+        assert_eq!((f.hunks.len(), f.mode_change()), (0, Some(("100644", "100755"))));
+        std::fs::write(dir.join("bin"), b"\0\x01\x02\x03\x04").unwrap();
+        let f = git::worktree_diff(&dir, &change("bin", 'M'), false, DiffOpts::default()).unwrap();
+        assert_eq!((f.binary, f.sizes), (true, Some((Some(3), Some(5)))));
+        sh(&dir, &["add", "bin"]);
+        sh(&dir, &["commit", "-q", "-m", "bin2"]);
+        let f = git::commit_diff(&dir, "HEAD", Some("HEAD~1"), &change("bin", 'M'), DiffOpts::default()).unwrap();
+        assert_eq!(f.sizes, Some((Some(3), Some(5))));
+        // An untracked binary file has only a new side.
+        std::fs::write(dir.join("new"), b"\0\0").unwrap();
+        let f = git::worktree_diff(&dir, &change("new", '?'), false, DiffOpts::default()).unwrap();
+        assert_eq!(f.sizes, Some((None, Some(2))));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Over 5,000 lines the diff is withheld until loaded with `all`.
+    #[test]
+    fn large_diff_guard() {
+        let dir = repo("large");
+        let text = |x: &str| (0..6000).map(|i| format!("{x}{i}\n")).collect::<String>();
+        commit(&dir, "f", &text("a"));
+        std::fs::write(dir.join("f"), text("b")).unwrap();
+        std::fs::write(dir.join("u"), text("c")).unwrap();
+        let c = |p: &str, code| git::Change { path: p.into(), old_path: None, code };
+        for (change, lines) in [(c("f", 'M'), 12_000), (c("u", '?'), 6_000)] {
+            let f = git::worktree_diff(&dir, &change, false, DiffOpts::default()).unwrap();
+            assert!(f.hunks.is_empty() && matches!(f.large, Some((l, _)) if l >= lines), "{:?}", f.large);
+            let f = git::worktree_diff(&dir, &change, false, DiffOpts { all: true, ..Default::default() }).unwrap();
+            assert!(f.large.is_none() && f.hunks.iter().map(|h| h.lines.len()).sum::<usize>() >= lines);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Compare with the working tree: committed and uncommitted changes since a ref, per file.
+    #[test]
+    fn compare_working_tree() {
+        let dir = repo("compare-wt");
+        commit(&dir, "a", "1\n");
+        commit(&dir, "b", "x\n");
+        sh(&dir, &["tag", "base"]);
+        commit(&dir, "c", "new\n");
+        std::fs::write(dir.join("a"), "1\n2\n").unwrap();
+        std::fs::write(dir.join("untracked"), "u\n").unwrap();
+        let info = git::compare_info(&dir, "base", git::WORKTREE, false, "wt").unwrap();
+        let mut names: Vec<_> = info.files.iter().map(|c| (c.path.as_str(), c.code)).collect();
+        names.sort();
+        assert_eq!(names, [("a", 'M'), ("c", 'A')]);
+        assert_eq!(info.id, git::WORKTREE);
+        let base = info.parents[0].as_str();
+        let f = git::commit_diff(&dir, &info.id, Some(base), &info.files.iter().find(|c| c.path == "a").unwrap().clone(), DiffOpts::default()).unwrap();
+        assert_eq!(f.hunks[0].lines.iter().filter(|l| l.kind == b'+').count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

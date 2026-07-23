@@ -403,7 +403,7 @@ impl RepoTab {
     }
 
     fn compare_query(&mut self, ctx: &egui::Context, from: String, to: String, three_dot: bool) {
-        let (dir, label) = (self.dir.clone(), format!("{to} compared with {from}"));
+        let (dir, label) = (self.dir.clone(), if to == git::WORKTREE { format!("Working tree compared with {from}") } else { format!("{to} compared with {from}") });
         self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
     }
 
@@ -413,6 +413,8 @@ impl RepoTab {
             // Clicking the file that is already open closes it again.
             Action::Diff(src) if self.merge.is_none() && self.diff.as_ref().is_some_and(|d| d.src == src) => self.diff = None,
             Action::Diff(src) => {
+                // "Load anyway" is for that one file.
+                self.diff_opts.all = false;
                 self.merge = None;
                 self.open_diff(ctx, src)
             }

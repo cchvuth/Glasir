@@ -44,8 +44,50 @@ pub fn bytes(n: u64) -> String {
     format!("{v:.1} TB")
 }
 
+/// Visual lines `chars` monospace characters take in `cols` columns (`usize::MAX`: no wrapping).
+pub fn wrapped(chars: usize, cols: usize) -> usize {
+    chars.div_ceil(cols.max(1)).max(1)
+}
+
+/// Tops of consecutive rows of `lines` visual lines of height `h` each, then the total.
+pub fn tops(h: f32, lines: impl Iterator<Item = usize>) -> Vec<f32> {
+    let mut y = 0.0;
+    std::iter::once(0.0).chain(lines.map(|n| { y += n as f32 * h; y })).collect()
+}
+
+pub fn visible(tops: &[f32], y0: f32, y1: f32) -> std::ops::Range<usize> {
+    let n = tops.len() - 1;
+    tops.partition_point(|&t| t <= y0).saturating_sub(1).min(n)..tops.partition_point(|&t| t < y1).min(n)
+}
+
+pub fn text_job(text: &str, font: egui::FontId, color: egui::Color32, h: f32, cols: usize, cw: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(text, 0.0, egui::TextFormat { line_height: Some(h), ..egui::TextFormat::simple(font, color) });
+    wrap_job(&mut job, cols, cw);
+    job
+}
+
+/// Wraps `job` at `cols` columns (`usize::MAX`: none).
+pub fn wrap_job(job: &mut egui::text::LayoutJob, cols: usize, cw: f32) {
+    if cols != usize::MAX {
+        job.wrap.max_width = (cols as f32 + 0.5) * cw;
+        job.wrap.break_anywhere = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wrapped_rows() {
+        assert_eq!((super::wrapped(0, 10), super::wrapped(10, 10), super::wrapped(11, 10), super::wrapped(99, usize::MAX)), (1, 1, 2, 1));
+        let t = super::tops(10.0, [1, 3, 1].into_iter());
+        assert_eq!(t, [0.0, 10.0, 40.0, 50.0]);
+        assert_eq!(super::visible(&t, 0.0, 5.0), 0..1);
+        assert_eq!(super::visible(&t, 15.0, 45.0), 1..3);
+        assert_eq!(super::visible(&t, 40.0, 100.0), 2..3);
+        assert_eq!(super::visible(&super::tops(10.0, std::iter::empty()), 0.0, 100.0), 0..0);
+    }
+
     #[test]
     fn byte_sizes() {
         assert_eq!(super::bytes(512), "512 B");

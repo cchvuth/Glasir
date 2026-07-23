@@ -16,6 +16,18 @@ pub struct FileDiff {
     pub submodule: Option<super::SubmoduleDiff>,
     /// Git LFS pointer file: (old, new) sides.
     pub lfs: Option<(Option<super::LfsPointer>, Option<super::LfsPointer>)>,
+    /// Byte sizes (old, new) of a binary file's sides; `None` = the side doesn't exist.
+    pub sizes: Option<(Option<u64>, Option<u64>)>,
+    /// Withheld as too big to show: (lines, bytes). Load again with [`DiffOpts::all`].
+    pub large: Option<(usize, usize)>,
+}
+
+impl FileDiff {
+    /// The `(old, new)` mode of a permission change (`old mode` / `new mode` header lines).
+    pub fn mode_change(&self) -> Option<(&str, &str)> {
+        let m = |p: &str| self.header.iter().find_map(|h| h.strip_prefix(p));
+        Some((m("old mode ")?, m("new mode ")?))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,12 +191,31 @@ const DIFF: [&str; 6] = ["--literal-pathspecs", "diff", "--no-color", "--no-ext-
 pub struct DiffOpts {
     pub ignore_ws: bool,
     pub context: u32,
+    /// Load a diff over [`LARGE_LINES`] / [`LARGE_BYTES`] too.
+    pub all: bool,
 }
 
 impl Default for DiffOpts {
     fn default() -> Self {
-        DiffOpts { ignore_ws: false, context: 3 }
+        DiffOpts { ignore_ws: false, context: 3, all: false }
     }
+}
+
+pub const LARGE_LINES: usize = 5_000;
+pub const LARGE_BYTES: usize = 1 << 20;
+
+/// The stand-in for a diff of `lines` / `bytes` that is too big to show unasked.
+fn large(lines: usize, bytes: usize, o: DiffOpts) -> Option<FileDiff> {
+    (!o.all && (lines > LARGE_LINES || bytes > LARGE_BYTES)).then(|| FileDiff { large: Some((lines, bytes)), ..Default::default() })
+}
+
+/// Size in bytes of a `git cat-file` object (`rev:path`, `:path` = index).
+fn blob_size(dir: &Path, spec: &str) -> Option<u64> {
+    run(dir, &["cat-file", "-s", spec]).ok()?.trim().parse().ok()
+}
+
+fn file_size(dir: &Path, path: &str) -> Option<u64> {
+    std::fs::metadata(dir.join(path)).ok().map(|m| m.len())
 }
 
 impl DiffOpts {
@@ -202,7 +233,7 @@ impl DiffOpts {
 
 pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<FileDiff> {
     if c.code == '?' {
-        let mut f = untracked_diff(dir, &c.path)?;
+        let mut f = untracked_diff(dir, &c.path, o)?;
         f.lfs = super::lfs::pointer_diff(&f);
         return Ok(f);
     }
@@ -220,15 +251,26 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<F
     }
     args.push(&c.path);
     let raw = run_raw(dir, &args, None)?;
+    if let Some(f) = large(raw.iter().filter(|&&b| b == b'\n').count(), raw.len(), o) {
+        return Ok(f);
+    }
     let mut f = parse_one(&String::from_utf8_lossy(&raw));
     f.lossy = std::str::from_utf8(&raw).is_err();
+    if f.binary {
+        let old = c.old_path.as_deref().unwrap_or(&c.path);
+        f.sizes = Some(match staged {
+            true => (blob_size(dir, &format!("HEAD:{old}")), blob_size(dir, &format!(":{}", c.path))),
+            false => (blob_size(dir, &format!(":{old}")), file_size(dir, &c.path)),
+        });
+    }
     Ok(f)
 }
 
 pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: DiffOpts) -> Res<FileDiff> {
     let opts = o.args();
     let mut args = match parent {
-        Some(p) => [&DIFF[..], &[p, id]].concat(),
+        // Compared with the working tree: no second revision.
+        Some(p) => [&DIFF[..], &[p, id][..1 + (id != super::WORKTREE) as usize]].concat(),
         None => vec!["--literal-pathspecs", "show", "--format=", "--no-color", "--no-ext-diff", "--submodule=log", id],
     };
     args.extend(opts.iter().map(String::as_str));
@@ -237,22 +279,37 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
         args.push(o);
     }
     args.push(&c.path);
-    Ok(parse_one(&run(dir, &args)?))
+    let text = run(dir, &args)?;
+    if let Some(f) = large(text.matches('\n').count(), text.len(), o) {
+        return Ok(f);
+    }
+    let mut f = parse_one(&text);
+    if f.binary {
+        let old = c.old_path.as_deref().unwrap_or(&c.path);
+        let new = if id == super::WORKTREE { file_size(dir, &c.path) } else { blob_size(dir, &format!("{id}:{}", c.path)) };
+        f.sizes = Some((parent.and_then(|p| blob_size(dir, &format!("{p}:{old}"))), new));
+    }
+    Ok(f)
 }
 
-fn untracked_diff(dir: &Path, path: &str) -> Res<FileDiff> {
+fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
     // The ---/+++ pair lets `partial_patch` write a patch for part of it (after `add -N`).
     let mut f = FileDiff { header: vec![format!("new file {path}"), "--- /dev/null".into(), format!("+++ b/{path}")], ..Default::default() };
     let meta = std::fs::symlink_metadata(dir.join(path)).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > 8 << 20 {
         f.binary = true;
+        f.sizes = Some((None, Some(meta.len())));
         return Ok(f);
     }
     let bytes = std::fs::read(dir.join(path)).map_err(|e| e.to_string())?;
     f.lossy = std::str::from_utf8(&bytes).is_err();
     if bytes[..bytes.len().min(8000)].contains(&0) {
         f.binary = true;
+        f.sizes = Some((None, Some(meta.len())));
         return Ok(f);
+    }
+    if let Some(l) = large(bytes.iter().filter(|&&b| b == b'\n').count(), bytes.len(), o) {
+        return Ok(l);
     }
     let text = String::from_utf8_lossy(&bytes);
     let lines: Vec<Line> = text

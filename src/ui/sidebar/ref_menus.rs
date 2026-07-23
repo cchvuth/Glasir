@@ -39,7 +39,14 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
     }
 }
 
+fn worktree_compare(ui: &mut Ui, name: &str, acts: &mut Vec<Action>) {
+    if ui.button(format!("{} Compare working tree with {name}", icon::GIT_DIFF)).on_hover_text("What your working tree changes relative to this ref").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: name.into(), to: crate::git::WORKTREE.into(), three_dot: false }));
+    }
+}
+
 fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
+    worktree_compare(ui, name, acts);
     let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
     if ui.button(format!("{} Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
         acts.push(Action::Select(Sel::Compare { from: head.clone(), to: name.into(), three_dot: true }));
@@ -182,6 +189,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
         acts.extend(branch_checkout(d, r));
     }
     reset_menu(ui, d, &r.target, &r.name, acts);
+    worktree_compare(ui, &r.name, acts);
     if let Some((remote, _)) = d.remotes.first() {
         if ui.button(format!("Push tag to {remote}")).clicked() {
             acts.push(op(format!("Push tag {}", r.name), &["push", remote, &r.full]));

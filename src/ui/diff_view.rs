@@ -2,6 +2,7 @@
 //! working-directory diffs, whitespace / context options, change navigation
 //! (F7 / ⇧F7) and a change minimap. Only visible lines are painted.
 
+use super::format::{tops, visible, wrapped};
 use crate::git::{DiffOpts, FileDiff, partial_patch, selects_all};
 use crate::repo::{Action, DiffSrc, DiffState, Op};
 use crate::theme::{self, icon};
@@ -27,7 +28,7 @@ fn rows(f: &FileDiff, split: bool) -> Vec<Row> {
     for (hi, h) in f.hunks.iter().enumerate() {
         rows.push(Row::Hunk(hi));
         if !split {
-            rows.extend((0..h.lines.len()).filter(|&l| h.lines[l].kind != b'\\').map(|l| Row::Line(hi, l)));
+            rows.extend((0..h.lines.len()).map(|l| Row::Line(hi, l)));
             continue;
         }
         let (mut dels, mut adds) = (vec![], vec![]);
@@ -42,7 +43,9 @@ fn rows(f: &FileDiff, split: bool) -> Vec<Row> {
             match l.kind {
                 b'-' => dels.push(li),
                 b'+' => adds.push(li),
-                b'\\' => {}
+                // "No newline at end of file" belongs to the side of the line before it.
+                b'\\' if h.lines[li - 1].kind == b'-' => dels.push(li),
+                b'\\' if h.lines[li - 1].kind == b'+' => adds.push(li),
                 _ => {
                     flush(&mut rows, &mut dels, &mut adds);
                     rows.push(Row::Pair(hi, Some(li), Some(li)));
@@ -145,7 +148,7 @@ fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, s
 }
 
 /// `tool`: the repo's `diff.tool` (None = not configured).
-pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str>, acts: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, tool: Option<&str>, acts: &mut Vec<Action>) {
     let (src, ds_opts) = (ds.src.clone(), ds.opts);
     let change = src.change().clone();
     let (worktree, staged) = match &ds.src {
@@ -163,8 +166,8 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
     let starts = change_starts(&kinds);
     // Scroll offset and viewport height of the last frame.
     let mem = ui.id().with("diff_pos");
-    let (off, view_h) = ui.data(|m| m.get_temp::<(f32, f32)>(mem)).unwrap_or_default();
-    let anchor = (off / LINE_H).round() as usize + LEAD;
+    let (first, view_h) = ui.data(|m| m.get_temp::<(usize, f32)>(mem)).unwrap_or_default();
+    let anchor = first + LEAD;
     let mut nav = ui.input(|i| i.key_pressed(egui::Key::F7).then_some(!i.modifiers.shift));
 
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -230,10 +233,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
     });
     if ds.image.is_none() {
         ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.y = 30.0; // the glass groups draw beyond their row height
-            view_controls(ui, ds, split, worktree && change.code != '?', &starts, anchor, &mut nav, acts)
-        });
+        ui.horizontal(|ui| view_controls(ui, ds, split, wrap, worktree && change.code != '?', &starts, anchor, &mut nav, acts));
     }
     ui.add_space(6.0);
 
@@ -248,6 +248,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
         }
         Some(Ok(f)) => f,
     };
+    if let Some((lines, size)) = f.large {
+        return large_note(ui, lines, size, ds.pending, acts);
+    }
     if let Some(sm) = &f.submodule {
         return submodule_note(ui, &change.path, sm, acts);
     }
@@ -257,32 +260,69 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
     if let Some(img) = &ds.image {
         return super::image_diff::show(ui, img);
     }
+    let mode = f.mode_change().map(|(a, b)| format!("Mode changed {a} → {b}"));
     if f.binary {
-        ui.centered_and_justified(|ui| ui.label("Binary file"));
+        let size = |n| crate::ui::format::bytes(n);
+        let what = match f.sizes {
+            Some((Some(o), Some(n))) => format!("Binary file changed ({} → {})", size(o), size(n)),
+            Some((None, Some(n))) => format!("Binary file added ({})", size(n)),
+            Some((Some(o), None)) => format!("Binary file deleted (was {})", size(o)),
+            _ => "Binary file".into(),
+        };
+        let text = match mode {
+            Some(m) => format!("{what}\n{m}"),
+            None => what,
+        };
+        ui.centered_and_justified(|ui| ui.label(text));
         return;
     }
     if f.hunks.is_empty() {
-        let text = if ds.opts.ignore_ws { "Only whitespace changed" } else { "No changes" };
+        let text = match (mode, ds.opts.ignore_ws) {
+            (Some(m), _) => m,
+            (None, true) => "Only whitespace changed".into(),
+            (None, false) => "No changes".into(),
+        };
         ui.centered_and_justified(|ui| ui.label(RichText::new(text).color(theme::dim(ui))));
         return;
+    }
+    if let Some(m) = mode {
+        ui.label(RichText::new(format!("{} {m}", icon::INFO)).small().color(theme::MOD));
     }
 
     let area = ui.available_rect_before_wrap();
     let rail = Rect::from_x_y_ranges(area.right() - RAIL_W..=area.right(), area.top() + 2.0..=area.bottom() - 2.0);
     let body = Rect::from_x_y_ranges(area.left()..=rail.left() - 4.0, area.y_range());
+    let cw = ui.fonts_mut(|fo| fo.glyph_width(&FontId::monospace(12.5), 'M'));
+    // Wrapped: columns of text per line (the scrollbar's width is left out); rows get as tall as their lines.
+    let cols = |text_w: f32| if *wrap { ((text_w / cw) as usize).max(1) } else { usize::MAX };
+    let (cols_u, cols_s) = (cols(body.width() - 14.0 - NUM_W * 2.0 - 16.0), cols(body.width() / 2.0 - 7.0 - NUM_W - 16.0));
+    let n_lines = |hi: usize, li: usize, cols| wrapped(crate::highlight::display_len(&f.hunks[hi].lines[li].text), cols);
+    let tops = tops(
+        LINE_H,
+        rows.iter().map(|r| match *r {
+            Row::Hunk(_) => 1,
+            Row::Line(hi, li) => n_lines(hi, li, cols_u),
+            Row::Pair(hi, a, b) => [a, b].into_iter().flatten().map(|li| n_lines(hi, li, cols_s)).max().unwrap_or(1),
+        }),
+    );
+    let last = rows.len() - 1;
+    // Fractional row at a scroll offset, for the minimap.
+    let row_f = |y: f32| {
+        let i = tops.partition_point(|&t| t <= y).saturating_sub(1).min(last);
+        i as f32 + (y - tops[i]) / (tops[i + 1] - tops[i])
+    };
     let per = (rail.height() / rows.len() as f32).min(LINE_H);
-    let row_at = |y: f32| (((y - rail.top()) / per) as usize).min(rows.len() - 1);
+    let row_at = |y: f32| (((y - rail.top()) / per) as usize).min(last);
     let rail_resp = ui.interact(rail, mem.with("rail"), Sense::click_and_drag()).on_hover_text("Changes in this file: click to jump");
-    let mut target = rail_resp.interact_pointer_pos().filter(|_| rail_resp.clicked() || rail_resp.dragged()).map(|p| row_at(p.y) as f32 * LINE_H - view_h / 2.0);
+    let mut target = rail_resp.interact_pointer_pos().filter(|_| rail_resp.clicked() || rail_resp.dragged()).map(|p| tops[row_at(p.y)] - view_h / 2.0);
     if let Some(s) = nav.and_then(|fwd| step(&starts, anchor, fwd)) {
-        target = Some(s.saturating_sub(LEAD) as f32 * LINE_H);
+        target = Some(tops[s.saturating_sub(LEAD)]);
     }
     let pairs: Vec<Vec<Option<usize>>> = f.hunks.iter().map(partners).collect();
     let span = |hi: usize, li: usize| {
         let other = pairs[hi][li]?;
         changed_span(&expand(&f.hunks[hi].lines[li].text), &expand(&f.hunks[hi].lines[other].text))
     };
-    let cw = ui.fonts_mut(|fo| fo.glyph_width(&FontId::monospace(12.5), 'M'));
     let max_chars = f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.text.len()).max().unwrap_or(0);
     let mono = FontId::monospace(12.5);
     let out = ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
@@ -291,15 +331,16 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
         if let Some(t) = target {
             area = area.vertical_scroll_offset(t.max(0.0));
         }
-        area.show_rows(ui, LINE_H, rows.len(), |ui, range| {
-            let content_w = if *split { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
-            ui.set_min_width(content_w);
+        area.show_viewport(ui, |ui, view| {
+            let range = visible(&tops, view.min.y, view.max.y);
+            let content_w = if *split || *wrap { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
+            ui.set_min_size(vec2(content_w, tops[last + 1]));
             let left = ui.max_rect().left();
-            let top = ui.max_rect().top() - range.start as f32 * LINE_H;
+            let top = ui.max_rect().top();
             let painter = ui.painter().clone();
             for r in range {
-                let rect = Rect::from_min_size(pos2(left, top + r as f32 * LINE_H), vec2(content_w, LINE_H));
-                let y = rect.center().y;
+                let rect = Rect::from_min_size(pos2(left, top + tops[r]), vec2(content_w, tops[r + 1] - tops[r]));
+                let y = rect.top() + LINE_H / 2.0;
                 match rows[r] {
                     Row::Hunk(hi) => {
                         let h = &f.hunks[hi];
@@ -332,34 +373,34 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
                     Row::Line(hi, li) => {
                         let l = &f.hunks[hi].lines[li];
                         let picked = ds.picked.contains(&(hi, li));
-                        let pick = partial && l.kind != b' ';
+                        let pick = partial && matches!(l.kind, b'+' | b'-');
                         let resp = ui.interact(rect, ui.id().with(("dl", r)), if pick { Sense::click_and_drag() } else { Sense::click() });
                         if pick {
-                            pick_lines(ui, mem, &mut ds.picked, &rows, f, &resp, r, None, (hi, li));
+                            pick_lines(ui, mem, &mut ds.picked, &rows, &tops, f, &resp, r, None, (hi, li));
                         }
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
-                        paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), cw, colors);
+                        paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), (cw, cols_u), colors);
                     }
                     Row::Pair(hi, a, b) => {
                         let h = &f.hunks[hi];
                         let half = rect.width() / 2.0;
-                        let lr = Rect::from_min_size(rect.min, vec2(half, LINE_H));
-                        let rr = Rect::from_min_size(pos2(rect.left() + half, rect.top()), vec2(half, LINE_H));
+                        let lr = Rect::from_min_size(rect.min, vec2(half, rect.height()));
+                        let rr = Rect::from_min_size(pos2(rect.left() + half, rect.top()), vec2(half, rect.height()));
                         for (side, idx, old) in [(lr, a, true), (rr, b, false)] {
                             let Some(li) = idx else {
                                 painter.rect_filled(side, 0.0, theme::faint(ui).gamma_multiply(0.5));
                                 continue;
                             };
                             let l = &h.lines[li];
-                            let pick = partial && l.kind != b' ';
+                            let pick = partial && matches!(l.kind, b'+' | b'-');
                             let resp = ui.interact(side, ui.id().with(("sl", r, old)), if pick { Sense::click_and_drag() } else { Sense::click() });
                             if pick {
-                                pick_lines(ui, mem, &mut ds.picked, &rows, f, &resp, r, Some(old), (hi, li));
+                                pick_lines(ui, mem, &mut ds.picked, &rows, &tops, f, &resp, r, Some(old), (hi, li));
                             }
                             let no = if old { l.old } else { l.new };
                             let colors = ds.hl.get(hi).and_then(|h| h.get(li));
                             let picked = ds.picked.contains(&(hi, li));
-                            paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), cw, colors);
+                            paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), (cw, cols_s), colors);
                         }
                     }
                 }
@@ -367,13 +408,13 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, tool: Option<&str
         })
     });
     let (off, view_h) = (out.inner.state.offset.y, out.inner.inner_rect.height());
-    ui.data_mut(|m| m.insert_temp(mem, (off, view_h)));
-    minimap(ui, rail, &kinds, off, view_h);
+    ui.data_mut(|m| m.insert_temp(mem, (row_f(off) as usize, view_h)));
+    minimap(ui, rail, &kinds, row_f(off), row_f(off + view_h));
 }
 
 /// Change lines of a row; a split row gives only the `old` (left) or new side.
 fn row_changes(f: &FileDiff, row: &Row, old: Option<bool>) -> Vec<(usize, usize)> {
-    let at = |hi: usize, li: usize| (f.hunks[hi].lines[li].kind != b' ').then_some((hi, li));
+    let at = |hi: usize, li: usize| matches!(f.hunks[hi].lines[li].kind, b'+' | b'-').then_some((hi, li));
     match *row {
         Row::Hunk(_) => vec![],
         Row::Line(hi, li) => at(hi, li).into_iter().collect(),
@@ -384,7 +425,7 @@ fn row_changes(f: &FileDiff, row: &Row, old: Option<bool>) -> Vec<(usize, usize)
 /// Click toggles a change line; dragging from one selects (or, starting on a picked line,
 /// deselects) every change line down to the pointer, relative to the picks at the drag's start.
 #[allow(clippy::too_many_arguments)]
-fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(usize, usize)>, rows: &[Row], f: &FileDiff, resp: &egui::Response, r: usize, old: Option<bool>, at: (usize, usize)) {
+fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(usize, usize)>, rows: &[Row], tops: &[f32], f: &FileDiff, resp: &egui::Response, r: usize, old: Option<bool>, at: (usize, usize)) {
     if resp.clicked() && !picked.remove(&at) {
         picked.insert(at);
     }
@@ -393,7 +434,9 @@ fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(u
         ui.data_mut(|m| m.insert_temp(key, (picked.clone(), !picked.contains(&at))));
     }
     if let (true, Some(p), Some((base, add))) = (resp.dragged(), resp.interact_pointer_pos(), ui.data(|m| m.get_temp::<(std::collections::BTreeSet<(usize, usize)>, bool)>(key))) {
-        let end = (r as f32 + ((p.y - resp.rect.top()) / LINE_H).floor()).clamp(0.0, (rows.len() - 1) as f32) as usize;
+        // Rows are as tall as their wrapped lines: find the pointer's row by the row tops.
+        let y = tops[r] + p.y - resp.rect.top();
+        let end = tops.partition_point(|&t| t <= y).saturating_sub(1).min(rows.len() - 1);
         *picked = base;
         for row in &rows[r.min(end)..=r.max(end)] {
             for l in row_changes(f, row, old) {
@@ -405,7 +448,7 @@ fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(u
 
 /// The second header row: layout, whitespace, context, change navigation.
 #[allow(clippy::too_many_arguments)]
-fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, stageable: bool, starts: &[usize], anchor: usize, nav: &mut Option<bool>, acts: &mut Vec<Action>) {
+fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, wrap: &mut bool, stageable: bool, starts: &[usize], anchor: usize, nav: &mut Option<bool>, acts: &mut Vec<Action>) {
     let o = ds.pending;
     wrap_group(ui, "layout", |ui| {
         for (v, text) in [(false, "Unified"), (true, "Split")] {
@@ -415,7 +458,13 @@ fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, stageable: bool,
         }
     });
     ui.add_space(6.0);
-    wrap_group(ui, "ws", |ui| {
+    theme::group(ui, |ui| {
+        if ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+            *wrap = !*wrap;
+        }
+    });
+    ui.add_space(6.0);
+    theme::group(ui, |ui| {
         let hint = if stageable { "Ignore whitespace changes (git diff -w).\nLine and hunk staging are off while this is on." } else { "Ignore whitespace changes (git diff -w)" };
         if ui.add(egui::Button::selectable(o.ignore_ws, format!("{} Ignore whitespace", icon::PARAGRAPH))).on_hover_text(hint).clicked() {
             acts.push(Action::DiffOpts(DiffOpts { ignore_ws: !o.ignore_ws, ..o }));
@@ -469,13 +518,14 @@ fn wrap_group(ui: &mut Ui, key: &str, add: impl FnOnce(&mut Ui)) {
 }
 
 /// Rail of added / removed / changed rows across the whole diff, with the viewport.
-fn minimap(ui: &Ui, rail: Rect, kinds: &[u8], off: f32, view_h: f32) {
+/// `v0..v1`: the viewport, in (fractional) rows.
+fn minimap(ui: &Ui, rail: Rect, kinds: &[u8], v0: f32, v1: f32) {
     // Short diffs map 1:1 to their lines; long ones are squeezed into the rail.
     let per = (rail.height() / kinds.len().max(1) as f32).min(LINE_H);
     let p = ui.painter();
     p.rect_filled(rail, 4.0, theme::faint(ui));
     let y = |row: f32| rail.top() + row * per;
-    let (v0, v1) = (y(off / LINE_H), y((off + view_h) / LINE_H).min(rail.bottom()));
+    let (v0, v1) = (y(v0), y(v1).min(rail.bottom()));
     p.rect_filled(Rect::from_x_y_ranges(rail.x_range(), v0..=v1.max(v0 + 6.0)), 4.0, theme::hover(ui).gamma_multiply(2.5));
     let h = per.max(2.0);
     let mut last = (f32::NEG_INFINITY, 0u8);
@@ -565,6 +615,20 @@ fn note_frame(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// A large diff is withheld until asked for: nothing is parsed or highlighted before.
+fn large_note(ui: &mut Ui, lines: usize, size: usize, o: DiffOpts, acts: &mut Vec<Action>) {
+    note_frame(ui, |ui| {
+        ui.label(RichText::new(format!("{} Large diff — {lines} lines, {}", icon::WARNING, crate::ui::format::bytes(size as u64))).strong());
+        ui.add_space(4.0);
+        ui.label(RichText::new("Showing it can be slow.").small().color(theme::dim(ui)));
+        ui.add_space(6.0);
+        if ui.button("Load anyway").clicked() {
+            acts.push(Action::DiffOpts(DiffOpts { all: true, ..o }));
+        }
+    });
+}
+
+/// `cw`: width of a character; `cols`: columns to wrap the text at (`usize::MAX`: don't).
 #[allow(clippy::too_many_arguments)]
 fn paint_line(
     ui: &Ui,
@@ -578,7 +642,7 @@ fn paint_line(
     font: &FontId,
     two_nums: bool,
     span: Option<(usize, usize)>,
-    cw: f32,
+    (cw, cols): (f32, usize),
     colors: Option<&crate::highlight::Spans>,
 ) {
     let (bg, sign_color) = match kind {
@@ -591,7 +655,7 @@ fn paint_line(
         p.rect_filled(rect, 0.0, theme::selection(ui));
         p.rect_filled(Rect::from_min_size(rect.min, vec2(3.0, rect.height())), 0.0, ui.visuals().selection.bg_fill);
     }
-    let y = rect.center().y;
+    let y = rect.top() + LINE_H / 2.0;
     let num = |n: u32| if n == 0 { String::new() } else { n.to_string() };
     let dim = theme::dim(ui);
     let mut x = rect.left() + NUM_W - 6.0;
@@ -604,30 +668,37 @@ fn paint_line(
     let sign = match kind {
         b'+' => "+",
         b'-' => "-",
+        b'\\' => "\\",
         _ => " ",
     };
     p.text(pos2(x, y), Align2::LEFT_CENTER, sign, font.clone(), sign_color);
     if let Some((s, e)) = span {
-        // Word-level emphasis on the part of the line that actually changed.
-        let r = Rect::from_min_max(pos2(x + 14.0 + s as f32 * cw, rect.top() + 1.0), pos2(x + 14.0 + e as f32 * cw, rect.bottom() - 1.0));
-        p.rect_filled(r, 3.0, sign_color.gamma_multiply(0.35));
+        // Word-level emphasis on the part of the line that actually changed, row by wrapped row.
+        for vr in s / cols..=(e - 1) / cols {
+            let (c0, c1) = (if vr == s / cols { s % cols } else { 0 }, if vr == (e - 1) / cols { (e - 1) % cols + 1 } else { cols });
+            let top = rect.top() + vr as f32 * LINE_H + 1.0;
+            let r = Rect::from_min_max(pos2(x + 14.0 + c0 as f32 * cw, top), pos2(x + 14.0 + c1 as f32 * cw, top + LINE_H - 2.0));
+            p.rect_filled(r, 3.0, sign_color.gamma_multiply(0.35));
+        }
     }
-    let shown = expand(text);
-    match colors.filter(|c| !c.is_empty()) {
+    // The "\ No newline at end of file" marker is a note, not code.
+    let note = kind == b'\\';
+    let shown = if note { text.trim_start().to_owned() } else { expand(text) };
+    let mut job = match colors.filter(|c| !c.is_empty() && !note) {
         Some(spans) => {
             let mut job = egui::text::LayoutJob::default();
             for (c, r) in spans {
                 if let Some(s) = shown.get(r.clone()) {
-                    job.append(s, 0.0, egui::TextFormat::simple(font.clone(), *c));
+                    job.append(s, 0.0, egui::TextFormat { line_height: Some(LINE_H), ..egui::TextFormat::simple(font.clone(), *c) });
                 }
             }
-            let g = p.layout_job(job);
-            p.galley(pos2(x + 14.0, y - g.size().y / 2.0), g, theme::text(ui));
+            job
         }
-        None => {
-            p.text(pos2(x + 14.0, y), Align2::LEFT_CENTER, shown, font.clone(), theme::text(ui));
-        }
-    }
+        None => egui::text::LayoutJob::single_section(shown, egui::TextFormat { line_height: Some(LINE_H), ..egui::TextFormat::simple(font.clone(), if note { dim } else { theme::text(ui) }) }),
+    };
+    super::format::wrap_job(&mut job, cols, cw);
+    let g = p.layout_job(job);
+    p.galley(pos2(x + 14.0, rect.top()), g, theme::text(ui));
 }
 
 #[cfg(test)]
@@ -656,6 +727,20 @@ mod tests {
         assert_eq!(starts, [2, 6]);
         assert_eq!((step(&starts, 0, true), step(&starts, 2, true), step(&starts, 6, true)), (Some(2), Some(6), None));
         assert_eq!((step(&starts, 6, false), step(&starts, 2, false)), (Some(2), None));
+    }
+
+    /// "No newline at end of file" is shown (under its side) instead of dropped.
+    #[test]
+    fn no_newline_marker_rows() {
+        let d = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n";
+        let f = &parse_diff(d)[0];
+        assert_eq!(rows(f, false).len(), 1 + 5);
+        // Split: each marker sits on its own side, in the row after its line.
+        let split = rows(f, true);
+        let kinds: Vec<u8> = split.iter().map(|r| row_kind(f, r)).collect();
+        assert_eq!(split.len(), 1 + 1 + 2);
+        assert_eq!(kinds, [0, 0, b'~', 0]);
+        assert!(matches!(split[3], Row::Pair(0, Some(2), Some(4))));
     }
 
     #[test]

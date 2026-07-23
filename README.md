@@ -65,6 +65,10 @@ The name fits a Git client:
 - Diff controls: **ignore whitespace** (`-w`; line staging pauses while it is on),
   **context** of 3 / 10 lines or the whole file, **previous / next change**
   (↑ ↓ or F7 / ⇧F7) and a clickable change minimap.
+- **Wrap** long lines (remembered) in the diff, blame and merge editor.
+- Mode-only changes (`Mode changed 100644 → 100755`), binary changes with old → new
+  sizes and the `\ No newline at end of file` marker are shown; diffs over ~5,000 lines
+  or 1 MB wait behind **Load anyway**.
 - **Image diffs** (PNG, JPEG, GIF, WebP, BMP): before / after side by side with
   dimensions and size, or a **swipe** slider; added / deleted images show one preview.
 - Commit and amend, with a 72-character guide; ⌘↩ to commit, ⇧⌘↩ to stage everything
@@ -73,7 +77,8 @@ The name fits a Git client:
   become `Co-authored-by` trailers), `commit.template` prefill (comment lines are stripped),
   and a detached-HEAD warning with **Create branch here**.
 - **Blame** with an age heatmap and **file history** that follows renames.
-- Compare a branch with the current one, or any commit with HEAD.
+- Compare a branch with the current one, or any commit with HEAD; **Compare working tree
+  with…** any branch, tag or commit (uncommitted changes included).
 
 ### Undo everything
 - ⌘Z / ⇧⌘Z undo and redo commits, amends, checkouts, merges, rebases, resets,

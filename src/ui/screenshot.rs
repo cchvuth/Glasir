@@ -100,10 +100,23 @@ impl App {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let (mode, path) = q.split_once(':').unwrap();
                             if mode == "diff-ws" {
-                                t.diff_opts = git::DiffOpts { ignore_ws: true, context: git::DiffOpts::FILE };
+                                t.diff_opts = git::DiffOpts { ignore_ws: true, context: git::DiffOpts::FILE, ..Default::default() };
                             }
                             let change = git::Change { path: path.into(), old_path: None, code: 'M' };
                             t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: mode == "diff-staged" }));
+                        }
+                    }
+                    "wrap" => self.s.wrap = true,
+                    // `compare-wt:<ref>[:<path>]`: compare the working tree with a ref, optionally opening a file's diff.
+                    q if q.starts_with("compare-wt:") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            let (rev, path) = q[11..].split_once(':').map_or((&q[11..], None), |(r, p)| (r, Some(p)));
+                            t.apply(&ctx.clone(), crate::repo::Action::Select(crate::repo::Sel::Compare { from: rev.into(), to: git::WORKTREE.into(), three_dot: false }));
+                            if let (Some(path), Ok(base)) = (path, git::run(&t.dir, &["rev-parse", rev])) {
+                                let change = git::Change { path: path.into(), old_path: None, code: 'M' };
+                                let src = crate::repo::DiffSrc::Commit { id: git::WORKTREE.into(), parent: Some(base.trim().into()), change };
+                                t.apply(&ctx.clone(), crate::repo::Action::Diff(src));
+                            }
                         }
                     }
                     q if q.starts_with("merge:") => {

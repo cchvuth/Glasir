@@ -80,6 +80,7 @@ impl RepoTab {
             Some(Sel::Compare { from, to, .. }) => Some((from.clone(), to.clone())),
             _ => None,
         };
+        let wt = compare.as_ref().is_some_and(|c| c.1 == crate::git::WORKTREE);
         let Some(info) = &self.info else {
             ui.centered_and_justified(|ui| ui.spinner());
             return;
@@ -96,7 +97,9 @@ impl RepoTab {
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(if compare.is_some() { "to" } else { "commit" }).color(theme::dim(ui)));
-                if ui.link(RichText::new(&info.id[..info.id.len().min(10)]).monospace()).on_hover_text("Copy full SHA").clicked() {
+                if wt {
+                    ui.label(RichText::new("working tree").monospace());
+                } else if ui.link(RichText::new(&info.id[..info.id.len().min(10)]).monospace()).on_hover_text("Copy full SHA").clicked() {
                     acts.push(Action::Copy(info.id.clone()));
                 }
                 if !info.parents.is_empty() {
@@ -135,7 +138,7 @@ impl RepoTab {
                         }
                     });
                 }
-                None if crate::ai::enabled() => {
+                None if crate::ai::enabled() && !wt => {
                     let label = if compare.is_some() { "Explain these changes" } else { "Explain this commit" };
                     if theme::small(ui, true, format!("{} {label}", icon::SPARKLE)).clicked() {
                         acts.push(Action::Ai(explain));
@@ -182,14 +185,14 @@ impl RepoTab {
                     {
                         acts.push(Action::Git(restore_file(d, format!("Apply {} from stash", c.path), id, &c.path, "the stash's version")));
                     }
-                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none()) {
+                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
                     file_items(ui, &c.path, acts);
-                    if let Some(d) = &self.data {
+                    if let Some(d) = self.data.as_ref().filter(|_| !wt) {
                         open_items(ui, d, &info.id, &c.path, c.code == 'D', acts);
                     }
-                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && c.code != 'D') {
+                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt && c.code != 'D') {
                         permalink_items(ui, d, &info.id, &c.path, acts);
                     }
                     if ui.button("Copy path").clicked() {
