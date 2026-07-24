@@ -119,6 +119,16 @@ impl App {
                             }
                         }
                     }
+                    // `commit-diff:<rev>:<path>`: a commit's diff (hunk revert / cherry-pick buttons).
+                    q if q.starts_with("commit-diff:") => {
+                        if let Some(t) = self.tabs.get_mut(self.active)
+                            && let Some((rev, path)) = q["commit-diff:".len()..].split_once(':')
+                        {
+                            let id = git::run(&t.dir, &["rev-parse", rev]).unwrap_or_default().trim().to_owned();
+                            let change = git::Change { path: path.into(), old_path: None, code: 'M' };
+                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Commit { parent: Some(format!("{id}^")), id, change }));
+                        }
+                    }
                     q if q.starts_with("merge:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.apply(&ctx.clone(), crate::repo::Action::MergeEditor(q[6..].into()));

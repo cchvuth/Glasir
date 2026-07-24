@@ -144,6 +144,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
             [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
+            [super::diff::APPLY_HUNK, ..] => super::diff::apply_hunk(dir, &a, op.input.as_deref().unwrap_or_default()),
             [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
                 true => Ok(String::new()),
                 false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),

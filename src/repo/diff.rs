@@ -124,8 +124,9 @@ pub(super) fn diff_is(dir: &std::path::Path, a: &[&str]) -> Res<String> {
 /// `git apply` of a partial patch built from `f`, the diff of `src` loaded with `opts`
 /// (`--cached`/`--reverse` in `args`). Re-checked when it runs: a confirm dialog or stale diff may outlive the file's content,
 /// and `--recount` would land the hunk on an identical block elsewhere.
+/// A commit's diff (`src`) goes to the working tree instead: [`hunk_op`].
 pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch: String, args: &[&str]) -> Op {
-    let DiffSrc::Worktree { change: c, staged } = src else { unreachable!("patches apply to worktree diffs") };
+    let DiffSrc::Worktree { change: c, staged } = src else { return hunk_op(label, src.change(), f, patch, args) };
     let (context, code, hunks) = (opts.context.to_string(), c.code.to_string(), shape(f));
     let guard = [DIFF_IS, if *staged { "1" } else { "0" }, &context, &code, &c.path, c.old_path.as_deref().unwrap_or(""), &hunks];
     let mut a = vec!["apply", "--recount", "--whitespace=nowarn"];
@@ -142,6 +143,60 @@ pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch:
     match label.starts_with("Discard") {
         true => op.backup(Backup::Paths(vec![c.path.clone()])).confirm("Discard the selected changes? (Undo with ⌘Z.)"),
         false => op,
+    }
+}
+
+/// A commit's hunk or lines applied to the working tree (`--reverse`: reverted), backed up.
+/// Nothing to guard: a commit's diff never changes.
+fn hunk_op(label: &str, c: &git::Change, f: &FileDiff, mut patch: String, args: &[&str]) -> Op {
+    // A partial patch has no blob ids, which `--3way` needs; its preimage is one side of the
+    // commit's file (unpicked lines stay as they were there), so the commit's ids fit.
+    if let (Some(ix), false) = (f.header.iter().find(|h| h.starts_with("index ")), patch.contains("\nindex ")) {
+        let at = patch.find('\n').map_or(0, |i| i + 1);
+        patch.insert_str(at, &format!("{ix}\n"));
+    }
+    let paths: Vec<String> = c.old_path.iter().chain([&c.path]).cloned().collect();
+    let mut a = vec![APPLY_HUNK];
+    a.extend_from_slice(args);
+    a.push("--");
+    a.extend(paths.iter().map(String::as_str));
+    Op::new(label, &a).input(patch).backup(Backup::Overwrite(paths))
+}
+
+/// `exec` pseudo-command: `APPLY_HUNK [apply args] -- paths`, the patch as input. If the lines
+/// around it changed since its commit, a 3-way merge, which may leave conflict markers.
+pub(super) const APPLY_HUNK: &str = "!apply-hunk";
+
+pub(super) fn apply_hunk(dir: &std::path::Path, a: &[&str], patch: &[u8]) -> Res<String> {
+    let split = a.iter().position(|x| *x == "--").unwrap_or(a.len());
+    let (args, paths) = (&a[1..split], a.get(split + 1..).unwrap_or_default());
+    let apply = |more: Option<&str>| {
+        let mut cmd = vec!["apply", "--recount", "--whitespace=nowarn"];
+        cmd.extend(args);
+        cmd.extend(more);
+        cmd.push("-");
+        git::run_input(dir, &cmd, Some(patch))
+    };
+    let Err(e) = apply(None) else { return Ok(String::new()) };
+    if !e.contains("patch does not apply") {
+        return Err(e);
+    }
+    let with = |cmd: &[&'static str]| [cmd, paths].concat();
+    if !git::run(dir, &with(&["--literal-pathspecs", "status", "--porcelain", "--"]))?.is_empty() {
+        return Err(format!(
+            "It doesn't apply cleanly: the lines around it changed since that commit. Commit or stash your changes to {} so Glasir can merge it in (3-way).",
+            paths.join(", ")
+        ));
+    }
+    let merged = apply(Some("--3way"));
+    // `--3way` writes the index too; the files were clean, so HEAD has what it held.
+    git::run(dir, &with(&["--literal-pathspecs", "reset", "-q", "--"]))?;
+    match merged {
+        Ok(_) => Ok("merged (3-way): the lines around it had changed".into()),
+        Err(e) if e.contains("with conflicts") => {
+            Err("It doesn't apply cleanly, so it was merged in with conflict markers (<<<<<<<): resolve them in the file, or undo with ⌘Z.".into())
+        }
+        Err(e) => Err(format!("It doesn't apply cleanly:\n{e}")),
     }
 }
 
@@ -331,6 +386,91 @@ mod tests {
         let base = info.parents[0].as_str();
         let f = git::commit_diff(&dir, &info.id, Some(base), &info.files.iter().find(|c| c.path == "a").unwrap().clone(), DiffOpts::default()).unwrap();
         assert_eq!(f.hunks[0].lines.iter().filter(|l| l.kind == b'+').count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Revert / cherry-pick a commit's hunk or lines into the working tree, end to end: applied,
+    /// undone with ⌘Z, 3-way merged when the context moved on, refused over local edits.
+    #[test]
+    fn hunks_from_a_commit() {
+        let dir = scratch("commit-hunks");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let lines = |edits: &[(usize, &str)]| {
+            let mut l: Vec<String> = (1..=20).map(|i| format!("l{i}")).collect();
+            edits.iter().for_each(|(i, t)| l[i - 1] = t.to_string());
+            l.join("\n") + "\n"
+        };
+        commit(&dir, "f", &lines(&[]));
+        commit(&dir, "f", &lines(&[(2, "TWO"), (3, "THREE"), (15, "FIFTEEN")]));
+        let c2 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let change = git::Change { path: "f".into(), old_path: None, code: 'M' };
+        let src = DiffSrc::Commit { id: c2.clone(), parent: Some(format!("{c2}^")), change: change.clone() };
+        let f = git::commit_diff(&dir, &c2, Some(&format!("{c2}^")), &change, DiffOpts::default()).unwrap();
+        assert_eq!(f.hunks.len(), 2);
+        let op = |label: &str, hi: usize, li: Option<usize>, rev: bool| {
+            let p = git::partial_patch(&f, |h, l| h == hi && li.is_none_or(|x| x == l), rev).unwrap();
+            patch_op(label, &src, DiffOpts::default(), &f, p, if rev { &["--reverse"] } else { &[] })
+        };
+        let read = || std::fs::read_to_string(dir.join("f")).unwrap();
+        let run = |t: &mut RepoTab, a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, t)
+        };
+
+        // Revert hunk: only the working tree changes, ⌘Z restores it.
+        run(&mut t, Action::Git(op("Revert hunk", 0, None, true)));
+        assert_eq!(read(), lines(&[(15, "FIFTEEN")]));
+        assert_eq!(sh(&dir, &["diff", "--cached"]), "");
+        run(&mut t, Action::Undo);
+        assert_eq!(read(), lines(&[(2, "TWO"), (3, "THREE"), (15, "FIFTEEN")]));
+        // Revert lines: just `-l2 +TWO` of the first hunk (lines 1..=4 are `l1 -l2 -l3 +TWO`).
+        let li = f.hunks[0].lines.iter().position(|l| l.text == "TWO").unwrap();
+        let l2 = f.hunks[0].lines.iter().position(|l| l.text == "l2").unwrap();
+        let p = git::partial_patch(&f, |h, l| h == 0 && (l == li || l == l2), true).unwrap();
+        run(&mut t, Action::Git(patch_op("Revert lines", &src, DiffOpts::default(), &f, p, &["--reverse"])));
+        assert_eq!(read(), lines(&[(3, "THREE"), (15, "FIFTEEN")]));
+        run(&mut t, Action::Undo);
+
+        sh(&dir, &["checkout", "-q", "-b", "side", &format!("{c2}^")]);
+        run(&mut t, Action::Git(op("Cherry-pick hunk", 1, None, false)));
+        assert_eq!(read(), lines(&[(15, "FIFTEEN")]));
+        sh(&dir, &["checkout", "-q", "--", "f"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+
+        // The context moved on (l6 edited since): a 3-way merge, the index left as it was.
+        commit(&dir, "f", &lines(&[(2, "TWO"), (3, "THREE"), (6, "SIX"), (15, "FIFTEEN")]));
+        let msgs = run(&mut t, Action::Git(op("Revert hunk", 0, None, true)));
+        assert!(msgs.iter().any(|m| !m.error && m.text.contains("3-way")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(read(), lines(&[(6, "SIX"), (15, "FIFTEEN")]));
+        assert_eq!(sh(&dir, &["diff", "--cached"]), "");
+        run(&mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
+        // Lines too: the patch borrows the commit's blob ids for the merge.
+        let p = git::partial_patch(&f, |h, l| h == 0 && (l == li || l == l2), true).unwrap();
+        run(&mut t, Action::Git(patch_op("Revert lines", &src, DiffOpts::default(), &f, p, &["--reverse"])));
+        assert_eq!(read(), lines(&[(3, "THREE"), (6, "SIX"), (15, "FIFTEEN")]));
+        run(&mut t, Action::Undo);
+
+        // A conflicting edit since: conflict markers in the file (not an unmerged index); ⌘Z undoes.
+        let head = lines(&[(2, "Two!"), (3, "THREE"), (6, "SIX"), (15, "FIFTEEN")]);
+        commit(&dir, "f", &head);
+        let msgs = run(&mut t, Action::Git(op("Revert hunk", 0, None, true)));
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("conflict markers")));
+        assert!(read().contains("<<<<<<<"));
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M f\n");
+        run(&mut t, Action::Undo);
+        assert_eq!(read(), head);
+
+        // Local edits to the file: no 3-way over them, nothing touched.
+        let mine = head.replace("l10", "mine");
+        std::fs::write(dir.join("f"), &mine).unwrap();
+        let msgs = run(&mut t, Action::Git(op("Revert hunk", 0, None, true)));
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("Commit or stash your changes to f")));
+        assert_eq!(read(), mine);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

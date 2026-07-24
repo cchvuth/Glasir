@@ -1,6 +1,6 @@
-//! Diff viewer: unified or side-by-side, with hunk and line staging for
-//! working-directory diffs, whitespace / context options, change navigation
-//! (F7 / ⇧F7) and a change minimap. Only visible lines are painted.
+//! Diff viewer: unified or side-by-side, hunk and line staging for working-directory diffs,
+//! revert / cherry-pick from commits, whitespace / context options, change navigation (F7 / ⇧F7)
+//! and a change minimap. Only visible lines are painted.
 
 use super::format::{tops, visible, wrapped};
 use crate::git::{DiffOpts, FileDiff, partial_patch, selects_all};
@@ -117,6 +117,9 @@ pub fn changed_span(a: &str, b: &str) -> Option<(usize, usize)> {
 
 use crate::highlight::display as expand;
 
+const REVERT_HINT: &str = "Undo these lines of the commit in your working tree (⌘Z restores the file)";
+const PICK_HINT: &str = "Apply these lines of the commit to your working tree (⌘Z restores the file)";
+
 /// `git apply` of a partial patch; `None` (an unsafe partial selection) becomes an explanation.
 fn apply_op(label: &str, patch: Option<String>, args: &[&str], src: &DiffSrc, opts: DiffOpts, f: &FileDiff) -> Action {
     match patch {
@@ -158,8 +161,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
     let lossy = ds.file.as_ref().is_some_and(|f| f.as_ref().is_ok_and(|f| f.lossy));
     // Partial staging patches the shown diff, which must be a plain (no -w), current one.
     // An untracked file's diff is never filtered, and only staged from (intent-to-add first).
+    // A commit's hunks and lines revert / cherry-pick into the working tree (not a working-tree compare's).
     let untracked = change.code == '?';
-    let partial = worktree && !lossy && (untracked || !ds.opts.ignore_ws) && !ds.loading();
+    let wt_compare = matches!(&ds.src, DiffSrc::Commit { id, .. } if id == crate::git::WORKTREE);
+    let partial = !lossy && !ds.loading() && if worktree { untracked || !ds.opts.ignore_ws } else { !ds.opts.ignore_ws && !wt_compare };
     let file = ds.file.as_ref().and_then(|f| f.as_ref().ok());
     let rows = file.map_or(vec![], |f| rows(f, *split));
     let kinds: Vec<u8> = file.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
@@ -204,11 +209,21 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
         if worktree && change.code != '?' && ds.opts.ignore_ws {
             ui.label(RichText::new(format!("{} Line staging off", icon::INFO)).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
+        } else if !worktree && !wt_compare && ds.opts.ignore_ws {
+            ui.label(RichText::new(format!("{} Hunk actions off", icon::INFO)).small().color(theme::MOD))
+                .on_hover_text("Hunks and lines can't be reverted or cherry-picked from a whitespace-ignoring diff: turn off Ignore whitespace.");
         }
         if let (true, Some(f)) = (partial && !ds.picked.is_empty(), file) {
             let n = ds.picked.len();
             let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
-            if staged {
+            if !worktree {
+                if ui.button(format!("Revert {n} line(s)")).on_hover_text(REVERT_HINT).clicked() {
+                    acts.push(apply_op("Revert lines", partial_patch(f, pick, true), &["--reverse"], &src, ds_opts, f));
+                }
+                if ui.button(format!("Cherry-pick {n} line(s)")).on_hover_text(PICK_HINT).clicked() {
+                    acts.push(apply_op("Cherry-pick lines", partial_patch(f, pick, false), &[], &src, ds_opts, f));
+                }
+            } else if staged {
                 if ui.button(format!("Unstage {n} line(s)")).clicked() {
                     acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &src, ds_opts, f));
                 }
@@ -356,7 +371,14 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
                                 let b = egui::Button::new(RichText::new(text).small()).wrap_mode(egui::TextWrapMode::Extend);
                                 ui.put(Rect::from_min_size(pos2(x, rect.top() + 1.0), vec2(w, LINE_H - 2.0)), b).clicked()
                             };
-                            if staged {
+                            if !worktree {
+                                if btn(ui, "Cherry-pick hunk") {
+                        acts.push(apply_op("Cherry-pick hunk", partial_patch(f, all, false), &[], &src, ds_opts, f));
+                                }
+                                if btn(ui, "Revert hunk") {
+                        acts.push(apply_op("Revert hunk", partial_patch(f, all, true), &["--reverse"], &src, ds_opts, f));
+                                }
+                            } else if staged {
                                 if btn(ui, "Unstage hunk") {
                         acts.push(apply_op("Unstage hunk", partial_patch(f, all, true), &["--cached", "--reverse"], &src, ds_opts, f));
                                 }

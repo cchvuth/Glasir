@@ -199,6 +199,10 @@ The name fits a Git client:
   keep / hard, undoable) or check it out.
 - **Restore a file from history**: as it is in a commit, or as it was before it
   (undoable like a discard).
+- **Revert or cherry-pick a hunk or lines from any commit**: in a commit's diff,
+  undo or apply just that part in your working tree (backed up, ⌘Z restores);
+  when the code around it has moved on, a 3-way merge, leaving conflict markers
+  where it can't decide.
 - **Move unpushed commits to a new branch** ("oops, I committed on main"): one
   undo step, local changes untouched.
 - **Visual bisect**: start from a commit's menu ("this commit is bad / good"), two
