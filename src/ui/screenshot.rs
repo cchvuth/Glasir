@@ -186,9 +186,18 @@ impl App {
                             t.search = Some(s);
                         }
                     }
-                    q if q.starts_with("blame:") || q.starts_with("history:") => {
+                    // `blame:<path>`, `blame@<rev>:<path>`, `history:<path or dir/>`, `lines:<start>-<end>:<path>` (from HEAD).
+                    q if q.starts_with("blame") || q.starts_with("history:") || q.starts_with("lines:") => {
                         let (mode, path) = q.split_once(':').unwrap();
-                        let mode = if mode == "blame" { Mode::Blame } else { Mode::History };
+                        let (mode, path) = match mode {
+                            "lines" => {
+                                let (r, path) = path.split_once(':').unwrap_or_default();
+                                let (a, b) = r.split_once('-').unwrap_or_default();
+                                (Mode::Lines { rev: Some("HEAD".into()), start: a.parse().unwrap_or(1), end: b.parse().unwrap_or(1) }, path)
+                            }
+                            "history" => (Mode::History, path),
+                            m => (Mode::Blame(m.strip_prefix("blame@").map(Into::into)), path),
+                        };
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.apply(&ctx.clone(), crate::repo::Action::FileView(path.into(), mode));
                         }

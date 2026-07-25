@@ -1,15 +1,19 @@
-//! File history (follows renames) and blame: the git queries, their parsers
-//! and the `FileView` state. Drawn by `crate::ui::history`.
+//! File, folder and line-range history (follows renames) and blame at any revision: the git
+//! queries, their parsers, and the `FileView` back/forward state. Drawn by `crate::ui::history`.
 
 use super::Task;
-use crate::git::{self, Change, Res};
+use crate::git::{self, Change, Hunk, Res};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Mode {
+    /// Commits touching the file (following renames), or the folder when the path ends in `/`.
     History,
-    Blame,
+    /// Blame at a revision; `None` = the working tree.
+    Blame(Option<String>),
+    /// `git log -L<start>,<end>:<path> <rev>`; `None` = the index (an unstaged diff's old side).
+    Lines { rev: Option<String>, start: u32, end: u32 },
 }
 
 pub struct Entry {
@@ -21,6 +25,8 @@ pub struct Entry {
     pub date: String,
     pub summary: String,
     pub change: Change,
+    /// Line-range history: how this commit changed the lines.
+    pub hunks: Vec<Hunk>,
 }
 
 pub struct BlameCommit {
@@ -28,13 +34,17 @@ pub struct BlameCommit {
     pub author: String,
     pub time: i64,
     pub summary: String,
+    /// The file's path in this commit.
+    pub file: String,
+    /// (parent, path there) to re-blame at; `None` for a root/boundary commit.
+    pub previous: Option<(String, String)>,
 }
 
 #[derive(Default)]
 pub struct Blame {
     pub commits: Vec<BlameCommit>,
-    /// (commit index, line text)
-    pub lines: Vec<(usize, String)>,
+    /// (commit index, line number in that commit's file, line text)
+    pub lines: Vec<(usize, u32, String)>,
     /// Heat 0 (oldest) ..= 1 (newest) per commit.
     pub heat: Vec<f32>,
 }
@@ -50,16 +60,45 @@ pub struct FileView {
     pub data: Option<Res<Data>>,
     task: Option<Task<Res<Data>>>,
     pub sel: Option<usize>,
+    dir: PathBuf,
+    /// Earlier / later (path, mode) views for Back and Forward.
+    pub back: Vec<(String, Mode)>,
+    pub fwd: Vec<(String, Mode)>,
 }
 
 impl FileView {
     pub fn open(ctx: &egui::Context, dir: &Path, path: &str, mode: Mode) -> Self {
-        let (dir, p) = (dir.to_path_buf(), path.to_owned());
-        let task = Task::spawn(ctx, move || match mode {
+        let mut fv = FileView { path: path.into(), mode, data: None, task: None, sel: None, dir: dir.into(), back: vec![], fwd: vec![] };
+        fv.load(ctx);
+        fv
+    }
+
+    fn load(&mut self, ctx: &egui::Context) {
+        let (dir, p, mode) = (self.dir.clone(), self.path.clone(), self.mode.clone());
+        (self.data, self.sel) = (None, None);
+        self.task = Some(Task::spawn(ctx, move || match mode {
             Mode::History => history(&dir, &p).map(Data::History),
-            Mode::Blame => blame(&dir, &p).map(Data::Blame),
-        });
-        FileView { path: path.into(), mode, data: None, task: Some(task), sel: None }
+            Mode::Blame(rev) => blame(&dir, &p, rev.as_deref()).map(Data::Blame),
+            Mode::Lines { rev, start, end } => line_history(&dir, &p, rev.as_deref(), start, end).map(Data::History),
+        }));
+    }
+
+    /// Shows another view, keeping this one for Back.
+    pub fn go(&mut self, ctx: &egui::Context, path: String, mode: Mode) {
+        if (&path, &mode) == (&self.path, &self.mode) {
+            return;
+        }
+        self.back.push((std::mem::replace(&mut self.path, path), std::mem::replace(&mut self.mode, mode)));
+        self.fwd.clear();
+        self.load(ctx);
+    }
+
+    /// One view back, or forward.
+    pub fn step(&mut self, ctx: &egui::Context, forward: bool) {
+        let (from, to) = if forward { (&mut self.fwd, &mut self.back) } else { (&mut self.back, &mut self.fwd) };
+        let Some((path, mode)) = from.pop() else { return };
+        to.push((std::mem::replace(&mut self.path, path), std::mem::replace(&mut self.mode, mode)));
+        self.load(ctx);
     }
 
     pub fn poll(&mut self) {
@@ -96,46 +135,111 @@ pub fn parse_history(out: &str) -> Vec<Entry> {
             date: f[5].into(),
             summary: f[6].into(),
             change,
+            hunks: vec![],
         });
     }
     v
 }
 
+const FORMAT: &str = "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s";
+
 fn history(dir: &Path, path: &str) -> Res<Vec<Entry>> {
-    let out = git::run(
-        dir,
-        &[
-            "--literal-pathspecs",
-            "log",
-            "--follow",
-            "-M",
-            "-z",
-            "--name-status",
-            git::DATE_FORMAT,
-            "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s",
-            "--",
-            path,
-        ],
-    )?;
-    Ok(parse_history(&out))
+    // A folder (`dir/`) can't be followed through renames.
+    let follow: &[&str] = if path.ends_with('/') { &[] } else { &["--follow", "-M"] };
+    let args = [&["--literal-pathspecs", "log"], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT, "--", path]].concat();
+    Ok(parse_history(&git::run(dir, &args)?))
+}
+
+/// Undoes git's C-style path quoting (`"\303\274 \"x\""`); plain paths pass through.
+fn unquote(s: &str) -> String {
+    let Some(inner) = s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else { return s.into() };
+    let (mut out, mut b) = (vec![], inner.bytes());
+    while let Some(c) = b.next() {
+        if c != b'\\' {
+            out.push(c);
+            continue;
+        }
+        match b.next() {
+            Some(d @ b'0'..=b'7') => {
+                let v = b.by_ref().take(2).fold((d - b'0') as u32, |v, x| v * 8 + x.wrapping_sub(b'0') as u32);
+                out.push(v as u8);
+            }
+            Some(b'n') => out.push(b'\n'),
+            Some(b't') => out.push(b'\t'),
+            Some(b'r') => out.push(b'\r'),
+            Some(x) => out.push(x),
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `git log -L` output: a header record, then the commit's diff of the range (path as of that commit).
+pub fn parse_lines(out: &str, path: &str) -> Vec<Entry> {
+    let mut v = vec![];
+    for rec in out.split('\x1e').filter(|r| !r.trim().is_empty()) {
+        let (head, patch) = rec.split_once('\n').unwrap_or((rec, ""));
+        let f: Vec<&str> = head.splitn(7, '\x1f').collect();
+        if f.len() < 7 {
+            continue;
+        }
+        let diff = git::parse_diff(patch).pop().unwrap_or_default();
+        let side = |p: &str, pre: &str| {
+            let s = unquote(diff.header.iter().find_map(|h| h.strip_prefix(p))?);
+            s.strip_prefix(pre).map(str::to_owned)
+        };
+        let (old, new) = (side("--- ", "a/"), side("+++ ", "b/"));
+        let change = match (old, new) {
+            (None, n) => Change { path: n.unwrap_or_else(|| path.into()), old_path: None, code: 'A' },
+            (Some(o), Some(n)) if o != n => Change { path: n, old_path: Some(o), code: 'R' },
+            (Some(o), _) => Change { path: o, old_path: None, code: 'M' },
+        };
+        v.push(Entry {
+            id: f[0].into(),
+            parent: f[1].split_whitespace().next().map(Into::into),
+            author: f[2].into(),
+            email: f[3].into(),
+            time: f[4].parse().unwrap_or(0),
+            date: f[5].into(),
+            summary: f[6].into(),
+            change,
+            hunks: diff.hunks,
+        });
+    }
+    v
+}
+
+const INDEX_LINES: &str = "Some of this file is staged, so the unstaged diff's line numbers don't match HEAD: pick the lines in the staged diff, or commit first.";
+
+fn line_history(dir: &Path, path: &str, rev: Option<&str>, start: u32, end: u32) -> Res<Vec<Entry>> {
+    // `log -L` reads a commit; the index stands in for HEAD only while nothing of the file is staged.
+    let rev = match rev {
+        Some(r) => r,
+        None if git::run(dir, &["--literal-pathspecs", "diff", "--cached", "--quiet", "--", path]).is_ok() => "HEAD",
+        None => return Err(INDEX_LINES.into()),
+    };
+    let range = format!("-L{start},{end}:{path}");
+    let args = ["log", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", git::DATE_FORMAT, FORMAT, &range, rev, "--"];
+    Ok(parse_lines(&git::run(dir, &args)?, path))
 }
 
 pub fn parse_blame(out: &str) -> Blame {
     let mut b = Blame::default();
     let mut index: HashMap<String, usize> = HashMap::new();
-    let mut cur = 0;
+    let (mut cur, mut orig) = (0, 0);
     for line in out.lines() {
         if let Some(text) = line.strip_prefix('\t') {
-            b.lines.push((cur, text.to_owned()));
+            b.lines.push((cur, orig, text.to_owned()));
             continue;
         }
         let mut it = line.splitn(2, ' ');
         let (key, val) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
         if key.len() >= 40 && key.bytes().all(|c| c.is_ascii_hexdigit()) {
             cur = *index.entry(key.to_owned()).or_insert_with(|| {
-                b.commits.push(BlameCommit { id: key.to_owned(), author: String::new(), time: 0, summary: String::new() });
+                b.commits.push(BlameCommit { id: key.to_owned(), author: String::new(), time: 0, summary: String::new(), file: String::new(), previous: None });
                 b.commits.len() - 1
             });
+            orig = val.split(' ').next().and_then(|n| n.parse().ok()).unwrap_or(0);
             continue;
         }
         let Some(c) = b.commits.get_mut(cur) else { continue };
@@ -143,6 +247,9 @@ pub fn parse_blame(out: &str) -> Blame {
             "author" => c.author = val.into(),
             "author-time" => c.time = val.parse().unwrap_or(0),
             "summary" => c.summary = val.into(),
+            // ponytail: one path per commit; a commit blamed under two paths (copies) keeps the last.
+            "filename" => c.file = unquote(val),
+            "previous" => c.previous = val.split_once(' ').map(|(id, p)| (id.into(), unquote(p))),
             _ => {}
         }
     }
@@ -156,8 +263,9 @@ pub fn parse_blame(out: &str) -> Blame {
     b
 }
 
-fn blame(dir: &Path, path: &str) -> Res<Blame> {
-    Ok(parse_blame(&git::run(dir, &["blame", "--porcelain", "-w", "--", path])?))
+fn blame(dir: &Path, path: &str, rev: Option<&str>) -> Res<Blame> {
+    let args = [&["blame", "--porcelain", "-w"][..], rev.as_slice(), &["--", path]].concat();
+    Ok(parse_blame(&git::run(dir, &args)?))
 }
 
 #[cfg(test)]
@@ -174,10 +282,94 @@ mod tests {
         );
         let bl = parse_blame(&out);
         assert_eq!(bl.commits.len(), 2);
-        assert_eq!(bl.lines.iter().map(|l| l.0).collect::<Vec<_>>(), [0, 0, 1]);
-        assert_eq!(bl.lines[2].1, "\tindented");
+        assert_eq!(bl.lines.iter().map(|l| (l.0, l.1)).collect::<Vec<_>>(), [(0, 1), (0, 2), (1, 3)]);
+        assert_eq!(bl.lines[2].2, "\tindented");
         assert_eq!((bl.commits[1].author.as_str(), bl.commits[1].time), ("Bob", 200));
+        assert_eq!(bl.commits[1].previous, Some((a.clone(), "f".into())));
+        assert_eq!((bl.commits[0].previous.as_ref(), bl.commits[0].file.as_str()), (None, "f"));
         assert_eq!(bl.heat, [0.0, 1.0]);
+    }
+
+    #[test]
+    fn quoted_paths() {
+        assert_eq!(unquote("plain name.txt"), "plain name.txt");
+        assert_eq!(unquote(r#""\303\274 \"q\"\tx""#), "ü \"q\"\tx");
+    }
+
+    #[test]
+    fn line_log() {
+        let out = "\x1eh3\x1fh2\x1fAnn\x1fa@x\x1f300\x1f2026-01-03 10:00\x1fedit\n\ndiff --git a/old b/\"n\\303\\274\"\n--- a/old\n+++ \"b/n\\303\\274\"\n@@ -2,1 +2,1 @@\n-b\n+B\n\
+                   \x1eh1\x1f\x1fAnn\x1fa@x\x1f100\x1f2026-01-01 10:00\x1fadd\n\ndiff --git a/old b/old\n--- /dev/null\n+++ b/old\n@@ -0,0 +2,1 @@\n+b\n";
+        let h = parse_lines(out, "nü");
+        assert_eq!(h.len(), 2);
+        assert_eq!((h[0].change.path.as_str(), h[0].change.old_path.as_deref(), h[0].change.code), ("nü", Some("old"), 'R'));
+        assert_eq!(h[0].hunks[0].lines.iter().map(|l| (l.kind, l.text.as_str())).collect::<Vec<_>>(), [(b'-', "b"), (b'+', "B")]);
+        assert_eq!((h[1].change.path.as_str(), h[1].change.code, h[1].parent.as_deref()), ("old", 'A', None));
+        assert_eq!((h[1].hunks[0].new_start, h[1].summary.as_str()), (2, "add"));
+    }
+
+    /// Lines followed through a rename, from a revision, under awkward names; blame at the
+    /// parent via `previous`; folder history; the unstaged-diff guard.
+    #[test]
+    fn line_folder_and_parent_blame() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-lines");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        std::fs::create_dir(dir.join("d[1]")).unwrap();
+        let c = |file: &str, text: &str, msg: &str| {
+            std::fs::write(dir.join(file), text).unwrap();
+            sh(&dir, &["add", "-A"]);
+            sh(&dir, &["commit", "-qm", msg]);
+        };
+        let rest = "3\n4\n5\n6\n7\n8\n9\n";
+        c("d[1]/a:b.txt", &format!("1\n2\n{rest}"), "add");
+        c("d[1]/a:b.txt", &format!("1\nTWO\n{rest}"), "two");
+        c("d1.txt", "x", "outside the folder");
+        sh(&dir, &["mv", "d[1]/a:b.txt", "n ü.txt"]);
+        c("n ü.txt", &format!("0\n1\nTWO!\n{rest}"), "move and edit");
+        c("n ü.txt", &format!("0\n1\nTWO!\n{rest}ten\n"), "ten");
+
+        let h = line_history(&dir, "n ü.txt", Some("HEAD"), 3, 3).unwrap();
+        assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["move and edit", "two", "add"]);
+        assert_eq!((h[0].change.path.as_str(), h[0].change.old_path.as_deref()), ("n ü.txt", Some("d[1]/a:b.txt")));
+        assert_eq!(h[2].change.code, 'A');
+        // From a revision: the file there, with its old name.
+        assert_eq!(line_history(&dir, "d[1]/a:b.txt", Some("HEAD~2"), 2, 2).unwrap().len(), 2);
+
+        let f = history(&dir, "d[1]/").unwrap();
+        assert_eq!(f.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["move and edit", "two", "add"]);
+
+        let b = blame(&dir, "n ü.txt", Some("HEAD")).unwrap();
+        let c = &b.commits[b.lines[2].0];
+        assert_eq!((c.summary.as_str(), c.file.as_str()), ("move and edit", "n ü.txt"));
+        let (prev, prev_path) = c.previous.clone().unwrap();
+        let p = blame(&dir, &prev_path, Some(&prev)).unwrap();
+        assert_eq!((prev_path.as_str(), p.lines[1].2.as_str()), ("d[1]/a:b.txt", "TWO"));
+
+        // The unstaged diff counts lines from the index: fine while it matches HEAD.
+        std::fs::write(dir.join("n ü.txt"), "x\n").unwrap();
+        assert!(line_history(&dir, "n ü.txt", None, 3, 3).is_ok_and(|h| h.len() == 3));
+        sh(&dir, &["add", "n ü.txt"]);
+        assert_eq!(line_history(&dir, "n ü.txt", None, 1, 1).err().as_deref(), Some(INDEX_LINES));
+
+        let ctx = egui::Context::default();
+        let mut fv = FileView::open(&ctx, &dir, "d[1]/", Mode::History);
+        fv.go(&ctx, prev_path.clone(), Mode::Blame(Some(prev.clone())));
+        fv.go(&ctx, prev_path.clone(), Mode::Blame(Some(prev.clone()))); // the same view: no new step
+        assert_eq!((fv.back.len(), fv.fwd.len()), (1, 0));
+        fv.step(&ctx, false);
+        assert_eq!((fv.path.as_str(), &fv.mode, fv.fwd.len()), ("d[1]/", &Mode::History, 1));
+        fv.step(&ctx, true);
+        for _ in 0..500 {
+            fv.poll();
+            if fv.data.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(matches!(&fv.data, Some(Ok(Data::Blame(b))) if b.lines[1].2 == "TWO"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

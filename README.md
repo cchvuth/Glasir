@@ -76,7 +76,13 @@ The name fits a Git client:
   (`--no-verify`), **Push after commit**, a **co-authors** picker (people from the log
   become `Co-authored-by` trailers), `commit.template` prefill (comment lines are stripped),
   and a detached-HEAD warning with **Create branch here**.
-- **Blame** with an age heatmap and **file history** that follows renames.
+- **Blame** with an age heatmap at any revision (from a commit's file menu or diff),
+  with **Blame at parent revision** on any line (follows renames) and back /
+  forward (⌘[ / ⌘]) through the views you drill into.
+- **File history** that follows renames, **folder history** (from a file menu or the
+  path above a history), and **line-range history**: pick lines in a diff (or a
+  blame block) and choose *History of these lines* (`git log -L`) to see each
+  commit's change to just those lines.
 - Compare a branch with the current one, or any commit with HEAD; **Compare working tree
   with…** any branch, tag or commit (uncommitted changes included).
 
@@ -310,6 +316,7 @@ token saved by an older version may ask once: choose **Always Allow**).
 | ⌘+ / ⌘- / ⌘0 | Zoom in / out / reset |
 | Esc | Close diff / editor |
 | F7 / ⇧F7 | Next / previous change in a diff |
+| ⌘[ / ⌘] | Back / forward in blame and history |
 
 Interactive rebase editor: **P** pick · **R** reword · **S** squash · **F** fixup ·
 **D** drop · **⌥↑ / ⌥↓** move.

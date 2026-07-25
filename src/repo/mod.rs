@@ -506,7 +506,10 @@ impl RepoTab {
             }
             Action::FileView(path, mode) => {
                 (self.diff, self.merge) = (None, None);
-                self.file_view = Some(history::FileView::open(ctx, &self.dir, &path, mode));
+                match &mut self.file_view {
+                    Some(fv) => fv.go(ctx, path, mode),
+                    None => self.file_view = Some(history::FileView::open(ctx, &self.dir, &path, mode)),
+                }
             }
             Action::Rebase { base, label } => match crate::repo::rebase::Editor::load(&self.dir, &base, &label) {
                 Ok(ed) => {

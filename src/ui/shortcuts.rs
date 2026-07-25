@@ -25,6 +25,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("⌘+ / ⌘- / ⌘0", "Zoom in / out / reset"),
     ("Esc", "Close diff / editor"),
     ("F7 / ⇧F7", "Next / previous change in a diff"),
+    ("⌘[ / ⌘]", "Back / forward in blame and history"),
 ];
 
 /// Interactive rebase editor keys.

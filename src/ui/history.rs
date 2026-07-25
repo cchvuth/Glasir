@@ -1,5 +1,5 @@
-//! File history and blame views (blame with an age heatmap). The data and git
-//! queries live in `crate::repo::history`.
+//! File, folder and line-range history and blame views (blame with an age
+//! heatmap), with back / forward. The data and git queries live in `crate::repo::history`.
 
 use super::format::{ago, initials, relative_time, text_job, tops, visible, wrapped};
 use crate::repo::history::{Blame, Data, FileView, Mode};
@@ -18,20 +18,52 @@ fn heat_color(t: f32) -> Color32 {
 pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     fv.poll();
     let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut nav = ui.input_mut(|i| {
+        let cmd = egui::Modifiers::COMMAND;
+        (i.consume_key(cmd, egui::Key::OpenBracket).then_some(false)).or(i.consume_key(cmd, egui::Key::CloseBracket).then_some(true))
+    });
+    let folder = fv.path.ends_with('/');
     ui.horizontal(|ui| {
         if theme::pill(ui, icon::X).on_hover_text("Close (Esc)").clicked() {
             close = true;
         }
-        let title = match fv.mode {
+        if !fv.back.is_empty() && theme::pill(ui, icon::ARROW_LEFT).on_hover_text("Back (⌘[)").clicked() {
+            nav = Some(false);
+        }
+        if !fv.fwd.is_empty() && theme::pill(ui, icon::ARROW_RIGHT).on_hover_text("Forward (⌘])").clicked() {
+            nav = Some(true);
+        }
+        let title = match &fv.mode {
+            Mode::History if folder => format!("{} Folder history", icon::FOLDER_SIMPLE),
             Mode::History => format!("{} History", icon::CLOCK_COUNTER_CLOCKWISE),
-            Mode::Blame => format!("{} Blame", icon::USER_LIST),
+            Mode::Blame(None) => format!("{} Blame", icon::USER_LIST),
+            Mode::Blame(Some(r)) => format!("{} Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
+            Mode::Lines { start, end, .. } if start == end => format!("{} History of line {start}", icon::CLOCK_COUNTER_CLOCKWISE),
+            Mode::Lines { start, end, .. } => format!("{} History of lines {start}–{end}", icon::CLOCK_COUNTER_CLOCKWISE),
         };
         ui.label(RichText::new(title).strong());
-        if fv.mode == Mode::Blame && ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+        if matches!(fv.mode, Mode::Blame(_)) && ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
             *wrap = !*wrap;
         }
-        ui.add(egui::Label::new(RichText::new(&fv.path).monospace().color(theme::dim(ui))).truncate());
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let mut end = 0;
+        for seg in fv.path.split_inclusive('/') {
+            end += seg.len();
+            let text = RichText::new(seg).monospace().color(theme::dim(ui));
+            // Folders above the shown file or folder open their history.
+            if seg.ends_with('/') && end < fv.path.len() {
+                if ui.add(egui::Button::new(text).frame(false)).on_hover_text(format!("History of {}", &fv.path[..end])).clicked() {
+                    acts.push(Action::FileView(fv.path[..end].into(), Mode::History));
+                }
+            } else {
+                ui.add(egui::Label::new(text).truncate());
+            }
+        }
     });
+    if let Some(forward) = nav {
+        fv.step(ui.ctx(), forward);
+        acts.push(Action::CloseDiff);
+    }
     ui.add_space(6.0);
     let data = match &fv.data {
         None => {
@@ -61,23 +93,59 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     p.text(pos2(rect.left() + 42.0, rect.top() + 14.0), Align2::LEFT_CENTER, &e.summary, FontId::proportional(13.5), theme::text(ui));
                     let meta = format!("{}  ·  {}  ·  {}", &e.id[..e.id.len().min(7)], e.author, relative_time(e.time, &e.date));
                     p.text(pos2(rect.left() + 42.0, rect.top() + 33.0), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme::dim(ui));
-                    if e.change.old_path.is_some() {
+                    if e.change.old_path.is_some() && !folder {
                         p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{} renamed", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::REN);
                     }
                     if r.clicked() {
                         fv.sel = Some(i);
-                        acts.push(Action::Diff(DiffSrc::Commit { id: e.id.clone(), parent: e.parent.clone(), change: e.change.clone() }));
+                        if !folder {
+                            acts.push(Action::Diff(DiffSrc::Commit { id: e.id.clone(), parent: e.parent.clone(), change: e.change.clone() }));
+                        }
                         acts.push(Action::Jump(e.id.clone()));
                     }
+                    if !folder && e.change.code != 'D' {
+                        r.context_menu(|ui| {
+                            if ui.button(format!("{} Blame at this commit", icon::USER_LIST)).clicked() {
+                                acts.push(Action::FileView(e.change.path.clone(), Mode::Blame(Some(e.id.clone()))));
+                            }
+                        });
+                    }
+                    hunks(ui, &e.hunks);
                 }
                 if entries.is_empty() {
-                    ui.label(RichText::new("No history (file not committed yet).").color(theme::dim(ui)));
+                    ui.label(RichText::new("No history (not committed yet).").color(theme::dim(ui)));
                 }
             });
         }
         Data::Blame(b) => blame_view(ui, b, *wrap, acts),
     }
     close
+}
+
+/// A line-range history entry's change, under its row.
+fn hunks(ui: &mut Ui, hunks: &[crate::git::Hunk]) {
+    const H: f32 = 16.0;
+    let lines: Vec<_> = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind != b'\\').collect();
+    if lines.is_empty() {
+        return;
+    }
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), lines.len() as f32 * H + 8.0), Sense::hover());
+    let p = ui.painter().with_clip_rect(rect);
+    p.rect_filled(rect.shrink2(vec2(8.0, 0.0)), 6.0, theme::faint(ui));
+    for (i, l) in lines.iter().enumerate() {
+        let row = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top() + 4.0 + i as f32 * H), vec2(rect.width() - 16.0, H));
+        let (bg, sign) = match l.kind {
+            b'+' => (theme::added_bg(ui), "+"),
+            b'-' => (theme::removed_bg(ui), "-"),
+            _ => (Color32::TRANSPARENT, " "),
+        };
+        p.rect_filled(row, 0.0, bg);
+        let no = if l.new > 0 { l.new } else { l.old };
+        p.text(pos2(row.left() + 34.0, row.center().y), Align2::RIGHT_CENTER, no.to_string(), FontId::monospace(10.5), theme::dim(ui));
+        let text = format!("{sign} {}", crate::highlight::display(&l.text));
+        p.text(pos2(row.left() + 42.0, row.center().y), Align2::LEFT_CENTER, text, FontId::monospace(11.5), theme::text(ui));
+    }
+    ui.add_space(6.0);
 }
 
 fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
@@ -88,16 +156,16 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         // Wrapped: rows as tall as their lines (the scrollbar's width is left out).
         let cols = if wrap { (((ui.available_width() - 406.0) / cw) as usize).max(1) } else { usize::MAX };
-        let tops = tops(H, b.lines.iter().map(|l| wrapped(l.1.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
+        let tops = tops(H, b.lines.iter().map(|l| wrapped(l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
         egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_viewport(ui, |ui, view| {
-            let max = if wrap { 0.0 } else { b.lines.iter().map(|l| l.1.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0 };
+            let max = if wrap { 0.0 } else { b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0 };
             ui.set_min_size(vec2(max.max(ui.available_width()), tops[b.lines.len()]));
             let max = max.max(ui.available_width());
             let left = ui.max_rect().left();
             let top = ui.max_rect().top();
             let p = ui.painter().clone();
             for r in visible(&tops, view.min.y, view.max.y) {
-                let (ci, text) = &b.lines[r];
+                let (ci, _, text) = &b.lines[r];
                 let c = &b.commits[*ci];
                 let rect = Rect::from_min_size(pos2(left, top + tops[r]), vec2(max, tops[r + 1] - tops[r]));
                 let y = rect.top() + H / 2.0;
@@ -114,10 +182,26 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
                     p.text(pos2(left + 330.0, y), Align2::RIGHT_CENTER, when, FontId::proportional(11.0), theme::dim(ui));
                 }
                 let resp = ui.interact(Rect::from_min_size(rect.min, vec2(340.0, H)), ui.id().with(("blame", r)), Sense::click());
-                if resp.clicked() && !c.id.bytes().all(|x| x == b'0') {
+                let uncommitted = c.id.bytes().all(|x| x == b'0');
+                if resp.clicked() && !uncommitted {
                     acts.push(Action::Jump(c.id.clone()));
                 }
-                resp.on_hover_text(format!("{}\n{} — {}", c.summary, c.author, ago(c.time)));
+                resp.context_menu(|ui| {
+                    let parent = ui.add_enabled(c.previous.is_some(), egui::Button::new(format!("{} Blame at parent revision", icon::ARROW_BEND_UP_RIGHT)));
+                    let parent = parent.on_hover_text("Blame the file as it was before this commit, to see who wrote these lines earlier").on_disabled_hover_text("This commit added these lines");
+                    if let (true, Some((id, path))) = (parent.clicked(), &c.previous) {
+                        acts.push(Action::FileView(path.clone(), Mode::Blame(Some(id.clone()))));
+                    }
+                    if !uncommitted && ui.button(format!("{} History of this block", icon::CLOCK_COUNTER_CLOCKWISE)).on_hover_text("Commits that changed these lines (git log -L)").clicked() {
+                        // The run of lines from this commit around `r`, in that commit's numbering.
+                        let same = |i: &usize| b.lines[*i].0 == *ci;
+                        let (lo, hi) = ((0..=r).rev().take_while(same).last().unwrap_or(r), (r..b.lines.len()).take_while(same).last().unwrap_or(r));
+                        let nums = (lo..=hi).map(|i| b.lines[i].1);
+                        let (start, end) = (nums.clone().min().unwrap_or(1), nums.max().unwrap_or(1));
+                        acts.push(Action::FileView(c.file.clone(), Mode::Lines { rev: Some(c.id.clone()), start, end }));
+                    }
+                });
+                resp.on_hover_text(format!("{}\n{} — {}\nRight-click: blame at parent, history of this block", c.summary, c.author, ago(c.time)));
                 p.text(pos2(left + 380.0, y), Align2::RIGHT_CENTER, (r + 1).to_string(), FontId::monospace(11.0), theme::dim(ui));
                 let g = p.layout_job(text_job(&text.replace('\t', "    "), mono.clone(), theme::text(ui), H, cols, cw));
                 p.galley(pos2(left + 392.0, rect.top()), g, theme::text(ui));

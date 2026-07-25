@@ -53,7 +53,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                     }
                     if let Some(fv) = &mut t.file_view {
                         let mut close = false;
-                        if fv.mode == Mode::History && t.diff.is_some() {
+                        if matches!(fv.mode, Mode::History | Mode::Lines { .. }) && t.diff.is_some() {
                             // History list beside the selected revision's diff.
                             let r = ui.max_rect();
                             let split = (r.width() * 0.38).clamp(280.0, 460.0);

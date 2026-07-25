@@ -4,9 +4,11 @@
 
 use super::format::{tops, visible, wrapped};
 use crate::git::{DiffOpts, FileDiff, partial_patch, selects_all};
+use crate::repo::history::Mode;
 use crate::repo::{Action, DiffSrc, DiffState, Op};
 use crate::theme::{self, icon};
 use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui, UiBuilder, pos2, vec2};
+use std::collections::BTreeSet;
 
 const LINE_H: f32 = 18.0;
 const NUM_W: f32 = 44.0;
@@ -140,6 +142,39 @@ fn stage(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, src
     apply_op(label, partial_patch(f, selected, false), &["--cached"], src, opts, f)
 }
 
+/// Path and `git log -L` range for "History of these lines": the picked lines when `at` is one
+/// of them, else `at`. A commit diff's new side (its old side if only removed lines are
+/// picked); a worktree diff's old side (HEAD when staged, else the index).
+fn line_range(src: &DiffSrc, f: &FileDiff, picked: &BTreeSet<(usize, usize)>, at: (usize, usize)) -> Option<(String, Mode)> {
+    let one = [at];
+    let sel = if picked.contains(&at) { picked.iter().collect::<Vec<_>>() } else { one.iter().collect() };
+    let lines: Vec<_> = sel.into_iter().filter_map(|&(h, l)| f.hunks.get(h)?.lines.get(l)).collect();
+    let span = |new: bool| {
+        let n: Vec<u32> = lines.iter().map(|l| if new { l.new } else { l.old }).filter(|&n| n > 0).collect();
+        Some((*n.iter().min()?, *n.iter().max()?))
+    };
+    let c = src.change();
+    let old_path = c.old_path.clone().unwrap_or_else(|| c.path.clone());
+    let (path, rev, (start, end)) = match src {
+        // The working tree (a compare's new side) has no history yet: the base's lines.
+        DiffSrc::Commit { id, parent, .. } => match span(true).filter(|_| id != crate::git::WORKTREE) {
+            Some(s) => (c.path.clone(), Some(id.clone()), s),
+            None => (old_path, Some(parent.clone()?), span(false)?),
+        },
+        DiffSrc::Worktree { staged, .. } => (old_path, staged.then(|| "HEAD".into()), span(false)?),
+    };
+    Some((path, Mode::Lines { rev, start, end }))
+}
+
+fn line_menu(ui: &mut Ui, src: &DiffSrc, f: &FileDiff, picked: &BTreeSet<(usize, usize)>, at: (usize, usize), acts: &mut Vec<Action>) {
+    let range = line_range(src, f, picked, at);
+    let text = format!("{} History of these lines", icon::CLOCK_COUNTER_CLOCKWISE);
+    let b = ui.add_enabled(range.is_some(), egui::Button::new(text)).on_disabled_hover_text("Lines added here have no earlier history");
+    if let (true, Some((path, mode))) = (b.on_hover_text("Commits that changed these lines (git log -L), following renames").clicked(), range) {
+        acts.push(Action::FileView(path, mode));
+    }
+}
+
 /// Discard the `selected` lines of an unstaged diff. All of an intent-to-add file (or worktree
 /// rename): `apply --reverse` would leave its index entry behind, so the file is discarded.
 fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, src: &DiffSrc, opts: DiffOpts) -> Action {
@@ -188,12 +223,20 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
                 acts.push(Action::Git(op));
             }
         }
-        if change.code != '?' && change.code != 'A' {
-            if theme::pill(ui, icon::USER_LIST).on_hover_text("Blame").clicked() {
-                acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::Blame));
+        if !worktree || (change.code != '?' && change.code != 'A') {
+            // A commit's file is blamed at that commit (a working-tree compare's in the working
+            // tree); a deleted one isn't there to blame.
+            let rev = match &src {
+                DiffSrc::Commit { id, .. } => (change.code != 'D').then(|| (!wt_compare).then(|| id.clone())),
+                DiffSrc::Worktree { .. } => Some(None),
+            };
+            if let Some(rev) = rev
+                && theme::pill(ui, icon::USER_LIST).on_hover_text(if rev.is_some() { "Blame at this commit" } else { "Blame" }).clicked()
+            {
+                acts.push(Action::FileView(change.path.clone(), Mode::Blame(rev)));
             }
             if theme::pill(ui, icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("File history").clicked() {
-                acts.push(Action::FileView(change.path.clone(), crate::repo::history::Mode::History));
+                acts.push(Action::FileView(change.path.clone(), Mode::History));
             }
         }
         if worktree {
@@ -213,8 +256,15 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
             ui.label(RichText::new(format!("{} Hunk actions off", icon::INFO)).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be reverted or cherry-picked from a whitespace-ignoring diff: turn off Ignore whitespace.");
         }
-        if let (true, Some(f)) = (partial && !ds.picked.is_empty(), file) {
-            let n = ds.picked.len();
+        if let (false, Some(f), Some(&first)) = (worktree, file, ds.picked.first())
+            && let Some((path, mode)) = line_range(&src, f, &ds.picked, first)
+            && ui.button(format!("{} History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len())).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
+        {
+            acts.push(Action::FileView(path, mode));
+        }
+        // Change lines only: a commit diff also picks context lines (for line history).
+        let n = file.map_or(0, |f| ds.picked.iter().filter(|&&(h, l)| f.hunks.get(h).and_then(|h| h.lines.get(l)).is_some_and(|l| matches!(l.kind, b'+' | b'-'))).count());
+        if let (true, Some(f)) = (partial && n > 0, file) {
             let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
             if !worktree {
                 if ui.button(format!("Revert {n} line(s)")).on_hover_text(REVERT_HINT).clicked() {
@@ -395,11 +445,13 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
                     Row::Line(hi, li) => {
                         let l = &f.hunks[hi].lines[li];
                         let picked = ds.picked.contains(&(hi, li));
-                        let pick = partial && matches!(l.kind, b'+' | b'-');
+                        let pick = l.kind != b'\\' && ((partial && l.kind != b' ') || !worktree);
                         let resp = ui.interact(rect, ui.id().with(("dl", r)), if pick { Sense::click_and_drag() } else { Sense::click() });
+                        // Commit diffs pick any line, for "History of these lines".
                         if pick {
                             pick_lines(ui, mem, &mut ds.picked, &rows, &tops, f, &resp, r, None, (hi, li));
                         }
+                        resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
                         paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), (cw, cols_u), colors);
                     }
@@ -414,11 +466,12 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
                                 continue;
                             };
                             let l = &h.lines[li];
-                            let pick = partial && matches!(l.kind, b'+' | b'-');
+                            let pick = l.kind != b'\\' && ((partial && l.kind != b' ') || !worktree);
                             let resp = ui.interact(side, ui.id().with(("sl", r, old)), if pick { Sense::click_and_drag() } else { Sense::click() });
                             if pick {
                                 pick_lines(ui, mem, &mut ds.picked, &rows, &tops, f, &resp, r, Some(old), (hi, li));
                             }
+                            resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                             let no = if old { l.old } else { l.new };
                             let colors = ds.hl.get(hi).and_then(|h| h.get(li));
                             let picked = ds.picked.contains(&(hi, li));
@@ -763,6 +816,30 @@ mod tests {
         assert_eq!(split.len(), 1 + 1 + 2);
         assert_eq!(kinds, [0, 0, b'~', 0]);
         assert!(matches!(split[3], Row::Pair(0, Some(2), Some(4))));
+    }
+
+    #[test]
+    fn line_history_range() {
+        let d = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,4 +1,4 @@\n a\n-b\n+B\n c\n d\n";
+        let f = &parse_diff(d)[0];
+        let change = crate::git::Change { path: "f".into(), old_path: Some("e".into()), code: 'R' };
+        let commit = DiffSrc::Commit { id: "c1".into(), parent: Some("p1".into()), change: change.clone() };
+        let lines = |rev: &str, start, end| Mode::Lines { rev: Some(rev.into()), start, end };
+        // Picked lines 0 (" a") and 4 (" d"): their new-side span at the commit.
+        let picked: BTreeSet<_> = [(0, 0), (0, 4)].into();
+        assert_eq!(line_range(&commit, f, &picked, (0, 4)), Some(("f".into(), lines("c1", 1, 4))));
+        // Right-click outside the picks: just that line.
+        assert_eq!(line_range(&commit, f, &picked, (0, 3)), Some(("f".into(), lines("c1", 3, 3))));
+        // Only a removed line: the parent's version, under the old name.
+        assert_eq!(line_range(&commit, f, &picked, (0, 1)), Some(("e".into(), lines("p1", 2, 2))));
+        // Compared with the working tree: the base's side.
+        let wt = DiffSrc::Commit { id: crate::git::WORKTREE.into(), parent: Some("p1".into()), change: change.clone() };
+        assert_eq!(line_range(&wt, f, &picked, (0, 3)), Some(("e".into(), lines("p1", 3, 3))));
+        let staged = DiffSrc::Worktree { change: change.clone(), staged: true };
+        assert_eq!(line_range(&staged, f, &picked, (0, 4)), Some(("e".into(), lines("HEAD", 1, 4))));
+        let unstaged = DiffSrc::Worktree { change, staged: false };
+        assert_eq!(line_range(&unstaged, f, &picked, (0, 2)), None); // an added line
+        assert_eq!(line_range(&unstaged, f, &picked, (0, 3)), Some(("e".into(), Mode::Lines { rev: None, start: 3, end: 3 })));
     }
 
     #[test]

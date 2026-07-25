@@ -482,7 +482,7 @@ impl RepoTab {
                         }
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != '?' {
-                            file_items(ui, &c.path, acts);
+                            file_items(ui, &c.path, None, acts);
                         }
                         if let Some(h) = d.status.head.as_deref().filter(|_| !matches!(c.code, '?' | 'A')) {
                             permalink_items(ui, d, h, &c.path, acts);
@@ -538,7 +538,7 @@ impl RepoTab {
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {
-                            file_items(ui, &c.path, acts);
+                            file_items(ui, &c.path, None, acts);
                         }
                         if let Some(h) = d.status.head.as_deref().filter(|_| c.code != 'A') {
                             permalink_items(ui, d, h, &c.path, acts);

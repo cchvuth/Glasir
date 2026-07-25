@@ -174,6 +174,8 @@ impl RepoTab {
             let untracked_id = format!("{}^3", info.id);
             let files = info.files.iter().map(|c| (c, &info.id, info.parents.first().cloned())).chain(info.untracked.iter().map(|c| (c, &untracked_id, None)));
             for (c, id, parent) in files {
+                // A deleted file is blamed as it was just before.
+                let blame_rev = if c.code == 'D' { parent.clone() } else { Some(id.clone()) };
                 let src = DiffSrc::Commit { id: id.clone(), parent, change: c.clone() };
                 let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)));
                 if resp.clicked() {
@@ -188,7 +190,7 @@ impl RepoTab {
                     if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
-                    file_items(ui, &c.path, acts);
+                    file_items(ui, &c.path, blame_rev.as_deref(), acts);
                     if let Some(d) = self.data.as_ref().filter(|_| !wt) {
                         open_items(ui, d, &info.id, &c.path, c.code == 'D', acts);
                     }
