@@ -62,7 +62,7 @@ pub use data::{RepoData, View};
 pub use diff::{DiffState, patch_op};
 pub use files::reveal;
 pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_files_op, unstage_op};
-pub use search::Search;
+pub use search::{MAX_HITS, Search};
 pub use task::Task;
 
 use crate::ai;
@@ -130,6 +130,10 @@ pub struct RepoTab {
     watcher: Option<(notify::RecommendedWatcher, Receiver<bool>)>,
     watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<bool>)>>>,
     pub search: Option<Search>,
+    /// Finding a jumped-to commit outside the loaded history: (id, its position in the log).
+    locate: Option<Task<Option<(String, usize)>>>,
+    /// That commit, scrolled to once a reload has brought it in.
+    jump_after: Option<String>,
     /// Extra selected commits (⌘/⇧-click), newest first; empty = single selection.
     pub multi: Vec<String>,
     /// Selected files of the WIP lists (⌘/⇧-click) as (staged, path): the target of S / U / Discard.
@@ -219,6 +223,8 @@ impl RepoTab {
             watcher_task: None,
             changed: None,
             search: None,
+            locate: None,
+            jump_after: None,
             multi: vec![],
             file_sel: vec![],
             rebase: None,
@@ -335,6 +341,14 @@ impl RepoTab {
                     if first {
                         self.prefill_template();
                     }
+                    if let Some(id) = &self.jump_after
+                        && let Some(&row) = self.shown().and_then(|d| d.row_of.get(id))
+                    {
+                        if self.sel.as_ref() == Some(&Sel::Commit(id.clone())) {
+                            self.scroll_to = Some(row);
+                        }
+                        self.jump_after = None;
+                    }
                     if bisect_moved && let Some(h) = &head {
                         self.apply(ctx, Action::Jump(h.clone()));
                     }
@@ -357,6 +371,11 @@ impl RepoTab {
             } else {
                 self.check_conflicts(ctx);
             }
+        }
+        if let Some(Some((id, pos))) = Task::poll(&mut self.locate) {
+            self.max_commits = self.max_commits.max((pos / PAGE + 1) * PAGE);
+            self.jump_after = Some(id);
+            self.reload(ctx, true);
         }
         if let Some(c) = Task::poll(&mut self.conflict_task) {
             self.conflicts = c;
@@ -400,6 +419,28 @@ impl RepoTab {
             }
         }
         self.sel = Some(sel);
+    }
+
+    /// The history the graph shows: the search results while "Filter graph to results" is on.
+    pub fn shown(&self) -> Option<&RepoData> {
+        self.search.as_ref().and_then(|s| s.filtered.as_deref()).or(self.data.as_ref())
+    }
+
+    /// Finds how deep in the (date-ordered) log `id` is, to load enough pages to show it.
+    fn locate(&mut self, ctx: &egui::Context, id: String) {
+        let (dir, revs) = (self.dir.clone(), self.view.revs());
+        self.locate = Some(Task::spawn(ctx, move || {
+            let mut args = vec!["log", "--date-order", "-z", "--format=%H"];
+            args.extend(revs.iter().map(String::as_str));
+            args.push("--");
+            let (mut n, mut found) = (0, false);
+            let _ = git::stream(&dir, &args, |h| {
+                found = h == id;
+                n += !found as usize;
+                !found
+            });
+            found.then_some((id, n))
+        }));
     }
 
     fn compare_query(&mut self, ctx: &egui::Context, from: String, to: String, three_dot: bool) {
@@ -465,7 +506,10 @@ impl RepoTab {
                 }
             }
             Action::Jump(id) => {
-                self.scroll_to = self.data.as_ref().and_then(|d| d.row_of.get(&id).copied());
+                self.scroll_to = self.shown().and_then(|d| d.row_of.get(&id).copied());
+                if self.scroll_to.is_none() && self.shown().is_some_and(|d| d.truncated) {
+                    self.locate(ctx, id.clone());
+                }
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Ai(p) => self.start_ai(ctx, p),
@@ -685,6 +729,28 @@ mod tests {
         t.apply(&ctx, Action::Git(Op::new("Stage", &["add", "f"]).light()));
         wait(&ctx, &mut t, |t| t.running.is_none());
         assert!(t.diff.as_ref().unwrap().loading());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A search hit (or any jump) beyond the loaded pages loads enough history to show it.
+    #[test]
+    fn jump_loads_history_up_to_the_commit() {
+        let dir = scratch("jump-load");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for i in 0..5 {
+            commit(&dir, "f", &format!("{i}\n"));
+        }
+        let first = sh(&dir, &["rev-list", "--max-parents=0", "HEAD"]).trim().to_owned();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 2, View::default());
+        settle(&ctx, &mut t);
+        assert!(!t.data.as_ref().unwrap().row_of.contains_key(&first));
+        t.apply(&ctx, Action::Jump(first.clone()));
+        wait(&ctx, &mut t, |t| t.scroll_to.is_some());
+        let d = t.data.as_ref().unwrap();
+        assert_eq!(t.scroll_to, d.row_of.get(&first).copied());
+        assert_eq!(t.sel, Some(Sel::Commit(first)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

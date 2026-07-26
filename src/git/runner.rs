@@ -230,6 +230,62 @@ pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8
     Err(if msg.is_empty() { format!("{prog} {} failed ({status})", args.join(" ")) } else { msg.to_owned() })
 }
 
+/// Runs git, handing each NUL-terminated stdout record to `each` as it arrives (a long
+/// history search shows its first hits at once); `each` returning false stops git.
+/// Cancellable through [`Cancel::scope`] like [`run`].
+pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> Res<()> {
+    let cancel = SCOPE.with_borrow(Clone::clone).unwrap_or_default();
+    if cancel.0.lock().unwrap().0 {
+        return Err(CANCELLED.into());
+    }
+    let start = Instant::now();
+    let mut c = cmd(dir);
+    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = c.spawn().map_err(|e| format!("could not run git: {e}"))?;
+    let err = read_all(child.stderr.take().unwrap(), None);
+    let mut out = child.stdout.take().unwrap();
+    let early = {
+        let mut g = cancel.0.lock().unwrap();
+        g.1 = Some(child.id());
+        g.0
+    };
+    if early {
+        cancel.cancel();
+    }
+    let (mut buf, mut chunk, mut stopped) = (vec![], [0u8; 65536], false);
+    'read: while let Ok(n @ 1..) = out.read(&mut chunk) {
+        buf.extend_from_slice(&chunk[..n]);
+        let mut at = 0;
+        while let Some(i) = buf[at..].iter().position(|&b| b == 0) {
+            if !each(&String::from_utf8_lossy(&buf[at..at + i])) {
+                stopped = true;
+                let _ = child.kill();
+                break 'read;
+            }
+            at += i + 1;
+        }
+        buf.drain(..at);
+    }
+    if !stopped && !buf.is_empty() {
+        each(&String::from_utf8_lossy(&buf));
+    }
+    drop(out);
+    let status = child.wait().map_err(|e| e.to_string());
+    let cancelled = {
+        let mut g = cancel.0.lock().unwrap();
+        g.1 = None;
+        g.0
+    };
+    let status = status?;
+    let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
+    record(dir, "git", args, start, status.code(), &stderr);
+    match () {
+        _ if cancelled => Err(CANCELLED.into()),
+        _ if stopped || status.success() => Ok(()),
+        _ => Err(if stderr.trim().is_empty() { format!("git {} failed ({status})", args.join(" ")) } else { stderr.trim().to_owned() }),
+    }
+}
+
 /// `taskkill /F` skips git's cleanup: remove the index.lock the killed git created.
 #[cfg(windows)]
 fn drop_index_lock(dir: &Path, since: std::time::SystemTime) {

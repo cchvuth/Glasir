@@ -49,6 +49,8 @@ pub struct Settings {
     pub avatars: bool,
     /// Cherry-picks add a "(cherry picked from commit …)" line (`-x`).
     pub cherry_pick_x: bool,
+    /// Recent ⌘F searches, newest first.
+    pub search_history: Vec<String>,
 }
 
 impl Default for Settings {
@@ -77,6 +79,7 @@ impl Default for Settings {
             tips: true,
             avatars: true,
             cherry_pick_x: false,
+            search_history: vec![],
         }
     }
 }

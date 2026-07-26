@@ -9,6 +9,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("⌘P / ⌘K", "Command palette"),
     ("? / ⌘/", "Keyboard shortcuts"),
     ("⌘F", "Search commits"),
+    ("F3 / ⇧F3", "Next / previous search match"),
     ("⌘Z / ⇧⌘Z", "Undo / redo"),
     ("⌘↩ / ⇧⌘↩", "Commit / stage all and commit"),
     ("⇧⌘M", "Focus the commit summary"),

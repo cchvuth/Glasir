@@ -179,10 +179,13 @@ impl App {
                             t.apply(&ctx.clone(), Action::Ai(p));
                         }
                     }
-                    q if q.starts_with("search:") => {
+                    // `search:<query>`, or `searchf:<query>` with "Filter graph to results" on.
+                    q if q.starts_with("search:") || q.starts_with("searchf:") => {
+                        self.s.search_history = vec!["author:ann".into(), "path:src/main.rs".into()];
                         if let Some(t) = self.tabs.get_mut(self.active) {
-                            let mut s = Search::open();
-                            s.query = q["search:".len()..].into();
+                            let mut s = Search::open(t.dir.clone());
+                            let (kind, query) = q.split_once(':').unwrap();
+                            (s.query, s.filter) = (query.into(), kind == "searchf");
                             t.search = Some(s);
                         }
                     }

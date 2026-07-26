@@ -52,7 +52,10 @@ The name fits a Git client:
 - **Hide / Solo** branches, **first-parent** view.
 - **Stashes** drawn next to the commit they were made on.
 - **Minimap rail** with markers for HEAD, selection, WIP, search hits and branch tips.
-- **⌘F search** by message, author, email or SHA: non-matches fade, ↩ / ⇧↩ jump.
+- **⌘F search across all history**, not just the loaded commits: free text matches message, author or SHA;
+  operators `author:` `committer:` `message:` `path:` `code:` (added/removed) `regex:` (changed lines)
+  `after:` `before:` `merges` `no-merges`. Hits stream in ("3 of 17"), non-matches fade, ↩ / F3 step
+  (loading older history as needed), a funnel filters the graph to the results; match case and recent searches.
 - **Multi-select** with ⌘-click / ⇧-click: cherry-pick, squash, revert or drop
   several commits, compare oldest ↔ newest, copy SHAs.
 
@@ -300,6 +303,7 @@ token saved by an older version may ask once: choose **Always Allow**).
 | ⌘P / ⌘K | Command palette |
 | ? / ⌘/ | Keyboard shortcuts |
 | ⌘F | Search commits |
+| F3 / ⇧F3 | Next / previous search match |
 | ⌘Z / ⇧⌘Z | Undo / redo |
 | ⌘↩ / ⇧⌘↩ | Commit / stage all and commit |
 | ⇧⌘M | Focus the commit summary |

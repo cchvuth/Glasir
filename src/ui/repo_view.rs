@@ -87,7 +87,20 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                                 t.reflog = None;
                             }
                         }
-                        (None, None) => graph_view::show(ui, t.data.as_ref().unwrap(), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, &mut acts),
+                        (None, None) => {
+                            let d = t.data.as_ref().unwrap();
+                            if let Some(se) = &mut t.search {
+                                se.history.clone_from(&s.search_history);
+                                se.poll(&ctx, d);
+                            }
+                            let filtered = t.search.as_ref().and_then(|se| se.filtered.clone());
+                            graph_view::show(ui, filtered.as_deref().unwrap_or(d), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, &mut acts);
+                            if let Some(se) = &t.search
+                                && se.history != s.search_history
+                            {
+                                s.search_history.clone_from(&se.history);
+                            }
+                        }
                     }
                 })
             });

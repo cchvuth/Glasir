@@ -161,7 +161,7 @@ impl App {
         }
         if cmd && pressed(Key::F) {
             t.diff = None;
-            t.search = Some(Search::open());
+            t.search.get_or_insert_with(|| Search::open(t.dir.clone())).focus = true;
         }
         if cmd && shift && pressed(Key::S) {
             act = t.data.as_ref().and_then(|d| crate::repo::stage_all_op(&d.status)).map(Action::Git).or(act);

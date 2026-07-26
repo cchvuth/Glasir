@@ -66,7 +66,7 @@ impl View {
     }
 
     /// `git log` revisions: the soloed refs, or every branch/remote/tag minus the hidden ones, plus HEAD.
-    fn revs(&self) -> Vec<String> {
+    pub(crate) fn revs(&self) -> Vec<String> {
         let mut a: Vec<String> = self.first_parent.then(|| "--first-parent".to_owned()).into_iter().collect();
         if !self.solo.is_empty() {
             a.push("--ignore-missing".into());
