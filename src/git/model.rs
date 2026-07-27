@@ -96,6 +96,9 @@ pub enum State {
     Applying,
 }
 
+/// Added / deleted lines per path (`None`: binary), from `git::numstat`.
+pub type Stats = std::collections::HashMap<String, Option<(u32, u32)>>;
+
 #[derive(Clone, Debug, Default)]
 pub struct CommitInfo {
     pub id: String,
@@ -103,10 +106,17 @@ pub struct CommitInfo {
     pub author: String,
     pub email: String,
     pub date: String,
+    pub time: i64,
     pub committer: String,
+    pub committer_email: String,
     pub committer_date: String,
+    pub committer_time: i64,
     pub message: String,
+    /// `Co-authored-by:` trailers as (name, email).
+    pub coauthors: Vec<(String, String)>,
     pub files: Vec<Change>,
+    /// Line counts, merged in after the list is shown.
+    pub stats: Stats,
     /// A stash's untracked files (its third parent), shown after `files`.
     pub untracked: Vec<Change>,
     /// Signature check (`%G?`): G good, U good but untrusted/unknown signer, X/Y expired

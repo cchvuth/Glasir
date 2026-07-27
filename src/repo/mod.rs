@@ -89,6 +89,8 @@ pub struct RepoTab {
     pub sel: Option<Sel>,
     pub info: Option<Res<CommitInfo>>,
     info_task: Option<Task<Res<CommitInfo>>>,
+    /// Line counts for `info`'s commit (its id), merged in when ready.
+    stats_task: Option<Task<(String, git::Stats)>>,
     pub diff: Option<DiffState>,
     /// Whitespace / context options for every diff opened in this tab.
     pub diff_opts: git::DiffOpts,
@@ -192,6 +194,7 @@ impl RepoTab {
             sel: None,
             info: None,
             info_task: None,
+            stats_task: None,
             diff: None,
             diff_opts: Default::default(),
             running: None,
@@ -382,7 +385,20 @@ impl RepoTab {
         }
         msgs.extend(Task::poll(&mut self.verify_task));
         if let Some(r) = Task::poll(&mut self.info_task) {
+            if let Ok(i) = &r {
+                let (dir, id, base) = (self.dir.clone(), i.id.clone(), i.parents.first().cloned());
+                self.stats_task = Some(Task::spawn(ctx, move || {
+                    let s = git::numstat(&dir, base.as_deref(), &id).unwrap_or_default();
+                    (id, s)
+                }));
+            }
             self.info = Some(r);
+        }
+        if let Some((id, s)) = Task::poll(&mut self.stats_task)
+            && let Some(Ok(i)) = &mut self.info
+            && i.id == id
+        {
+            i.stats = s;
         }
         if let Some(d) = &mut self.doctor {
             d.poll();

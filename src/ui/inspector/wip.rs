@@ -366,7 +366,7 @@ impl RepoTab {
                     });
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0); // type label hugs its row
                     for c in &s.conflicted {
-                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path));
+                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path), None);
                         let (kind, has) = crate::git::conflict_kind(s.conflict_xy.get(&c.path).map_or("", String::as_str));
                         ui.horizontal(|ui| {
                             ui.add_space(22.0);
@@ -439,7 +439,7 @@ impl RepoTab {
                 for (i, c) in s.unstaged.iter().enumerate() {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: false };
                     let in_sel = picked(&self.file_sel, false, &c.path);
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path));
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None);
                     let stage_one = || stage_files_op("Stage", std::slice::from_ref(c)).map(Action::Git);
                     if !busy && row_button(ui, &resp, icon::PLUS, "Stage") {
                         acts.extend(stage_one());
@@ -513,7 +513,7 @@ impl RepoTab {
                 for (i, c) in s.staged.iter().enumerate() {
                     let src = DiffSrc::Worktree { change: c.clone(), staged: true };
                     let in_sel = picked(&self.file_sel, true, &c.path);
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path));
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None);
                     if !busy && row_button(ui, &resp, icon::MINUS, "Unstage") {
                         acts.push(Action::Git(crate::repo::unstage_op(c)));
                     } else if resp.clicked() && pick_file(&mut self.file_sel, &s.staged, true, i, mods) {

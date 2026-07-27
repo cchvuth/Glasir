@@ -32,6 +32,13 @@ pub fn relative_time(t: i64, fallback: &str) -> String {
     if age(t) < 7 * 86400 { ago(t) } else { fallback.into() }
 }
 
+/// "3 modified, 1 added, 2 deleted".
+pub fn change_summary(files: &[crate::git::Change]) -> String {
+    let kinds: [(&[char], &str); 6] = [(&['M'], "modified"), (&['A', '?'], "added"), (&['D'], "deleted"), (&['R'], "renamed"), (&['C'], "copied"), (&['T'], "type changed")];
+    let parts: Vec<_> = kinds.iter().map(|(cs, w)| (files.iter().filter(|c| cs.contains(&c.code)).count(), w)).filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
+    parts.join(", ")
+}
+
 /// 512 -> "512 B", 1572864 -> "1.5 MB".
 pub fn bytes(n: u64) -> String {
     let mut v = n as f64;
@@ -86,6 +93,13 @@ mod tests {
         assert_eq!(super::visible(&t, 15.0, 45.0), 1..3);
         assert_eq!(super::visible(&t, 40.0, 100.0), 2..3);
         assert_eq!(super::visible(&super::tops(10.0, std::iter::empty()), 0.0, 100.0), 0..0);
+    }
+
+    #[test]
+    fn summary_counts() {
+        let c = |code| crate::git::Change { path: "p".into(), old_path: None, code };
+        assert_eq!(super::change_summary(&[c('M'), c('A'), c('M'), c('D'), c('D'), c('M'), c('?')]), "3 modified, 2 added, 2 deleted");
+        assert_eq!(super::change_summary(&[]), "");
     }
 
     #[test]

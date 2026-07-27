@@ -1,7 +1,7 @@
 //! Read-only queries (log, refs, status, stashes, remotes, commit details,
 //! worktrees, conflict prediction) and the parsers for their output.
 
-use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, State, Status, Worktree, cmd, run};
+use super::{Change, Commit, CommitInfo, Ref, RefKind, Res, Stash, State, Stats, Status, Worktree, cmd, run};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -250,13 +250,56 @@ fn parse_name_status(out: &str) -> Vec<Change> {
     files
 }
 
+/// `diff-tree --numstat -z`: `added\tdeleted\tpath\0`, or `added\tdeleted\t\0old\0new\0` for a rename.
+fn parse_numstat(out: &str) -> Stats {
+    let mut stats = Stats::new();
+    let mut it = out.split('\0').filter(|s| !s.is_empty());
+    while let Some(rec) = it.next() {
+        let mut f = rec.splitn(3, '\t');
+        let (Some(a), Some(d), Some(p)) = (f.next(), f.next(), f.next()) else { continue };
+        let path = if p.is_empty() {
+            let _old = it.next();
+            let Some(new) = it.next() else { break };
+            new
+        } else {
+            p
+        };
+        stats.insert(path.into(), a.parse().ok().zip(d.parse().ok()));
+    }
+    stats
+}
+
+/// Line counts of `id` against `base` (`None`: a root commit). Slow on huge commits, so run it off the UI thread.
+pub fn numstat(dir: &Path, base: Option<&str>, id: &str) -> Res<Stats> {
+    let out = match (id, base) {
+        // A comparison with the working tree: the files on disk against `base`.
+        (WORKTREE, Some(b)) => run(dir, &["diff", "-z", "-M", "--numstat", b])?,
+        _ => run(dir, &["diff-tree", "-r", "-z", "-M", "--numstat", "--no-commit-id", base.unwrap_or("--root"), id])?,
+    };
+    Ok(parse_numstat(&out))
+}
+
+/// `Co-authored-by: Name <email>` lines of a commit message.
+fn parse_coauthors(msg: &str) -> Vec<(String, String)> {
+    msg.lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            if !k.trim().eq_ignore_ascii_case("co-authored-by") {
+                return None;
+            }
+            let (name, email) = v.rsplit_once('<').map_or((v, ""), |(n, e)| (n, e.trim_end().trim_end_matches('>')));
+            Some((name.trim().into(), email.trim().into()))
+        })
+        .collect()
+}
+
 pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {
     let out = run(
         dir,
-        &["show", "-s", DATE_FORMAT, "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd%x1f%G?%x1f%GS%x1f%GK%x1f%B", id, "--"],
+        &["show", "-s", DATE_FORMAT, "--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd%x1f%G?%x1f%GS%x1f%GK%x1f%at%x1f%ct%x1f%B", id, "--"],
     )?;
-    let f: Vec<&str> = out.splitn(12, '\x1f').collect();
-    if f.len() < 12 {
+    let f: Vec<&str> = out.splitn(14, '\x1f').collect();
+    if f.len() < 14 {
         return Err(format!("unexpected output for {id}"));
     }
     let parents: Vec<String> = f[1].split_whitespace().map(Into::into).collect();
@@ -273,11 +316,16 @@ pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {
         author: f[2].into(),
         email: f[3].into(),
         date: f[4].into(),
+        time: f[11].parse().unwrap_or(0),
         committer: f[5].into(),
+        committer_email: f[6].into(),
         committer_date: f[7].into(),
-        message: f[11].trim_end().into(),
+        committer_time: f[12].parse().unwrap_or(0),
+        coauthors: parse_coauthors(f[13]),
+        message: f[13].trim_end().into(),
         files,
         untracked: vec![],
+        stats: Stats::new(),
         sig: sig_code(f[8], || run(dir, &["cat-file", "commit", f[0]]).unwrap_or_default()),
         signer: f[9].into(),
         key: f[10].into(),
@@ -448,6 +496,59 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         assert_eq!(conflict_kind("AU"), ("Added by us", [true, false]));
         assert_eq!(conflict_kind("UA"), ("Added by them", [false, true]));
         assert_eq!(conflict_kind("??").0, "Conflicted");
+    }
+
+    #[test]
+    fn numstat_records() {
+        let out = "3\t1\tsrc/a b.rs\0-\t-\timg.png\00\t0\t\0old.rs\0new.rs\0";
+        let s = parse_numstat(out);
+        assert_eq!((s["src/a b.rs"], s["img.png"], s["new.rs"]), (Some((3, 1)), None, Some((0, 0))));
+        assert_eq!(s.len(), 3);
+        assert!(parse_numstat("").is_empty());
+    }
+
+    #[test]
+    fn coauthor_trailers() {
+        let msg = "Fix it\n\nBody: text\n\nCo-authored-by: Ann Lee <ann@x.example>\nco-authored-by:Bo <bo@y>\nSigned-off-by: Me <me@z>\nCo-authored-by: No Mail\n";
+        assert_eq!(parse_coauthors(msg), [("Ann Lee".into(), "ann@x.example".into()), ("Bo".into(), "bo@y".into()), ("No Mail".into(), String::new())]);
+        assert!(parse_coauthors("plain").is_empty());
+    }
+
+    #[test]
+    fn commit_info_details_and_numstat() {
+        let dir = std::env::temp_dir().join(format!("glasir-details-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "T"]);
+        g(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("old.txt"), "1\n2\n3\n4\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "x\ny\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "one"]);
+        let root = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        g(&["mv", "old.txt", "new.txt"]);
+        std::fs::write(dir.join("new.txt"), "1\n2\n3\n4\n5\n").unwrap();
+        g(&["rm", "-q", "gone.txt"]);
+        std::fs::write(dir.join("added.txt"), "a\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "two\n\nCo-authored-by: Ann <ann@x>"]);
+        let info = commit_info(&dir, "HEAD").unwrap();
+        assert_eq!(info.coauthors, [("Ann".into(), "ann@x".into())]);
+        assert!(info.time > 0 && info.committer_time > 0 && info.committer_email == "t@t");
+        let s = numstat(&dir, info.parents.first().map(String::as_str), &info.id).unwrap();
+        assert_eq!((s["new.txt"], s["gone.txt"], s["added.txt"]), (Some((1, 0)), Some((0, 2)), Some((1, 0))));
+        assert_eq!(s.len(), 3);
+        // Root commit: everything is added.
+        let s = numstat(&dir, None, &root).unwrap();
+        assert_eq!((s["old.txt"], s["gone.txt"]), (Some((4, 0)), Some((2, 0))));
+        // Against the working tree: unstaged edits count too.
+        std::fs::write(dir.join("added.txt"), "a\nb\nc\n").unwrap();
+        let s = numstat(&dir, Some(&info.id), WORKTREE).unwrap();
+        assert_eq!((s["added.txt"], s.len()), (Some((2, 0)), 1));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::git::{Change, CommitInfo};
 use crate::repo::restore::restore_file;
 use crate::repo::{Action, DiffSrc, RepoData, RepoTab, Sel};
 use crate::theme::{self, icon};
-use crate::ui::format::initials;
+use crate::ui::format::{ago, change_summary, initials};
 use egui::{Color32, RichText, ScrollArea, Sense, Ui};
 
 /// Message text with `#123` / `GH-123` linked to the pull request (or issue) on `web`.
@@ -31,6 +31,18 @@ fn linked(ui: &mut Ui, text: &str, web: Option<&str>, style: impl Fn(&str) -> Ri
             }
         }
     });
+}
+
+/// A round author picture: the GitHub avatar when loaded, else colored initials.
+fn avatar(ui: &mut Ui, avatars: &crate::repo::avatars::Avatars, name: &str, email: &str, r: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(r * 2.0, r * 2.0), Sense::hover());
+    ui.painter().circle_filled(rect.center(), r, theme::avatar(email));
+    match avatars.get(email) {
+        Some(t) => theme::photo(ui.painter(), rect.center(), r, &t, 1.0),
+        None => {
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials(name), egui::FontId::proportional(r * 0.8), Color32::WHITE);
+        }
+    }
 }
 
 /// Restore a commit's file into the working tree: as it is in `id`, or as it
@@ -99,8 +111,14 @@ impl RepoTab {
                 ui.label(RichText::new(if compare.is_some() { "to" } else { "commit" }).color(theme::dim(ui)));
                 if wt {
                     ui.label(RichText::new("working tree").monospace());
-                } else if ui.link(RichText::new(&info.id[..info.id.len().min(10)]).monospace()).on_hover_text("Copy full SHA").clicked() {
-                    acts.push(Action::Copy(info.id.clone()));
+                } else {
+                    let short = &info.id[..info.id.len().min(7)];
+                    if ui.link(RichText::new(short).monospace()).on_hover_text("Copy short SHA").clicked() {
+                        acts.push(Action::Copy(short.into()));
+                    }
+                    if ui.link(icon::COPY).on_hover_text(format!("Copy full SHA\n{}", info.id)).clicked() {
+                        acts.push(Action::Copy(info.id.clone()));
+                    }
                 }
                 if !info.parents.is_empty() {
                     ui.label(RichText::new(if compare.is_some() { "base" } else { "parent" }).color(theme::dim(ui)));
@@ -147,37 +165,56 @@ impl RepoTab {
                 None => {}
             }
             ui.add_space(8.0);
-            if compare.is_none() { ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(30.0, 30.0), Sense::hover());
-                ui.painter().circle_filled(rect.center(), 15.0, theme::avatar(&info.email));
-                match self.avatars.get(&info.email) {
-                    Some(t) => theme::photo(ui.painter(), rect.center(), 15.0, &t, 1.0),
-                    None => {
-                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials(&info.author), egui::FontId::proportional(12.0), Color32::WHITE);
-                    }
-                }
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(&info.author).strong()).on_hover_text(&info.email);
-                    ui.label(RichText::new(format!("authored {}", info.date)).small().color(theme::dim(ui)));
-                    if info.committer != info.author {
-                        ui.label(RichText::new(format!("committed by {} {}", info.committer, info.committer_date)).small().color(theme::dim(ui)));
-                    }
-                    sig_badge(ui, info);
+            if compare.is_none() {
+                ui.horizontal(|ui| {
+                    avatar(ui, &self.avatars, &info.author, &info.email, 15.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(&info.author).strong()).on_hover_text(&info.email);
+                        ui.label(RichText::new(format!("authored {} · {}", info.date, ago(info.time))).small().color(theme::dim(ui)));
+                        if info.committer != info.author || info.committer_email != info.email {
+                            ui.label(RichText::new(format!("committed by {} {} · {}", info.committer, info.committer_date, ago(info.committer_time))).small().color(theme::dim(ui)))
+                                .on_hover_text(&info.committer_email);
+                        }
+                        sig_badge(ui, info);
+                    });
                 });
-            }); }
+                for (name, email) in &info.coauthors {
+                    ui.horizontal(|ui| {
+                        avatar(ui, &self.avatars, name, email, 9.0);
+                        ui.label(RichText::new(format!("co-authored by {name}")).small().color(theme::dim(ui))).on_hover_text(email);
+                    });
+                }
+            }
             ui.add_space(8.0);
             ui.add_space(2.0);
             let n = info.files.len() + info.untracked.len();
             ui.label(RichText::new(format!("{n} changed file{}", if n == 1 { "" } else { "s" })).small().strong());
             let stash = self.data.as_ref().filter(|d| d.stashes.iter().any(|s| s.id == info.id));
+            let mut summary = change_summary(&info.files.iter().chain(&info.untracked).cloned().collect::<Vec<_>>());
+            let (add, del) = info.stats.values().flatten().fold((0, 0), |t, s| (t.0 + s.0, t.1 + s.1));
+            if add + del > 0 {
+                summary += &format!(" · +{add} -{del}");
+            }
+            ui.label(RichText::new(summary).small().color(theme::dim(ui)));
+            if compare.is_none() && stash.is_none() && info.parents.len() > 1 {
+                ui.label(RichText::new("Merge commit: changes are against the first parent").small().color(theme::dim(ui)));
+            }
             // A stash's untracked files live in its third parent, a root commit.
             let untracked_id = format!("{}^3", info.id);
             let files = info.files.iter().map(|c| (c, &info.id, info.parents.first().cloned())).chain(info.untracked.iter().map(|c| (c, &untracked_id, None)));
-            for (c, id, parent) in files {
+            // Only the rows in view are built, so a 10k-file commit stays cheap.
+            let files: Vec<_> = files.collect();
+            let total = files.len();
+            let step = 24.0 + ui.spacing().item_spacing.y;
+            let (top, clip) = (ui.cursor().top(), ui.clip_rect());
+            let first = (((clip.top() - top) / step).floor().max(0.0) as usize).min(files.len());
+            let last = (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(files.len());
+            ui.add_space(first as f32 * step);
+            for (c, id, parent) in files[first..last].iter().cloned() {
                 // A deleted file is blamed as it was just before.
                 let blame_rev = if c.code == 'D' { parent.clone() } else { Some(id.clone()) };
                 let src = DiffSrc::Commit { id: id.clone(), parent, change: c.clone() };
-                let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)));
+                let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)), info.stats.get(&c.path).copied());
                 if resp.clicked() {
                     acts.push(Action::Diff(src));
                 }
@@ -202,6 +239,7 @@ impl RepoTab {
                     }
                 });
             }
+            ui.add_space((total - last) as f32 * step);
         });
     }
 }

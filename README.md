@@ -43,6 +43,11 @@ The name fits a Git client:
   credential helper already has for it (never prompts; public github.com works
   without one). Cached on disk for a week; initials otherwise. Settings → "Show
   GitHub avatars" turns it off, with no avatar requests at all.
+- **Commit details**: author and committer (when different) with absolute and
+  relative dates, `Co-authored-by` trailers as co-authors, copy short or full SHA,
+  a "3 modified, 1 added" summary and per-file `+/-` line counts (loaded in the
+  background); renames read `old → new`, and the file list is virtualised so
+  10k-file commits stay smooth.
 - Branch, remote and tag **pills** joined to their commits (`+N` when several),
   with their own right-click menus; worktree branches get a tree icon.
 - Loads the latest 1,000 commits for a fast start; **Load 1,000 more** at the

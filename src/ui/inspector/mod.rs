@@ -126,8 +126,9 @@ pub fn row_button(ui: &Ui, row: &egui::Response, glyph: &str, label: &str) -> bo
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-/// A file row: colored status letter, file name, an LFS badge, dimmed directory.
-pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool) -> egui::Response {
+/// A file row: colored status letter, file name (`old → new` for a rename), an LFS
+/// badge, dimmed directory and, when known, the +/- line counts (`Some(None)`: binary).
+pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option<Option<(u32, u32)>>) -> egui::Response {
     let (dir, file) = c.path.rsplit_once('/').map_or(("", c.path.as_str()), |(d, f)| (d, f));
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::click());
@@ -136,8 +137,24 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool) -> egui::Res
     } else if hovering(ui, rect) {
         ui.painter().rect_filled(rect, 8.0, theme::hover(ui));
     }
-    let p = ui.painter().with_clip_rect(rect);
     let y = rect.center().y;
+    let mut right = rect.right() - 6.0;
+    let counts = match stat {
+        Some(Some((a, d))) => [(a, '+', theme::ADD), (d, '-', theme::DEL)].into_iter().filter(|c| c.0 > 0).map(|(n, s, col)| (format!("{s}{n}"), col)).collect(),
+        Some(None) => vec![("bin".to_owned(), theme::dim(ui))],
+        None => vec![],
+    };
+    // Right to left, so "+a -d" reads in order.
+    for (t, col) in counts.into_iter().rev() {
+        right = ui.painter().text(egui::pos2(right, y), egui::Align2::RIGHT_CENTER, t, egui::FontId::monospace(11.0), col).left() - 6.0;
+    }
+    let p = ui.painter().with_clip_rect(egui::Rect::from_min_max(rect.min, egui::pos2(right, rect.max.y)));
+    let file = &match &c.old_path {
+        // Same folder: just the names, otherwise the old full path.
+        Some(o) if o.rsplit_once('/').map_or("", |d| d.0) == dir => format!("{} → {file}", o.rsplit('/').next().unwrap_or(o)),
+        Some(o) => format!("{o} → {file}"),
+        None => file.to_owned(),
+    };
     let code = if c.code == '?' { 'A' } else { c.code };
     p.text(egui::pos2(rect.left() + 6.0, y), egui::Align2::LEFT_CENTER, code, egui::FontId::monospace(12.0), theme::change_color(c.code));
     let mut r = p.text(egui::pos2(rect.left() + 22.0, y), egui::Align2::LEFT_CENTER, file, egui::FontId::proportional(13.0), theme::text(ui));
