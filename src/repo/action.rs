@@ -90,6 +90,8 @@ pub enum Action {
     Cleanup,
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },
+    /// Replace a commit's message on the current branch (HEAD: amend; older: rebase), undoable.
+    Reword { commit: String, message: String },
     AmendInto(String),
     /// Plan absorbing the staged hunks into the commits they belong to (preview first).
     Absorb,

@@ -118,7 +118,8 @@ The name fits a Git client:
 - **Interactive rebase editor**: pick, reword, squash, fixup, drop and reorder,
   with single-key shortcuts.
 - **One-click history edits**: reword, squash into parent, drop, or
-  **amend staged changes into any older commit**.
+  **amend staged changes into any older commit**, or click a commit's message
+  in its details to **edit it inline** (⌘↩ saves; warns before rewriting pushed commits).
 - **Absorb staged changes**: each staged hunk becomes a fixup of the unpushed
   commit that last changed its lines and is folded in; a preview lists hunk →
   commit first, ambiguous hunks stay staged, one undo step.

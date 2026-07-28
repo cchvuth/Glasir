@@ -5,23 +5,26 @@ use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::{Change, CommitInfo};
 use crate::repo::restore::restore_file;
-use crate::repo::{Action, DiffSrc, RepoData, RepoTab, Sel};
+use crate::repo::{Action, DiffSrc, MsgEdit, RepoData, RepoTab, Sel};
 use crate::theme::{self, icon};
 use crate::ui::format::{ago, change_summary, initials};
-use egui::{Color32, RichText, ScrollArea, Sense, Ui};
+use egui::{Color32, Label, Response, RichText, ScrollArea, Sense, TextEdit, Ui};
 
 /// Message text with `#123` / `GH-123` linked to the pull request (or issue) on `web`.
-fn linked(ui: &mut Ui, text: &str, web: Option<&str>, style: impl Fn(&str) -> RichText, acts: &mut Vec<Action>) {
+/// The response covers the plain text (not the links), for click-to-edit.
+fn linked(ui: &mut Ui, text: &str, web: Option<&str>, style: impl Fn(&str) -> RichText, acts: &mut Vec<Action>) -> Response {
+    let plain = |ui: &mut Ui, s: &str| ui.add(Label::new(style(s)).sense(Sense::click()));
     let parts = crate::git::autolinks(text);
     let Some(web) = web.filter(|_| parts.iter().any(|p| p.1.is_some())) else {
-        ui.label(style(text));
-        return;
+        return plain(ui, text);
     };
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
+        let mut resp: Option<Response> = None;
         for (s, n) in parts {
             let Some(n) = n else {
-                ui.label(style(s));
+                let r = plain(ui, s);
+                resp = Some(resp.take().map_or(r.clone(), |p| p.union(r)));
                 continue;
             };
             let url = format!("{web}/pull/{n}");
@@ -30,7 +33,31 @@ fn linked(ui: &mut Ui, text: &str, web: Option<&str>, style: impl Fn(&str) -> Ri
                 acts.push(Action::Url(url));
             }
         }
-    });
+        resp
+    })
+    .inner
+    .unwrap_or_else(|| ui.label(""))
+}
+
+/// Click-to-edit affordance for a message part: a faint highlight and pencil on hover, and a
+/// tooltip that says why editing isn't possible when it isn't. True when clicked and allowed.
+fn editable(ui: &mut Ui, r: &Response, why_not: Option<&str>) -> bool {
+    if r.hovered() {
+        let rect = r.rect.expand2(egui::vec2(4.0, 2.0));
+        ui.painter().rect_filled(rect, 4.0, theme::dim(ui).gamma_multiply(0.12));
+        ui.painter().text(
+            egui::pos2(ui.max_rect().right() - 4.0, rect.top() + 2.0),
+            egui::Align2::RIGHT_TOP,
+            icon::PENCIL_SIMPLE,
+            egui::FontId::proportional(13.0),
+            theme::dim(ui),
+        );
+        ui.ctx().set_cursor_icon(if why_not.is_some() { egui::CursorIcon::NotAllowed } else { egui::CursorIcon::Text });
+        egui::Tooltip::for_enabled(r).show(|ui| {
+            ui.label(why_not.unwrap_or("Click to edit message"));
+        });
+    }
+    r.clicked() && why_not.is_none()
 }
 
 /// A round author picture: the GitHub avatar when loaded, else colored initials.
@@ -104,6 +131,7 @@ impl RepoTab {
                 return;
             }
         };
+        let busy = self.busy().is_some();
         let open = self.diff.as_ref().map(|d| d.src.clone());
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(6.0);
@@ -132,10 +160,25 @@ impl RepoTab {
             ui.add_space(6.0);
             let (summary, body) = info.message.split_once('\n').unwrap_or((&info.message, ""));
             let web = self.data.as_ref().and_then(|d| d.web());
-            linked(ui, summary, web.as_deref(), |s| RichText::new(s).heading().strong(), acts);
-            if !body.trim().is_empty() {
-                ui.add_space(4.0);
-                linked(ui, body.trim(), web.as_deref(), |s| RichText::new(s), acts);
+            if self.edit_msg.as_ref().is_some_and(|e| e.id == info.id) && compare.is_none() {
+                msg_editor(ui, &mut self.edit_msg, busy, acts);
+            } else {
+                // Eligibility is only worked out while the message is hovered or clicked.
+                let why_not = |hit: &Response| match (&compare, hit.hovered() || hit.clicked()) {
+                    (Some(_), _) | (_, false) => None,
+                    _ => self.data.as_ref().and_then(|d| d.reword_depth(&info.id).err()),
+                };
+                let mut edit = false;
+                let r = linked(ui, summary, web.as_deref(), |s| RichText::new(s).heading().strong(), acts);
+                edit |= compare.is_none() && editable(ui, &r, why_not(&r));
+                if !body.trim().is_empty() {
+                    ui.add_space(4.0);
+                    let r = linked(ui, body.trim(), web.as_deref(), |s| RichText::new(s), acts);
+                    edit |= compare.is_none() && editable(ui, &r, why_not(&r));
+                }
+                if edit && let Some(depth) = self.data.as_ref().and_then(|d| d.reword_depth(&info.id).ok()) {
+                    self.edit_msg = Some(MsgEdit::new(&info.id, &info.message, depth));
+                }
             }
             ui.add_space(6.0);
             let explain = match &compare {
@@ -241,5 +284,40 @@ impl RepoTab {
             }
             ui.add_space((total - last) as f32 * step);
         });
+    }
+}
+
+/// The inline message editor: summary (72-char hint) and body, Save / Cancel, Esc / ⌘↩.
+fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Vec<Action>) {
+    let Some(e) = edit else { return };
+    ui.horizontal(|ui| {
+        let n = e.summary.chars().count();
+        let w = ui.available_width() - 30.0;
+        let field = ui.add(TextEdit::singleline(&mut e.summary).margin(theme::INPUT_MARGIN).hint_text("Summary").desired_width(w));
+        if std::mem::take(&mut e.focus) {
+            field.request_focus();
+        }
+        ui.label(RichText::new(n.to_string()).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
+    });
+    ui.add(TextEdit::multiline(&mut e.body).margin(theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
+    let can = !busy && !e.summary.trim().is_empty();
+    let (mut save, mut cancel) = (false, false);
+    ui.horizontal(|ui| {
+        save = theme::small(ui, can, "Save").on_hover_text("Save the message (⌘↩)").clicked();
+        cancel = theme::small(ui, true, "Cancel").on_hover_text("Discard the edit (Esc)").clicked();
+    });
+    // Not while a dialog is open: Esc and ⌘↩ there belong to the dialog.
+    if ui.ctx().memory(|m| m.top_modal_layer().is_none()) {
+        cancel |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        save |= can && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
+    }
+    if cancel {
+        *edit = None;
+    } else if save && can {
+        if e.changed() {
+            acts.push(Action::Reword { commit: e.id.clone(), message: e.message() });
+        } else {
+            *edit = None;
+        }
     }
 }

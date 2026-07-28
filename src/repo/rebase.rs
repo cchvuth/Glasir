@@ -167,6 +167,41 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
     Ok(op)
 }
 
+/// Replace the message of `commit` (HEAD: amend, message only; older: a rebase that rewords it).
+/// Asks first when the rewrite reaches commits that are already on the upstream.
+pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: String) -> Res<Op> {
+    let mut op = if is_head {
+        Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
+    } else {
+        let mut op = quick(dir, git_dir, commit, Act::Reword, Some(message))?;
+        // A reword changes no tree, so uncommitted work can ride along (git refuses a dirty rebase otherwise).
+        if let Some(rebase) = op.cmds.last_mut() {
+            rebase.insert(rebase.len() - 1, "--autostash".into());
+        }
+        op
+    };
+    // The commits the rewrite replaces (`commit` up to HEAD), and those of them the upstream lacks.
+    let mut range = vec!["rev-list".to_owned(), "--count".into(), "HEAD".into()];
+    if git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).is_ok() {
+        range.push(format!("^{commit}^"));
+    }
+    let count = |extra: &[&str]| {
+        let args: Vec<&str> = range.iter().map(String::as_str).chain(extra.iter().copied()).collect();
+        git::run(dir, &args).ok().and_then(|n| n.trim().parse::<usize>().ok())
+    };
+    if let (Some(total), Some(unpushed), Ok(up)) = (count(&[]), count(&["^@{u}"]), git::run(dir, &["rev-parse", "--abbrev-ref", "@{u}"]))
+        && total > unpushed
+    {
+        let n = total - unpushed;
+        op = op.confirm(format!(
+            "This rewrites {n} commit{} already pushed to {}. They get new hashes, so the branch will need a force push, and anyone who has them will have to reconcile.",
+            if n == 1 { "" } else { "s" },
+            up.trim()
+        ));
+    }
+    Ok(op)
+}
+
 /// Squash or drop several commits of the current branch in one rebase.
 /// Squash needs a contiguous run; everything melds into the oldest selected.
 pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {

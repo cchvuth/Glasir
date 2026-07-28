@@ -14,6 +14,7 @@
 //!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
 //! - `tags`, `restore`, `spinoff`, `patch`: history tools (move/delete/push tags,
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
+//! - `msgedit`: inline editing of a commit's message in the commit details
 //! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
 //! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
@@ -39,6 +40,7 @@ pub mod image_diff;
 pub mod merge_editor;
 pub mod merge_opts;
 pub mod message;
+mod msgedit;
 mod offer;
 mod op;
 mod patch;
@@ -62,6 +64,7 @@ pub use data::{RepoData, View};
 pub use diff::{DiffState, patch_op};
 pub use files::reveal;
 pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_files_op, unstage_op};
+pub use msgedit::MsgEdit;
 pub use search::{MAX_HITS, Search};
 pub use task::Task;
 
@@ -170,6 +173,8 @@ pub struct RepoTab {
     absorb_task: Option<Task<Res<absorb::Plan>>>,
     /// A guided commit split in progress (banner in the WIP panel).
     pub split: Option<split::Split>,
+    /// The commit message being edited inline in the commit details.
+    pub edit_msg: Option<MsgEdit>,
     /// Commit Composer plan; its dialog shows once Claude's commits are in.
     pub compose: Option<compose::Plan>,
     compose_task: Option<Task<Res<(compose::Plan, String)>>>,
@@ -247,6 +252,7 @@ impl RepoTab {
             absorb: None,
             absorb_task: None,
             split: None,
+            edit_msg: None,
             compose: None,
             compose_task: None,
             remote_form: None,
@@ -412,6 +418,7 @@ impl RepoTab {
         self.poll_absorb();
         self.poll_diff();
         self.poll_op(ctx, msgs);
+        self.sync_msg_edit(ctx);
     }
 
     pub fn select(&mut self, ctx: &egui::Context, sel: Sel) {
@@ -553,6 +560,17 @@ impl RepoTab {
             Action::Absorb => self.start_absorb(ctx),
             Action::Split(commit) => self.start_split(ctx, commit),
             Action::SplitEnd { abort } => self.end_split(ctx, abort),
+            Action::Reword { commit, message } => {
+                let Some(d) = &self.data else { return };
+                let is_head = d.status.head.as_deref() == Some(commit.as_str());
+                match crate::repo::rebase::reword(&self.dir, &d.git_dir, &commit, is_head, message) {
+                    Ok(op) => {
+                        self.mark_saved();
+                        self.run(ctx, op);
+                    }
+                    Err(e) => self.notes.push(Msg { text: e, error: true }),
+                }
+            }
             Action::Rewrite { commit, act, message } => {
                 let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
                 match crate::repo::rebase::quick(&self.dir, &git_dir, &commit, act, message) {

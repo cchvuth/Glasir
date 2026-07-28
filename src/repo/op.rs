@@ -692,11 +692,7 @@ impl RepoTab {
             let old = git::run(&self.dir, &["log", "-1", "--format=%B", commit]).unwrap_or_default();
             let body = old.trim_end().split_once('\n').map(|(_, b)| b.trim_start_matches('\n').to_owned()).unwrap_or_default();
             let message = if body.is_empty() { msg.clone() } else { format!("{msg}\n\n{body}") };
-            if self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str()) {
-                let op = Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft);
-                return self.run(ctx, op);
-            }
-            return self.apply(ctx, Action::Rewrite { commit: commit.clone(), act: crate::repo::rebase::Act::Reword, message: Some(message) });
+            return self.apply(ctx, Action::Reword { commit: commit.clone(), message });
         }
         if op.confirm.is_some() {
             self.confirm = Some(op);
