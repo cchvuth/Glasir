@@ -21,6 +21,7 @@ mod graph_view;
 mod history;
 mod image_diff;
 mod inspector;
+mod links;
 mod merge_editor;
 mod palette;
 mod rebase_editor;

@@ -2,7 +2,7 @@
 //! remote branch and tag menus plus graph hide/solo toggles.
 
 use crate::ai::Purpose;
-use crate::git::RefKind;
+use crate::git::{Page, RefKind};
 use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, delete_branches, op, prompt};
 use crate::theme::icon;
 use crate::ui::graph_view::menus::{integrate_items, reset_menu};
@@ -45,14 +45,19 @@ fn worktree_compare(ui: &mut Ui, name: &str, acts: &mut Vec<Action>) {
     }
 }
 
-fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
+fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, tip: &str, acts: &mut Vec<Action>) {
     worktree_compare(ui, name, acts);
     let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
     if ui.button(format!("{} Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
         acts.push(Action::Select(Sel::Compare { from: head.clone(), to: name.into(), three_dot: true }));
     }
     if crate::ai::enabled() && ui.button(format!("{} Explain changes vs {head} with AI", icon::SPARKLE)).clicked() {
-        acts.push(Action::Ai(Purpose::ExplainRange { from: head, to: name.into() }));
+        acts.push(Action::Ai(Purpose::ExplainRange { from: head.clone(), to: name.into() }));
+    }
+    if let Some(base) = d.local(&head) {
+        // By commit id: a local branch name need not exist on the remote.
+        let page = Page::Compare { base: &base.target, head: tip };
+        crate::ui::links::items(ui, d, &[("compare", page)], &[&base.target, tip], acts);
     }
 }
 
@@ -75,7 +80,7 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
         acts.push(Action::Url(format!("{web}/compare/{}...{}?expand=1", enc(&d.default_branch()), enc(&branch))));
     }
     if ui.button("Open branch on remote").clicked() {
-        acts.push(Action::Url(format!("{web}/tree/{}", enc(&branch))));
+        acts.push(Action::Url(Page::Branch(&branch).url(&web)));
     }
 }
 
@@ -95,7 +100,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         }
         integrate_items(ui, d, name, d.rev(r), acts);
         reset_menu(ui, d, &r.target, name, acts);
-        compare_items(ui, d, name, acts);
+        compare_items(ui, d, name, &r.target, acts);
     }
     if r.head
         && let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
@@ -162,7 +167,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
     }
     integrate_items(ui, d, &r.name, d.rev(r), acts);
     reset_menu(ui, d, &r.target, &r.name, acts);
-    compare_items(ui, d, &r.name, acts);
+    compare_items(ui, d, &r.name, &r.target, acts);
     let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
     if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
         acts.push(prompt(
@@ -215,6 +220,8 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
             acts.push(Action::Git(crate::repo::tags::push_all(remote)));
         }
     }
+    crate::ui::links::items(ui, d, &[("release page", Page::Release(&r.name))], &[], acts);
+    ui.separator();
     if ui.button("Copy tag name").clicked() {
         acts.push(Action::Copy(r.name.clone()));
     }

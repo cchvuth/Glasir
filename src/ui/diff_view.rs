@@ -3,7 +3,7 @@
 //! and a change minimap. Only visible lines are painted.
 
 use super::format::{tops, visible, wrapped};
-use crate::git::{DiffOpts, FileDiff, partial_patch, selects_all};
+use crate::git::{DiffOpts, FileDiff, Page, partial_patch, selects_all};
 use crate::repo::history::Mode;
 use crate::repo::{Action, DiffSrc, DiffState, Op};
 use crate::theme::{self, icon};
@@ -186,7 +186,7 @@ fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, s
 }
 
 /// `tool`: the repo's `diff.tool` (None = not configured).
-pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, tool: Option<&str>, acts: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, split: &mut bool, wrap: &mut bool, tool: Option<&str>, acts: &mut Vec<Action>) {
     let (src, ds_opts) = (ds.src.clone(), ds.opts);
     let change = src.change().clone();
     let (worktree, staged) = match &ds.src {
@@ -284,6 +284,16 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, split: &mut bool, wrap: &mut bool, 
                 if ui.button(format!("Stage {n} line(s)")).clicked() {
                     acts.push(stage("Stage lines", f, pick, &src, ds_opts));
                 }
+            }
+        }
+        // Links to the picked lines' new side (removed lines have none); not for a working-tree compare.
+        if let (DiffSrc::Commit { id, .. }, Some(f), Some(d)) = (&src, file, d)
+            && id != crate::git::WORKTREE
+        {
+            let nums = ds.picked.iter().map(|&(h, l)| f.hunks[h].lines[l].new).filter(|&n| n > 0);
+            if let (Some(a), Some(b)) = (nums.clone().min(), nums.max()) {
+                let page = Page::File { rev: id, path: &change.path, lines: Some((a, b)) };
+                crate::ui::links::items(ui, d, &[(if a == b { "line" } else { "lines" }, page)], &[id], acts);
             }
         }
         theme::rest(ui, |ui| {

@@ -505,7 +505,12 @@ impl RepoTab {
             }
             Action::Copy(s) => ctx.copy_text(s),
             Action::Url(u) => {
-                let _ = open::that_detached(u);
+                let hosts: Vec<String> = self.data.iter().flat_map(|d| d.remotes.iter()).filter_map(|r| git::host(&r.1)).collect();
+                if git::is_web_link(&u, &hosts) {
+                    let _ = open::that_detached(u);
+                } else {
+                    self.notes.push(Msg { text: format!("Not opened: {u} is not an http(s) page on a remote's host."), error: true });
+                }
             }
             // The repo itself opens in the file manager; a file is revealed in its folder.
             Action::Reveal(p) if p.is_empty() => {

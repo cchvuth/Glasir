@@ -30,6 +30,8 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut
     if ui.button("Copy SHAs").clicked() {
         acts.push(Action::Copy(multi.join("\n")));
     }
+    let page = crate::git::Page::Compare { base: &multi[n - 1], head: &multi[0] };
+    crate::ui::links::items(ui, d, &[("compare", page)], &[&multi[n - 1], &multi[0]], acts);
     crate::ui::bisect::multi_item(ui, d, multi, acts);
 }
 fn patch_items(ui: &mut Ui, ids: &[String], acts: &mut Vec<Action>) {
@@ -225,14 +227,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
     if ui.button("Compare working tree with this commit").on_hover_text("Your uncommitted and committed changes since this commit").clicked() {
         acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: crate::git::WORKTREE.into(), three_dot: false }));
     }
-    if let Some(web) = d.web() {
-        if ui.button("Open commit on remote").clicked() {
-            acts.push(Action::Url(format!("{web}/commit/{}", c.id)));
-        }
-        if ui.button("Copy link to commit").clicked() {
-            acts.push(Action::Copy(format!("{web}/commit/{}", c.id)));
-        }
-    }
+    crate::ui::links::items(ui, d, &[("commit", crate::git::Page::Commit(&c.id))], &[&c.id], acts);
     // format-patch skips merge commits.
     if c.parents.len() < 2 {
         patch_items(ui, std::slice::from_ref(&c.id), acts);

@@ -140,6 +140,22 @@ impl RepoData {
         dir.to_string_lossy().into_owned()
     }
 
+    /// `(remote, web URL)` of every remote with a web page.
+    pub fn webs(&self) -> Vec<(&str, String)> {
+        self.remotes.iter().filter_map(|(name, url)| Some((name.as_str(), git::web_url(url)?))).collect()
+    }
+
+    /// Is commit `sha` in a remote-tracking branch of `remote`? (Else its web page 404s.)
+    /// Commits outside the loaded history count as pushed: no false warning.
+    pub fn on_remote(&self, sha: &str, remote: &str) -> bool {
+        let Some(&row) = self.row_of.get(sha) else { return true };
+        self.refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Remote && self.split_remote(&r.name).is_some_and(|s| s.0 == remote))
+            .filter_map(|r| self.row_of.get(&r.target))
+            .any(|&tip| self.reachable(tip)[row])
+    }
+
     pub fn web_of(&self, remote: &str) -> Option<String> {
         self.remotes.iter().find(|r| r.0 == remote).and_then(|r| git::web_url(&r.1)).or_else(|| self.web())
     }
@@ -376,6 +392,28 @@ mod tests {
         let only = "only on origin".to_owned();
         assert!(msgs(View::default()).contains(&only));
         assert!(!msgs(hide(&["refs/remotes/origin/main"])).contains(&only));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A link to a commit only works once a remote-tracking branch of that remote contains it.
+    #[test]
+    fn commit_on_remote_and_remote_webs() {
+        let dir = scratch("onremote");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        let pushed = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        sh(&dir, &["remote", "add", "ghe", "https://ghe.corp.se/o/r.git"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        commit(&dir, "a.txt", "two\n");
+        let local = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert!(d.on_remote(&pushed, "origin") && !d.on_remote(&local, "origin"));
+        assert!(!d.on_remote(&pushed, "ghe"), "no tracking branch of ghe");
+        assert!(d.on_remote("f".repeat(40).as_str(), "origin"), "unknown commits don't warn");
+        let webs: Vec<_> = d.webs().into_iter().map(|(r, w)| format!("{r} {w}")).collect();
+        assert_eq!(webs, ["ghe https://ghe.corp.se/o/r", "origin https://github.com/o/r"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

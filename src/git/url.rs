@@ -30,6 +30,55 @@ pub fn host(remote: &str) -> Option<String> {
     Some(h.split(':').next()?.to_lowercase())
 }
 
+/// A page of the hosting site (github.com / GitHub Enterprise); `url` joins it to a repo's web URL.
+pub enum Page<'a> {
+    Commit(&'a str),
+    Branch(&'a str),
+    Release(&'a str),
+    /// A file at a revision, with an optional 1-based line range.
+    File { rev: &'a str, path: &'a str, lines: Option<(u32, u32)> },
+    Blame { rev: &'a str, path: &'a str },
+    History { rev: &'a str, path: &'a str },
+    Compare { base: &'a str, head: &'a str },
+}
+
+impl Page<'_> {
+    pub fn url(&self, web: &str) -> String {
+        let e = url_path;
+        match self {
+            Page::Commit(s) => format!("{web}/commit/{}", e(s)),
+            Page::Branch(b) => format!("{web}/tree/{}", e(b)),
+            Page::Release(t) => format!("{web}/releases/tag/{}", e(t)),
+            Page::File { rev, path, lines } => {
+                let mut u = format!("{web}/blob/{}/{}", e(rev), e(path));
+                if let Some((a, b)) = lines {
+                    // Rendered Markdown has no line anchors: `?plain=1` shows the source.
+                    if path.rsplit('.').next().is_some_and(|x| ["md", "markdown", "mdx"].contains(&x.to_lowercase().as_str())) {
+                        u += "?plain=1";
+                    }
+                    u += &if a == b { format!("#L{a}") } else { format!("#L{a}-L{b}") };
+                }
+                u
+            }
+            Page::Blame { rev, path } => format!("{web}/blame/{}/{}", e(rev), e(path)),
+            Page::History { rev, path } => format!("{web}/commits/{}/{}", e(rev), e(path)),
+            Page::Compare { base, head } => format!("{web}/compare/{}...{}", e(base), e(head)),
+        }
+    }
+}
+
+/// `url` is plain http(s) to one of the `hosts` (as `host` returns them), without user info:
+/// the only links handed to the OS opener.
+pub fn is_web_link(url: &str, hosts: &[String]) -> bool {
+    let Some((scheme, rest)) = url.split_once("://") else { return false };
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = auth.split(':').next().unwrap_or_default().to_lowercase();
+    matches!(scheme, "http" | "https")
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
+        && !auth.contains('@')
+        && hosts.contains(&host)
+}
+
 /// Splits text into plain runs and `#123` / `GH-123` references, given as
 /// `(text, Some(number))`. GitHub redirects `/pull/N` to the issue when N is one.
 pub fn autolinks(text: &str) -> Vec<(&str, Option<&str>)> {
@@ -112,6 +161,46 @@ mod tests {
             ("http://local:3000/a/b", "http://local:3000/a/b"),
         ] {
             assert_eq!(web_url(i).as_deref(), Some(o), "{i}");
+        }
+    }
+
+    #[test]
+    fn pages() {
+        for web in ["https://github.com/o/r", "https://ghe.corp.se/o/r"] {
+            let u = |p: Page| p.url(web);
+            assert_eq!(u(Page::Commit("abc")), format!("{web}/commit/abc"));
+            assert_eq!(u(Page::Branch("feat/a b")), format!("{web}/tree/feat/a%20b"));
+            assert_eq!(u(Page::Release("v1.0")), format!("{web}/releases/tag/v1.0"));
+            assert_eq!(u(Page::Blame { rev: "abc", path: "src/é #1.rs" }), format!("{web}/blame/abc/src/%C3%A9%20%231.rs"));
+            assert_eq!(u(Page::History { rev: "abc", path: "a.rs" }), format!("{web}/commits/abc/a.rs"));
+            assert_eq!(u(Page::Compare { base: "a", head: "b" }), format!("{web}/compare/a...b"));
+            assert_eq!(u(Page::File { rev: "abc", path: "a.rs", lines: None }), format!("{web}/blob/abc/a.rs"));
+            assert_eq!(u(Page::File { rev: "abc", path: "a.rs", lines: Some((10, 20)) }), format!("{web}/blob/abc/a.rs#L10-L20"));
+            assert_eq!(u(Page::File { rev: "abc", path: "a.rs", lines: Some((7, 7)) }), format!("{web}/blob/abc/a.rs#L7"));
+            assert_eq!(u(Page::File { rev: "abc", path: "docs/README.MD", lines: Some((1, 2)) }), format!("{web}/blob/abc/docs/README.MD?plain=1#L1-L2"));
+            assert_eq!(u(Page::File { rev: "abc", path: "README.md", lines: None }), format!("{web}/blob/abc/README.md"));
+        }
+    }
+
+    #[test]
+    fn opens_only_web_links_on_the_remote_host() {
+        let hosts = vec!["ghe.corp.se".to_owned(), "github.com".to_owned()];
+        for ok in ["https://github.com/o/r", "http://GHE.corp.se:8443/o/r?x#L1"] {
+            assert!(is_web_link(ok, &hosts), "{ok}");
+        }
+        for bad in [
+            "file:///etc/passwd",
+            "javascript://github.com/%0aalert(1)",
+            "ssh://github.com/o/r",
+            "https://github.com.evil.com/o/r",
+            "https://github.com@evil.com/o/r",
+            "https://evil.com/github.com",
+            "https://github.com\\@evil.com/",
+            "https://github.com/a b",
+            "github.com/o/r",
+            "",
+        ] {
+            assert!(!is_web_link(bad, &hosts), "{bad}");
         }
     }
 

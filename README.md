@@ -165,7 +165,11 @@ The name fits a Git client:
   `pull/<n>/head` into `pr/<n>` (again to update it); optionally show every PR as
   `<remote>/pr/<n>`.
 - Commit messages link **#123** and **GH-123** to the pull request or issue.
-- **Permalinks**: copy a link to a file at a commit, or open it on the remote.
+- **Permalinks**: copy a link to a file at a commit, or open it on the remote. Also for a commit, a tag's
+  release page, a file's blame and history, a compare of two selected commits or of a branch with
+  the current one, and the lines you click in a commit's diff (`#L10-L20`, `?plain=1` for Markdown).
+  With several remotes you pick one. Unpushed commits warn that the link would 404; only http(s)
+  pages on a remote's host are ever opened.
 - **Commit identity guard**: the commit box shows who you commit as; rules in
   Settings (`ghe.corp.example -> @corp.example`) warn when a repo would get the
   wrong email, with one-click **Set for this repo**.

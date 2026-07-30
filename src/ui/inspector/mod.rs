@@ -6,7 +6,7 @@ mod commit;
 mod multi;
 mod wip;
 
-use crate::git::Change;
+use crate::git::{Change, Page};
 use crate::repo::history::Mode;
 use crate::repo::{Action, Op, RepoData, RepoTab, Sel, tools};
 use crate::theme::{self, icon};
@@ -75,19 +75,14 @@ pub fn custom_items(ui: &mut Ui, cmds: Vec<tools::Custom>, vars: &tools::Vars, a
     }
 }
 
-/// Permalink to `path` at commit `sha` on the main remote: copy it or open it.
+/// The file at commit `sha` (full SHA, so the links are permalinks), its blame and history on the remote.
 pub fn permalink_items(ui: &mut Ui, d: &RepoData, sha: &str, path: &str, acts: &mut Vec<Action>) {
-    let Some(web) = d.web() else { return };
-    let url = format!("{web}/blob/{sha}/{}", crate::git::url_path(path));
-    let short = &sha[..sha.len().min(7)];
-    let pushed = "Pinned to the full SHA: the link works once the commit is pushed";
-    if ui.button(format!("{} Copy link to file at {short}", icon::LINK)).on_hover_text(pushed).clicked() {
-        acts.push(Action::Copy(url.clone()));
-    }
-    let host = web.split_once("://").map_or(web.as_str(), |w| w.1).split('/').next().unwrap_or_default();
-    if ui.button(format!("{} Open file on {host}", icon::GLOBE)).on_hover_text(pushed).clicked() {
-        acts.push(Action::Url(url));
-    }
+    let pages = [
+        ("file", Page::File { rev: sha, path, lines: None }),
+        ("blame", Page::Blame { rev: sha, path }),
+        ("file history", Page::History { rev: sha, path }),
+    ];
+    crate::ui::links::items(ui, d, &pages, &[sha], acts);
 }
 
 /// "Track *.ext with LFS": adds the pattern to .gitattributes and stages it.
