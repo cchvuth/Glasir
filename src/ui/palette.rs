@@ -136,7 +136,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         for c in crate::repo::tools::commands(None) {
             v.push(item(icon::TERMINAL, c.name.clone(), "custom command", Cmd::Tab(Action::Custom(c, vars.clone()))));
         }
-        v.push(item(icon::BROOM, "Clean up merged & gone branches…", "", Cmd::Tab(Action::Cleanup)));
+        v.push(item(icon::BROOM, "Clean up branches (merged, squashed, gone, stale)…", "", Cmd::Tab(Action::Cleanup)));
         v.push(item(icon::LIFEBUOY, "Reflog — restore lost commits", "after a bad reset or rebase", Cmd::Tab(Action::Reflog)));
         if let Some((label, a)) = crate::repo::spinoff::move_unpushed(d) {
             v.push(item(icon::GIT_FORK, label, "", Cmd::Tab(a)));

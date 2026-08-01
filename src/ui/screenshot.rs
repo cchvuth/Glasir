@@ -134,8 +134,13 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::MergeEditor(q[6..].into()));
                         }
                     }
-                    "cleanup" => {
+                    // `cleanup:all` also ticks "delete on remote" and "prune" (checks the remotes).
+                    "cleanup" | "cleanup:all" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
+                            if view == "cleanup:all" {
+                                let c = t.cleanup.get_or_insert_default();
+                                (c.prune, c.remote) = (true, true);
+                            }
                             t.apply(&ctx.clone(), crate::repo::Action::Cleanup);
                         }
                     }

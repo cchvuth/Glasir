@@ -26,7 +26,7 @@ pub mod absorb;
 mod action;
 mod ai_job;
 pub mod avatars;
-mod cleanup;
+pub mod cleanup;
 pub mod compose;
 mod conflicts;
 mod data;
@@ -148,8 +148,9 @@ pub struct RepoTab {
     pub file_view: Option<history::FileView>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
-    /// Branch cleanup candidates: (name, reason, selected).
-    pub cleanup: Option<Vec<(String, String, bool)>>,
+    pub cleanup: Option<cleanup::Cleanup>,
+    /// Settings → protected branches (`release/*`-style patterns), mirrored every frame.
+    pub keep_branches: String,
     /// Predicted conflicts with the target branch: (target, files).
     pub conflicts: Option<(String, Vec<String>)>,
     conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
@@ -258,6 +259,7 @@ impl RepoTab {
             remote_form: None,
             doctor: None,
             email_rules: String::new(),
+            keep_branches: String::new(),
             avatars: Default::default(),
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
@@ -314,6 +316,9 @@ impl RepoTab {
                 msgs.push(Msg { text: "Live refresh is off for this repo (file watching unavailable); changes show on focus or F5.".into(), error: false });
             }
             self.watcher = w;
+        }
+        if let Some(c) = &mut self.cleanup {
+            c.poll();
         }
         if let Some((_, rx)) = &self.watcher {
             let now = ctx.input(|i| i.time);
@@ -542,7 +547,7 @@ impl RepoTab {
             }
             Action::Ai(p) => self.start_ai(ctx, p),
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
-            Action::Cleanup => self.open_cleanup(),
+            Action::Cleanup => self.open_cleanup(ctx),
             Action::Multi(ids) => {
                 if let Some(last) = ids.last().cloned() {
                     self.select(ctx, Sel::Commit(last));

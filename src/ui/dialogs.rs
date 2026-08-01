@@ -180,33 +180,107 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
     }
 }
 
-pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
-    let (Some(list), Some(d)) = (&mut t.cleanup, &t.data) else { return };
+/// Clean up branches: candidates against a chosen target, grouped by why they're offered.
+pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>, days: &mut u32) {
+    use crate::repo::cleanup::{Cleanup, Why};
+    let (Some(c), Some(d)) = (&mut t.cleanup, &t.data) else { return };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |t| t.as_secs() as i64);
     let mut close = false;
     egui::Modal::new(Id::new("cleanup")).show(ctx, |ui| {
-        ui.set_width(480.0);
+        ui.set_width(560.0);
         ui.heading(format!("{} Clean up branches", icon::BROOM));
-        if list.is_empty() {
-            ui.label(RichText::new("Nothing to clean up — no merged or orphaned local branches.").color(theme::dim(ui)));
-        } else {
-            ui.label(RichText::new("Local branches you probably don't need anymore. Deleting is undoable (⌘Z).").small().color(theme::dim(ui)));
-            ui.add_space(4.0);
-            // Full width: reasons line up on the right, long names end in "…".
-            egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
-                for (name, why, on) in list.iter_mut() {
-                    theme::bar(ui, |ui| {
-                        ui.label(RichText::new(why.as_str()).small().color(theme::dim(ui)));
-                        theme::rest(ui, |ui| ui.checkbox(on, RichText::new(name.as_str()).strong()).on_hover_text(name.as_str()));
-                    });
+        ui.horizontal(|ui| {
+            ui.label("Target");
+            let before = c.target.clone();
+            egui::ComboBox::from_id_salt("cleanup_target").selected_text(c.target.as_str()).width(200.0).show_ui(ui, |ui| {
+                for n in &c.targets {
+                    ui.selectable_value(&mut c.target, n.clone(), n.as_str());
                 }
             });
+            if c.target != before {
+                c.rows = None;
+                acts.push(Action::Cleanup);
+            }
+            ui.add_space(12.0);
+            ui.label("Stale after");
+            ui.add(egui::DragValue::new(days).range(1..=3650).suffix(" days"));
+        });
+        ui.add_space(4.0);
+        match &mut c.rows {
+            None => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Checking branches…").color(theme::dim(ui)));
+                });
+            }
+            Some(Err(e)) => {
+                ui.colored_label(theme::DEL, e.as_str());
+            }
+            Some(Ok(rows)) if !rows.iter().any(|r| Cleanup::group(r, *days, now).is_some()) => {
+                ui.label(RichText::new("Nothing to clean up: no merged, orphaned or stale local branches.").color(theme::dim(ui)));
+            }
+            Some(Ok(rows)) => {
+                ui.label(RichText::new("Local branches you probably don't need anymore. Deleting is undoable (⌘Z).").small().color(theme::dim(ui)));
+                egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for g in [Why::Merged, Why::Squashed, Why::Gone, Why::Stale] {
+                        let mut first = true;
+                        for r in rows.iter_mut().filter(|r| Cleanup::group(r, *days, now) == Some(g)) {
+                            if std::mem::take(&mut first) {
+                                ui.add_space(4.0);
+                                ui.label(RichText::new(match g {
+                                    Why::Merged => format!("Merged into {}", c.target),
+                                    Why::Squashed => "Squash- or rebase-merged (same changes in the target)".into(),
+                                    Why::Gone => "Upstream deleted".into(),
+                                    Why::Stale => format!("Stale: no commits in {days} days"),
+                                }).small().strong());
+                            }
+                            // Full width: details line up on the right, long names end in "…".
+                            theme::bar(ui, |ui| {
+                                let mut info = vec![super::format::ago(r.date), format!("↑{} ↓{}", r.ahead, r.behind)];
+                                if !r.note.is_empty() {
+                                    info.insert(0, r.note.clone());
+                                }
+                                ui.label(RichText::new(info.join(" · ")).small().color(theme::dim(ui)))
+                                    .on_hover_text(format!("{} commits not in {}, {} commits of {} missing", r.ahead, c.target, r.behind, c.target));
+                                theme::rest(ui, |ui| ui.checkbox(&mut r.on, RichText::new(r.name.as_str()).strong()).on_hover_text(r.name.as_str()));
+                            });
+                        }
+                    }
+                });
+            }
         }
         ui.add_space(6.0);
+        let remote = if c.remote { format!(" ({})", c.remote_deletes(*days, now).len()) } else { String::new() };
+        ui.checkbox(&mut c.remote, format!("Also delete on the remote{remote}"))
+            .on_hover_text("Deletes the ticked branches' same-named upstream branches, if they hold nothing the local branch lacks. Can't be undone on the remote.");
         ui.horizontal(|ui| {
-            let names: Vec<&str> = list.iter().filter(|c| c.2).map(|c| c.0.as_str()).collect();
-            let label = format!("Delete {} branch{}", names.len(), if names.len() == 1 { "" } else { "es" });
-            if theme::primary(ui, !names.is_empty(), &label, 170.0).clicked() {
-                acts.push(Action::Git(crate::repo::delete_branches(d, "Clean up branches".into(), &names, true)));
+            if ui.checkbox(&mut c.prune, "Prune stale remote-tracking refs").changed() && c.prune {
+                acts.push(Action::Cleanup);
+            }
+            match (&c.stale_refs, c.prune) {
+                (_, false) => {}
+                (None, true) => {
+                    ui.spinner();
+                }
+                (Some(Ok(v)), true) => {
+                    let n = v.len();
+                    ui.label(RichText::new(format!("{n} ref{} gone from the remote", if n == 1 { "" } else { "s" })).small().color(theme::dim(ui)))
+                        .on_hover_text(v.iter().map(|r| r.0.trim_start_matches("refs/remotes/")).collect::<Vec<_>>().join("\n"));
+                }
+                (Some(Err(e)), true) => {
+                    ui.label(RichText::new(e.lines().next().unwrap_or("")).small().color(theme::DEL)).on_hover_text(e.as_str());
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let (n, p) = (c.chosen(*days, now).len(), c.pruned().len());
+            let mut label = format!("Delete {n} branch{}", if n == 1 { "" } else { "es" });
+            if p > 0 {
+                label += &format!(", prune {p}");
+            }
+            if theme::primary(ui, n + p > 0, &label, 190.0).clicked() {
+                acts.push(c.op(d, *days, now).map_or_else(Action::Error, Action::Git));
                 close = true;
             }
             if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {

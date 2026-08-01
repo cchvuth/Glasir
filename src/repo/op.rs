@@ -1423,8 +1423,11 @@ mod tests {
         let ctx = egui::Context::default();
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
-        t.open_cleanup();
-        let names: Vec<String> = t.cleanup.take().unwrap().into_iter().map(|c| c.0).collect();
+        t.apply(&ctx, Action::Cleanup);
+        while t.cleanup.as_ref().unwrap().rows.is_none() {
+            settle(&ctx, &mut t);
+        }
+        let names: Vec<String> = t.cleanup.take().unwrap().rows.unwrap().unwrap().into_iter().map(|c| c.name).collect();
         assert_eq!(names, ["x", "y"]);
         let op = super::delete_branches(t.data.as_ref().unwrap(), "Clean up branches".into(), &["x", "tmp", "y"], true);
         t.apply(&ctx, Action::Git(op));

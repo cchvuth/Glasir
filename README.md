@@ -137,7 +137,7 @@ The name fits a Git client:
   while unmerged files remain.
 - **External tools**: open a conflicted file in your `merge.tool` (backed up first, ⌘Z) and any
   file diff in your `diff.tool`; both are greyed out with a hint when git has no tool configured.
-- **Branch cleanup**: delete merged and orphaned branches in one go.
+- **Branch cleanup**: against a target you pick (default `origin/<default>`), lists branches merged, squash- or rebase-merged (patch-id / merge-tree equivalence), with their upstream deleted, or stale (no commits in N days, default 90), each with its last-commit date and ahead/behind. Unpushed work is never pre-selected; main, master, develop, `release/*` and your Settings → Protected branches are never offered. Optionally deletes the same-named remote branches (confirmed; not undoable on the remote) and prunes stale remote-tracking refs; local deletes and prunes undo with ⌘Z.
 - Merge / rebase / cherry-pick / revert banner with Continue, Skip and Abort (undoable
   with ⌘Z), shown even when the resolved tree is clean.
 

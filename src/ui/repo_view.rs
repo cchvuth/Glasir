@@ -15,6 +15,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let mut acts = vec![];
     t.ai_cfg.clone_from(&s.ai);
     t.email_rules.clone_from(&s.email_rules);
+    t.keep_branches.clone_from(&s.keep_branches);
     crate::ai::sync(&s.ai);
     egui::Panel::top("toolbar")
         .show_separator_line(false)
@@ -110,7 +111,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     dialogs::confirm_dialog(t, &ctx, &mut acts);
     dialogs::ai_dialog(t, &ctx, &mut acts);
     dialogs::drop_menu(t, &ctx, &mut acts);
-    dialogs::cleanup_dialog(t, &ctx, &mut acts);
+    dialogs::cleanup_dialog(t, &ctx, &mut acts, &mut s.stale_days);
     dialogs::absorb_dialog(t, &ctx, &mut acts);
     super::compose::compose_dialog(t, &ctx, &mut acts);
     dialogs::choice_dialog(t, &ctx, &mut acts);

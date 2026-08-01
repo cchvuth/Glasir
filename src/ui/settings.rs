@@ -40,6 +40,10 @@ pub struct Settings {
     pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
     /// Commit email rules, one `host -> @domain` per line (`repo::identity`).
     pub email_rules: String,
+    /// Branches Clean up never offers, besides the trunk names and `release/*`: patterns like `hotfix/*`.
+    pub keep_branches: String,
+    /// Clean up's "Stale" group: no commit in this many days.
+    pub stale_days: u32,
     pub tools: crate::repo::tools::Tools,
     /// UI zoom (⌘+ / ⌘- / ⌘0).
     pub zoom: f32,
@@ -74,6 +78,8 @@ impl Default for Settings {
             auto_fetch: 10,
             views: Default::default(),
             email_rules: String::new(),
+            keep_branches: String::new(),
+            stale_days: 90,
             tools: Default::default(),
             zoom: 1.0,
             tips: true,
@@ -183,6 +189,12 @@ impl App {
                     ui.vertical(|ui| {
                         ui.add(TextEdit::multiline(&mut s.email_rules).margin(crate::theme::INPUT_MARGIN).hint_text("ghe.corp.example -> @corp.example").desired_rows(2).desired_width(330.0));
                         ui.label(RichText::new("Warns in the commit box when a repo on that host commits with another email").small().color(theme::dim(ui)));
+                    });
+                    ui.end_row();
+                    ui.label("Protected branches");
+                    ui.vertical(|ui| {
+                        ui.add(TextEdit::singleline(&mut s.keep_branches).margin(crate::theme::INPUT_MARGIN).hint_text("hotfix/*, staging").desired_width(330.0));
+                        ui.label(RichText::new("Never offered by Clean up branches, like main, master, develop and release/*").small().color(theme::dim(ui)));
                     });
                     ui.end_row();
                 });
