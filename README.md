@@ -123,6 +123,12 @@ The name fits a Git client:
 - **Absorb staged changes**: each staged hunk becomes a fixup of the unpushed
   commit that last changed its lines and is folded in; a preview lists hunk →
   commit first, ambiguous hunks stay staged, one undo step.
+- **Stacked branches**: branches built on one another show indented under their
+  parent in the sidebar. Rebases and history edits move the branches below along
+  (`--update-refs`, never main), and a commit, amend or rewrite restacks the ones
+  on top. **Restack** brings stale branches onto their moved parent (all or
+  nothing), **Push stack** pushes every branch (force-with-lease where rewritten),
+  and a stacked branch's pull request targets its parent. One undo step each.
 - **Interactive cherry-pick**: pick, reword, squash, drop and reorder selected
   commits from other branches, then apply them onto HEAD in one go.
 - **Split a commit**: uncommit it (mid-branch too), stage and commit the parts with

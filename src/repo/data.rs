@@ -43,6 +43,8 @@ pub struct RepoData {
     pub stash_at: HashMap<String, Vec<usize>>,
     /// The filter this history was loaded with.
     pub view: View,
+    /// Stacked local branches (`stack`): child -> (parent, the parent tip it's built on).
+    pub stack: Arc<super::stack::Stacks>,
     /// Tip row -> rows reachable from it (hover highlight).
     reach: std::sync::Mutex<HashMap<usize, Arc<Vec<bool>>>>,
 }
@@ -291,6 +293,7 @@ impl RepoData {
             refs_at,
             stash_at,
             view,
+            stack: Default::default(),
             reach: Default::default(),
         }
     }
@@ -336,6 +339,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.author = author;
     d.load_bisect(dir);
     d.load_conflicts(dir);
+    d.stack = Arc::new(super::stack::load(dir, &d));
     Ok(d)
 }
 

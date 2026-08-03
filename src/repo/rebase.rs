@@ -75,8 +75,14 @@ impl Editor {
         if !self.head.is_empty() && head_state(&self.dir) != self.head {
             return Err("The branch changed since this list was loaded; reopen the rebase editor.".into());
         }
+        // Stacked branches pointing into the range stay on their (rewritten) commits.
+        let stacked = match self.cherry || !super::stack::follows() {
+            true => vec![],
+            false => stacked_refs(&self.dir, &self.items),
+        };
         let mut todo = String::new();
         for (n, it) in self.items.iter().enumerate().rev() {
+            let refs = stacked.iter().filter(|(_, oid)| *oid == it.id).map(|(r, _)| format!("update-ref {r}\n")).collect::<String>();
             let verb = match it.act {
                 Act::Pick | Act::Reword => "pick",
                 Act::Edit => "edit",
@@ -85,7 +91,7 @@ impl Editor {
                 Act::Drop => "drop",
             };
             if it.act != Act::Reword {
-                todo += &format!("{verb} {}\n", it.id);
+                todo += &format!("{verb} {}\n{refs}", it.id);
                 continue;
             }
             let msg = git_dir.join(format!("glasir-msg-{n}"));
@@ -95,7 +101,7 @@ impl Editor {
             // skipped would leave the amend to reword the commit before it.
             let (msg, pre) = (sh_quote(&msg), sh_quote(&pre));
             todo += &format!("exec git rev-parse HEAD > {pre}\n{verb} {}\n", it.id);
-            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then git commit --amend --allow-empty -F {msg}; fi\n");
+            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then git commit --amend --allow-empty -F {msg}; fi\n{refs}");
         }
         let path = git_dir.join("glasir-rebase-todo");
         std::fs::write(&path, todo).map_err(|e| e.to_string())?;
@@ -115,8 +121,23 @@ impl Editor {
         if !self.head.is_empty() {
             op.cmds.insert(0, vec![HEAD_IS.into(), self.head.clone()]);
         }
+        if !stacked.is_empty() {
+            op.cmds.insert(0, [REFS_AT.to_owned()].into_iter().chain(stacked.into_iter().flat_map(|(r, o)| [r, o])).collect());
+        }
         Ok(op)
     }
+}
+
+/// Local branches (full name, commit) pointing at one of `items`: not the trunk, and not
+/// checked out anywhere (HEAD's moves anyway; git refuses another worktree's).
+fn stacked_refs(dir: &Path, items: &[Item]) -> Vec<(String, String)> {
+    let out = git::run(dir, &["for-each-ref", "--format=%(objectname) %(worktreepath) %(refname)", "refs/heads"]).unwrap_or_default();
+    out.lines()
+        .filter_map(|l| match l.splitn(3, ' ').collect::<Vec<_>>()[..] {
+            [oid, "", r] if !super::data::is_trunk(&r["refs/heads/".len()..]) && items.iter().any(|i| i.id == oid) => Some((r.to_owned(), oid.to_owned())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `git log` records as todo items (pick); merges are refused.
@@ -283,6 +304,20 @@ fn on_branch(dir: &Path, commit: &str) -> Res<()> {
 
 /// `exec` pseudo-command: `HEAD_IS state` fails unless [`head_state`] is still `state`.
 pub(super) const HEAD_IS: &str = "!head-is";
+
+/// `exec` pseudo-command: `REFS_AT (ref oid)..` fails unless every ref still points at its oid.
+pub(super) const REFS_AT: &str = "!refs-at";
+
+pub(super) fn refs_at(dir: &Path, pairs: &[&str]) -> Res<String> {
+    for p in pairs.chunks(2) {
+        let now = git::run(dir, &["rev-parse", "-q", "--verify", p[0]]).unwrap_or_default();
+        if p.get(1).is_none_or(|o| now.trim() != *o) {
+            let name = p[0].strip_prefix("refs/heads/").unwrap_or(p[0]);
+            return Err(format!("{name} moved since this was prepared, so nothing was changed. Check it and try again."));
+        }
+    }
+    Ok(String::new())
+}
 
 /// `exec` pseudo-command: `rebase --abort` if a rebase is in progress, else nothing.
 pub(super) const ABORT_ANY: &str = "!abort-rebase";

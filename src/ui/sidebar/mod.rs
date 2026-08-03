@@ -9,7 +9,7 @@ mod submodules;
 mod worktrees;
 
 use crate::git::RefKind;
-use crate::repo::{Action, RepoData, Sel, branch_checkout};
+use crate::repo::{Action, RepoData, Sel, branch_checkout, stack};
 use crate::theme::{self, icon};
 use crate::ui::graph_view::dnd::branch_dnd;
 use crate::ui::graph_view::hover::hover_ref;
@@ -51,6 +51,29 @@ pub(super) fn row(ui: &Ui, current: bool, text: RichText) -> egui::Button<'stati
     }
 }
 
+/// Stacked branches right under their parent, with their depth (`repo::stack`).
+fn stacked<'a>(d: &'a RepoData, locals: &[&'a crate::git::Ref]) -> Vec<(&'a crate::git::Ref, usize)> {
+    fn add<'a>(d: &'a RepoData, r: &'a crate::git::Ref, depth: usize, out: &mut Vec<(&'a crate::git::Ref, usize)>) {
+        out.push((r, depth));
+        for c in stack::children(d, &r.name).into_iter().filter_map(|c| d.local(c)) {
+            if depth < 16 && !out.iter().any(|o| o.0.name == c.name) {
+                add(d, c, depth + 1, out);
+            }
+        }
+    }
+    let mut out = vec![];
+    for r in locals.iter().filter(|r| stack::parent(d, &r.name).is_none_or(|p| d.local(p).is_none())) {
+        add(d, r, 0, &mut out);
+    }
+    // A loop of stale edges has no root: never lose a branch from the list.
+    for r in locals {
+        if !out.iter().any(|o| o.0.name == r.name) {
+            out.push((r, 0));
+        }
+    }
+    out
+}
+
 fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
     egui::CollapsingHeader::new(RichText::new(format!("{title}  {count}")).small().strong())
         .id_salt(title)
@@ -77,11 +100,21 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
     ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
         let mut locals: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Local && matches(f, &r.name)).collect();
         locals.sort_by_key(|r| d.branch_rank(&r.name)); // stable: A–Z within each group
+        // While filtering, a stacked branch's parent may be filtered out: a flat list then.
+        let rows = if f.is_empty() { stacked(d, &locals) } else { locals.iter().map(|r| (*r, 0)).collect() };
+        let names: Vec<&str> = rows.iter().map(|r| r.0.name.as_str()).collect();
         section(ui, "LOCAL", locals.len(), |ui| {
-            for (i, r) in locals.iter().copied().enumerate() {
-                pinned_separator(ui, d, i, &locals.iter().map(|r| r.name.as_str()).collect::<Vec<_>>());
+            for (i, (r, depth)) in rows.iter().copied().enumerate() {
+                pinned_separator(ui, d, i, &names);
                 let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
-                let mut text = format!("{glyph} {}", r.name);
+                let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
+                let mut text = format!("{indent}{glyph} {}", r.name);
+                if depth == 0 && !stack::children(d, &r.name).is_empty() {
+                    text += &format!("  {}", icon::STACK);
+                }
+                if stack::stale(d, &r.name) {
+                    text += &format!("  {}", icon::ARROWS_CLOCKWISE);
+                }
                 if r.ahead > 0 {
                     text += &format!("  ↑{}", r.ahead);
                 }
@@ -95,7 +128,14 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                 let resp = ui.add(row(ui, r.head, view_style(ui, d, r, rt)));
                 branch_dnd(ui, &resp, &r.name, &r.full, acts);
                 hover_ref(ui, &resp, &r.target);
-                let resp = resp.on_hover_text(if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() });
+                let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
+                if let Some(p) = stack::parent(d, &r.name) {
+                    tip += &format!("\nStacked on {p}");
+                    if stack::stale(d, &r.name) {
+                        tip += &format!("; {p} has moved on since: right-click → Restack to bring this branch along");
+                    }
+                }
+                let resp = resp.on_hover_text(tip);
                 if resp.clicked() {
                     acts.push(Action::Jump(r.target.clone()));
                 }

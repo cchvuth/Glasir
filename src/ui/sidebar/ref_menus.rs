@@ -76,8 +76,10 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
     }
     let Some(web) = d.web_of(&remote) else { return };
     let enc = crate::git::url_path;
-    if ui.button("Create pull request…").on_hover_text("Opens the compare page on GitHub / GitHub Enterprise").clicked() {
-        acts.push(Action::Url(format!("{web}/compare/{}...{}?expand=1", enc(&d.default_branch()), enc(&branch))));
+    // A stacked branch's pull request goes into its parent's.
+    let into = crate::repo::stack::parent(d, &r.name).filter(|_| r.kind == RefKind::Local).map_or_else(|| d.default_branch(), str::to_owned);
+    if ui.button("Create pull request…").on_hover_text(format!("Opens the compare page into {into} on GitHub / GitHub Enterprise")).clicked() {
+        acts.push(Action::Url(format!("{web}/compare/{}...{}?expand=1", enc(&into), enc(&branch))));
     }
     if ui.button("Open branch on remote").clicked() {
         acts.push(Action::Url(Page::Branch(&branch).url(&web)));
@@ -116,6 +118,25 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         let to = if rb == name { remote.to_owned() } else { format!("{remote}/{rb}") };
         if ui.button(format!("Push {name} to {to}")).clicked() {
             acts.push(op(format!("Push {name}"), &["push", "-u", remote, &format!("{name}:refs/heads/{rb}")]));
+        }
+    }
+    let members = crate::repo::stack::members(d, name);
+    if members.len() > 1 {
+        if members.iter().any(|m| crate::repo::stack::stale(d, m))
+            && ui
+                .button(format!("{} Restack", icon::ARROWS_CLOCKWISE))
+                .on_hover_text("Rebase each branch of this stack whose parent moved on onto it, bottom first. All or nothing; undo with ⌘Z.")
+                .clicked()
+        {
+            acts.push(Action::Git(crate::repo::stack::restack_op(d, name)));
+        }
+        if !d.remotes.is_empty()
+            && ui
+                .button(format!("{} Push stack ({} branches)", icon::STACK, members.len()))
+                .on_hover_text(format!("Push {}; a branch rewritten since its last push is force-pushed with a lease (asks first)", members.join(", ")))
+                .clicked()
+        {
+            acts.extend(crate::repo::stack::push_op(d, name).map(Action::Git));
         }
     }
     if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {

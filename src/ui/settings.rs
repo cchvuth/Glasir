@@ -55,6 +55,8 @@ pub struct Settings {
     pub cherry_pick_x: bool,
     /// Recent ⌘F searches, newest first.
     pub search_history: Vec<String>,
+    /// Commits and rewrites keep stacked branches together (`repo::stack`).
+    pub stacks: bool,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             avatars: true,
             cherry_pick_x: false,
             search_history: vec![],
+            stacks: true,
         }
     }
 }
@@ -177,6 +180,10 @@ impl App {
                         ui.add(egui::DragValue::new(&mut s.auto_fetch).range(0..=120).suffix(" min"));
                         ui.label(RichText::new("every N minutes and on focus · 0 = off").small().color(theme::dim(ui)));
                     });
+                    ui.end_row();
+                    ui.label("Stacked branches");
+                    ui.checkbox(&mut s.stacks, "Keep stacked branches together")
+                        .on_hover_text("Rebases and history edits move the branches stacked below along (--update-refs), and a commit or rewrite restacks the branches built on top. Off: they stay behind, marked for Restack in the sidebar. Undo puts them all back in one step.");
                     ui.end_row();
                     ui.label("Default pull");
                     ui.horizontal(|ui| {

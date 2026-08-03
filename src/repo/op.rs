@@ -152,6 +152,8 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::merge_opts::CLEAN] => super::merge_opts::clean(dir),
             [super::merge_opts::TREE_IS, ..] => super::merge_opts::tree_is(dir, &a),
             [super::merge_opts::PICK_NEW, ..] => super::merge_opts::pick_new(dir, &a),
+            [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
+            [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
                 git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
                 _ => Ok(String::new()),
@@ -162,7 +164,11 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
     let all = || {
         let mut out = Ok(String::new());
         for args in &op.cmds {
-            out = one(args);
+            let prev = std::mem::replace(&mut out, one(args));
+            // A restack after a commit that had nothing to move: keep the commit's output.
+            if args[0] == super::stack::RESTACK && out.as_ref().is_ok_and(String::is_empty) {
+                out = prev;
+            }
             if out.is_err() {
                 // A failed guard means nothing ran yet: there is nothing to roll back.
                 if !op.on_fail.is_empty() && args.first().map(String::as_str) != Some(super::diff::DIFF_IS) {
@@ -702,6 +708,7 @@ impl RepoTab {
             self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
             return;
         }
+        let op = super::stack::follow(op, self.data.as_ref());
         let dir = self.dir.clone();
         let label = op.label.clone();
         let cancel = git::Cancel::default();

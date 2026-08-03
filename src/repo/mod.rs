@@ -16,6 +16,7 @@
 //!   restore a file from a commit, move unpushed commits to a new branch, patches)
 //! - `msgedit`: inline editing of a commit's message in the commit details
 //! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
+//! - `stack`: stacked branches (detection, keeping them together, restack, push stack)
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
 //! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
 //!   per-remote connection doctor, the commit-email guard
@@ -51,6 +52,7 @@ pub mod restore;
 mod search;
 pub mod spinoff;
 mod split;
+pub mod stack;
 pub mod tags;
 mod task;
 pub mod tools;
@@ -296,12 +298,12 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg, au, tr))) => {
+            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg, au, tr, stk))) => {
                 let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
-                (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated) = (wt, sm, lfs, cfg, au, tr);
+                (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated, d.stack) = (wt, sm, lfs, cfg, au, tr, stk);
                 d.load_bisect(&dir);
                 d.load_conflicts(&dir);
                 Ok(d)
@@ -336,7 +338,10 @@ impl RepoTab {
         }
         if let Some(res) = Task::poll(&mut self.load) {
             match res {
-                Ok(d) => {
+                Ok(mut d) => {
+                    if let Some(old) = &self.data {
+                        stack::keep_stale(old, &mut d);
+                    }
                     if self.sel == Some(Sel::Wip) && !d.wip {
                         self.sel = None;
                     }
