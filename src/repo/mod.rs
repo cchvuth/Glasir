@@ -153,6 +153,8 @@ pub struct RepoTab {
     pub cleanup: Option<cleanup::Cleanup>,
     /// Settings → protected branches (`release/*`-style patterns), mirrored every frame.
     pub keep_branches: String,
+    /// Pending commit drop menu: (title, entries (label, action; `None` = reason it's off), where).
+    pub commit_drop: Option<(String, Vec<(String, Option<Action>)>, egui::Pos2)>,
     /// Predicted conflicts with the target branch: (target, files).
     pub conflicts: Option<(String, Vec<String>)>,
     conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
@@ -242,6 +244,7 @@ impl RepoTab {
             merge: None,
             file_view: None,
             drop_menu: None,
+            commit_drop: None,
             cleanup: None,
             conflicts: None,
             conflict_task: None,
@@ -596,6 +599,14 @@ impl RepoTab {
             Action::DropBranch { src, dst } => {
                 let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
                 self.drop_menu = Some((src, dst, at));
+            }
+            Action::DropCommit { src, dst, branch, squash } => self.drop_commit(ctx, src, dst, branch, squash),
+            Action::DragCommit { src, dst, act } => {
+                let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
+                match crate::repo::rebase::drag(&self.dir, &git_dir, &src, &dst, act) {
+                    Ok(op) => self.run(ctx, op),
+                    Err(e) => self.notes.push(Msg { text: e, error: true }),
+                }
             }
             Action::FileView(path, mode) => {
                 (self.diff, self.merge) = (None, None);

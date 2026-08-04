@@ -368,6 +368,39 @@ pub(super) fn choice_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     }
 }
 
+/// The menu shown after dropping a commit onto a commit or a branch.
+pub(super) fn commit_drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
+    let Some((title, items, at)) = &t.commit_drop else { return };
+    let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
+    let area = egui::Area::new(Id::new("commit_drop_menu")).order(egui::Order::Foreground).fixed_pos(*at).show(ctx, |ui| {
+        Frame::popup(ui.style()).show(ui, |ui| {
+            ui.set_min_width(260.0);
+            ui.set_max_width(380.0);
+            ui.label(RichText::new(format!("{} {title}", icon::GIT_COMMIT)).strong());
+            ui.separator();
+            for (label, a) in items {
+                match a {
+                    Some(a) if ui.button(label).clicked() => {
+                        acts.push(a.clone());
+                        close = true;
+                    }
+                    Some(_) => {}
+                    None => {
+                        ui.label(RichText::new(label).weak());
+                    }
+                }
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    let outside = ctx.input(|i| i.pointer.any_pressed()) && !area.response.contains_pointer();
+    if close || outside {
+        t.commit_drop = None;
+    }
+}
+
 /// The menu shown after dropping one branch onto another.
 pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let Some((src, dst, at)) = t.drop_menu.clone() else { return };

@@ -256,6 +256,45 @@ pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {
     Ok(op)
 }
 
+/// The todo for dragging `src` onto `dst` in the graph: both unpushed, on the
+/// current branch, with no merges from the older one up to HEAD.
+pub fn drag_editor(dir: &Path, src: &str, dst: &str) -> Res<Editor> {
+    on_branch(dir, src)?;
+    on_branch(dir, dst)?;
+    let oldest = if git::run(dir, &["merge-base", "--is-ancestor", src, dst]).is_ok() { src } else { dst };
+    // Its descendants up to HEAD are then unpushed too.
+    if git::run(dir, &["rev-list", "-n1", oldest, "--not", "--remotes"])?.trim().is_empty() {
+        return Err("Pushed commits can't be reordered or squashed by dragging (that would rewrite shared history).".into());
+    }
+    let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{oldest}^")])
+        .map_err(|_| "The root commit can't be moved by dragging; use the interactive rebase editor.".to_string())?;
+    Editor::load(dir, base.trim(), &oldest[..oldest.len().min(7)])
+}
+
+/// Drag `src` onto `dst`: `Pick` moves it to `dst`'s place (like a list drag),
+/// `Squash`/`Fixup` meld it into `dst`. One rebase, one undo step.
+pub fn drag(dir: &Path, git_dir: &Path, src: &str, dst: &str, act: Act) -> Res<Op> {
+    let mut ed = drag_editor(dir, src, dst)?;
+    let pos = |ed: &Editor, id: &str| ed.items.iter().position(|i| i.id == id).ok_or("Commit is not on the current branch.");
+    let (si, di) = (pos(&ed, src)?, pos(&ed, dst)?);
+    let mut it = ed.items.remove(si);
+    // Items are newest first: a meld goes right above (newer than) its target.
+    let at = if act == Act::Pick { di } else { pos(&ed, dst)? };
+    it.act = act;
+    ed.items.insert(at, it);
+    if let Some(p) = ed.problem() {
+        return Err(p.into());
+    }
+    let mut op = ed.op(git_dir)?;
+    let (s, d) = (&src[..src.len().min(7)], &dst[..dst.len().min(7)]);
+    op.label = match act {
+        Act::Squash => format!("Squash {s} into {d}"),
+        Act::Fixup => format!("Fixup {s} into {d}"),
+        _ => format!("Move {s}"),
+    };
+    Ok(op)
+}
+
 /// Commit the staged changes as a fixup of `commit` and fold it in (autosquash).
 /// `fixup! <sha>`, not `--fixup` (`fixup! <subject>`): autosquash would pick the oldest commit with that subject.
 pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
@@ -632,6 +671,76 @@ mod tests {
         assert_eq!(git::state(&gd), git::State::Clean);
         assert!(g(&["status", "--porcelain"]).contains("?? z"));
         assert!(split(&dir, &gd, &g(&["rev-list", "--max-parents=0", "HEAD"]).trim().to_owned(), false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Dragging commits in the graph: reorder, ⌥-squash and cherry-pick, one ⌘Z each;
+    /// pushed commits and other branches are refused.
+    #[test]
+    fn drag_commits_in_the_graph() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("drag");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a", "b", "c", "d"] {
+            commit(&dir, f, f);
+        }
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD~2"]); // a and b are pushed
+        sh(&dir, &["branch", "side", "HEAD~3"]);
+        let id = |r: &str| sh(&dir, &["rev-parse", r]).trim().to_owned();
+        let log = || sh(&dir, &["log", "--format=%s"]);
+        let tip = id("HEAD");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let menu = |t: &mut RepoTab, src: &str, dst: Option<&str>, branch: Option<&str>| {
+            t.apply(&ctx, Action::DropCommit { src: id(src), dst: dst.map(id), branch: branch.map(String::from), squash: false });
+            t.commit_drop.take().expect("a drop menu").1
+        };
+
+        // Reorder: d dropped onto c goes below it.
+        let items = menu(&mut t, "HEAD", Some("HEAD~1"), None);
+        assert_eq!(items.iter().map(|i| i.0.as_str()).collect::<Vec<_>>()[..2], ["Move below \"c\"", "Squash into \"c\""]);
+        t.apply(&ctx, items[0].1.clone().unwrap());
+        settle(&ctx, &mut t);
+        assert_eq!(log(), "c\nd\nb\na\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(id("HEAD"), tip);
+
+        // ⌥-drop c onto d: squashed into it right away, both messages kept.
+        t.apply(&ctx, Action::DropCommit { src: id("HEAD~1"), dst: Some(id("HEAD")), branch: None, squash: true });
+        assert!(t.commit_drop.is_none());
+        settle(&ctx, &mut t);
+        assert_eq!(log(), "d\nb\na\n");
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%B"]).trim(), "d\n\nc");
+        assert!(dir.join("c").exists() && dir.join("d").exists());
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(id("HEAD"), tip);
+
+        // Pushed commits are refused, also as the far end of a drag.
+        for (src, dst) in [("HEAD~2", "HEAD"), ("HEAD", "HEAD~2")] {
+            let items = menu(&mut t, src, Some(dst), None);
+            assert!(items.len() == 1 && items[0].1.is_none() && items[0].0.starts_with("Pushed commits"), "{:?}", items[0].0);
+        }
+
+        // Cherry-pick: only onto HEAD's branch, and not of a commit already on it.
+        let items = menu(&mut t, "HEAD", None, Some("refs/heads/side"));
+        assert!(items[0].1.is_none() && items[0].0.starts_with("Check out side"));
+        sh(&dir, &["checkout", "-q", "side"]);
+        t.apply(&ctx, Action::Reload);
+        settle(&ctx, &mut t);
+        let items = menu(&mut t, "main", None, Some("refs/heads/side"));
+        assert_eq!(items[0].0, "Cherry-pick onto side");
+        t.apply(&ctx, items[0].1.clone().unwrap());
+        settle(&ctx, &mut t);
+        assert_eq!(log(), "d\na\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(log(), "a\n");
+        assert_eq!(id("main"), tip);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

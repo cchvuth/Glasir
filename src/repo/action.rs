@@ -87,6 +87,11 @@ pub enum Action {
     FileView(String, super::history::Mode),
     /// A branch was dropped onto another (full refs): offer merge / rebase / push.
     DropBranch { src: String, dst: String },
+    /// A commit was dropped onto commit `dst` and/or branch `branch` (full ref):
+    /// offer move / squash / fixup / cherry-pick (`squash`: ⌥ held, squash right away).
+    DropCommit { src: String, dst: Option<String>, branch: Option<String>, squash: bool },
+    /// Move `src` to `dst`'s place (`Pick`) or meld it into `dst` (squash / fixup).
+    DragCommit { src: String, dst: String, act: crate::repo::rebase::Act },
     Cleanup,
     /// Rewrite one commit on the current branch: reword / squash / drop.
     Rewrite { commit: String, act: crate::repo::rebase::Act, message: Option<String> },

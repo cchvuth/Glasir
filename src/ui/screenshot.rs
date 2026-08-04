@@ -210,6 +210,19 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::FileView(path.into(), mode));
                         }
                     }
+                    // `commitdrop:<src rev>:<dst rev>`: the menu after dragging one commit row onto another.
+                    q if q.starts_with("commitdrop:") => {
+                        let mut it = q[11..].splitn(2, ':');
+                        if let (Some(src), Some(dst), Some(t)) = (it.next(), it.next(), self.tabs.get_mut(self.active)) {
+                            let id = |r: &str| git::run(&t.dir, &["rev-parse", r]).map(|s| s.trim().to_owned()).unwrap_or_default();
+                            let (src, dst) = (id(src), id(dst));
+                            let branch = t.data.as_ref().and_then(|d| d.refs.iter().find(|r| r.head && r.target == dst)).map(|r| r.full.clone());
+                            t.apply(&ctx.clone(), Action::DropCommit { src, dst: Some(dst), branch, squash: false });
+                            if let Some(m) = &mut t.commit_drop {
+                                m.2 = egui::pos2(600.0, 300.0);
+                            }
+                        }
+                    }
                     q if q.starts_with("drop:") => {
                         let mut it = q[5..].splitn(2, ':');
                         if let (Some(src), Some(dst), Some(t)) = (it.next(), it.next(), self.tabs.get_mut(self.active)) {

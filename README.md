@@ -101,6 +101,9 @@ The name fits a Git client:
 
 ### Branches, merges and rebases
 - **Drag a branch onto another** to merge, rebase or push.
+- **Drag a commit** onto another unpushed commit of the current branch to move it
+  there, squash or fixup into it (hold ⌥ to squash right away), or onto the current
+  branch to cherry-pick it; one ⌘Z each, pushed commits and merges are refused.
 - Sidebar keeps the **default branch** (and main / master / develop / trunk)
   pinned on top, above a separator.
 - Checkout, create, rename, delete (undoable), set / unset upstream, fast-forward

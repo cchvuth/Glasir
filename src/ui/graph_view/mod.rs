@@ -13,7 +13,7 @@ use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
 use crate::repo::{Action, RepoData, Search, Sel, View, branch_checkout};
 use crate::theme::{self, icon};
-use dnd::BranchDrag;
+use dnd::{BranchDrag, CommitDrag};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use crate::ui::format::{initials, relative_time};
 use hover::{hover_ref, hovered_ref};
@@ -206,9 +206,9 @@ pub fn show(
             let mut hovered = None;
             for r in range.clone() {
                 let rect = Rect::from_min_size(pos2(left, top + r as f32 * ROW), vec2(full.width(), ROW));
-                let resp = ui.interact(rect, ui.id().with(("row", r)), Sense::click());
-                let pill = rect.shrink2(vec2(2.0, 1.5));
                 let commit = d.commit(r);
+                let resp = ui.interact(rect, ui.id().with(("row", r)), if commit.is_some() { Sense::click_and_drag() } else { Sense::click() });
+                let pill = rect.shrink2(vec2(2.0, 1.5));
                 let in_multi = commit.is_some_and(|c| multi.contains(&c.id));
                 if Some(r) == sel_row || in_multi {
                     ui.painter().rect_filled(pill, 9.0, theme::selection(ui));
@@ -237,6 +237,21 @@ pub fn show(
                         && p.1 != dst.full
                     {
                         acts.push(Action::DropBranch { src: p.1.clone(), dst: dst.full.clone() });
+                    }
+                }
+                // Dragging a commit onto another moves / squashes it, or cherry-picks it onto the row's branch.
+                if let Some(c) = commit {
+                    resp.dnd_set_drag_payload(CommitDrag(c.id.clone(), c.summary.clone()));
+                    if resp.dnd_hover_payload::<CommitDrag>().is_some_and(|p| p.0 != c.id) {
+                        ui.painter().rect_stroke(pill, 9.0, Stroke::new(2.0, theme::accent()), egui::StrokeKind::Inside);
+                    }
+                    if let Some(p) = resp.dnd_release_payload::<CommitDrag>()
+                        && p.0 != c.id
+                    {
+                        let locals = d.refs_at.get(&c.id).map_or(&[][..], |v| v).iter().map(|&i| &d.refs[i]).filter(|r| r.kind == RefKind::Local);
+                        let branch = locals.max_by_key(|r| r.head).map(|r| r.full.clone());
+                        let squash = ui.input(|i| i.modifiers.alt);
+                        acts.push(Action::DropCommit { src: p.0.clone(), dst: Some(c.id.clone()), branch, squash });
                     }
                 }
                 resp.context_menu(|ui| match commit {

@@ -907,6 +907,52 @@ impl RepoTab {
         }
     }
 
+    /// The menu for a commit dropped onto a commit and/or a branch; ⌥ squashes right away.
+    pub(super) fn drop_commit(&mut self, ctx: &egui::Context, src: String, dst: Option<String>, branch: Option<String>, squash: bool) {
+        use super::rebase::{self, Act};
+        let Some(d) = &self.data else { return };
+        let short = |id: &str| -> String {
+            let s = d.row_of.get(id).and_then(|&r| d.commit(r)).map_or(&id[..id.len().min(7)], |c| c.summary.as_str());
+            if s.chars().count() > 40 { format!("{}…", s.chars().take(39).collect::<String>()) } else { s.to_owned() }
+        };
+        let title = short(&src);
+        let on_head = git::run(&self.dir, &["merge-base", "--is-ancestor", &src, "HEAD"]).is_ok();
+        let mut items: Vec<(String, Option<Action>)> = vec![];
+        if let Some(dst) = dst.filter(|t| on_head && *t != src) {
+            match rebase::drag_editor(&self.dir, &src, &dst) {
+                Ok(_) if squash => return self.apply(ctx, Action::DragCommit { src, dst, act: Act::Squash }),
+                Ok(ed) => {
+                    let pos = |id: &str| ed.items.iter().position(|i| i.id == id);
+                    let side = if pos(&src) > pos(&dst) { "above" } else { "below" }; // newest first
+                    let to = short(&dst);
+                    let drag = |act| Some(Action::DragCommit { src: src.clone(), dst: dst.clone(), act });
+                    items.push((format!("Move {side} \"{to}\""), drag(Act::Pick)));
+                    items.push((format!("Squash into \"{to}\""), drag(Act::Squash)));
+                    items.push((format!("Fixup into \"{to}\" (drop this message)"), drag(Act::Fixup)));
+                }
+                Err(e) => items.push((e, None)),
+            }
+        }
+        if let Some(b) = branch.and_then(|b| d.refs.iter().find(|r| r.full == b && r.kind == RefKind::Local)) {
+            if !b.head {
+                items.push((format!("Check out {} to cherry-pick onto it", b.name), None));
+            } else if git::run(&self.dir, &["rev-parse", "-q", "--verify", &format!("{src}^2")]).is_ok() {
+                items.push(("Merge commits can't be cherry-picked by dragging.".into(), None));
+            } else if !on_head {
+                let mut op = super::merge_opts::pick_op(format!("Cherry-pick {}", &src[..src.len().min(7)]), &[&src], false, false);
+                // The menu may wait while HEAD moves: pick onto the branch it names or not at all.
+                op.cmds.insert(0, vec![rebase::HEAD_IS.into(), rebase::head_state(&self.dir)]);
+                items.push((format!("Cherry-pick onto {}", b.name), Some(Action::Git(op))));
+            }
+        }
+        if items.is_empty() {
+            let text = "Drop a commit onto an unpushed commit of the current branch to move or squash it, or onto the current branch to cherry-pick it.";
+            return self.notes.push(Msg { text: text.into(), error: true });
+        }
+        let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
+        self.commit_drop = Some((title, items, at));
+    }
+
     /// Op that commits the message in the editor (and pushes, if asked).
     pub fn commit_op(&self) -> Op {
         let mut msg = if self.body.trim().is_empty() {

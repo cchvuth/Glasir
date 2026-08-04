@@ -111,6 +111,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     dialogs::confirm_dialog(t, &ctx, &mut acts);
     dialogs::ai_dialog(t, &ctx, &mut acts);
     dialogs::drop_menu(t, &ctx, &mut acts);
+    dialogs::commit_drop_menu(t, &ctx, &mut acts);
     dialogs::cleanup_dialog(t, &ctx, &mut acts, &mut s.stale_days);
     dialogs::absorb_dialog(t, &ctx, &mut acts);
     super::compose::compose_dialog(t, &ctx, &mut acts);
