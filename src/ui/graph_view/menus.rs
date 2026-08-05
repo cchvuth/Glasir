@@ -22,6 +22,7 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut
     if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::DEL)).clicked() {
         acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
     }
+    recompose_items(ui, d, &format!("Recompose {n} commits with AI…"), &multi[n - 1], multi, acts);
     patch_items(ui, multi, acts);
     ui.separator();
     if ui.button("Compare oldest ↔ newest").clicked() {
@@ -34,6 +35,23 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut
     crate::ui::links::items(ui, d, &[("compare", page)], &[&multi[n - 1], &multi[0]], acts);
     crate::ui::bisect::multi_item(ui, d, multi, acts);
 }
+/// The commits from `oldest` up to HEAD (exactly `picked`, if any) back into the Commit
+/// Composer, with or without the uncommitted changes.
+fn recompose_items(ui: &mut Ui, d: &RepoData, label: &str, oldest: &str, picked: &[String], acts: &mut Vec<Action>) {
+    if !crate::ai::enabled() {
+        return;
+    }
+    let dirty = !d.status.staged.is_empty() || !d.status.unstaged.is_empty();
+    for wip in [false, true].into_iter().take(1 + dirty as usize) {
+        let text = if wip { format!("{} {label} (with uncommitted changes)", icon::SPARKLE) } else { format!("{} {label}", icon::SPARKLE) };
+        let hover = format!("Let {} re-plan these unpushed commits' changes as new focused commits (you review the plan first; undo with ⌘Z)", crate::ai::name());
+        if ui.button(text).on_hover_text(hover).clicked() {
+            acts.push(Action::Recompose(crate::repo::compose::Recompose { oldest: oldest.into(), picked: picked.to_vec(), wip }));
+            ui.close();
+        }
+    }
+}
+
 fn patch_items(ui: &mut Ui, ids: &[String], acts: &mut Vec<Action>) {
     ui.separator();
     if ui.button(format!("{} Copy as patch", icon::COPY)).clicked() {
@@ -185,6 +203,9 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
             if ui.button(format!("{} Split this commit…", icon::SCISSORS)).on_hover_text("Uncommit it, then commit its parts one by one").clicked() {
                 acts.push(Action::Split(c.id.clone()));
                 ui.close();
+            }
+            if on_branch {
+                recompose_items(ui, d, "Recompose from here with AI…", &c.id, &[], acts);
             }
             if ui.button("Squash into parent").clicked() {
                 acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Squash, message: None });

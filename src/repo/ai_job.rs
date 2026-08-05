@@ -7,16 +7,11 @@ use crate::ai;
 
 impl RepoTab {
     pub(super) fn start_ai(&mut self, ctx: &egui::Context, p: ai::Purpose) {
-        if !self.ai_cfg.enabled {
-            return;
-        }
-        // A replaced job is dropped mid-stream: its partial text stays and its follow-up (draft restore, stash) never runs.
-        if let Some(busy) = self.ai_busy().map(|p| p.title()).or(self.compose_task.is_some().then(|| "Compose commits".into())) {
-            self.notes.push(Msg { text: format!("{} is still working on {busy}; wait for it to finish", ai::name()), error: true });
+        if !self.ai_free() {
             return;
         }
         let draft = match &p {
-            ai::Purpose::Compose => return self.start_compose(ctx),
+            ai::Purpose::Compose => return self.start_compose(ctx, None),
             ai::Purpose::CommitMessage { .. } => {
                 self.ai_draft = Some((self.summary.clone(), self.body.clone()));
                 format!("{}\n\n{}", self.summary, self.body).trim().to_owned()
@@ -84,6 +79,19 @@ impl RepoTab {
             }
             _ => {}
         }
+    }
+
+    /// AI is on and idle; else says what it's still doing.
+    pub(super) fn ai_free(&mut self) -> bool {
+        if !self.ai_cfg.enabled {
+            return false;
+        }
+        // A replaced job is dropped mid-stream: its partial text stays and its follow-up (draft restore, stash) never runs.
+        if let Some(busy) = self.ai_busy().map(|p| p.title()).or(self.compose_task.is_some().then(|| "Compose commits".into())) {
+            self.notes.push(Msg { text: format!("{} is still working on {busy}; wait for it to finish", ai::name()), error: true });
+            return false;
+        }
+        true
     }
 
     pub fn ai_busy(&self) -> Option<&ai::Purpose> {

@@ -163,10 +163,12 @@ impl App {
                         }
                     }
                     // Commit Composer: `compose` (a canned plan, the last change left out; no AI),
+                    // `recompose` (the same for the last two commits),
                     // `ai:compose` / `ai:explain-wip` (real requests; raise GLASIR_SCREENSHOT_FRAMES).
-                    "compose" => {
+                    v @ ("compose" | "recompose") => {
+                        let r = (v == "recompose").then(|| crate::repo::compose::Recompose { oldest: "HEAD~1".into(), picked: vec![], wip: false });
                         if let Some(t) = self.tabs.get_mut(self.active)
-                            && let Ok((mut p, _)) = crate::repo::compose::Plan::load(&t.dir)
+                            && let Ok((mut p, _)) = crate::repo::compose::Plan::load(&t.dir, r.as_ref())
                         {
                             let n = p.units.len();
                             let (a, b): (Vec<usize>, Vec<usize>) = (1..n.max(2)).partition(|i| *i <= n / 2);

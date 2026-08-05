@@ -100,6 +100,8 @@ pub enum Action {
     AmendInto(String),
     /// Plan absorbing the staged hunks into the commits they belong to (preview first).
     Absorb,
+    /// Commit Composer on existing commits (see `compose::Recompose`).
+    Recompose(super::compose::Recompose),
     /// Uncommit this commit and guide splitting it into several.
     Split(String),
     /// Finish the guided split (`rebase --continue`), or abort it.

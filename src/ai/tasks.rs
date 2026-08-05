@@ -238,7 +238,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
             (
                 format!(
-                    "Split these uncommitted changes into a sequence of small, focused, logical commits, as a careful engineer would. \
+                    "Split these changes into a sequence of small, focused, logical commits, as a careful engineer would. \
                      The changes are numbered units (diff hunks, or whole files). Plan the commits in the order they should be made \
                      (foundations first), and give each one a commit message: a summary line in the imperative mood (at most 72 characters), \
                      plus a blank line and a short body only if the change needs explaining. Match the conventions of the recent commits.\n\

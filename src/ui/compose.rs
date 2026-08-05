@@ -17,9 +17,13 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
     let (mut close, mut run, mut edit) = (false, false, None);
     egui::Modal::new(Id::new("compose")).show(ctx, |ui| {
         ui.set_width(680.0);
-        ui.heading(format!("{} Compose commits", icon::SPARKLE));
+        let what = match (p.replaces, p.wip) {
+            (0, _) => "your uncommitted changes".to_owned(),
+            (n, wip) => format!("the changes of your last {n} commits{}", if wip { " and your uncommitted ones" } else { "" }),
+        };
+        ui.heading(format!("{} {}", icon::SPARKLE, if p.replaces > 0 { "Recompose commits" } else { "Compose commits" }));
         ui.label(
-            RichText::new(format!("{}'s plan for your uncommitted changes, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.", crate::ai::name()))
+            RichText::new(format!("{}'s plan for {what}, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.", crate::ai::name()))
                 .small()
                 .color(theme::dim(ui)),
         );

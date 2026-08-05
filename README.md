@@ -247,6 +247,10 @@ The name fits a Git client:
   new files whole) into a series of focused commits; review the plan, edit messages,
   move changes between commits, split / merge / reorder, then create them in one
   undoable step (⌘Z).
+- ✨ **Recompose commits**: "Recompose from here" on an unpushed commit (or on a
+  multi-selection ending at HEAD) re-plans those commits' changes, optionally with
+  your uncommitted ones, as new focused commits in the Composer; one ⌘Z brings the
+  originals back. Refused for pushed commits, merges, or an operation in progress.
 - ✨ **Explain** a commit, a branch, any comparison, or your working changes.
 - ✨ **Pull request** title and description, opened prefilled on GitHub / GHE.
 - ✨ **Stash messages** and ✨ **conflict resolution** suggestions (into the merge editor).

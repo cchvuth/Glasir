@@ -577,6 +577,11 @@ impl RepoTab {
             }
             Action::Absorb => self.start_absorb(ctx),
             Action::Split(commit) => self.start_split(ctx, commit),
+            Action::Recompose(r) => {
+                if self.ai_free() {
+                    self.start_compose(ctx, Some(r));
+                }
+            }
             Action::SplitEnd { abort } => self.end_split(ctx, abort),
             Action::Reword { commit, message } => {
                 let Some(d) = &self.data else { return };
