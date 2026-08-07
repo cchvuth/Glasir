@@ -38,6 +38,8 @@ pub struct Settings {
     pub auto_fetch: u32,
     /// Graph filter (hidden / soloed refs, first-parent) per repo path.
     pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
+    /// Custom tab names per repo path (tab right-click → Rename).
+    pub aliases: std::collections::HashMap<PathBuf, String>,
     /// Commit email rules, one `host -> @domain` per line (`repo::identity`).
     pub email_rules: String,
     /// Branches Clean up never offers, besides the trunk names and `release/*`: patterns like `hotfix/*`.
@@ -79,6 +81,7 @@ impl Default for Settings {
             transparency: 0.25,
             auto_fetch: 10,
             views: Default::default(),
+            aliases: Default::default(),
             email_rules: String::new(),
             keep_branches: String::new(),
             stale_days: 90,

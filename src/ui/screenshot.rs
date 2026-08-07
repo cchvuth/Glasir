@@ -354,6 +354,15 @@ impl App {
                             }
                         }
                     }
+                    // `tabs:<repo>`: another tab (aliased "Work"), the first stays active.
+                    q if q.starts_with("tabs:") => {
+                        let a = self.active;
+                        self.open(ctx, std::path::Path::new(&q[5..]));
+                        if let Some(t) = self.tabs.last() {
+                            self.s.aliases.insert(t.dir.clone(), "Work".into());
+                        }
+                        self.active = a;
+                    }
                     "deselect" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.sel = None;

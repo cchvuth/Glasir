@@ -32,6 +32,8 @@ pub struct App {
     pub(super) git_check: Option<Task<Option<String>>>,
     pub(super) show_log: bool,
     pub(super) focused: bool,
+    /// Rename-tab dialog: the repo path and the alias being typed.
+    pub(super) rename: Option<(PathBuf, String)>,
     /// The OS draws glass behind the window, so the canvas stays translucent.
     pub(super) glass_backdrop: bool,
     pub(super) shortcuts: bool,
@@ -77,6 +79,7 @@ impl App {
             git_check: Some(Task::spawn(&cc.egui_ctx, git::check_git)),
             show_log: false,
             focused: true,
+            rename: None,
             glass_backdrop,
             shortcuts: false,
             drop_hint_shot: false,
@@ -141,6 +144,13 @@ impl App {
         }
         if cmd && pressed(Key::W) && self.active < self.tabs.len() {
             self.close_tab(ctx, self.active);
+        }
+        const NUMS: [Key; 9] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+        if cmd && !shift && let Some(n) = NUMS.iter().position(|&k| pressed(k)) {
+            let n = if n == 8 { self.tabs.len().saturating_sub(1) } else { n }; // ⌘9 = last tab
+            if n < self.tabs.len() {
+                self.active = n;
+            }
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Tab)) && !self.tabs.is_empty() {
             self.active = (self.active + 1) % self.tabs.len();
@@ -363,6 +373,7 @@ impl eframe::App for App {
             Some(t) => repo_view::show(t, ui, &mut self.s),
             None => self.welcome(ui),
         }
+        self.rename_dialog(&ctx);
         self.clone_dialog(&ctx);
         self.settings_dialog(&ctx);
         self.command_palette(&ctx);

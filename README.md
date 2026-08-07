@@ -259,7 +259,7 @@ The name fits a Git client:
 
 ### Workflow and comfort
 - **⌘P command palette** with fuzzy search over commands, branches, tags and repos.
-- **Repo tabs**, recent repositories, live refresh when files change on disk.
+- **Repo tabs** show the branch, a dirty dot and ahead/behind arrows; drag to reorder, right-click to rename, close others or reveal; ⌘1–⌘9 switch. Recent repositories, live refresh when files change on disk.
 - **Command log** (⇧⌘L) showing every git command Glasir ran, copyable as shell commands.
 - **Keyboard shortcut cheat sheet**: press **?** (or ⌘/) anywhere.
 - **Undo right from the toast**: after a commit, checkout, rebase, discard and
@@ -337,6 +337,7 @@ token saved by an older version may ask once: choose **Always Allow**).
 | ↑ ↓ / J K | Move through commits |
 | ⌘-click / ⇧-click | Select several commits, or WIP files to stage / unstage / discard |
 | ⌘O / ⌘T / ⌘W | Open repo / new tab / close tab |
+| ⌘1 – ⌘9 | Go to tab 1–8 / the last tab |
 | ⌃Tab | Next tab |
 | ⌘, | Settings |
 | F5 / ⌘R | Refresh |
