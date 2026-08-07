@@ -82,11 +82,13 @@ pub struct Config {
     /// keychain: `Some("")` = none saved, `None` = not known yet (older settings).
     pub saved_in: Option<String>,
     pub openai: Endpoint,
+    /// Settings → AI → "Custom instructions", appended to every AI prompt.
+    pub instructions: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { provider: Provider::Claude, model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true, saved_in: None, openai: Endpoint::default() }
+        Config { provider: Provider::Claude, model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true, saved_in: None, openai: Endpoint::default(), instructions: String::new() }
     }
 }
 

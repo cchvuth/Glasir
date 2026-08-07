@@ -255,6 +255,9 @@ The name fits a Git client:
 - ✨ **Pull request** title and description, opened prefilled on GitHub / GHE.
 - ✨ **Stash messages** and ✨ **conflict resolution** suggestions (into the merge editor).
 - Your token stays in the OS keychain and is only sent to the API URL you set.
+- **Custom instructions** (Settings → AI, with Conventional Commits / Gitmoji / short-subject
+  presets) are added to every AI prompt; per repo use `git config glasir.aiInstructions`
+  or a `.glasir/ai.md` file.
 - **Settings → Enable AI features** off hides every AI button and menu item.
 
 ### Workflow and comfort

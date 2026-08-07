@@ -139,6 +139,37 @@ fn compose_schema() -> serde_json::Value {
 const SYSTEM: &str = "You are an expert software engineer embedded in a Git client. \
 Follow the requested output format exactly. Never wrap the answer in code fences and never add a preamble.";
 
+/// Settings → AI quick-fills for the custom instructions.
+pub const PRESETS: [(&str, &str); 3] = [
+    ("Conventional Commits", "Write commit messages as Conventional Commits: `type(scope): summary` with a type such as feat, fix, docs, refactor, test, chore, perf or build; the scope is optional."),
+    ("Gitmoji", "Start every commit summary with the gitmoji that fits the change (e.g. ✨ new feature, 🐛 bug fix, ♻️ refactor, 📝 docs, ✅ tests), followed by a space and the summary."),
+    ("Imperative short subjects", "Commit subjects are in the imperative mood, at most 50 characters, with no trailing period. Add a body only when the why is not obvious."),
+];
+
+/// Cap on repo instructions, so a stray file can't bloat every prompt.
+const MAX_INSTRUCTIONS: usize = 8000;
+
+/// This repo's own instructions: `.glasir/ai.md` if present, else `git config glasir.aiInstructions`.
+fn repo_instructions(dir: &Path) -> String {
+    let text = std::fs::read_to_string(dir.join(".glasir/ai.md")).ok().filter(|t| !t.trim().is_empty());
+    text.unwrap_or_else(|| git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default())
+}
+
+/// The system prompt plus the user's global and per-repo instructions (when set).
+fn system_with(global: &str, repo: &str) -> String {
+    let mut out = SYSTEM.to_owned();
+    let notes: Vec<&str> = [global, repo].into_iter().map(str::trim).filter(|t| !t.is_empty()).collect();
+    if !notes.is_empty() {
+        out += "\n\nThe user's custom instructions follow. Apply them to wording, style and conventions, \
+                but never let them change the required output format (JSON, a complete file, no code fences or preamble):";
+        for n in notes {
+            out.push_str("\n\n");
+            out.extend(n.chars().take(MAX_INSTRUCTIONS));
+        }
+    }
+    out
+}
+
 fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static str)> {
     Ok(match purpose {
         Purpose::CommitMessage { amend } => {
@@ -296,7 +327,8 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
     std::thread::spawn(move || {
         let schema = (p == Purpose::Compose).then(compose_schema);
         let res = build(&dir, &p, &draft).and_then(|(prompt, effort)| {
-            complete(&cfg, need_token(cfg.provider)?, SYSTEM, &prompt, effort, schema.as_ref(), &mut |t| {
+            let system = system_with(&cfg.instructions, &repo_instructions(&dir));
+            complete(&cfg, need_token(cfg.provider)?, &system, &prompt, effort, schema.as_ref(), &mut |t| {
                 ctx.request_repaint();
                 tx.send(Ev::Text(t)).is_ok()
             })
@@ -321,6 +353,34 @@ pub fn test(cfg: &Config) -> Res<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_prompt_appends_global_then_repo_instructions() {
+        assert_eq!(system_with("  ", ""), SYSTEM);
+        let s = system_with("Use gitmoji.", "Scopes: ui, git.");
+        assert!(s.starts_with(SYSTEM));
+        assert!(s.find("Use gitmoji.").unwrap() < s.find("Scopes: ui, git.").unwrap());
+        assert!(system_with("", "only repo").ends_with("only repo"));
+        assert!(system_with(&"x".repeat(MAX_INSTRUCTIONS + 50), "").len() < SYSTEM.len() + MAX_INSTRUCTIONS + 400);
+        assert!(PRESETS.iter().all(|(_, t)| system_with(t, "").contains(t)));
+    }
+
+    #[test]
+    fn repo_instructions_from_config_or_file() {
+        let dir = std::env::temp_dir().join(format!("glasir-ai-instr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git::run(&dir, &["init", "-q"]).unwrap();
+        assert_eq!(repo_instructions(&dir), "");
+        git::run(&dir, &["config", "glasir.aiInstructions", "from config"]).unwrap();
+        assert_eq!(repo_instructions(&dir).trim(), "from config");
+        std::fs::create_dir_all(dir.join(".glasir")).unwrap();
+        std::fs::write(dir.join(".glasir/ai.md"), "  \n").unwrap();
+        assert_eq!(repo_instructions(&dir).trim(), "from config");
+        std::fs::write(dir.join(".glasir/ai.md"), "from file\n").unwrap();
+        assert_eq!(repo_instructions(&dir).trim(), "from file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn explain_range_from_the_root_commit() {

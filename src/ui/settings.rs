@@ -312,6 +312,20 @@ impl App {
                     ui.end_row();
                 });
                 ui.add_space(6.0);
+                ui.label("Custom instructions");
+                ui.add(TextEdit::multiline(&mut s.ai.instructions).margin(crate::theme::INPUT_MARGIN).hint_text("e.g. Write commit messages in Swedish").desired_rows(3).desired_width(f32::INFINITY));
+                ui.horizontal_wrapped(|ui| {
+                    for (name, text) in ai::PRESETS {
+                        if ui.small_button(name).on_hover_text(text).clicked() && !s.ai.instructions.contains(text) {
+                            if !s.ai.instructions.trim().is_empty() {
+                                s.ai.instructions.push('\n');
+                            }
+                            s.ai.instructions.push_str(text);
+                        }
+                    }
+                });
+                ui.label(RichText::new("Added to every AI prompt. Per repo: `git config glasir.aiInstructions \"…\"` or a .glasir/ai.md file (used after these).").small().color(theme::dim(ui)));
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if st.test.is_some() {
                         ui.spinner();
