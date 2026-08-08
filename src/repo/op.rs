@@ -142,6 +142,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::tools::DETACH, rest @ ..] => super::tools::detach(dir, rest),
             [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP | STASH_APPLY | STASH_RENAME | STASH_UNPOP, ..] => stash_cmd(dir, &a),
             [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
+            [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
             [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
             [super::diff::APPLY_HUNK, ..] => super::diff::apply_hunk(dir, &a, op.input.as_deref().unwrap_or_default()),

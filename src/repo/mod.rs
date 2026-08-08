@@ -20,6 +20,7 @@
 //! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
 //! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
 //!   per-remote connection doctor, the commit-email guard
+//! - `maintenance`: optimize hint heuristic, `git maintenance` run, background-schedule toggle
 //! - `tools`: open in editor / terminal, custom commands (Settings → Tools)
 //! - `avatars`: commit authors' GitHub / GitHub Enterprise profile pictures
 
@@ -38,6 +39,7 @@ pub mod files;
 pub mod history;
 pub mod identity;
 pub mod image_diff;
+pub mod maintenance;
 pub mod merge_editor;
 pub mod merge_opts;
 pub mod message;

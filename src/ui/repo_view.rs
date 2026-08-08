@@ -6,13 +6,14 @@
 use super::settings::Settings;
 use super::{diff_view, dialogs, graph_view, history, merge_editor, rebase_editor, reflog, sidebar, toolbar::toolbar};
 use crate::repo::history::Mode;
-use crate::repo::{Action, RepoTab};
-use crate::theme;
+use crate::repo::{Action, RepoData, RepoTab, maintenance};
+use crate::theme::{self, icon};
 use egui::{Frame, Margin, Ui, UiBuilder};
 
 pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let ctx = ui.ctx().clone();
     let mut acts = vec![];
+    let busy = t.busy().is_some();
     t.ai_cfg.clone_from(&s.ai);
     t.email_rules.clone_from(&s.email_rules);
     t.keep_branches.clone_from(&s.keep_branches);
@@ -90,6 +91,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                         }
                         (None, None) => {
                             let d = t.data.as_ref().unwrap();
+                            optimize_hint(ui, d, &t.dir, busy, s, &mut acts);
                             if let Some(se) = &mut t.search {
                                 se.history.clone_from(&s.search_history);
                                 se.poll(&ctx, d);
@@ -128,4 +130,32 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
         }
         t.apply(&ctx, a);
     }
+}
+
+/// One-time strip above the graph when the repo would benefit from `git maintenance`.
+fn optimize_hint(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, busy: bool, s: &mut Settings, acts: &mut Vec<Action>) {
+    if busy || !d.health.wants_optimizing() || d.state != crate::git::State::Clean || s.optimize_seen.iter().any(|p| p == dir) {
+        return;
+    }
+    let why = match d.health.loose >= maintenance::LOOSE_MAX {
+        true => format!("{} loose objects slow git down", d.health.loose),
+        false => "No commit-graph: history queries are slower than they need to be".into(),
+    };
+    Frame::new().fill(theme::accent().gamma_multiply(0.18)).inner_margin(Margin::symmetric(10, 6)).corner_radius(12.0).show(ui, |ui| {
+        let mut done = false;
+        theme::bar(ui, |ui| {
+            theme::group(ui, |ui| {
+                done |= theme::pill(ui, icon::X).on_hover_text("Don't suggest this again").clicked();
+                if theme::pill(ui, format!("{} Optimize", icon::WRENCH)).on_hover_text("Pack loose objects and refresh the commit-graph (git maintenance)").clicked() {
+                    acts.push(Action::Git(maintenance::op()));
+                    done = true;
+                }
+            });
+            theme::rest(ui, |ui| ui.label(format!("{} Optimize repository: {why}", icon::LIGHTBULB)));
+        });
+        if done {
+            s.optimize_seen.push(dir.to_path_buf());
+        }
+    });
+    ui.add_space(4.0);
 }

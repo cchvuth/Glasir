@@ -40,6 +40,8 @@ pub struct Settings {
     pub views: std::collections::HashMap<PathBuf, crate::repo::View>,
     /// Custom tab names per repo path (tab right-click → Rename).
     pub aliases: std::collections::HashMap<PathBuf, String>,
+    /// Repos whose one-time "Optimize repository" hint was shown and dealt with.
+    pub optimize_seen: Vec<PathBuf>,
     /// Commit email rules, one `host -> @domain` per line (`repo::identity`).
     pub email_rules: String,
     /// Branches Clean up never offers, besides the trunk names and `release/*`: patterns like `hotfix/*`.
@@ -82,6 +84,7 @@ impl Default for Settings {
             auto_fetch: 10,
             views: Default::default(),
             aliases: Default::default(),
+            optimize_seen: vec![],
             email_rules: String::new(),
             keep_branches: String::new(),
             stale_days: 90,

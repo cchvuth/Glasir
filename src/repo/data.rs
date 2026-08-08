@@ -14,6 +14,7 @@ pub struct RepoData {
     pub worktrees: Arc<Vec<git::Worktree>>,
     pub submodules: Arc<Vec<git::Submodule>>,
     pub lfs: Arc<git::Lfs>,
+    pub health: super::maintenance::Health,
     pub remotes: Arc<Vec<(String, String)>>,
     /// `remote.*`, `branch.*`, `user.*`, `commit.template` and `core.comment*` config, all scopes in git's order (`cfg` looks keys up).
     pub config: Arc<Vec<(String, String)>>,
@@ -276,6 +277,7 @@ impl RepoData {
             worktrees: Default::default(),
             submodules: Default::default(),
             lfs: Default::default(),
+            health: Default::default(),
             remotes,
             config: Default::default(),
             author: Default::default(),
@@ -320,10 +322,10 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
             })
         });
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
-        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir), git::author(dir)));
+        let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir), git::author(dir), super::maintenance::health(dir)));
         (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
     });
-    let (remotes, submodules, lfs, config, author) = remotes;
+    let (remotes, submodules, lfs, config, author, health) = remotes;
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
@@ -337,6 +339,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.lfs = Arc::new(lfs);
     d.config = Arc::new(config);
     d.author = author;
+    d.health = health;
     d.load_bisect(dir);
     d.load_conflicts(dir);
     d.stack = Arc::new(super::stack::load(dir, &d));

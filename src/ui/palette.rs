@@ -150,6 +150,11 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
             }
             _ => {}
         }
+        if d.state == crate::git::State::Clean {
+            v.push(item(icon::WRENCH, "Perform repo maintenance", "pack loose objects, refresh the commit-graph", Cmd::Tab(Action::Git(crate::repo::maintenance::op()))));
+            let on = d.health.scheduled;
+            v.push(item(icon::CLOCK, format!("{} background maintenance", if on { "Disable" } else { "Enable" }), "git maintenance start", Cmd::Tab(Action::Git(crate::repo::maintenance::schedule_op(!on)))));
+        }
         v.push(item(icon::BANDAIDS, "Apply patch…", "git am / git apply", Cmd::Tab(Action::ApplyPatch)));
         if let Some((remote, _)) = d.remotes.first() {
             v.push(item(icon::TAG, format!("Push all tags to {remote}"), "", Cmd::Tab(Action::Git(crate::repo::tags::push_all(remote)))));

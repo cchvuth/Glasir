@@ -4,6 +4,7 @@
 
 use crate::ai;
 use crate::git;
+use crate::repo::maintenance;
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, fetch_op, op, pop_stash, pull_op, stash_prompt};
 use crate::theme::{self, icon};
 use crate::ui::settings::Settings;
@@ -15,7 +16,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
         theme::group(ui, |ui| {
             // Right to left: the overflow menu sits at the far right.
             if let Some(d) = &t.data {
-                ui.menu_button(icon::DOTS_THREE, |ui| history_tools(ui, d, acts)).response.on_hover_text("History tools");
+                ui.menu_button(icon::DOTS_THREE, |ui| history_tools(ui, d, t.busy().is_some(), acts)).response.on_hover_text("History tools");
             }
             if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
                 acts.push(Action::Reload);
@@ -113,7 +114,7 @@ fn open_items(ui: &mut Ui, acts: &mut Vec<Action>) {
     ui.label(RichText::new("Set the editor and terminal in Settings → Tools").small().color(theme::dim(ui)));
 }
 
-fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, acts: &mut Vec<Action>) {
+fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut Vec<Action>) {
     if ui.button(format!("{} Reflog — recover lost commits", icon::LIFEBUOY)).clicked() {
         acts.push(Action::Reflog);
     }
@@ -129,6 +130,20 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, acts: &mut Vec<Action>)
         && ui.button(format!("{} Push all tags to {remote}", icon::TAG)).clicked()
     {
         acts.push(Action::Git(crate::repo::tags::push_all(remote)));
+    }
+    // Never while something else is running or a merge / rebase is half done.
+    let idle = !busy && d.state == git::State::Clean;
+    let tip = "Wait for the running operation, or finish the merge / rebase in progress";
+    let maintain = ui.add_enabled(idle, Button::new(format!("{} Perform repo maintenance", icon::WRENCH)));
+    if maintain.on_hover_text("Pack loose objects and refresh the commit-graph (git maintenance)").on_disabled_hover_text(tip).clicked() {
+        acts.push(Action::Git(maintenance::op()));
+        ui.close();
+    }
+    let on = d.health.scheduled;
+    let sched = ui.add_enabled(idle, Button::new(format!("{} {} background maintenance", icon::CLOCK, if on { "Disable" } else { "Enable" })));
+    if sched.on_hover_text("Let git tidy this repository on a schedule (git maintenance start)").on_disabled_hover_text(tip).clicked() {
+        acts.push(Action::Git(maintenance::schedule_op(!on)));
+        ui.close();
     }
     if d.lfs.used {
         ui.separator();

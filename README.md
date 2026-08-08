@@ -239,6 +239,12 @@ The name fits a Git client:
   candidate is selected for you and the first bad commit is named at the end.
 - **Patches**: copy or save commits as a patch (`git format-patch`); apply a patch
   file as commits (`git am`, with Continue / Skip / Abort) or as working-tree changes.
+- **Repository maintenance**: **Perform repo maintenance** (toolbar `…` menu and ⌘P)
+  packs loose objects and refreshes the commit-graph (`git maintenance`, `gc --auto`
+  on old git) with progress and Cancel, never during a merge, rebase or other
+  running operation. A one-time, dismissable **Optimize repository** hint appears
+  when a repo has thousands of loose objects or no commit-graph. **Enable background
+  maintenance** schedules git's own hourly / daily / weekly job for the repo (⌘Z undoes).
 
 ### AI (bring your own Claude or ChatGPT token)
 - ✨ **Commit messages** from your staged changes (keeps your draft if it fails);
