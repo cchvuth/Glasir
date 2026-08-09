@@ -5,7 +5,7 @@ use super::action::{Action, Msg, MultiOp};
 use super::data::RepoData;
 use super::message;
 use super::offer::offer;
-use super::undo::{UndoEntry, UndoKind, save_worktree, split_z, Saved};
+use super::undo::{UndoEntry, UndoKind, keep_backup, save_worktree, split_z, Saved};
 use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
@@ -337,9 +337,13 @@ pub fn stash_prompt() -> Action {
 }
 
 /// Stash just these paths (and their old paths, for renames), untracked ones included.
-pub fn stash_paths_op(paths: &[&str]) -> Op {
+/// `untracked`: some are untracked (`-u`, which also makes git save the stash before it checks the paths).
+pub fn stash_paths_op(paths: &[&str], untracked: bool) -> Op {
     let list: String = paths.iter().map(|p| format!("{p}\0")).collect();
-    let args = ["--literal-pathspecs", "stash", "push", "--include-untracked", "--pathspec-from-file=-", "--pathspec-file-nul"];
+    let mut args = vec!["--literal-pathspecs", "stash", "push", "--pathspec-from-file=-", "--pathspec-file-nul"];
+    if untracked {
+        args.insert(3, "--include-untracked");
+    }
     Op::new(if paths.len() == 1 { "Stash file".to_owned() } else { format!("Stash {} files", paths.len()) }, &args).input(list)
 }
 
@@ -592,8 +596,12 @@ pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
     });
     let renamed = stash(find(STASH_RENAME));
     let out = exec(dir, op);
-    if out.is_err() {
-        return out;
+    if let Err(e) = out {
+        // `stash push -u` saves the stash before it checks the paths, then fails on one that matches nothing.
+        return match before.is_some_and(|b| b != top()) {
+            true => Err(format!("{e}\nA stash was saved anyway (the top one): your files may still hold these changes, so check both before you pop it.")),
+            false => Err(e),
+        };
     }
     let revert = |label: &str, cmd: Vec<String>| Some(Box::new(Op { cmds: vec![cmd], ..Op::new(label, &[]) }));
     let now = before.as_ref().map(|_| top()).unwrap_or_default();
@@ -786,7 +794,7 @@ impl RepoTab {
                 if (res.is_ok() || (moved && op.label == PUSH_AFTER)) && !op.custom && op.label.starts_with("Commit") {
                     self.reset_message();
                 }
-                let mut saved = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty());
+                let mut saved = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty() || !s.absent.is_empty());
                 if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
                     // Git's own `--autostash` (pull, cherry-pick): `reset --keep` would refuse edits the op merged into.
                     let autostash = op.autostash.clone().or_else(|| {
@@ -839,12 +847,10 @@ impl RepoTab {
             Done::Undo(was_undo, res, moved) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
                 match res {
-                    Ok(fresh) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_))).map(|mut e| {
-                        match (fresh, &mut e.kind) {
-                            (Some(f), UndoKind::Op { undo, .. }) => *undo = f,
-                            // Restored: a redo (`reset --keep`) carries the files along instead.
-                            (_, UndoKind::Refs { saved, .. }) => *saved = None,
-                            _ => {}
+                    // A hard reset's files restored: its redo (`reset --keep`) would refuse them.
+                    Ok(fresh) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_) | UndoKind::Refs { saved: Some(_), .. })).map(|mut e| {
+                        if let (Some(f), UndoKind::Op { undo, .. }) = (fresh, &mut e.kind) {
+                            *undo = f;
                         }
                         e
                     })),
@@ -852,13 +858,8 @@ impl RepoTab {
                         // Ref snapshots are unreliable once refs moved (a refusal moves none). Discards
                         // and reverting ops (deleted branches, dropped stashes) stay: they check the state before acting.
                         if moved {
-                            // A hard reset's backup outlives its ref step, as a discard to retry.
-                            let kept = from.last_mut().and_then(|e| match &mut e.kind {
-                                UndoKind::Refs { saved, .. } => saved.take().map(|s| UndoEntry::new(e.label.clone(), UndoKind::Discard(s))),
-                                _ => None,
-                            });
+                            from.iter_mut().for_each(keep_backup);
                             from.retain(|e| !matches!(e.kind, UndoKind::Refs { .. }));
-                            from.extend(kept);
                         }
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
@@ -1412,7 +1413,34 @@ mod tests {
         assert_eq!((read("a"), read("s"), read("u"), read("x.log"), read("keep")), ("edited\n".into(), "staged\n".into(), "mine\n".into(), "mine\n".into(), "keep\n".into()));
         assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "s");
         assert!(sh(&dir, &["status", "--porcelain"]).contains("?? u"));
-        assert!(t.undo_label().is_none() && t.redo_label().is_some());
+        // Redo would `reset --keep` over the restored edits, which git refuses: none is offered.
+        assert!(t.undo_label().is_none() && t.redo_label().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed undo clears the ref steps, but a hard reset's backup below the top stays a discard.
+    #[test]
+    fn hard_reset_backup_survives_a_failed_undo() {
+        let dir = scratch("hard-reset-kept");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        let c1 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "a", "two\n");
+        std::fs::write(dir.join("a"), "MINE\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut op = super::reset_op(t.data.as_ref().unwrap(), &c1, "--hard");
+        op.confirm = None;
+        run(&ctx, &mut t, Action::Git(op));
+        run(&ctx, &mut t, Action::Git(Op::new("Create branch x", &["branch", "x"]).undo(super::Undo::Keep)));
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "outside"]);
+        let msgs = run(&ctx, &mut t, Action::Undo);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("changed outside")));
+        assert!(t.undo_label().is_some_and(|l| l.starts_with("Reset main")), "{:?}", t.undo_label());
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "MINE\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1842,12 +1870,26 @@ mod tests {
         std::fs::write(dir.join("a"), "a edit\n").unwrap();
         std::fs::write(dir.join("b"), "b edit\n").unwrap();
         std::fs::write(dir.join("*"), "star\n").unwrap();
-        run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a", "*"])));
+        run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a", "*"], true)));
         assert_eq!(sh(&dir, &["status", "--porcelain"]), " M b\n");
         assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1);
         run(&ctx, &mut t, Action::Undo);
         assert_eq!(sh(&dir, &["status", "--porcelain"]), " M a\n M b\n?? *\n");
         assert_eq!(sh(&dir, &["stash", "list"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `stash push -u` with a path that matches nothing saves a stash, then fails: the failure
+    /// names that stray stash. Without untracked files the path is refused before anything is saved.
+    #[test]
+    fn stash_files_reports_a_stray_stash() {
+        let (dir, ctx, mut t) = stash_repo("stash-files-stray");
+        sh(&dir, &["rm", "-q", "a"]);
+        let msgs = run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a"], false)));
+        assert!(msgs.iter().any(|m| m.error) && sh(&dir, &["stash", "list"]).is_empty());
+        let msgs = run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a"], true)));
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("stash was saved anyway")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert!(t.undo_label().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

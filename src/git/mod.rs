@@ -19,7 +19,7 @@ mod url;
 pub type Res<T> = Result<T, String>;
 
 pub use bisect::{Bisect, bisect};
-pub use diff::{DiffOpts, FileDiff, Hunk, commit_diff, file_paths, partial_patch, selects_all, worktree_diff};
+pub use diff::{DiffOpts, FileDiff, Hunk, commit_diff, file_paths, partial_patch, plain_header, selects_all, worktree_diff};
 pub use diff::parse_diff;
 #[cfg(unix)]
 pub use env::import_login_env;

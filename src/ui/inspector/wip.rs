@@ -12,12 +12,17 @@ use std::sync::Arc;
 
 /// "Stash this file" (or the selected files): their staged and unstaged changes (a rename
 /// with its old path), ⌘Z pops them back. True when clicked.
-fn stash_files_item(ui: &mut Ui, cs: &[Change], acts: &mut Vec<Action>) -> bool {
+fn stash_files_item(ui: &mut Ui, cs: &[Change], staged: bool, acts: &mut Vec<Action>) -> bool {
     let what = if cs.len() == 1 { "this file".to_owned() } else { format!("{} files", cs.len()) };
-    let clicked = ui.button(format!("{} Stash {what}", icon::TRAY_ARROW_DOWN)).clicked();
+    // git can't stash a path that's gone from the index (it fails, perhaps after saving a stash).
+    let gone = staged && cs.iter().any(|c| matches!(c.code, 'D' | 'R'));
+    let clicked = ui
+        .add_enabled(!gone, egui::Button::new(format!("{} Stash {what}", icon::TRAY_ARROW_DOWN)))
+        .on_disabled_hover_text("git can't stash a staged deletion or rename by path: stash all changes instead.")
+        .clicked();
     if clicked {
         let paths: Vec<&str> = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).map(String::as_str).collect();
-        acts.push(Action::Git(crate::repo::stash_paths_op(&paths)));
+        acts.push(Action::Git(crate::repo::stash_paths_op(&paths, cs.iter().any(|c| c.code == '?'))));
     }
     clicked
 }
@@ -460,7 +465,7 @@ impl RepoTab {
                                 acts.extend(discard_files_op(&sel_un).map(Action::Git));
                                 clear = true;
                             }
-                            clear |= stash_files_item(ui, &sel_un, acts);
+                            clear |= stash_files_item(ui, &sel_un, false, acts);
                             return;
                         }
                         if ui.button("Stage").clicked() {
@@ -469,7 +474,7 @@ impl RepoTab {
                         if ui.button("Discard changes").clicked() {
                             acts.push(Action::Git(crate::repo::discard_op(c)));
                         }
-                        stash_files_item(ui, std::slice::from_ref(c), acts);
+                        stash_files_item(ui, std::slice::from_ref(c), false, acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         if c.code == '?' && ui.button("Add to .gitignore").clicked() {
                             match crate::repo::files::append_gitignore(&self.dir, &c.path) {
@@ -528,13 +533,13 @@ impl RepoTab {
                                 acts.extend(unstage_files_op(&sel_st).map(Action::Git));
                                 clear = true;
                             }
-                            clear |= stash_files_item(ui, &sel_st, acts);
+                            clear |= stash_files_item(ui, &sel_st, true, acts);
                             return;
                         }
                         if ui.button("Unstage").clicked() {
                             acts.push(Action::Git(crate::repo::unstage_op(c)));
                         }
-                        stash_files_item(ui, std::slice::from_ref(c), acts);
+                        stash_files_item(ui, std::slice::from_ref(c), true, acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {

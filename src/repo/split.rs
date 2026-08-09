@@ -2,7 +2,7 @@
 //! stages and commits the parts, then Continue replays the rest of the branch.
 //! The whole split becomes one undo step.
 
-use super::undo::{UndoEntry, UndoKind};
+use super::undo::{UndoEntry, UndoKind, keep_backup};
 use super::{Backup, Choice, Msg, Op, RepoTab, Undo};
 use crate::git;
 use std::collections::{HashMap, HashSet};
@@ -135,7 +135,8 @@ impl RepoTab {
     /// (the abort's own entry stays).
     pub(super) fn split_aborted(&mut self) {
         let Some(sp) = self.split.take() else { return };
-        let steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
+        let mut steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
+        steps.iter_mut().filter(|e| e.label != ABORT).for_each(keep_backup);
         self.undo.extend(steps.into_iter().filter(|e| matches!(e.kind, UndoKind::Discard(_)) || e.label == ABORT));
     }
 
@@ -150,7 +151,10 @@ impl RepoTab {
             self.undo.push(UndoEntry::new(format!("Split {}", &sp.id[..7.min(sp.id.len())]), kind));
         }
         // Backed-up discards stay undoable on their own.
-        self.undo.extend(steps.into_iter().filter(|e| matches!(e.kind, UndoKind::Discard(_))));
+        self.undo.extend(steps.into_iter().filter_map(|mut e| {
+            keep_backup(&mut e);
+            matches!(e.kind, UndoKind::Discard(_)).then_some(e)
+        }));
         self.notes.push(Msg { text: "Split done ✔".into(), error: false });
     }
 }

@@ -95,19 +95,23 @@ pub fn selects_all(file: &FileDiff, selected: impl Fn(usize, usize) -> bool) -> 
     file.hunks.iter().enumerate().all(|(hi, h)| h.lines.iter().enumerate().all(|(li, l)| !matches!(l.kind, b'+' | b'-') || selected(hi, li)))
 }
 
+/// A patch header editing just the file's new path (its old one if deleted).
+pub fn plain_header(file: &FileDiff) -> Option<String> {
+    let side = |p: &str| file.header.iter().find_map(|h| h.strip_prefix(p)).filter(|s| *s != "/dev/null");
+    let path = side("+++ ").map(|s| s.replacen("b/", "", 1)).or_else(|| side("--- ").map(|s| s.replacen("a/", "", 1)))?;
+    let (q, p) = match path.strip_prefix('"') { Some(rest) => ("\"", rest.to_owned()), None => ("", path) };
+    Some(format!("diff --git {q}a/{p} {q}b/{p}\n--- {q}a/{p}\n+++ {q}b/{p}\n"))
+}
+
 pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, reverse: bool) -> Option<String> {
     if file.lossy || file.binary {
         return None;
     }
     let whole = selects_all(file, &selected);
-    let mut out: String = if whole {
-        file.header.iter().map(|h| format!("{h}\n")).collect()
-    } else {
+    let mut out: String = match whole {
+        true => file.header.iter().map(|h| format!("{h}\n")).collect(),
         // Part of a rename / new / deleted file: express it as a plain edit of one path.
-        let side = |p: &str| file.header.iter().find_map(|h| h.strip_prefix(p)).filter(|s| *s != "/dev/null");
-        let path = side("+++ ").map(|s| s.replacen("b/", "", 1)).or_else(|| side("--- ").map(|s| s.replacen("a/", "", 1)))?;
-        let (q, p) = match path.strip_prefix('"') { Some(rest) => ("\"", rest.to_owned()), None => ("", path) };
-        format!("diff --git {q}a/{p} {q}b/{p}\n--- {q}a/{p}\n+++ {q}b/{p}\n")
+        false => plain_header(file)?,
     };
     let mut delta: i64 = 0;
     let mut any = false;

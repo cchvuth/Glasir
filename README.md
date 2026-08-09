@@ -228,7 +228,8 @@ The name fits a Git client:
 - **Restore a file from history**: as it is in a commit, or as it was before it
   (undoable like a discard).
 - **Revert or cherry-pick a hunk or lines from any commit**: in a commit's diff,
-  undo or apply just that part in your working tree (backed up, ⌘Z restores);
+  undo or apply just that part in your working tree (backed up, ⌘Z restores, and
+  removes a file it created; a renamed file's hunk edits only the new path);
   when the code around it has moved on, a 3-way merge, leaving conflict markers
   where it can't decide.
 - **Move unpushed commits to a new branch** ("oops, I committed on main"): one

@@ -21,6 +21,8 @@ pub(super) struct Saved {
     pub(super) files: Vec<(String, Vec<u8>)>,
     /// `Backup::Overwrite`: put `files` back even if the path exists.
     pub(super) overwrite: bool,
+    /// Untracked paths that didn't exist (once sealed: that the op created), removed on undo.
+    pub(super) absent: Vec<String>,
     /// `Backup::All` with a real `stash create` commit: undo also restores its index (`^2`).
     pub(super) index: bool,
     /// What each path held right after the op (`seal`): undo refuses once one changed.
@@ -31,7 +33,8 @@ pub(super) struct Saved {
 impl Saved {
     /// Records the paths' state after the discard ran.
     pub(super) fn seal(&mut self, dir: &Path) {
-        let mut paths: Vec<&String> = self.tracked.iter().chain(&self.staged).chain(self.files.iter().map(|(p, _)| p)).collect();
+        self.absent.retain(|p| std::fs::symlink_metadata(dir.join(p)).is_ok());
+        let mut paths: Vec<&String> = self.tracked.iter().chain(&self.staged).chain(&self.absent).chain(self.files.iter().map(|(p, _)| p)).collect();
         paths.sort_unstable();
         paths.dedup();
         *self.after.lock().unwrap() = paths.into_iter().map(|p| (p.clone(), fingerprint(&dir.join(p)))).collect();
@@ -80,6 +83,15 @@ impl UndoEntry {
     pub(super) fn new(label: String, kind: UndoKind) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         UndoEntry { label, kind, id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
+    }
+}
+
+/// A hard reset's backup outlives its ref step (dropped, or folded into one): a discard of its own.
+pub(super) fn keep_backup(e: &mut UndoEntry) {
+    if let UndoKind::Refs { saved, .. } = &mut e.kind
+        && let Some(s) = saved.take()
+    {
+        e.kind = UndoKind::Discard(s);
     }
 }
 
@@ -142,7 +154,7 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     });
     // Copies live in memory, capped so a stray huge file can't exhaust RAM.
     let mut budget: u64 = 256 << 20;
-    let mut files = vec![];
+    let (mut files, mut absent) = (vec![], vec![]);
     let copied: std::collections::HashSet<&String> = untracked.iter().collect();
     // With a stash, tracked copies are optional: they only keep the exact bytes, which the
     // stash's clean/smudge round trip may change (autocrlf, eol, filters).
@@ -151,7 +163,10 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         let path = dir.join(p);
         let meta = match std::fs::symlink_metadata(&path) {
             // Not there yet (a file restored from history): nothing to lose.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                absent.extend(copied.contains(p).then(|| p.clone()));
+                continue;
+            }
             m => m.map_err(|e| refuse(format!("{p}: {e}")))?,
         };
         if optional && (!meta.is_file() || meta.len() > budget) {
@@ -163,7 +178,7 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         budget = budget.checked_sub(meta.len()).ok_or_else(|| refuse(format!("{p} is too large")))?;
         files.push((p.clone(), std::fs::read(&path).map_err(|e| refuse(format!("{p}: {e}")))?));
     }
-    Ok(Saved { stash, tracked, staged, unmerged, files, overwrite: matches!(b, Backup::Overwrite(_)), index, after: Default::default() })
+    Ok(Saved { stash, tracked, staged, unmerged, files, overwrite: matches!(b, Backup::Overwrite(_)), absent, index, after: Default::default() })
 }
 
 /// Err if a backed-up path changed since the discard: restoring would overwrite that.
@@ -219,6 +234,14 @@ pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
         let mut a = vec!["update-index", "--unresolve", "--"];
         a.extend(s.unmerged.iter().map(String::as_str));
         git::run(dir, &a)?;
+    }
+    for p in &s.absent {
+        let res = std::fs::remove_file(dir.join(p));
+        reseal(&[p]);
+        match res {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{p}: {e}")),
+            _ => {}
+        }
     }
     // Without a stash every tracked path present then was copied: one without a copy was
     // absent before the op (a discarded rename's old path), so it goes again.
@@ -759,7 +782,7 @@ mod tests {
         std::fs::create_dir(dir.join("z")).unwrap();
         std::fs::write(dir.join("a"), "a\n").unwrap();
         std::fs::write(dir.join("z/b"), "b\n").unwrap();
-        let mut saved = Saved { stash: None, tracked: vec!["a".into(), "z/b".into()], staged: vec![], unmerged: vec![], files: vec![], overwrite: false, index: false, after: Default::default() };
+        let mut saved = Saved { stash: None, tracked: vec!["a".into(), "z/b".into()], staged: vec![], unmerged: vec![], files: vec![], overwrite: false, absent: vec![], index: false, after: Default::default() };
         saved.seal(&dir);
         let mode = |m| std::fs::set_permissions(dir.join("z"), std::fs::Permissions::from_mode(m)).unwrap();
         mode(0o555);

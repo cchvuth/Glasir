@@ -149,6 +149,12 @@ pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch:
 /// A commit's hunk or lines applied to the working tree (`--reverse`: reverted), backed up.
 /// Nothing to guard: a commit's diff never changes.
 fn hunk_op(label: &str, c: &git::Change, f: &FileDiff, mut patch: String, args: &[&str]) -> Op {
+    // A whole rename's patch would also rename the file back (or again): edit the new path only.
+    if f.header.iter().any(|h| h.starts_with("rename from ") || h.starts_with("copy from "))
+        && let (Some(h), Some(at)) = (git::plain_header(f), patch.find("\n@@ "))
+    {
+        patch.replace_range(..=at, &h);
+    }
     // A partial patch has no blob ids, which `--3way` needs; its preimage is one side of the
     // commit's file (unpicked lines stay as they were there), so the commit's ids fit.
     if let (Some(ix), false) = (f.header.iter().find(|h| h.starts_with("index ")), patch.contains("\nindex ")) {
@@ -177,9 +183,9 @@ pub(super) fn apply_hunk(dir: &std::path::Path, a: &[&str], patch: &[u8]) -> Res
         cmd.push("-");
         git::run_input(dir, &cmd, Some(patch))
     };
-    let Err(e) = apply(None) else { return Ok(String::new()) };
-    if !e.contains("patch does not apply") {
-        return Err(e);
+    // Decided by exit status, not git's (possibly translated) messages.
+    if apply(Some("--check")).is_ok() {
+        return apply(None).map(|_| String::new());
     }
     let with = |cmd: &[&'static str]| [cmd, paths].concat();
     if !git::run(dir, &with(&["--literal-pathspecs", "status", "--porcelain", "--"]))?.is_empty() {
@@ -189,11 +195,12 @@ pub(super) fn apply_hunk(dir: &std::path::Path, a: &[&str], patch: &[u8]) -> Res
         ));
     }
     let merged = apply(Some("--3way"));
+    let conflicts = merged.is_err() && !git::run(dir, &with(&["--literal-pathspecs", "diff", "--name-only", "--diff-filter=U", "--"]))?.is_empty();
     // `--3way` writes the index too; the files were clean, so HEAD has what it held.
     git::run(dir, &with(&["--literal-pathspecs", "reset", "-q", "--"]))?;
     match merged {
         Ok(_) => Ok("merged (3-way): the lines around it had changed".into()),
-        Err(e) if e.contains("with conflicts") => {
+        Err(_) if conflicts => {
             Err("It doesn't apply cleanly, so it was merged in with conflict markers (<<<<<<<): resolve them in the file, or undo with ⌘Z.".into())
         }
         Err(e) => Err(format!("It doesn't apply cleanly:\n{e}")),
@@ -471,6 +478,53 @@ mod tests {
         let msgs = run(&mut t, Action::Git(op("Revert hunk", 0, None, true)));
         assert!(msgs.iter().any(|m| m.error && m.text.contains("Commit or stash your changes to f")));
         assert_eq!(read(), mine);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hunk op that creates a file (a cherry-picked addition, a reverted rename's old path)
+    /// is its own undo step, and ⌘Z removes that file again; a rename's hunk edits only the new path.
+    #[test]
+    fn hunk_ops_that_create_files_undo() {
+        let dir = scratch("hunk-new-file");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let text: String = (1..=10).map(|i| format!("line {i}\n")).collect();
+        commit(&dir, "old", &text);
+        sh(&dir, &["mv", "old", "new"]);
+        std::fs::write(dir.join("new"), text.replace("line 5", "FIVE")).unwrap();
+        sh(&dir, &["commit", "-qam", "rename"]);
+        let ren = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "n", "added\n");
+        let add = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let run = |t: &mut RepoTab, a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, t)
+        };
+        let op = |id: &str, change: git::Change, label: &str, rev: bool| {
+            let parent = format!("{id}^");
+            let f = git::commit_diff(&dir, id, Some(&parent), &change, DiffOpts::default()).unwrap();
+            assert_eq!(f.hunks.len(), 1);
+            let p = git::partial_patch(&f, |_, _| true, rev).unwrap();
+            Action::Git(patch_op(label, &DiffSrc::Commit { id: id.into(), parent: Some(parent), change }, DiffOpts::default(), &f, p, if rev { &["--reverse"] } else { &[] }))
+        };
+
+        let renamed = git::Change { path: "new".into(), old_path: Some("old".into()), code: 'R' };
+        run(&mut t, op(&ren, renamed, "Revert hunk", true));
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M new\n");
+        run(&mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
+
+        sh(&dir, &["checkout", "-q", "-b", "side", &ren]);
+        run(&mut t, Action::Git(Op::new("Create branch y", &["branch", "y"]).undo(super::super::Undo::Keep)));
+        run(&mut t, op(&add, git::Change { path: "n".into(), old_path: None, code: 'A' }, "Cherry-pick hunk", false));
+        assert_eq!(std::fs::read_to_string(dir.join("n")).unwrap(), "added\n");
+        assert_eq!(t.undo_label(), Some("Cherry-pick hunk"));
+        run(&mut t, Action::Undo);
+        assert!(!dir.join("n").exists());
+        assert_eq!(t.undo_label(), Some("Create branch y"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
