@@ -1,13 +1,6 @@
-//! Everything drawn on screen (egui). Screens read `RepoTab` / `RepoData` and
-//! push `Action`s; `RepoTab::apply` runs them after the frame, so no screen
-//! mutates repository state directly.
-//!
-//! Window shell: `app` (App, frame loop, shortcuts), `titlebar`, `toolbar`,
-//! `welcome` (+ clone), `settings`, `toasts`, `command_log`, `screenshot` (dev harness).
-//! A repo tab: `repo_view` (layout) with `sidebar/`, `graph_view/`, `inspector/`
-//! and the center-pane views `diff_view`, `merge_editor`, `history`, `rebase_editor`, `reflog`;
-//! its modals are in `dialogs` (the Commit Composer's in `compose`, the connection doctor in `doctor`). `palette` is the ⌘P command palette, `shortcuts` the `?` cheat sheet; `format` holds
-//! shared text formatters (dates, initials). Reusable widgets live in `theme::glass`.
+//! Everything drawn on screen (egui). Screens read `RepoTab` / `RepoData` and push `Action`s;
+//! `RepoTab::apply` runs them after the frame, so no screen mutates repository state directly.
+//! Window shell, repo tab and dialogs live in the submodules; reusable widgets in `theme::glass`.
 
 mod app;
 mod bisect;
@@ -31,6 +24,7 @@ mod screenshot;
 mod settings;
 mod shortcuts;
 mod sidebar;
+mod terminal;
 mod titlebar;
 mod toasts;
 mod toolbar;

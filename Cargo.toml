@@ -19,6 +19,8 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 notify = "8"
 open = "5.4.4"
 rfd = "0.17.2"
+# Embedded terminal: PTY (openpty / ConPTY) and VT emulation in one maintained crate.
+alacritty_terminal = { version = "0.26.0", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }
@@ -27,6 +29,10 @@ syntect = { version = "5.3.0", default-features = false, features = ["default-sy
 # rustls + the platform verifier on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
 ureq = { version = "3.4.2", features = ["platform-verifier"] }
+
+# tcgetpgrp: is a command running in an embedded terminal? (already in the tree)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.1"

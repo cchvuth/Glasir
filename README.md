@@ -270,6 +270,11 @@ The name fits a Git client:
 - **⌘P command palette** with fuzzy search over commands, branches, tags and repos.
 - **Repo tabs** show the branch, a dirty dot and ahead/behind arrows; drag to reorder, right-click to rename, close others or reveal; ⌘1–⌘9 switch. Recent repositories, live refresh when files change on disk.
 - **Command log** (⇧⌘L) showing every git command Glasir ran, copyable as shell commands.
+- **Embedded terminal** (⌃`, the toolbar's terminal button or ⌘P): your login shell
+  in the repo folder below the graph, with several shell tabs, 256 / true colours,
+  scrollback, mouse selection, copy / paste and resizing. Shells keep running
+  while the panel is hidden; closing a shell, the tab or the app waits for (or asks
+  before stopping) a running command. Off in **Settings → Terminal**.
 - **Keyboard shortcut cheat sheet**: press **?** (or ⌘/) anywhere.
 - **Undo right from the toast**: after a commit, checkout, rebase, discard and
   anything else undoable, the confirmation has an **Undo** button.
@@ -343,6 +348,7 @@ token saved by an older version may ask once: choose **Always Allow**).
 | S / U | Stage / unstage the selected files |
 | ⌘L | Fetch |
 | ⇧⌘L | Command log |
+| ⌃` | Terminal panel |
 | ↑ ↓ / J K | Move through commits |
 | ⌘-click / ⇧-click | Select several commits, or WIP files to stage / unstage / discard |
 | ⌘O / ⌘T / ⌘W | Open repo / new tab / close tab |

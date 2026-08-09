@@ -75,6 +75,7 @@ pub enum Action {
     /// Open a file in the user's editor ("" = the repo folder).
     Editor(String),
     Terminal,
+    ToggleTerminal,
     /// Run a custom command (Settings → Tools) with these placeholder values.
     Custom(super::tools::Custom, super::tools::Vars),
     Jump(String),

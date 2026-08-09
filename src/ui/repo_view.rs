@@ -1,7 +1,6 @@
-//! One repository tab: toolbar on top, sidebar left, inspector right and the
-//! center pane (graph, or the diff / merge editor / history / rebase editor
-//! that replaces it), then the tab's dialogs (and the remote form / connection doctor). Collected `Action`s are applied
-//! to the `RepoTab` at the end of the frame.
+//! One repository tab: toolbar, sidebar left, inspector right, and the center pane (graph, or
+//! the diff / merge editor / history / rebase editor that replaces it) over the terminal.
+//! Dialogs follow. Collected `Action`s are applied to the `RepoTab` at the end of the frame.
 
 use super::settings::Settings;
 use super::{diff_view, dialogs, graph_view, history, merge_editor, rebase_editor, reflog, sidebar, toolbar::toolbar};
@@ -42,6 +41,15 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .size_range(300.0..=720.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut acts)));
+        if s.terminal && t.term.open {
+            egui::Panel::bottom("terminal")
+                .show_separator_line(false)
+                .resizable(true)
+                .default_size(260.0)
+                .size_range(110.0..=900.0)
+                .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 0, bottom: 12 }))
+                .show(ui, |ui| theme::card(ui, 205, |ui| super::terminal::show(ui, &mut t.term, &t.dir)));
+        }
         let tool = t.data.as_ref().and_then(|d| d.cfg("diff.tool"));
         egui::CentralPanel::default()
             .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 2, bottom: 12 }))

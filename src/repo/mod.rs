@@ -22,6 +22,7 @@
 //!   per-remote connection doctor, the commit-email guard
 //! - `maintenance`: optimize hint heuristic, `git maintenance` run, background-schedule toggle
 //! - `tools`: open in editor / terminal, custom commands (Settings → Tools)
+//! - `terminal`: the embedded terminal's shell sessions (⌃`)
 //! - `avatars`: commit authors' GitHub / GitHub Enterprise profile pictures
 
 pub mod absorb;
@@ -57,6 +58,7 @@ mod split;
 pub mod stack;
 pub mod tags;
 mod task;
+pub mod terminal;
 pub mod tools;
 #[cfg(test)]
 mod testutil;
@@ -191,6 +193,7 @@ pub struct RepoTab {
     /// Settings → commit email rules (`host -> @domain` lines), mirrored every frame.
     pub email_rules: String,
     pub avatars: avatars::Avatars,
+    pub term: terminal::Terminals,
 }
 
 impl RepoTab {
@@ -268,6 +271,7 @@ impl RepoTab {
             email_rules: String::new(),
             keep_branches: String::new(),
             avatars: Default::default(),
+            term: Default::default(),
         };
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
@@ -318,6 +322,7 @@ impl RepoTab {
     }
 
     pub fn poll(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
+        self.term.poll(ctx);
         if let Some(w) = Task::poll(&mut self.watcher_task) {
             if w.is_none() {
                 msgs.push(Msg { text: "Live refresh is off for this repo (file watching unavailable); changes show on focus or F5.".into(), error: false });
@@ -542,6 +547,7 @@ impl RepoTab {
                     self.notes.push(Msg { text: e, error: true });
                 }
             }
+            Action::ToggleTerminal => self.term.toggle(ctx, &self.dir),
             Action::Custom(c, v) => {
                 match tools::op(&c, &self.dir, &v) {
                     Ok(op) => self.run(ctx, op),

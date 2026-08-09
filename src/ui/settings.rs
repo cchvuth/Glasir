@@ -61,6 +61,8 @@ pub struct Settings {
     pub search_history: Vec<String>,
     /// Commits and rewrites keep stacked branches together (`repo::stack`).
     pub stacks: bool,
+    /// The embedded terminal panel (⌃`); off = the toolbar's external terminal only.
+    pub terminal: bool,
 }
 
 impl Default for Settings {
@@ -95,6 +97,7 @@ impl Default for Settings {
             cherry_pick_x: false,
             search_history: vec![],
             stacks: true,
+            terminal: true,
         }
     }
 }
@@ -180,6 +183,10 @@ impl App {
                     ui.label("Cherry-pick");
                     ui.checkbox(&mut s.cherry_pick_x, "Add \"(cherry picked from commit …)\" to the message")
                         .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing'.");
+                    ui.end_row();
+                    ui.label("Terminal");
+                    ui.checkbox(&mut s.terminal, "Embedded terminal panel (⌃`)")
+                        .on_hover_text("Your login shell in the repository folder, below the graph. Off: ⌃` opens the external terminal from Settings → Tools.");
                     ui.end_row();
                     ui.label("Auto-fetch");
                     ui.horizontal(|ui| {

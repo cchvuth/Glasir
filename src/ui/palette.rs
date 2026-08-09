@@ -66,7 +66,7 @@ fn git(label: impl Into<String>, a: Action) -> Item {
     item(icon::TERMINAL_WINDOW, label, "", Cmd::Tab(a))
 }
 
-pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<Item> {
+pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal: bool) -> Vec<Item> {
     let mut v = vec![];
     if let Some(t) = tab
         && let Some(d) = &t.data
@@ -126,7 +126,10 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode) -> Vec<I
         }
         v.push(item(icon::ARROWS_CLOCKWISE, "Refresh", "F5", Cmd::Tab(Action::Reload)));
         v.push(item(icon::CODE, "Open in editor", "the repository folder", Cmd::Tab(Action::Editor(String::new()))));
-        v.push(item(icon::TERMINAL, "Open terminal here", "", Cmd::Tab(Action::Terminal)));
+        if terminal {
+            v.push(item(icon::TERMINAL, "Toggle terminal panel", "⌃`", Cmd::Tab(Action::ToggleTerminal)));
+        }
+        v.push(item(icon::TERMINAL, "Open terminal here", "external terminal app", Cmd::Tab(Action::Terminal)));
         v.push(item(icon::FOLDER_OPEN, "Show in file manager", "", Cmd::Tab(Action::Reveal(String::new()))));
         let vars = crate::repo::tools::Vars {
             branch: d.status.branch.clone().unwrap_or_default(),

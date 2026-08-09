@@ -123,6 +123,15 @@ impl App {
         let typing = ctx.memory(|m| m.focused().is_some());
         let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
         let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
+        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.mac_cmd && i.key_pressed(Key::Backtick))
+            && let Some(t) = self.tabs.get_mut(self.active)
+        {
+            t.apply(ctx, if self.s.terminal { Action::ToggleTerminal } else { Action::Terminal });
+        }
+        // Off macOS ⌘ is Ctrl, which the shell needs (^R, ^L, ^W, ^Z...).
+        if !cfg!(target_os = "macos") && ctx.memory(|m| m.has_focus(super::terminal::id())) {
+            return;
+        }
         if cmd && pressed(Key::O) {
             self.pick_and_open(ctx);
         }
@@ -201,6 +210,9 @@ impl App {
         if let Some(b) = self.tabs.get(i).and_then(RepoTab::busy).map(str::to_owned) {
             return self.toast(ctx, format!("Close this tab once '{b}' finishes (or cancel it)."), true);
         }
+        if self.tabs.get(i).is_some_and(|t| t.term.busy()) {
+            return self.toast(ctx, "A command is still running in this tab's terminal: let it finish or stop it there, then close the tab.".into(), true);
+        }
         self.tabs.remove(i);
         if self.active > i || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
@@ -216,7 +228,7 @@ impl App {
     fn command_palette(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.palette else { return };
         if p.items.is_empty() {
-            p.items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull);
+            p.items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull, self.s.terminal);
         }
         let Some(choice) = palette::show(ctx, p) else { return };
         self.palette = None;
@@ -332,7 +344,7 @@ impl eframe::App for App {
             t.auto_fetch(&ctx, every, i == self.active && focused && !self.focused);
         }
         self.focused = focused;
-        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
+        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned).or_else(|| t.term.busy().then(|| "the command in the terminal".into())));
         if hold_close(&ctx, busy.as_deref(), &mut self.quit_pending) {
             self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.unwrap_or_default()), false);
         }
@@ -381,7 +393,7 @@ impl eframe::App for App {
             self.shortcuts = super::shortcuts::show(&ctx);
         }
         #[cfg(target_os = "macos")]
-        mac_quit::BUSY.store(self.tabs.iter().any(|t| t.busy().is_some()), std::sync::atomic::Ordering::SeqCst);
+        mac_quit::BUSY.store(self.tabs.iter().any(|t| t.busy().is_some() || t.term.busy()), std::sync::atomic::Ordering::SeqCst);
         drop_hint(&ctx, self.drop_hint_shot);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);

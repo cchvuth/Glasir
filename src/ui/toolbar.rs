@@ -1,6 +1,6 @@
 //! Per-repo toolbar: repo / branch status, undo-redo, fetch-pull-push,
 //! branch-stash-pop, conflict and fetch-failure chips, progress and cancel, and
-//! the open-in editor / terminal / file manager menu.
+//! the embedded terminal toggle and the open-in editor / terminal / file manager menu.
 
 use crate::ai;
 use crate::git;
@@ -20,6 +20,9 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             }
             if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
                 acts.push(Action::Reload);
+            }
+            if s.terminal && theme::pill(ui, icon::TERMINAL).on_hover_text(format!("Terminal ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
+                acts.push(Action::ToggleTerminal);
             }
             ui.menu_button(icon::ARROW_SQUARE_OUT, |ui| open_items(ui, acts)).response.on_hover_text("Open in editor, terminal or file manager");
             if let Some(web) = t.data.as_ref().and_then(|d| d.web())

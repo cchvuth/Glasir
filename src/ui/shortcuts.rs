@@ -17,6 +17,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("S / U", "Stage / unstage the selected files"),
     ("⌘L", "Fetch"),
     ("⇧⌘L", "Command log"),
+    ("⌃`", "Terminal panel"),
     ("↑ ↓ / J K", "Move through commits"),
     ("⌘-click / ⇧-click", "Select several commits, or WIP files to stage / unstage / discard"),
     ("⌘O / ⌘T / ⌘W", "Open repo / new tab / close tab"),

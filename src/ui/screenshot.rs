@@ -48,6 +48,15 @@ impl App {
                         }
                     }
                     "log" => self.show_log = true,
+                    // `terminal`, or `terminal:<command>` typed into its shell.
+                    q if q.starts_with("terminal") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.apply(&ctx.clone(), Action::ToggleTerminal);
+                            if let (Some(cmd), Some(s)) = (q.strip_prefix("terminal:"), t.term.tabs.first()) {
+                                s.write(format!("{cmd}\r").into_bytes());
+                            }
+                        }
+                    }
                     // Network dialogs and badges: `checkout:<branch>`, `pull-ff`, `push-rejected`, `force-push`, `fetch-failed`.
                     q if q.starts_with("checkout:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
