@@ -451,7 +451,7 @@ impl RepoTab {
                     } else if resp.clicked() && pick_file(&mut self.file_sel, &s.unstaged, false, i, mods) {
                         acts.push(Action::Diff(src));
                     }
-                    if resp.double_clicked() {
+                    if resp.double_clicked() && !busy {
                         acts.extend(stage_one());
                     }
                     resp.context_menu(|ui| {
@@ -524,7 +524,7 @@ impl RepoTab {
                     } else if resp.clicked() && pick_file(&mut self.file_sel, &s.staged, true, i, mods) {
                         acts.push(Action::Diff(src));
                     }
-                    if resp.double_clicked() {
+                    if resp.double_clicked() && !busy {
                         acts.push(Action::Git(crate::repo::unstage_op(c)));
                     }
                     resp.context_menu(|ui| {

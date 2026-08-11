@@ -298,6 +298,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Part of an untracked file stages its exact bytes: a missing final newline stays missing,
+    /// and a file `git add` would convert (CRLF, a clean filter) stages whole files only.
+    #[test]
+    fn untracked_partial_keeps_bytes() {
+        let dir = scratch("untracked-bytes");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "core.autocrlf", "false"]);
+        commit(&dir, "base", "b\n");
+        std::fs::write(dir.join(".gitattributes"), "*.dat filter=x\n").unwrap();
+        let o = DiffOpts::default();
+        let stage = |name: &str, body: &str, keep: &[usize]| {
+            std::fs::write(dir.join(name), body).unwrap();
+            let c = git::Change { path: name.into(), old_path: None, code: '?' };
+            let f = git::worktree_diff(&dir, &c, false, o).unwrap();
+            let src = DiffSrc::Worktree { change: c, staged: false };
+            let p = git::partial_patch(&f, |_, l| keep.contains(&l), false)?;
+            super::super::op::exec(&dir, &patch_op("Stage lines", &src, o, &f, p, &["--cached"])).unwrap();
+            Some(sh(&dir, &["show", &format!(":{name}")]))
+        };
+        assert_eq!(stage("n.txt", "one\ntwo\nlast", &[0, 2]).as_deref(), Some("one\nlast"));
+        assert_eq!(stage("m.txt", "one\ntwo\nlast", &[0, 1]).as_deref(), Some("one\ntwo\n"));
+        assert_eq!(stage("w.txt", "one\r\ntwo\r\nthree\r\n", &[0, 2]), None);
+        assert_eq!(stage("f.dat", "one\ntwo\nthree\n", &[0, 2]), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The guard covers the diff's header too: a mode change undone since isn't staged.
     #[cfg(unix)]
     #[test]

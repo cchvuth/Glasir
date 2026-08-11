@@ -60,7 +60,8 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
             Some(Choice { title: "Push rejected".into(), text: text.into(), ops })
         }
         // gpg / ssh-keygen failed (no key, pinentry cancelled, locked agent): say so, offer to go unsigned.
-        verb @ ("commit" | "tag") if ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
+        // A lone command only: in a commit-then-rebase op, a later step may be what failed to sign.
+        verb @ ("commit" | "tag") if op.cmds.len() == 1 && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
             let (on, off) = if verb == "commit" { ("-S", "--no-gpg-sign") } else { ("--sign", "--no-sign") };
             let mut o = op.clone();
             o.cmds[0].retain(|a| a != on);
@@ -321,6 +322,9 @@ mod tests {
         t.sign = Some(true);
         std::fs::write(dir.join("a"), "b").unwrap();
         sh(&dir, &["add", "a"]);
+        let two = t.commit_op().then(&["status"]);
+        let err = exec(&dir, &two).unwrap_err();
+        assert!(offer(&two, &err, None).is_none());
         op_unsigned(&dir, &t.commit_op(), "Commit without signing");
         assert_ne!(sh(&dir, &["rev-parse", "HEAD"]), head);
         assert_eq!(info().sig, 'N');

@@ -12,6 +12,9 @@ pub struct FileDiff {
     pub binary: bool,
     /// Not valid UTF-8: shown lossily, so it must not be patched line by line.
     pub lossy: bool,
+    /// An untracked file `git add` would convert (CRLF, a clean filter): its lines aren't the
+    /// blob's, so only all of it can be staged.
+    pub whole_only: bool,
     /// A submodule pointer change (shown instead of hunks).
     pub submodule: Option<super::SubmoduleDiff>,
     /// Git LFS pointer file: (old, new) sides.
@@ -108,6 +111,9 @@ pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, r
         return None;
     }
     let whole = selects_all(file, &selected);
+    if file.whole_only && !whole {
+        return None;
+    }
     let mut out: String = match whole {
         true => file.header.iter().map(|h| format!("{h}\n")).collect(),
         // Part of a rename / new / deleted file: express it as a plain edit of one path.
@@ -147,9 +153,10 @@ pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, r
         if !changed {
             continue;
         }
-        // A "no newline at end of file" marker can't be split safely: whole hunks only.
+        // A "no newline at end of file" marker can't be split safely: whole hunks only. In a
+        // pure insertion it follows its line, kept or dropped with it.
         let partial_hunk = h.lines.iter().enumerate().any(|(li, l)| matches!(l.kind, b'+' | b'-') && !selected(hi, li));
-        if partial_hunk && h.lines.iter().any(|l| l.kind == b'\\') {
+        if partial_hunk && h.lines.iter().any(|l| l.kind == b'\\') && h.lines.iter().any(|l| l.kind == b'-') {
             return None;
         }
         any = true;
@@ -316,12 +323,18 @@ fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
         return Ok(l);
     }
     let text = String::from_utf8_lossy(&bytes);
-    let lines: Vec<Line> = text
+    let mut lines: Vec<Line> = text
         .lines()
         .enumerate()
         .map(|(i, l)| Line { kind: b'+', text: l.into(), old: 0, new: i as u32 + 1 })
         .collect();
-    f.hunks.push(Hunk { header: format!("@@ -0,0 +1,{} @@", lines.len()), old_start: 0, new_start: 1, lines });
+    let header = format!("@@ -0,0 +1,{} @@", lines.len());
+    if !bytes.ends_with(b"\n") && !lines.is_empty() {
+        lines.push(Line { kind: b'\\', text: " No newline at end of file".into(), old: 0, new: 0 });
+    }
+    let attrs = || run(dir, &["check-attr", "-z", "filter", "working-tree-encoding", "ident", "--", path]).unwrap_or_default();
+    f.whole_only = bytes.contains(&b'\r') || attrs().split('\0').skip(2).step_by(3).any(|v| !matches!(v, "" | "unspecified" | "unset"));
+    f.hunks.push(Hunk { header, old_start: 0, new_start: 1, lines });
     Ok(f)
 }
 
@@ -343,6 +356,12 @@ mod tests {
         let p = partial_patch(f, |h, _| h == 1, true).unwrap();
         assert!(p.ends_with("@@ -10,2 +10,3 @@\n x\n+y\n z\n"), "{p}");
         assert!(partial_patch(f, |_, _| false, false).is_none());
+        // A missing final newline: part of a hunk with removals is refused, a pure insertion is fine.
+        let nl = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1,2 @@\n-a\n\\ No newline at end of file\n+a\n+b\n\\ No newline at end of file\n";
+        assert!(partial_patch(&parse_diff(nl)[0], |_, l| l == 2, false).is_none());
+        let ins = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1,3 @@\n a\n+b\n+c\n\\ No newline at end of file\n";
+        let p = partial_patch(&parse_diff(ins)[0], |_, l| l == 2, false).unwrap();
+        assert!(p.ends_with("@@ -1,1 +1,2 @@\n a\n+c\n\\ No newline at end of file\n"), "{p}");
         // -U0 insertions after line 5 and 10: new starts as git writes them.
         let u0 = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -5,0 +6 @@\n+x\n@@ -10,0 +12 @@\n+y\n";
         let p = partial_patch(&parse_diff(u0)[0], |_, _| true, false).unwrap();

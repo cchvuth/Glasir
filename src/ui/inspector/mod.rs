@@ -107,7 +107,8 @@ fn hovering(ui: &Ui, rect: egui::Rect) -> bool {
 }
 
 /// The hover button at a file row's right edge ("Stage" / "Unstage"): drawn only while the pointer
-/// is over the row, true when clicked. Takes the click from the row beneath.
+/// is over the row, true when clicked. Takes the click from the row beneath. Not the second click
+/// of a double-click: the first one's op may have slid the next file under the pointer.
 pub fn row_button(ui: &Ui, row: &egui::Response, glyph: &str, label: &str) -> bool {
     if !hovering(ui, row.rect) {
         return false;
@@ -118,7 +119,8 @@ pub fn row_button(ui: &Ui, row: &egui::Response, glyph: &str, label: &str) -> bo
     let fill = theme::accent().gamma_multiply(if resp.hovered() { 1.0 } else { 0.8 });
     ui.painter().rect_filled(rect, 255.0, fill);
     ui.painter().galley(rect.center() - g.size() / 2.0, g, egui::Color32::WHITE);
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    resp.clicked() && !resp.double_clicked()
 }
 
 /// A file row: colored status letter, file name (`old → new` for a rename), an LFS
@@ -168,4 +170,28 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option
         None if lfs => format!("{}\nStored with Git LFS", c.path),
         None => c.path.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Event, PointerButton, RawInput, pos2, vec2};
+
+    /// Double-clicking the Stage button stages once: the second click may land on the next file.
+    #[test]
+    fn row_button_skips_double_click() {
+        let ctx = egui::Context::default();
+        let at = pos2(180.0, 12.0);
+        let mut hits = 0;
+        let press = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Default::default() };
+        let frames = [vec![Event::PointerMoved(at)], vec![press(true)], vec![press(false)], vec![press(true)], vec![press(false)], vec![]];
+        for (i, events) in frames.into_iter().enumerate() {
+            let raw = RawInput { time: Some(i as f64 * 0.05), events, ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let (_, row) = ui.allocate_exact_size(vec2(200.0, 24.0), egui::Sense::click());
+                hits += super::row_button(ui, &row, "+", "Stage") as usize;
+            });
+            out.textures_delta.clear();
+        }
+        assert_eq!(hits, 1);
+    }
 }

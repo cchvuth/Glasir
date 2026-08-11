@@ -193,7 +193,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         DiffSrc::Worktree { staged, .. } => (true, *staged),
         DiffSrc::Commit { .. } => (false, false),
     };
-    let lossy = ds.file.as_ref().is_some_and(|f| f.as_ref().is_ok_and(|f| f.lossy));
+    let lossy = ds.file.as_ref().is_some_and(|f| f.as_ref().is_ok_and(|f| f.lossy || f.whole_only));
     // Partial staging patches the shown diff, which must be a plain (no -w), current one.
     // An untracked file's diff is never filtered, and only staged from (intent-to-add first).
     // A commit's hunks and lines revert / cherry-pick into the working tree (not a working-tree compare's).

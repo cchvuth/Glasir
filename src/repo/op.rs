@@ -754,8 +754,13 @@ impl RepoTab {
         self.running = None;
         self.cancel = None;
         match done {
-            Done::Op(op, res, snaps, saved) => {
+            Done::Op(mut op, res, snaps, saved) => {
                 let commit_next = std::mem::take(&mut self.commit_next) && res.is_ok() && !op.custom && op.label == "Stage all";
+                // The push runs as its own op: its failure gets the push fixes, and ⌘Z only the commit.
+                let push_next = !op.custom && op.label == PUSH_AFTER && res.is_ok();
+                if push_next {
+                    op.label = "Commit".into();
+                }
                 match &res {
                     Ok(out) if !op.light => {
                         // A custom shell command's output is the point: show its last lines.
@@ -789,9 +794,7 @@ impl RepoTab {
                     }
                     self.sel = None;
                 }
-                // A failed push after the commit went through must not leave the message to commit twice.
-                let moved = snaps.as_ref().is_some_and(|(b, a)| b != a);
-                if (res.is_ok() || (moved && op.label == PUSH_AFTER)) && !op.custom && op.label.starts_with("Commit") {
+                if res.is_ok() && !op.custom && op.label.starts_with("Commit") {
                     self.reset_message();
                 }
                 let mut saved = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty() || !s.absent.is_empty());
@@ -842,6 +845,9 @@ impl RepoTab {
                 self.reload(ctx, !op.light);
                 if commit_next {
                     self.run(ctx, self.commit_op());
+                }
+                if let (true, Some(p)) = (push_next, self.push_op(false)) {
+                    self.run(ctx, p);
                 }
             }
             Done::Undo(was_undo, res, moved) => {
@@ -963,7 +969,7 @@ impl RepoTab {
             format!("{}\n\n{}", self.summary.trim(), self.body.trim())
         };
         if let (Some(t), false) = (&self.template, self.amend) {
-            msg = message::strip_comments(&msg, &t.prefix);
+            msg = message::strip_comments(&msg, t);
         }
         let msg = message::add_coauthors(&msg, &self.coauthors);
         let mut args = vec!["commit", "-F", "-"];
@@ -978,12 +984,9 @@ impl RepoTab {
         if self.no_verify {
             args.push("--no-verify");
         }
-        let op = Op::new(if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
-        // Not after an amend: that push would need a force.
-        match self.push_op(false).filter(|_| self.push_after && !self.amend) {
-            Some(p) => Op { label: PUSH_AFTER.into(), cmds: [op.cmds, p.cmds].concat(), ..op },
-            None => op,
-        }
+        // Not after an amend: that push would need a force. `poll_op` pushes once it's committed.
+        let push = self.push_after && !self.amend && self.push_op(false).is_some();
+        Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft)
     }
 
     /// Empties the message fields for the next commit (and prefills the template again).

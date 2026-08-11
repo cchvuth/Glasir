@@ -31,10 +31,12 @@ pub fn template(d: &RepoData, dir: &Path) -> Option<Template> {
     Some(Template { prefix, summary, body })
 }
 
-/// Drops comment lines like git's `--cleanup=strip`, and collapses blank runs.
-pub fn strip_comments(msg: &str, prefix: &str) -> String {
+/// Drops the template's comment lines like git's `--cleanup=strip`, and collapses blank runs.
+/// Only the template's own: the box may hold a split's or Claude's message with `## Why` lines.
+pub fn strip_comments(msg: &str, t: &Template) -> String {
+    let ours = |l: &&str| l.starts_with(&t.prefix) && t.body.lines().any(|c| c.trim_end() == l.trim_end());
     let mut out: Vec<&str> = vec![];
-    for l in msg.lines().filter(|l| !l.starts_with(prefix)).map(str::trim_end) {
+    for l in msg.lines().filter(|l| !ours(l)).map(str::trim_end) {
         if !(l.is_empty() && out.last().is_none_or(|p| p.is_empty())) {
             out.push(l);
         }
@@ -68,10 +70,13 @@ mod tests {
 
     #[test]
     fn strips_comment_lines() {
+        let tpl = |prefix: &str, body: &str| Template { prefix: prefix.into(), summary: String::new(), body: body.into() };
         let t = "feat: x\n\n# Explain why\n# more\n\nBody  \n\n\n#end\n";
-        assert_eq!(strip_comments(t, "#"), "feat: x\n\nBody");
-        assert_eq!(strip_comments("a\n; c\nb", ";"), "a\nb");
-        assert_eq!(strip_comments("  # indented stays\n", "#"), "# indented stays");
+        assert_eq!(strip_comments(t, &tpl("#", "# Explain why\n# more\n#end")), "feat: x\n\nBody");
+        assert_eq!(strip_comments("a\n; c\nb", &tpl(";", "; c")), "a\nb");
+        assert_eq!(strip_comments("  # indented stays\n", &tpl("#", "# indented stays")), "# indented stays");
+        // Only the template's own comments: a split's or Claude's `## Why` / `#123` lines stay.
+        assert_eq!(strip_comments("Fix\n\n## Why\n#123 was hit\n# explain", &tpl("#", "# explain")), "Fix\n\n## Why\n#123 was hit");
     }
 
     #[test]
@@ -146,6 +151,21 @@ mod tests {
         assert_eq!(sh(&a, &["log", "-1", "--format=%B"]).trim(), "feat: two\n\nCo-authored-by: Ann <ann@x.io>");
         assert_eq!(sh(&a, &["rev-parse", "HEAD"]), sh(&root.join("up.git"), &["rev-parse", "main"]));
         assert_eq!((t.summary.as_str(), t.coauthors.len()), ("feat:", 0));
+        assert_eq!(t.undo_label(), Some("Commit"));
+
+        // A rejected push after the commit offers the push fixes; ⌘Z is the commit's alone.
+        sh(&root, &["clone", "-q", "up.git", "b"]);
+        identity(&root.join("b"));
+        commit(&root.join("b"), "g", "theirs");
+        sh(&root.join("b"), &["push", "-q"]);
+        std::fs::write(a.join("f"), "three").unwrap();
+        sh(&a, &["add", "f"]);
+        t.summary = "feat: three".into();
+        t.run(&ctx, t.commit_op());
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&a, &["log", "-1", "--format=%s"]).trim(), "feat: three");
+        assert_eq!(t.choice.as_ref().map(|c| c.title.as_str()), Some("Push rejected"));
+        assert_eq!((t.summary.as_str(), t.undo_label()), ("feat:", Some("Commit")));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

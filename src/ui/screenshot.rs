@@ -104,15 +104,16 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Multi(ids));
                         }
                     }
-                    // `diff:<path>` (unstaged), `diff-ws:<path>` with whitespace ignored and whole-file context.
-                    q if q.starts_with("diff:") || q.starts_with("diff-ws:") || q.starts_with("diff-staged:") => {
+                    // `diff:<path>` (unstaged or untracked), `diff-ws:<path>` with whitespace ignored and whole-file context.
+                    q if q.starts_with("diff:") || q.starts_with("diff-ws:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let (mode, path) = q.split_once(':').unwrap();
                             if mode == "diff-ws" {
                                 t.diff_opts = git::DiffOpts { ignore_ws: true, context: git::DiffOpts::FILE, ..Default::default() };
                             }
-                            let change = git::Change { path: path.into(), old_path: None, code: 'M' };
-                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: mode == "diff-staged" }));
+                            let code = t.data.as_ref().and_then(|d| d.status.unstaged.iter().find(|c| c.path == path)).map_or('M', |c| c.code);
+                            let change = git::Change { path: path.into(), old_path: None, code };
+                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: false }));
                         }
                     }
                     "wrap" => self.s.wrap = true,
