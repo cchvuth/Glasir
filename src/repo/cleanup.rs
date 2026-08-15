@@ -54,6 +54,11 @@ fn matches(pat: &str, name: &str) -> bool {
     pat.strip_suffix('*').map_or(pat == name, |p| name.starts_with(p))
 }
 
+/// A long-lived branch: a trunk name, `release/*` or one of Settings → Protected branches (`keep`).
+pub(super) fn protected(keep: &str, name: &str) -> bool {
+    is_trunk(name) || keep.split([',', ' ', '\n']).filter(|p| !p.is_empty()).chain(["release/*"]).any(|p| matches(p, name))
+}
+
 impl Cleanup {
     pub fn poll(&mut self) {
         if let Some(r) = Task::poll(&mut self.task) {
@@ -206,8 +211,7 @@ impl RepoTab {
         }
         let target = c.target.clone();
         let target_branch = d.split_remote(&target).map_or(target.as_str(), |(_, b)| b);
-        let keep: Vec<&str> = self.keep_branches.split([',', ' ', '\n']).filter(|p| !p.is_empty()).chain(["release/*"]).collect();
-        let kept = |n: &str| is_trunk(n) || n == def || n == target || n == target_branch || keep.iter().any(|p| matches(p, n));
+        let kept = |n: &str| protected(&self.keep_branches, n) || n == def || n == target || n == target_branch;
         // A branch being rebased or bisected has no HEAD marker, but git refuses to delete it.
         let busy: Vec<String> = ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"]
             .iter()
@@ -425,5 +429,6 @@ mod tests {
         assert_eq!(Cleanup::group(&c, 90, 1000 + 90 * 86400), Some(Why::Stale));
         assert_eq!(Cleanup::group(&Cand { why: Some(Why::Gone), ..c }, 90, 1000), Some(Why::Gone));
         assert!(matches("release/*", "release/1.2") && matches("main", "main") && !matches("main", "mainx"));
+        assert!(protected("hotfix/*, staging", "staging") && protected("", "release/2.0") && protected("", "develop") && !protected("staging", "feat"));
     }
 }

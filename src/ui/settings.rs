@@ -214,7 +214,7 @@ impl App {
                     ui.label("Protected branches");
                     ui.vertical(|ui| {
                         ui.add(TextEdit::singleline(&mut s.keep_branches).margin(crate::theme::INPUT_MARGIN).hint_text("hotfix/*, staging").desired_width(330.0));
-                        ui.label(RichText::new("Never offered by Clean up branches, like main, master, develop and release/*").small().color(theme::dim(ui)));
+                        ui.label(RichText::new("Never offered by Clean up branches nor moved with a stack, like main, master, develop and release/*").small().color(theme::dim(ui)));
                     });
                     ui.end_row();
                 });

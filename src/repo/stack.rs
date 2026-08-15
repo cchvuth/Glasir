@@ -5,6 +5,7 @@ use super::op::{Op, Undo};
 use crate::git::{self, RefKind, Res};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Child branch -> (parent branch, the parent tip it is built on). A stale edge (kept
@@ -12,10 +13,24 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub type Stacks = HashMap<String, (String, String)>;
 
 static FOLLOW: AtomicBool = AtomicBool::new(true);
+static KEEP: Mutex<String> = Mutex::new(String::new());
 
-/// Settings → "Keep stacked branches together", mirrored every frame.
-pub fn set_follow(on: bool) {
+/// Settings → "Keep stacked branches together" and Protected branches, mirrored every frame.
+pub fn set_follow(on: bool, keep: &str) {
     FOLLOW.store(on, Ordering::Relaxed);
+    let mut k = KEEP.lock().unwrap_or_else(|e| e.into_inner());
+    if *k != keep {
+        *k = keep.to_owned();
+    }
+}
+
+/// A long-lived branch (`release/*`, Settings → Protected branches..): never a stack member.
+pub(super) fn protected(name: &str) -> bool {
+    super::cleanup::protected(&KEEP.lock().unwrap_or_else(|e| e.into_inner()), name)
+}
+
+fn trunk_name(d: &RepoData, name: &str) -> bool {
+    d.branch_rank(name) < 2 || protected(name)
 }
 
 pub fn follows() -> bool {
@@ -51,9 +66,9 @@ pub(super) fn parse(revs: &str, tips: &[(String, String)]) -> Stacks {
     out
 }
 
-/// The stacks among the local branches (not the trunk ones: the default branch, main, develop..).
+/// The stacks among the local branches (not the trunk ones: the default branch, main, release/*..).
 pub(super) fn load(dir: &Path, d: &RepoData) -> Stacks {
-    let tips: Vec<(String, String)> = d.refs.iter().filter(|r| r.kind == RefKind::Local && d.branch_rank(&r.name) == 2).map(|r| (r.name.clone(), r.target.clone())).collect();
+    let tips: Vec<(String, String)> = d.refs.iter().filter(|r| r.kind == RefKind::Local && !trunk_name(d, &r.name)).map(|r| (r.name.clone(), r.target.clone())).collect();
     if tips.len() < 2 {
         return Stacks::new();
     }
@@ -67,8 +82,8 @@ pub(super) fn load(dir: &Path, d: &RepoData) -> Stacks {
 
 fn trunk(d: &RepoData, r: &git::Ref) -> bool {
     match r.kind {
-        RefKind::Local => d.branch_rank(&r.name) < 2,
-        RefKind::Remote => d.split_remote(&r.name).is_some_and(|(_, b)| d.branch_rank(b) < 2),
+        RefKind::Local => trunk_name(d, &r.name),
+        RefKind::Remote => d.split_remote(&r.name).is_some_and(|(_, b)| trunk_name(d, b)),
         RefKind::Tag => false,
     }
 }
@@ -79,7 +94,7 @@ pub(super) fn keep_stale(old: &RepoData, new: &mut RepoData) {
     let tip = |d: &RepoData, b: &str| d.local(b).map(|r| r.target.clone());
     let mut st = (*new.stack).clone();
     for (c, (p, base)) in old.stack.iter() {
-        if tip(old, c).is_some() && tip(old, c) == tip(new, c) && tip(new, p).is_some_and(|t| t != *base) && new.branch_rank(p) == 2 {
+        if tip(old, c).is_some() && tip(old, c) == tip(new, c) && tip(new, p).is_some_and(|t| t != *base) && !trunk_name(new, p) {
             st.insert(c.clone(), (p.clone(), base.clone()));
         }
     }
@@ -127,6 +142,8 @@ pub fn members(d: &RepoData, b: &str) -> Vec<String> {
 /// The `RESTACK` command for the edges whose child is in `only` (all if None), parents first.
 /// Children checked out in another worktree are left alone (git can't rebase them here).
 /// `follow`: restack where this op moves a parent, else where the parent moved on since.
+/// Pinned (put back if a `--update-refs` rebase moves them, and not restacked after it): the
+/// trunk branches and any other branch at HEAD's commit, a copy rather than a stack member.
 fn restack_cmd(d: &RepoData, only: Option<&[String]>, follow: bool) -> Vec<String> {
     let depth = |c: &str| (0..64).scan(c, |c, _| parent(d, c).map(|p| *c = p)).count();
     let mut edges: Vec<(&String, &(String, String))> = d
@@ -136,10 +153,15 @@ fn restack_cmd(d: &RepoData, only: Option<&[String]>, follow: bool) -> Vec<Strin
         .collect();
     edges.sort_by_key(|(c, _)| (depth(c), c.as_str()));
     let mut cmd: Vec<String> = vec![RESTACK.into(), if follow { "follow" } else { "own" }.into()];
-    cmd.extend(d.refs.iter().filter(|r| r.kind == RefKind::Local && trunk(d, r)).flat_map(|r| [r.name.clone(), r.target.clone()]));
+    let head = d.refs.iter().find(|r| r.kind == RefKind::Local && r.head).map(|r| r.target.as_str());
+    let pin = |r: &&git::Ref| r.kind == RefKind::Local && (trunk(d, r) || (!r.head && Some(r.target.as_str()) == head));
+    cmd.extend(d.refs.iter().filter(pin).flat_map(|r| [r.name.clone(), r.target.clone()]));
     cmd.push("--".into());
     for (c, (p, base)) in edges {
         let (Some(ct), Some(pt)) = (d.local(c), d.local(p)) else { continue };
+        if follow && pin(&ct) {
+            continue;
+        }
         cmd.extend([c.clone(), p.clone(), ct.target.clone(), base.clone(), if follow { pt.target.clone() } else { base.clone() }]);
     }
     cmd
@@ -170,7 +192,9 @@ pub(super) fn follow(mut op: Op, d: Option<&RepoData>) -> Op {
         let i = c.iter().position(|a| a == "rebase").unwrap_or(0);
         c.insert(i + 1, "--update-refs".into());
     }
-    op.cmds.push(restack_cmd(d, None, true));
+    // Right after the commit / rebase: a push after it may fail.
+    let at = op.cmds.iter().rposition(|c| matches!(subcommand(c), Some("commit" | "rebase"))).map_or(op.cmds.len(), |i| i + 1);
+    op.cmds.insert(at, restack_cmd(d, None, true));
     op
 }
 
@@ -262,8 +286,9 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
     })
 }
 
-/// Push every branch of `b`'s stack, bottom first: a new one sets its upstream, one
-/// rewritten since its last push is force-pushed with a lease on the remote commit shown.
+/// Push every branch of `b`'s stack, bottom first: a new one sets its upstream, one behind
+/// its remote branch is skipped, and one rewritten since its last push is force-pushed with
+/// a lease, only if the remote commit is one it had (`--force-if-includes`).
 pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
     let first = d.remotes.iter().find(|r| r.0 == "origin").or(d.remotes.first())?.0.as_str();
     // Pushes what is shown: a branch moved since refuses the whole push.
@@ -277,17 +302,23 @@ pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
             Some(dest) => dest,
             None => (fork.unwrap_or(first), name.as_str()),
         };
-        let sha = d.refs.iter().find(|x| x.kind == RefKind::Remote && x.name == format!("{remote}/{rb}")).map_or("", |x| x.target.as_str());
-        let contains = |tip: &str| {
-            let (Some(&t), Some(&s)) = (d.row_of.get(tip), d.row_of.get(sha)) else { return false };
-            d.reachable(t)[s]
+        let tracking = d.refs.iter().find(|x| x.kind == RefKind::Remote && x.name == format!("{remote}/{rb}")).filter(|x| x.target != r.target);
+        let reaches = |from: &str, to: &str| {
+            let (Some(&f), Some(&t)) = (d.row_of.get(from), d.row_of.get(to)) else { return false };
+            d.reachable(f)[t]
         };
+        if tracking.is_some_and(|t| reaches(&t.target, &r.target)) {
+            continue; // behind: nothing to push, and forcing would drop the remote's commits
+        }
         let mut c = vec!["push".to_owned(), "--progress".into()];
         if r.upstream.is_empty() {
             c.push("-u".into());
         }
-        if !sha.is_empty() && sha != r.target && !contains(&r.target) {
-            c.extend([format!("--force-with-lease=refs/heads/{rb}:{sha}"), "--force-if-includes".into()]);
+        if let Some(t) = tracking.filter(|t| !reaches(&r.target, &t.target)) {
+            // No expected value: with one, git skips the `--force-if-includes` reflog check.
+            // The guard pins the remote-tracking ref instead (the lease's expected value).
+            c.extend([format!("--force-with-lease=refs/heads/{rb}"), "--force-if-includes".into()]);
+            guard.extend([t.full.clone(), t.target.clone()]);
             forced.push(name.clone());
         }
         c.extend([remote.to_owned(), format!("{name}:refs/heads/{rb}")]);
@@ -300,7 +331,7 @@ pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
     Some(match forced.is_empty() {
         true => op,
         false => op.confirm(format!(
-            "Push the {n} branches of this stack? {} will be force-pushed: commits on the remote that aren't in your branch are lost. Each goes through only if its remote branch is still where it's shown.",
+            "Push the {n} branches of this stack? {} will be force-pushed, replacing the remote commits you rewrote. Each goes through only if its remote branch is still where it's shown and holds no commit you never had.",
             forced.join(", ")
         )),
     })
@@ -459,5 +490,107 @@ mod tests {
         assert_eq!(sh(&remote, &["log", "--format=%s", "c"]), "c\nb\na v2\nbase\nm0\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A teammate's commit on a stacked branch survives Push stack: just behind, the branch
+    /// is skipped; diverged without having taken that commit in, the force push is refused.
+    #[test]
+    fn push_stack_keeps_teammate_commits() {
+        let dir = stack_repo("stack-push-mate");
+        let (remote, mate) = (scratch("stack-push-mate-remote"), scratch("stack-push-mate-clone"));
+        sh(&remote, &["init", "-q", "--bare"]);
+        sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        sh(&dir, &["push", "-q", "-u", "origin", "main", "a", "b", "c"]);
+        sh(&mate, &["clone", "-q", "-b", "b", &remote.to_string_lossy(), "."]);
+        identity(&mate);
+        commit(&mate, "t", "teammate\n");
+        sh(&mate, &["push", "-q", "origin", "b"]);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        let theirs = sh(&remote, &["rev-parse", "b"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let op = push_op(t.data.as_ref().unwrap(), "a").unwrap();
+        assert!(op.confirm.is_none() && !op.cmds.iter().flatten().any(|a| a.starts_with("--force")), "{:?}", op.cmds);
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&remote, &["rev-parse", "b"]), theirs);
+        sh(&dir, &["checkout", "-q", "b"]);
+        commit(&dir, "mine", "mine\n");
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        let op = push_op(t.data.as_ref().unwrap(), "a").unwrap();
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..op }));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().any(|m| m.error), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(sh(&remote, &["rev-parse", "b"]), theirs);
+        for d in [&dir, &remote, &mate] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// History edits move only the stacked branches below HEAD: a backup at HEAD's tip stays.
+    #[test]
+    fn backup_branch_at_head_stays_put() {
+        let dir = stack_repo("stack-backup");
+        sh(&dir, &["checkout", "-q", "c"]);
+        sh(&dir, &["branch", "c-backup"]);
+        let backup = sh(&dir, &["rev-parse", "c-backup"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let a = sh(&dir, &["rev-parse", "a"]).trim().to_owned();
+        t.apply(&ctx, Action::Rewrite { commit: a, act: crate::repo::rebase::Act::Reword, message: Some("a reworded".into()) });
+        settle(&ctx, &mut t);
+        assert_eq!((subjects(&dir, "c"), sh(&dir, &["rev-parse", "c-backup"])), ("c b a reworded base m0".into(), backup));
+        // A plain rebase (`--update-refs`) puts it back too.
+        sh(&dir, &["branch", "-f", "c-backup", "c"]);
+        let backup = sh(&dir, &["rev-parse", "c-backup"]);
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "--force-rebase", "main"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        assert_ne!(sh(&dir, &["rev-parse", "c"]), backup);
+        assert_eq!(sh(&dir, &["rev-parse", "c-backup"]), backup);
+        assert_eq!(sh(&dir, &["rev-parse", "b~1"]), sh(&dir, &["rev-parse", "a"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A long-lived base like `release/2.0` is trunk, not a stack parent: rebasing the feature
+    /// on it onto main leaves the release branch alone (also when other stacks exist).
+    #[test]
+    fn rebase_leaves_release_branch() {
+        let dir = scratch("stack-release");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "m", "m\n");
+        for b in ["release/2.0", "feat", "feat2"] {
+            sh(&dir, &["checkout", "-q", "-b", b]);
+            commit(&dir, b.replace('/', "-").as_str(), &format!("{b}\n"));
+        }
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "m2", "m2\n");
+        sh(&dir, &["checkout", "-q", "feat"]);
+        let release = sh(&dir, &["rev-parse", "release/2.0"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!((parent(d, "feat"), parent(d, "feat2")), (None, Some("feat")));
+        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "main"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "release/2.0"]), release);
+        assert_eq!(subjects(&dir, "feat2"), "feat2 feat release/2.0 m2 m");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Commit & push: the restack comes right after the commit, so a failed push can't skip it.
+    #[test]
+    fn follow_restacks_before_the_push() {
+        let dir = stack_repo("stack-follow-push");
+        let d = crate::repo::data::load_all(&dir, 100, View::default()).unwrap();
+        let op = follow(Op::new("Commit & push", &["commit", "-F", "-"]).then(&["push", "origin", "a"]).undo(Undo::Soft), Some(&d));
+        assert_eq!(op.cmds.iter().map(|c| c[0].as_str()).collect::<Vec<_>>(), ["commit", RESTACK, "push"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

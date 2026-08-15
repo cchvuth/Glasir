@@ -78,7 +78,7 @@ impl Editor {
         // Stacked branches pointing into the range stay on their (rewritten) commits.
         let stacked = match self.cherry || !super::stack::follows() {
             true => vec![],
-            false => stacked_refs(&self.dir, &self.items),
+            false => stacked_refs(&self.dir, &self.items, self.head.rsplit(' ').next().unwrap_or_default()),
         };
         let mut todo = String::new();
         for (n, it) in self.items.iter().enumerate().rev() {
@@ -128,13 +128,20 @@ impl Editor {
     }
 }
 
-/// Local branches (full name, commit) pointing at one of `items`: not the trunk, and not
-/// checked out anywhere (HEAD's moves anyway; git refuses another worktree's).
-fn stacked_refs(dir: &Path, items: &[Item]) -> Vec<(String, String)> {
-    let out = git::run(dir, &["for-each-ref", "--format=%(objectname) %(worktreepath) %(refname)", "refs/heads"]).unwrap_or_default();
-    out.lines()
-        .filter_map(|l| match l.splitn(3, ' ').collect::<Vec<_>>()[..] {
-            [oid, "", r] if !super::data::is_trunk(&r["refs/heads/".len()..]) && items.iter().any(|i| i.id == oid) => Some((r.to_owned(), oid.to_owned())),
+/// Local branches (full name, commit) pointing at one of `items` below HEAD's commit `head`
+/// (one at `head` is a copy, like a backup): not a trunk or protected branch, not the remote's
+/// default, and not checked out anywhere (HEAD's moves anyway; git refuses another worktree's).
+fn stacked_refs(dir: &Path, items: &[Item], head: &str) -> Vec<(String, String)> {
+    let fmt = "--format=%(refname)%09%(objectname)%09%(symref:lstrip=3)%09%(worktreepath)";
+    let out = git::run(dir, &["for-each-ref", fmt, "refs/heads", "refs/remotes/origin/HEAD"]).unwrap_or_default();
+    let rows: Vec<Vec<&str>> = out.lines().map(|l| l.splitn(4, '\t').collect()).collect();
+    let default = rows.iter().find(|f| f[0] == "refs/remotes/origin/HEAD").and_then(|f| f.get(2).copied());
+    rows.iter()
+        .filter_map(|f| match f[..] {
+            [r, oid, _, ""] if oid != head && items.iter().any(|i| i.id == oid) => {
+                let name = r.strip_prefix("refs/heads/")?;
+                (!super::stack::protected(name) && Some(name) != default).then(|| (r.to_owned(), oid.to_owned()))
+            }
             _ => None,
         })
         .collect()
@@ -696,6 +703,7 @@ mod tests {
         settle(&ctx, &mut t);
         let menu = |t: &mut RepoTab, src: &str, dst: Option<&str>, branch: Option<&str>| {
             t.apply(&ctx, Action::DropCommit { src: id(src), dst: dst.map(id), branch: branch.map(String::from), squash: false });
+            settle(&ctx, t);
             t.commit_drop.take().expect("a drop menu").1
         };
 

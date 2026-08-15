@@ -15,6 +15,17 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
         merge.label = "Pull (merge)".into();
         vec![("Pull (rebase)".to_owned(), pull_op(PullMode::Rebase)), ("Pull (merge)".to_owned(), merge)]
     };
+    // The guard's own refusal, wherever it sits (the drag cherry-pick checks HEAD first).
+    let guard = op.cmds.iter().position(|c| c.first().is_some_and(|a| a == super::merge_opts::PICK_NEW));
+    if let Some(i) = guard.filter(|_| err.starts_with(super::merge_opts::ALREADY)) {
+        let mut anyway = op.clone();
+        anyway.cmds.remove(i);
+        return Some(Choice {
+            title: "Already applied".into(),
+            text: format!("{err}\n\nCherry-picking anyway may stop on an empty commit or conflicts, which you can skip or abort."),
+            ops: vec![("Cherry-pick anyway".into(), anyway)],
+        });
+    }
     match args.first()?.as_str() {
         // Not for untracked files: the target's copy would be checked out and the stash couldn't pop.
         "checkout" if err.contains("would be overwritten by checkout") && !err.contains("untracked working tree files") => {
@@ -30,15 +41,6 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
                     files.join("\n")
                 ),
                 ops: vec![("Stash, switch and reapply".into(), o)],
-            })
-        }
-        super::merge_opts::PICK_NEW => {
-            let mut anyway = op.clone();
-            anyway.cmds.remove(0);
-            Some(Choice {
-                title: "Already applied".into(),
-                text: format!("{err}\n\nCherry-picking anyway may stop on an empty commit or conflicts, which you can skip or abort."),
-                ops: vec![("Cherry-pick anyway".into(), anyway)],
             })
         }
         "pull" if has("--ff-only") && err.contains("Not possible to fast-forward") => Some(Choice {
@@ -330,6 +332,34 @@ mod tests {
         assert_eq!(info().sig, 'N');
         op_unsigned(&dir, &Op::new("Create tag", &["tag", "--sign", "-a", "v2", "-m", "m", "HEAD"]), "Create tag without signing");
         assert!(!git::verify_tag(&dir, "refs/tags/v2").0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Already applied" answers only the guard's own refusal, wherever the guard sits.
+    #[test]
+    fn already_applied_offer_only_for_the_guard() {
+        use crate::repo::merge_opts::{PICK_NEW, pick_op};
+        use crate::repo::rebase::{HEAD_IS, head_state};
+        let dir = scratch("offer-picked");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "feat\n");
+        let pick = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        let op = pick_op("Cherry-pick", &[&pick], false, false);
+        let err = exec(&dir, &op).unwrap_err();
+        assert!(offer(&op, &err, None).is_none(), "a conflict isn't 'already applied': {err}");
+        sh(&dir, &["cherry-pick", "--abort"]);
+        // The drag cherry-pick checks HEAD first.
+        sh(&dir, &["checkout", "-q", "feat"]);
+        let mut op = pick_op("Cherry-pick", &[&pick], false, false);
+        op.cmds.insert(0, vec![HEAD_IS.into(), head_state(&dir)]);
+        let c = offer(&op, &exec(&dir, &op).unwrap_err(), None).expect("already applied is offered");
+        assert_eq!(c.title, "Already applied");
+        assert!(c.ops[0].1.cmds[0][0] == HEAD_IS && !c.ops[0].1.cmds.iter().any(|c| c[0] == PICK_NEW));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

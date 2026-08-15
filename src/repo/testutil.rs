@@ -32,7 +32,7 @@ pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) -> Vec<super::
     let mut msgs = vec![];
     for _ in 0..1000 {
         t.poll(ctx, &mut msgs);
-        if t.running.is_none() && !t.loading() && t.data.is_some() {
+        if t.running.is_none() && !t.loading() && t.data.is_some() && t.drop_task.is_none() {
             return msgs;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));

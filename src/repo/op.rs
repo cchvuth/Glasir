@@ -127,11 +127,29 @@ impl Op {
 
 const PUSH_AFTER: &str = "Commit & push";
 
+/// A commit drop as worked out off the UI thread: its menu, the rewrite to run, or why not.
+pub enum Dropped {
+    Menu(String, Vec<(String, Option<Action>)>, egui::Pos2),
+    Run(Op),
+    Note(String),
+}
+
 pub(super) enum Done {
     Op(Op, Res<String>, Option<(Snapshot, Snapshot)>, Option<Saved>),
     /// Undo or redo, its result (a redone op's fresh undo), and whether a failed one moved refs.
     Undo(bool, Res<Option<Box<Op>>>, bool),
 }
+
+/// Pseudo-commands that only check state (and change nothing).
+const GUARDS: [&str; 7] = [
+    super::diff::DIFF_IS,
+    super::rebase::HEAD_IS,
+    super::rebase::REFS_AT,
+    super::merge_opts::CLEAN,
+    super::merge_opts::TREE_IS,
+    super::merge_opts::PICK_NEW,
+    super::remotes::PR_GUARD,
+];
 
 /// Runs an op's commands in order, stopping at the first failure.
 pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
@@ -164,15 +182,15 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
     };
     let all = || {
         let mut out = Ok(String::new());
-        for args in &op.cmds {
+        for (i, args) in op.cmds.iter().enumerate() {
             let prev = std::mem::replace(&mut out, one(args));
             // A restack after a commit that had nothing to move: keep the commit's output.
             if args[0] == super::stack::RESTACK && out.as_ref().is_ok_and(String::is_empty) {
                 out = prev;
             }
             if out.is_err() {
-                // A failed guard means nothing ran yet: there is nothing to roll back.
-                if !op.on_fail.is_empty() && args.first().map(String::as_str) != Some(super::diff::DIFF_IS) {
+                // Only guards ran (the failed one too): there is nothing to roll back.
+                if !op.on_fail.is_empty() && !op.cmds[..=i].iter().all(|c| GUARDS.contains(&c[0].as_str())) {
                     // A later step after a failed one could hit the wrong ref (a still-detached rebase HEAD).
                     let back = git::Cancel::default().scope(|| op.on_fail.iter().try_for_each(|a| one(a).map(drop)));
                     out = out.map_err(|e| match back {
@@ -916,23 +934,32 @@ impl RepoTab {
     }
 
     /// The menu for a commit dropped onto a commit and/or a branch; ⌥ squashes right away.
+    /// Worked out in a task: it takes several git calls.
     pub(super) fn drop_commit(&mut self, ctx: &egui::Context, src: String, dst: Option<String>, branch: Option<String>, squash: bool) {
-        use super::rebase::{self, Act};
         let Some(d) = &self.data else { return };
         let short = |id: &str| -> String {
             let s = d.row_of.get(id).and_then(|&r| d.commit(r)).map_or(&id[..id.len().min(7)], |c| c.summary.as_str());
             if s.chars().count() > 40 { format!("{}…", s.chars().take(39).collect::<String>()) } else { s.to_owned() }
         };
-        let title = short(&src);
-        let on_head = git::run(&self.dir, &["merge-base", "--is-ancestor", &src, "HEAD"]).is_ok();
+        let (title, to) = (short(&src), dst.as_deref().map(short).unwrap_or_default());
+        let branch = branch.and_then(|b| d.refs.iter().find(|r| r.full == b && r.kind == RefKind::Local)).map(|b| (b.name.clone(), b.head));
+        let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
+        let (dir, git_dir) = (self.dir.clone(), d.git_dir.clone());
+        self.drop_task = Some(Task::spawn(ctx, move || Self::drop_menu(&dir, &git_dir, src, dst, branch, squash, (title, to, at))));
+    }
+
+    /// [`Self::drop_commit`]'s git work. `labels`: the dropped commit's, the target's, where.
+    fn drop_menu(dir: &Path, git_dir: &Path, src: String, dst: Option<String>, branch: Option<(String, bool)>, squash: bool, labels: (String, String, egui::Pos2)) -> Dropped {
+        use super::rebase::{self, Act};
+        let (title, to, at) = labels;
+        let on_head = git::run(dir, &["merge-base", "--is-ancestor", &src, "HEAD"]).is_ok();
         let mut items: Vec<(String, Option<Action>)> = vec![];
         if let Some(dst) = dst.filter(|t| on_head && *t != src) {
-            match rebase::drag_editor(&self.dir, &src, &dst) {
-                Ok(_) if squash => return self.apply(ctx, Action::DragCommit { src, dst, act: Act::Squash }),
+            match rebase::drag_editor(dir, &src, &dst) {
+                Ok(_) if squash => return rebase::drag(dir, git_dir, &src, &dst, Act::Squash).map_or_else(Dropped::Note, Dropped::Run),
                 Ok(ed) => {
                     let pos = |id: &str| ed.items.iter().position(|i| i.id == id);
                     let side = if pos(&src) > pos(&dst) { "above" } else { "below" }; // newest first
-                    let to = short(&dst);
                     let drag = |act| Some(Action::DragCommit { src: src.clone(), dst: dst.clone(), act });
                     items.push((format!("Move {side} \"{to}\""), drag(Act::Pick)));
                     items.push((format!("Squash into \"{to}\""), drag(Act::Squash)));
@@ -941,24 +968,22 @@ impl RepoTab {
                 Err(e) => items.push((e, None)),
             }
         }
-        if let Some(b) = branch.and_then(|b| d.refs.iter().find(|r| r.full == b && r.kind == RefKind::Local)) {
-            if !b.head {
-                items.push((format!("Check out {} to cherry-pick onto it", b.name), None));
-            } else if git::run(&self.dir, &["rev-parse", "-q", "--verify", &format!("{src}^2")]).is_ok() {
+        if let Some((name, head)) = branch {
+            if !head {
+                items.push((format!("Check out {name} to cherry-pick onto it"), None));
+            } else if git::run(dir, &["rev-parse", "-q", "--verify", &format!("{src}^2")]).is_ok() {
                 items.push(("Merge commits can't be cherry-picked by dragging.".into(), None));
             } else if !on_head {
                 let mut op = super::merge_opts::pick_op(format!("Cherry-pick {}", &src[..src.len().min(7)]), &[&src], false, false);
                 // The menu may wait while HEAD moves: pick onto the branch it names or not at all.
-                op.cmds.insert(0, vec![rebase::HEAD_IS.into(), rebase::head_state(&self.dir)]);
-                items.push((format!("Cherry-pick onto {}", b.name), Some(Action::Git(op))));
+                op.cmds.insert(0, vec![rebase::HEAD_IS.into(), rebase::head_state(dir)]);
+                items.push((format!("Cherry-pick onto {name}"), Some(Action::Git(op))));
             }
         }
         if items.is_empty() {
-            let text = "Drop a commit onto an unpushed commit of the current branch to move or squash it, or onto the current branch to cherry-pick it.";
-            return self.notes.push(Msg { text: text.into(), error: true });
+            return Dropped::Note("Drop a commit onto an unpushed commit of the current branch to move or squash it, or onto the current branch to cherry-pick it.".into());
         }
-        let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
-        self.commit_drop = Some((title, items, at));
+        Dropped::Menu(title, items, at)
     }
 
     /// Op that commits the message in the editor (and pushes, if asked).
@@ -1486,6 +1511,12 @@ mod tests {
         op.on_fail = vec![vec!["read-tree".into(), "--reset".into(), "nope".into()], vec!["tag".into(), "ran".into()]];
         let e = exec(&dir, &op).unwrap_err();
         assert!(!e.contains("Rolled back") && e.contains("Rolling back failed"), "{e}");
+        assert_eq!(sh(&dir, &["tag", "-l"]), "");
+        // A failed guard ran nothing: no rollback either.
+        let mut op = Op::new("X", &[super::super::rebase::HEAD_IS, "refs/heads/gone 0"]).then(&["tag", "ran"]);
+        op.on_fail = vec![vec!["tag".into(), "rolled".into()]];
+        let e = exec(&dir, &op).unwrap_err();
+        assert!(!e.contains("Rolled back"), "{e}");
         assert_eq!(sh(&dir, &["tag", "-l"]), "");
         let _ = std::fs::remove_dir_all(&dir);
     }

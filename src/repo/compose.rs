@@ -86,6 +86,11 @@ fn range(dir: &Path, r: &Recompose) -> Res<(String, usize, String)> {
     if git::run(dir, &["rev-list", "--count", "HEAD", "--not", &base, "--remotes", "--"])?.trim() != ids.len().to_string() {
         return Err("Some of these commits are already pushed; recomposing would rewrite published history.".into());
     }
+    // A branch inside the range (a stack's lower branch) would be left on the old commits.
+    let inside = git::run(dir, &["for-each-ref", "--merged=HEAD", &format!("--no-merged={base}"), "--format=%(objectname) %(refname:short)", "refs/heads"])?;
+    if let Some((_, b)) = inside.lines().filter_map(|l| l.split_once(' ')).find(|(oid, _)| Some(*oid) != ids.first().copied()) {
+        return Err(format!("{b} is stacked inside these commits and would be left on the old ones: recompose from {b}'s tip upward, or recompose {b} on its own."));
+    }
     let subjects = git::run(dir, &["log", "--reverse", "--format=- %s", "HEAD", "--not", &base, "--"])?;
     Ok((base, ids.len(), subjects))
 }
@@ -455,11 +460,17 @@ mod tests {
         std::fs::write(git::git_dir(&dir).unwrap().join("MERGE_HEAD"), &c3).unwrap();
         refused(&r(&c1, &[], false), "in progress");
         std::fs::remove_file(git::git_dir(&dir).unwrap().join("MERGE_HEAD")).unwrap();
+        // A branch inside the range would be left on the old commits; one at HEAD is a copy.
+        g(&["branch", "below", "HEAD~1"]);
+        g(&["branch", "copy"]);
+        refused(&r(&c1, &[], false), "below is stacked");
+        g(&["branch", "-D", "below"]);
 
         let (mut plan, listing) = Plan::load(&dir, Some(&r(&c1, &[&c3, &rev("HEAD~1"), &c1], false))).unwrap();
         let what: Vec<String> = plan.units.iter().map(|u| format!("{} {}", u.path, u.what)).collect();
         assert_eq!(what, ["a modified, hunk 1/2", "a modified, hunk 2/2", "bin new file, binary, whole file", "gone deleted, hunk 1/1"]);
         assert!(listing.starts_with("(These changes are now the commits below") && listing.contains("- bin, no gone\n"), "{listing}");
+        g(&["branch", "-D", "copy"]);
         plan.fill(r#"{"commits":[{"message":"Drop gone, a18","units":[4,2]},{"message":"Rest","units":[1,3]}]}"#).unwrap();
         let op = plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap();
         assert_eq!((op.label.as_str(), op.undo), ("Recompose 3 commits into 2", Undo::Soft));

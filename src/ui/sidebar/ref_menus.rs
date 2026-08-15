@@ -133,7 +133,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         if !d.remotes.is_empty()
             && ui
                 .button(format!("{} Push stack ({} branches)", icon::STACK, members.len()))
-                .on_hover_text(format!("Push {}; a branch rewritten since its last push is force-pushed with a lease (asks first)", members.join(", ")))
+                .on_hover_text(format!("Push {}; a branch rewritten since its last push is force-pushed with a lease (asks first), one behind its remote is skipped", members.join(", ")))
                 .clicked()
         {
             acts.extend(crate::repo::stack::push_op(d, name).map(Action::Git));

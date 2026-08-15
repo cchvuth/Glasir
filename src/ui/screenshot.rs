@@ -230,6 +230,10 @@ impl App {
                             let (src, dst) = (id(src), id(dst));
                             let branch = t.data.as_ref().and_then(|d| d.refs.iter().find(|r| r.head && r.target == dst)).map(|r| r.full.clone());
                             t.apply(&ctx.clone(), Action::DropCommit { src, dst: Some(dst), branch, squash: false });
+                            while t.drop_task.is_some() {
+                                std::thread::sleep(std::time::Duration::from_millis(5));
+                                t.poll(ctx, &mut vec![]);
+                            }
                             if let Some(m) = &mut t.commit_drop {
                                 m.2 = egui::pos2(600.0, 300.0);
                             }

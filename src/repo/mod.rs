@@ -159,6 +159,8 @@ pub struct RepoTab {
     pub keep_branches: String,
     /// Pending commit drop menu: (title, entries (label, action; `None` = reason it's off), where).
     pub commit_drop: Option<(String, Vec<(String, Option<Action>)>, egui::Pos2)>,
+    /// A commit drop (its menu or the drag's rewrite) being worked out off the UI thread.
+    pub drop_task: Option<Task<op::Dropped>>,
     /// Predicted conflicts with the target branch: (target, files).
     pub conflicts: Option<(String, Vec<String>)>,
     conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
@@ -250,6 +252,7 @@ impl RepoTab {
             file_view: None,
             drop_menu: None,
             commit_drop: None,
+            drop_task: None,
             cleanup: None,
             conflicts: None,
             conflict_task: None,
@@ -405,6 +408,12 @@ impl RepoTab {
             self.max_commits = self.max_commits.max((pos / PAGE + 1) * PAGE);
             self.jump_after = Some(id);
             self.reload(ctx, true);
+        }
+        match Task::poll(&mut self.drop_task) {
+            Some(op::Dropped::Menu(title, items, at)) => self.commit_drop = Some((title, items, at)),
+            Some(op::Dropped::Run(o)) => self.run(ctx, o),
+            Some(op::Dropped::Note(e)) => self.notes.push(Msg { text: e, error: true }),
+            None => {}
         }
         if let Some(c) = Task::poll(&mut self.conflict_task) {
             self.conflicts = c;
@@ -616,10 +625,8 @@ impl RepoTab {
             Action::DropCommit { src, dst, branch, squash } => self.drop_commit(ctx, src, dst, branch, squash),
             Action::DragCommit { src, dst, act } => {
                 let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
-                match crate::repo::rebase::drag(&self.dir, &git_dir, &src, &dst, act) {
-                    Ok(op) => self.run(ctx, op),
-                    Err(e) => self.notes.push(Msg { text: e, error: true }),
-                }
+                let dir = self.dir.clone();
+                self.drop_task = Some(Task::spawn(ctx, move || crate::repo::rebase::drag(&dir, &git_dir, &src, &dst, act).map_or_else(op::Dropped::Note, op::Dropped::Run)));
             }
             Action::FileView(path, mode) => {
                 (self.diff, self.merge) = (None, None);

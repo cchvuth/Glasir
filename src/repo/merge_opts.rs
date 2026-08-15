@@ -14,6 +14,8 @@ pub(super) const CLEAN: &str = "!tree-clean";
 pub(super) const TREE_IS: &str = "!tree-is";
 /// `exec` pseudo-command: `PICK_NEW id...` fails if a commit's change is already in HEAD.
 pub(super) const PICK_NEW: &str = "!pick-new";
+/// How [`pick_new`]'s refusal starts.
+pub(super) const ALREADY: &str = "Already in the current branch:";
 
 /// Settings → "Add '(cherry picked from …)'", mirrored every frame for the menus.
 static PICK_X: AtomicBool = AtomicBool::new(false);
@@ -135,7 +137,7 @@ pub(super) fn pick_new(dir: &Path, a: &[&str]) -> Res<String> {
     }
     match seen.is_empty() {
         true => Ok(String::new()),
-        false => Err(format!("Already in the current branch:\n{}", seen.join("\n"))),
+        false => Err(format!("{ALREADY}\n{}", seen.join("\n"))),
     }
 }
 
