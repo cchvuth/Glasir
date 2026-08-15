@@ -46,6 +46,8 @@ pub struct RepoData {
     pub view: View,
     /// Stacked local branches (`stack`): child -> (parent, the parent tip it's built on).
     pub stack: Arc<super::stack::Stacks>,
+    /// Unique per `build`: tells a reload apart even when it keeps the log.
+    pub generation: u64,
     /// Tip row -> rows reachable from it (hover highlight).
     reach: std::sync::Mutex<HashMap<usize, Arc<Vec<bool>>>>,
 }
@@ -84,7 +86,8 @@ impl View {
             }
             a.push(all.into());
         }
-        a.push("HEAD".into());
+        // An unborn HEAD (orphan branch) is skipped instead of failing the walk.
+        a.extend(["--ignore-missing".into(), "HEAD".into()]);
         a
     }
 }
@@ -296,6 +299,10 @@ impl RepoData {
             stash_at,
             view,
             stack: Default::default(),
+            generation: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            },
             reach: Default::default(),
         }
     }
@@ -315,11 +322,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
         let rf = s.spawn(|| git::refs(dir));
         let lg = s.spawn(|| {
             let r: Vec<&str> = revs.iter().map(String::as_str).collect();
-            // Unborn HEAD: retry without it.
-            git::log(dir, limit, &r).or_else(|e| match r.split_last() {
-                Some((&"HEAD", rest)) => git::log(dir, limit, rest),
-                _ => Err(e),
-            })
+            git::log(dir, limit, &r)
         });
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
         let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir), git::author(dir), super::maintenance::health(dir)));

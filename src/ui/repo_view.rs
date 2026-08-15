@@ -104,8 +104,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                                 se.history.clone_from(&s.search_history);
                                 se.poll(&ctx, d);
                             }
-                            let filtered = t.search.as_ref().and_then(|se| se.filtered.clone());
-                            graph_view::show(ui, filtered.as_deref().unwrap_or(d), &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, &mut acts);
+                            graph_view::show(ui, d, &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, &mut acts);
                             if let Some(se) = &t.search
                                 && se.history != s.search_history
                             {

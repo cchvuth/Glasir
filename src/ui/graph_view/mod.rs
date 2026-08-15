@@ -58,9 +58,10 @@ fn ref_label(r: &Ref) -> String {
     }
 }
 
+/// `all`: the loaded history; the graph shows the search hits instead while they filter it.
 pub fn show(
     ui: &mut Ui,
-    d: &RepoData,
+    all: &RepoData,
     sel: &Option<Sel>,
     multi: &[String],
     scroll_to: &mut Option<usize>,
@@ -68,6 +69,8 @@ pub fn show(
     avatars: &crate::repo::avatars::Avatars,
     acts: &mut Vec<Action>,
 ) {
+    let filtered = search.as_ref().and_then(|s| s.filtered.clone());
+    let d = filtered.as_deref().unwrap_or(all);
     let sel_row = match sel {
         Some(Sel::Wip) if d.wip => Some(0),
         Some(Sel::Commit(id)) => d.row_of.get(id).copied(),
@@ -256,7 +259,8 @@ pub fn show(
                 }
                 resp.context_menu(|ui| match commit {
                     Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, d, multi, acts),
-                    Some(c) => commit_menu(ui, d, c, acts),
+                    // The full graph: "on HEAD's branch" needs the commits between the hits.
+                    Some(c) => commit_menu(ui, all, c, acts),
                     None => wip_menu(ui, acts),
                 });
             }

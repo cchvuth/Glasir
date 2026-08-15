@@ -139,7 +139,9 @@ pub struct Search {
     log_ptr: usize,
     refs_fp: u64,
     rows_key: (usize, bool, usize, usize),
-    filtered_key: (usize, bool, usize, usize),
+    /// (run, data generation, hits) the filtered graph was built from, and when.
+    filtered_key: (usize, u64, usize),
+    filtered_at: std::time::Instant,
 }
 
 impl Search {
@@ -164,6 +166,7 @@ impl Search {
             refs_fp: 0,
             rows_key: Default::default(),
             filtered_key: Default::default(),
+            filtered_at: std::time::Instant::now(),
         }
     }
 
@@ -195,12 +198,19 @@ impl Search {
                 Err(TryRecvError::Disconnected) => self.rx = None,
             }
         }
-        let fkey = (self.run, d.wip, self.found.len(), ptr);
+        let fkey = (self.run, d.generation, self.found.len());
         if !self.filter || self.found.is_empty() {
             self.filtered = None;
         } else if self.filtered.is_none() || fkey != self.filtered_key {
-            self.filtered_key = fkey;
-            self.filtered = Some(Arc::new(self.filtered_data(d)));
+            // A rebuild is O(hits): while they stream in, only when their number doubled
+            // or a moment passed; the end of the stream brings it up to date.
+            const EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+            if self.filtered.is_none() || !self.running() || fkey.2 >= 2 * self.filtered_key.2 || self.filtered_at.elapsed() >= EVERY {
+                (self.filtered_key, self.filtered_at) = (fkey, std::time::Instant::now());
+                self.filtered = Some(Arc::new(self.filtered_data(d)));
+            } else {
+                ctx.request_repaint_after(EVERY);
+            }
         }
     }
 
@@ -245,12 +255,14 @@ impl Search {
         });
     }
 
-    /// The history of just the hits; a parent that is no hit is dropped (no lane to nowhere).
+    /// The history of just the hits. Lanes join hits only (a parent that is no hit would be
+    /// a lane to nowhere), but `log` keeps the real commits: menus read their parents.
     fn filtered_data(&self, d: &RepoData) -> RepoData {
         let ids: std::collections::HashSet<&str> = self.found.iter().map(|c| c.id.as_str()).collect();
         let log = self.found.iter().map(|c| Commit { parents: c.parents.iter().filter(|p| ids.contains(p.as_str())).cloned().collect(), ..c.clone() }).collect();
         let mut f = RepoData::build(Arc::new(log), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), d.status.clone(), d.view.clone());
         (f.worktrees, f.submodules, f.lfs, f.config, f.author, f.bisect) = (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.bisect.clone());
+        f.log = Arc::new(self.found.clone());
         f
     }
 
@@ -316,10 +328,10 @@ mod tests {
         assert!(parse("  author:  ", false).is_empty());
     }
 
-    fn search(dir: &std::path::Path, d: &RepoData, query: &str) -> Vec<String> {
+    fn finished(dir: &std::path::Path, d: &RepoData, query: &str, filter: bool) -> Search {
         let ctx = egui::Context::default();
         let mut s = Search::open(dir.to_path_buf());
-        s.query = query.into();
+        (s.query, s.filter) = (query.into(), filter);
         s.poll(&ctx, d);
         for _ in 0..1000 {
             if !s.running() {
@@ -329,7 +341,11 @@ mod tests {
             s.poll(&ctx, d);
         }
         assert_eq!(s.error, None);
-        s.found.iter().map(|c| c.summary.clone()).collect()
+        s
+    }
+
+    fn search(dir: &std::path::Path, d: &RepoData, query: &str) -> Vec<String> {
+        finished(dir, d, query, false).found.iter().map(|c| c.summary.clone()).collect()
     }
 
     /// path: (literal, over the whole history), code: (-S), free text on the body and author.
@@ -359,6 +375,79 @@ mod tests {
         assert_eq!(search(&dir, &d, "needle"), ["Tidy"]);
         assert_eq!(search(&dir, &d, "author:t path:b.txt"), ["Add beta"]);
         assert!(search(&dir, &d, "author:nobody").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The filtered graph draws hit-to-hit lanes only, but its commits keep their real
+    /// parents (menus pick merge flags from them) and it follows status-only reloads.
+    #[test]
+    fn filtered_graph_keeps_parents_and_status() {
+        let dir = scratch("search-filter");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        sh(&dir, &["switch", "-q", "-c", "side"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "on side"]);
+        sh(&dir, &["switch", "-q", "main"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "on main"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "Merge needle", "side"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let mut s = finished(&dir, &d, "needle", true);
+        let f = s.filtered.clone().unwrap();
+        assert_eq!(f.log[0].parents.len(), 2, "still a merge");
+        assert!(f.graph.edges.is_empty(), "no lanes to commits that are not shown");
+        // A status-only reload keeps the log Arc.
+        std::fs::write(dir.join("new.txt"), "x").unwrap();
+        sh(&dir, &["add", "new.txt"]);
+        let d2 = RepoData::build(d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), git::status(&dir).unwrap(), d.view.clone());
+        s.poll(&egui::Context::default(), &d2);
+        assert_eq!(s.filtered.as_ref().unwrap().status.staged.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// While hits stream in, the filtered graph is rebuilt when their number doubles (or
+    /// every so often), not per hit; the end of the stream brings it up to date.
+    #[test]
+    fn filtered_graph_rebuilds_throttled() {
+        let dir = scratch("search-throttle");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for i in 0..5 {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", &format!("c{i}")]);
+        }
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let ctx = egui::Context::default();
+        let mut s = Search::open(dir.clone());
+        s.poll(&ctx, &d);
+        let (tx, rx) = channel();
+        (s.rx, s.filter) = (Some(rx), true);
+        let rows = |s: &Search| s.filtered.as_ref().map_or(0, |f| f.log.len());
+        let mut sent = 0;
+        for want in [1, 2, 2, 4] {
+            tx.send(Ok(d.log[sent].clone())).unwrap();
+            sent += 1;
+            s.poll(&ctx, &d);
+            assert_eq!(rows(&s), want, "after {sent} hits");
+        }
+        tx.send(Ok(d.log[sent].clone())).unwrap();
+        s.poll(&ctx, &d);
+        assert_eq!(rows(&s), 4);
+        drop(tx);
+        s.poll(&ctx, &d);
+        assert_eq!(rows(&s), 5, "the last hits once the stream ends");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An unborn HEAD (orphan branch) next to other branches still searches them.
+    #[test]
+    fn searches_from_an_orphan_branch() {
+        let dir = scratch("search-orphan");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "On main"]);
+        sh(&dir, &["switch", "-q", "--orphan", "pages"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(search(&dir, &d, "main"), ["On main"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

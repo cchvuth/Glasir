@@ -125,14 +125,19 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
 /// A line-range history entry's change, under its row.
 fn hunks(ui: &mut Ui, hunks: &[crate::git::Hunk]) {
     const H: f32 = 16.0;
-    let lines: Vec<_> = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind != b'\\').collect();
-    if lines.is_empty() {
+    let lines = || hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind != b'\\');
+    let n = lines().count();
+    if n == 0 {
         return;
     }
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), lines.len() as f32 * H + 8.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), n as f32 * H + 8.0), Sense::hover());
     let p = ui.painter().with_clip_rect(rect);
     p.rect_filled(rect.shrink2(vec2(8.0, 0.0)), 6.0, theme::faint(ui));
-    for (i, l) in lines.iter().enumerate() {
+    // Only the lines in view: a big range is thousands of them per entry.
+    let clip = ui.clip_rect();
+    let first = ((clip.top() - rect.top() - 4.0) / H).floor().max(0.0) as usize;
+    let shown = ((clip.bottom() - rect.top() - 4.0) / H).ceil().max(0.0) as usize;
+    for (i, l) in lines().enumerate().skip(first).take(shown.saturating_sub(first)) {
         let row = Rect::from_min_size(pos2(rect.left() + 8.0, rect.top() + 4.0 + i as f32 * H), vec2(rect.width() - 16.0, H));
         let (bg, sign) = match l.kind {
             b'+' => (theme::added_bg(ui), "+"),

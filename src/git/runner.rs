@@ -86,6 +86,7 @@ impl Cancel {
         let mut g = self.0.lock().unwrap();
         g.0 = true;
         let Some(pid) = g.1 else { return };
+        drop(g);
         let pid = pid.to_string();
         // SIGTERM to git's whole process group lets git remove its lock files.
         #[cfg(unix)]
@@ -100,7 +101,8 @@ impl Cancel {
             use std::os::windows::process::CommandExt;
             c.args(["/T", "/F", "/PID", &pid]).creation_flags(0x0800_0000);
         }
-        let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status();
+        // Off the caller's thread: search cancels on every keystroke, and taskkill is slow.
+        std::thread::spawn(move || c.stdout(Stdio::null()).stderr(Stdio::null()).status());
     }
 
     /// Last progress line of a `--progress` command running under this scope.
