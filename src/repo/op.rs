@@ -157,7 +157,6 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         match a.as_slice() {
             [super::tools::SHELL, line] => git::run_shell(dir, line),
-            [super::tools::DETACH, rest @ ..] => super::tools::detach(dir, rest),
             [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP | STASH_APPLY | STASH_RENAME | STASH_UNPOP, ..] => stash_cmd(dir, &a),
             [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),

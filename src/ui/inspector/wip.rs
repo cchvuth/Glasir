@@ -394,10 +394,11 @@ impl RepoTab {
                                     acts.push(Action::Git(crate::repo::merge_editor::take_side(&name, side, &c.path, file)));
                                 }
                             }
-                            let tool = d.cfg("merge.tool");
-                            let b = ui.add_enabled(tool.is_some() && has == [true, true], egui::Button::new(format!("{} Open in external merge tool", icon::ARROW_SQUARE_OUT)));
-                            let b = b.on_hover_text(format!("git mergetool ({}). Your current file is backed up first (⌘Z).", tool.unwrap_or_default()));
-                            if b.on_disabled_hover_text(if tool.is_none() { "No merge tool configured: git config --global merge.tool <name>" } else { "One side deleted this file; use the merge editor instead." }).clicked() {
+                            let tool = crate::repo::tools::tool(d, false);
+                            let b = ui.add_enabled(tool.is_ok() && has == [true, true], egui::Button::new(format!("{} Open in external merge tool", icon::ARROW_SQUARE_OUT)));
+                            let b = b.on_hover_text(format!("git mergetool ({}). Your current file is backed up first (⌘Z); Glasir waits until you close the tool.", tool.as_deref().unwrap_or_default()));
+                            let why = tool.err().unwrap_or_else(|| "One side deleted this file; use the merge editor instead.".into());
+                            if b.on_disabled_hover_text(why).clicked() {
                                 acts.push(Action::Git(crate::repo::tools::mergetool_op(&c.path)));
                             }
                             if ui.button("Show in file manager").clicked() {

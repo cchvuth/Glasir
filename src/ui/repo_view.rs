@@ -50,7 +50,6 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                 .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 0, bottom: 12 }))
                 .show(ui, |ui| theme::card(ui, 205, |ui| super::terminal::show(ui, &mut t.term, &t.dir)));
         }
-        let tool = t.data.as_ref().and_then(|d| d.cfg("diff.tool"));
         egui::CentralPanel::default()
             .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 2, bottom: 12 }))
             .show(ui, |ui| {
@@ -71,7 +70,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                             let right = egui::Rect::from_min_max(egui::pos2(r.left() + split + 12.0, r.top()), r.max);
                             ui.scope_builder(UiBuilder::new().max_rect(left), |ui| close = history::show(ui, fv, &mut s.wrap, &mut acts));
                             ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
-                                diff_view::show(ui, t.diff.as_mut().unwrap(), t.data.as_ref(), &mut s.split_diff, &mut s.wrap, tool, &mut acts)
+                                diff_view::show(ui, t.diff.as_mut().unwrap(), t.data.as_ref(), &mut s.split_diff, &mut s.wrap, &mut acts)
                             });
                         } else {
                             close = history::show(ui, fv, &mut s.wrap, &mut acts);
@@ -91,7 +90,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                     }
                     // A diff opened from the inspector covers the reflog; closing it goes back there.
                     match (&mut t.diff, &mut t.reflog) {
-                        (Some(ds), _) => diff_view::show(ui, ds, t.data.as_ref(), &mut s.split_diff, &mut s.wrap, tool, &mut acts),
+                        (Some(ds), _) => diff_view::show(ui, ds, t.data.as_ref(), &mut s.split_diff, &mut s.wrap, &mut acts),
                         (None, Some(rl)) => {
                             if reflog::show(ui, rl, t.data.as_ref().unwrap(), &mut acts) {
                                 t.reflog = None;

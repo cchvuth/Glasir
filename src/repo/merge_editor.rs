@@ -212,7 +212,8 @@ pub(super) fn labels(dir: &Path) -> [String; 2] {
 }
 
 /// Conflicted files "Mark all resolved" may stage: both sides present (a deleted side is a
-/// decision to make), a text file, and no conflict markers left.
+/// decision to make), a text file git merges (`-merge` / `binary` keep our side without
+/// markers), and no conflict markers left.
 pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
     st.conflicted
         .iter()
@@ -220,8 +221,8 @@ pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
         .filter(|c| {
             let p = dir.join(&c.path);
             let text = std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&p).ok()).and_then(|b| String::from_utf8(b).ok());
-            let n = marker_size(dir, &c.path);
-            text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n)))
+            let (n, merged) = attrs(dir, &c.path);
+            merged && text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n)))
         })
         .map(|c| c.path.clone())
         .collect()
@@ -330,8 +331,16 @@ fn like(original: &[u8], text: &str) -> Res<String> {
 }
 
 fn marker_size(dir: &Path, path: &str) -> usize {
-    let attr = git::run(dir, &["check-attr", "conflict-marker-size", "--", path]).unwrap_or_default();
-    attr.trim().rsplit(": ").next().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7)
+    attrs(dir, path).0
+}
+
+/// The path's conflict-marker size, and whether git text-merges it (`merge` not unset / binary).
+fn attrs(dir: &Path, path: &str) -> (usize, bool) {
+    let out = git::run(dir, &["check-attr", "-z", "conflict-marker-size", "merge", "--", path]).unwrap_or_default();
+    // `path\0attr\0value\0` records.
+    let f: Vec<&str> = out.split('\0').collect();
+    let val = |a: &str| f.chunks(3).find(|r| r.get(1) == Some(&a)).and_then(|r| r.get(2).copied());
+    (val("conflict-marker-size").and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7), !matches!(val("merge"), Some("unset" | "binary")))
 }
 
 /// Whole-file choices for the current and incoming side. A side without a
@@ -491,6 +500,32 @@ mod tests {
         std::fs::write(dir.join("f"), &mixed).unwrap();
         assert!(apply_ai(&dir, "f", &mixed, "a\nb\nxy").unwrap_err().contains("line endings"));
         assert_eq!(std::fs::read(dir.join("f")).unwrap(), mixed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `-merge` / `binary` files keep our side without markers: never bulk-resolvable.
+    #[test]
+    fn unmergeable_files_are_not_resolvable() {
+        use crate::repo::testutil::{commit, identity, scratch, sh};
+        let dir = scratch("resolvable-attr");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, ".gitattributes", "yarn.lock -merge\n*.svg binary\n");
+        for f in ["yarn.lock", "a.svg", "a.txt"] {
+            commit(&dir, f, "base\n");
+        }
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        for f in ["yarn.lock", "a.svg", "a.txt"] {
+            commit(&dir, f, "feature\n");
+        }
+        sh(&dir, &["checkout", "-q", "main"]);
+        for f in ["yarn.lock", "a.svg", "a.txt"] {
+            commit(&dir, f, "main\n");
+        }
+        assert!(git::run(&dir, &["merge", "feature"]).is_err());
+        std::fs::write(dir.join("a.txt"), "both\n").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("yarn.lock")).unwrap(), "main\n");
+        assert_eq!(resolvable(&dir, &git::status(&dir).unwrap()), ["a.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -12,9 +12,6 @@ use std::sync::Mutex;
 /// Marks an op command that is a shell line rather than git args (`op::exec`).
 pub(super) const SHELL: &str = "!shell";
 
-/// Marks an op command that starts git and returns at once (a merge / diff tool's window).
-pub(super) const DETACH: &str = "!detach";
-
 /// A user-defined command: git args (`git push origin HEAD:refs/for/{branch}`) or a shell line.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -146,24 +143,27 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
     Ok(Op { custom: true, ..op.undo(Undo::Keep) })
 }
 
-pub(super) fn detach(dir: &Path, args: &[&str]) -> Res<String> {
-    let mut c = crate::git::cmd(dir);
-    c.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    let mut child = c.spawn().map_err(|e| format!("Could not start git: {e}"))?;
-    std::thread::spawn(move || child.wait()); // reap it
-    Ok(String::new())
+/// The tool `git mergetool --gui` / `difftool --gui` runs, or why it can't run from here.
+pub fn tool(d: &super::RepoData, diff: bool) -> Result<&str, String> {
+    let (kind, keys): (_, &[_]) = if diff { ("diff", &["diff.guitool", "merge.guitool", "diff.tool", "merge.tool"]) } else { ("merge", &["merge.guitool", "merge.tool"]) };
+    let t = keys.iter().find_map(|k| d.cfg(k)).ok_or_else(|| format!("No {kind} tool configured: git config --global {kind}.tool <name>"))?;
+    // These need a terminal (we have none): git would exit at once.
+    if t.starts_with("vimdiff") || t.starts_with("nvimdiff") || t == "emerge" {
+        return Err(format!("{t} runs in a terminal: set a windowed tool with git config --global {kind}.guitool <name>"));
+    }
+    Ok(t)
 }
 
-/// `git mergetool` for one conflicted file. It rebuilds the working file from the index
-/// stages, dropping any hand edits, so the file is backed up first (⌘Z).
+/// `git mergetool` for one conflicted file, waiting until the tool closes. It rebuilds the
+/// working file from the index stages, dropping any hand edits, so the file is backed up first (⌘Z).
 pub fn mergetool_op(path: &str) -> Op {
-    Op::new("Open in external merge tool", &[DETACH, "--literal-pathspecs", "mergetool", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
+    Op::new("Open in external merge tool", &["--literal-pathspecs", "mergetool", "--gui", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
 }
 
 /// `git difftool` for the file a diff shows; `None` where there is nothing to compare
-/// (untracked files, root commits).
+/// (untracked files, root commits). Waits until the tool closes, so its errors show.
 pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
-    let mut a = vec![DETACH, "--literal-pathspecs", "difftool", "--no-prompt"];
+    let mut a = vec!["--literal-pathspecs", "difftool", "--gui", "--no-prompt"];
     let c = src.change();
     match src {
         DiffSrc::Worktree { change, staged } => {
@@ -364,6 +364,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The merge tool's backup undoes what the tool wrote (sealed once it exits), and a
+    /// failing tool shows its error.
+    #[cfg(unix)]
+    #[test]
+    fn merge_tool_backup_undoes_and_errors_show() {
+        use crate::repo::testutil::settle;
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("mergetool-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        commit(&dir, "a.txt", "feature\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a.txt", "main\n");
+        assert!(crate::git::run(&dir, &["merge", "feature"]).is_err());
+        std::fs::write(dir.join("a.txt"), "hand edit\n").unwrap();
+        for kv in [["merge.tool", "fake"], ["mergetool.fake.cmd", "sleep 1; cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"], ["mergetool.keepBackup", "false"]] {
+            sh(&dir, &["config", kv[0], kv[1]]);
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
+        settle(&ctx, &mut t);
+        let read = || std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        assert!((0..200).any(|_| read() == "feature\n" || { std::thread::sleep(std::time::Duration::from_millis(25)); false }));
+        t.apply(&ctx, Action::Undo);
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().all(|m| !m.error), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(read(), "hand edit\n");
+        assert!(sh(&dir, &["status", "--porcelain"]).contains("UU a.txt"));
+
+        sh(&dir, &["config", "mergetool.fake.cmd", "echo tool broke >&2; exit 3"]);
+        t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("tool broke")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn conflict_kinds_bulk_resolve_and_external_tools() {
@@ -399,13 +439,18 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         assert_eq!(d.resolvable, ["b.txt"]);
         sh(&dir, &["config", "merge.tool", "fake"]);
-        sh(&dir, &["config", "diff.tool", "fake"]);
         for kv in [["mergetool.fake.cmd", "cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"], ["mergetool.keepBackup", "false"]] {
             sh(&dir, &["config", kv[0], kv[1]]);
         }
-        assert_eq!(load_all(&dir, 100, View::default()).unwrap().cfg("merge.tool"), Some("fake"));
+        let d2 = load_all(&dir, 100, View::default()).unwrap();
+        // difftool falls back to merge.tool; terminal tools are refused.
+        assert_eq!((tool(&d2, false), tool(&d2, true)), (Ok("fake"), Ok("fake")));
+        sh(&dir, &["config", "merge.guitool", "vimdiff"]);
+        let d2 = load_all(&dir, 100, View::default()).unwrap();
+        assert!(tool(&d2, true).is_err_and(|e| e.contains("terminal")));
+        sh(&dir, &["config", "--unset", "merge.guitool"]);
 
-        // The merge tool runs detached on a backed-up file and takes the incoming side here.
+        // The merge tool runs on a backed-up file and takes the incoming side here.
         let op = mergetool_op("a.txt");
         assert!(op.backup.is_some());
         exec(&dir, &op).unwrap();
@@ -420,7 +465,7 @@ mod tests {
         exec(&dir, &Op::new("Mark all resolved", &a)).unwrap();
         assert_eq!(unmerged(), ["c.txt"]);
 
-        // Diff tool: working-tree file against the index, run detached.
+        // Diff tool: working-tree file against the index.
         std::fs::write(dir.join("b.txt"), "edited\n").unwrap();
         let out = dir.join("seen.out");
         sh(&dir, &["config", "difftool.fake.cmd", &format!("cp \"$LOCAL\" '{}'", out.display())]);
@@ -429,7 +474,7 @@ mod tests {
         let op = difftool_op(&DiffSrc::Worktree { change: change.clone(), staged: false }).unwrap();
         exec(&dir, &op).unwrap();
         assert!(wait(&|| out.exists()));
-        assert_eq!(&op.cmds[0][2..], ["difftool", "--no-prompt", "--", "b.txt"]);
+        assert_eq!(&op.cmds[0][1..], ["difftool", "--gui", "--no-prompt", "--", "b.txt"]);
         let staged = difftool_op(&DiffSrc::Worktree { change: change.clone(), staged: true }).unwrap();
         assert_eq!(staged.cmds[0][4], "--cached");
         let new = crate::git::Change { code: '?', ..change.clone() };

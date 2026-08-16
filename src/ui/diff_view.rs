@@ -185,8 +185,7 @@ fn discard(label: &str, f: &FileDiff, selected: impl Fn(usize, usize) -> bool, s
     apply_op(label, partial_patch(f, selected, true), &["--reverse"], src, opts, f)
 }
 
-/// `tool`: the repo's `diff.tool` (None = not configured).
-pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, split: &mut bool, wrap: &mut bool, tool: Option<&str>, acts: &mut Vec<Action>) {
+pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, split: &mut bool, wrap: &mut bool, acts: &mut Vec<Action>) {
     let (src, ds_opts) = (ds.src.clone(), ds.opts);
     let change = src.change().clone();
     let (worktree, staged) = match &ds.src {
@@ -218,8 +217,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             acts.push(Action::Editor(change.path.clone()));
         }
         if let Some(op) = crate::repo::tools::difftool_op(&src) {
-            let b = ui.add_enabled(tool.is_some(), egui::Button::new(icon::GIT_DIFF).frame_when_inactive(false).corner_radius(255));
-            if b.on_hover_text(format!("Open in external diff tool ({})", tool.unwrap_or_default())).on_disabled_hover_text("No diff tool configured: git config --global diff.tool <name>").clicked() {
+            let tool = d.map_or(Err(String::new()), |d| crate::repo::tools::tool(d, true));
+            let b = ui.add_enabled(tool.is_ok(), egui::Button::new(icon::GIT_DIFF).frame_when_inactive(false).corner_radius(255));
+            let b = b.on_hover_text(format!("Open in external diff tool ({}); Glasir waits until you close it", tool.as_deref().unwrap_or_default()));
+            if b.on_disabled_hover_text(tool.err().unwrap_or_default()).clicked() {
                 acts.push(Action::Git(op));
             }
         }

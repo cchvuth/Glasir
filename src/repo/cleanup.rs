@@ -148,12 +148,15 @@ fn scan(dir: &Path, target: &str, rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
             let lr = git::run(dir, &["rev-list", "--left-right", "--count", &format!("{target}...{}", c.oid)]).unwrap_or_default();
             let mut n = lr.split_whitespace().filter_map(|n| n.parse().ok());
             (c.behind, c.ahead) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
+            let same = || git::run(dir, &["merge-tree", "--write-tree", target, &c.oid]).is_ok_and(|o| o.lines().next() == tree.lines().next());
             if merged.contains(c.oid.as_str()) {
                 (c.why, c.on) = (Some(Why::Merged), true);
             } else if git::run(dir, &["cherry", target, &c.oid]).is_ok_and(|o| !o.is_empty() && o.lines().all(|l| l.starts_with('-'))) {
-                // Every commit has a patch-identical twin in the target.
-                (c.why, c.on, c.note) = (Some(Why::Squashed), true, "rebase-merged".into());
-            } else if git::run(dir, &["merge-tree", "--write-tree", target, &c.oid]).is_ok_and(|o| o.lines().next() == tree.lines().next()) {
+                // Every commit has a patch-identical twin in the target. Patch-ids skip merge
+                // commits and whitespace, so only matching content makes it safe to pre-select.
+                let same = same();
+                (c.why, c.on, c.note) = (Some(Why::Squashed), same, if same { "rebase-merged" } else { "rebase-merged · content differs" }.into());
+            } else if same() {
                 // Merging it would change nothing: its changes are in the target already.
                 (c.why, c.on, c.note) = (Some(Why::Squashed), true, "squash-merged".into());
             } else {
@@ -178,24 +181,39 @@ fn scan(dir: &Path, target: &str, rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
     Ok(out)
 }
 
-/// Remote-tracking refs whose branch no longer exists on the remote (what `git remote prune` drops).
+/// Remote-tracking refs whose source no longer exists on the remote (what `git remote prune`
+/// drops): mapped back through the remote's fetch refspecs, so `pr/*` from `refs/pull/*` count.
 fn stale_refs(dir: &Path, remotes: &[String]) -> Res<Vec<(String, String)>> {
     let mut out = vec![];
     for r in remotes {
-        let heads = git::run(dir, &["ls-remote", "--heads", r])?;
-        let have: HashSet<&str> = heads.lines().filter_map(|l| l.split_once('\t')?.1.strip_prefix("refs/heads/")).collect();
+        let specs = git::run(dir, &["config", "--get-all", &format!("remote.{r}.fetch")]).unwrap_or_default();
+        let all = git::run(dir, &["ls-remote", r])?;
+        let have: HashSet<&str> = all.lines().filter_map(|l| Some(l.split_once('\t')?.1)).collect();
         let prefix = format!("refs/remotes/{r}/");
         let local = git::run(dir, &["for-each-ref", "--format=%(refname)%1f%(objectname)", &prefix])?;
         for (full, oid) in local.lines().filter_map(|l| l.split_once('\x1f')) {
             let b = &full[prefix.len()..];
             // `refs/remotes/a/b/x` may belong to a remote named `a/b`.
             let other = remotes.iter().any(|o| o.len() > r.len() && full.starts_with(&format!("refs/remotes/{o}/")));
-            if b != "HEAD" && !other && !have.contains(b) {
+            // A ref no refspec maps to isn't fetched, so git leaves it alone too.
+            let srcs: Vec<String> = specs.lines().filter_map(|s| source(s, full)).collect();
+            if b != "HEAD" && !other && !srcs.is_empty() && !srcs.iter().any(|s| have.contains(s.as_str())) {
                 out.push((full.to_owned(), oid.to_owned()));
             }
         }
     }
     Ok(out)
+}
+
+/// The remote ref a fetch refspec (`+refs/heads/*:refs/remotes/o/*`) maps to the local `full`.
+fn source(spec: &str, full: &str) -> Option<String> {
+    let (src, dst) = spec.trim().trim_start_matches('+').split_once(':')?;
+    let s = match (src.split_once('*'), dst.split_once('*')) {
+        (Some((sp, ss)), Some((dp, ds))) => format!("{sp}{}{ss}", full.strip_prefix(dp)?.strip_suffix(ds)?),
+        (None, None) if full == dst => src.to_owned(),
+        _ => return None,
+    };
+    s.starts_with("refs/").then_some(s)
 }
 
 impl RepoTab {
@@ -422,12 +440,67 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// `git cherry` skips merge commits and whitespace: a "rebase-merged" branch whose
+    /// content still differs from the target is listed but not pre-selected.
+    #[test]
+    fn rebase_merged_needs_matching_content() {
+        let dir = scratch("cleanup-cherry");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "Makefile", "all:\n\techo hi\n");
+        // A merge of main into the branch adds a file main never got.
+        sh(&dir, &["switch", "-q", "-c", "mrg"]);
+        commit(&dir, "f1", "one\n");
+        sh(&dir, &["switch", "-q", "-c", "ws", "main"]);
+        commit(&dir, "Makefile", "all:\n\techo bye\n");
+        sh(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "m", "main\n");
+        sh(&dir, &["switch", "-q", "mrg"]);
+        sh(&dir, &["merge", "-q", "--no-commit", "main"]);
+        std::fs::write(dir.join("evil"), "extra\n").unwrap();
+        sh(&dir, &["add", "evil"]);
+        sh(&dir, &["commit", "-q", "-m", "merge main"]);
+        sh(&dir, &["switch", "-q", "main"]);
+        sh(&dir, &["cherry-pick", "mrg^1"]);
+        // Tabs vs spaces only.
+        commit(&dir, "Makefile", "all:\n    echo bye\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        scanned(&ctx, &mut t);
+        let rows = shown(&t, now());
+        let rows: Vec<_> = rows.iter().map(|r| (r.0.as_str(), r.1, r.3)).collect();
+        assert_eq!(rows, [("mrg", Why::Squashed, false), ("ws", Why::Squashed, false)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Refs a fetch refspec maps from outside refs/heads (pull requests) stay while the remote has them.
+    #[test]
+    fn prune_follows_fetch_refspecs() {
+        let root = scratch("cleanup-refspec");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "origin", "main", "main:refs/pull/7/head", "main:old"]);
+        sh(&a, &["config", "--add", "remote.origin.fetch", "+refs/pull/*/head:refs/remotes/origin/pr/*"]);
+        sh(&a, &["fetch", "-q", "origin"]);
+        sh(&root.join("remote.git"), &["branch", "-D", "old"]);
+        let stale = stale_refs(&a, &["origin".into()]).unwrap();
+        assert_eq!(stale.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), ["refs/remotes/origin/old"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn stale_after_the_chosen_days() {
         let c = Cand { date: 1000, ..Default::default() };
         assert_eq!(Cleanup::group(&c, 90, 1000 + 89 * 86400), None);
         assert_eq!(Cleanup::group(&c, 90, 1000 + 90 * 86400), Some(Why::Stale));
         assert_eq!(Cleanup::group(&Cand { why: Some(Why::Gone), ..c }, 90, 1000), Some(Why::Gone));
+        assert_eq!(source("+refs/pull/*/head:refs/remotes/o/pr/*", "refs/remotes/o/pr/7").as_deref(), Some("refs/pull/7/head"));
+        assert_eq!(source("refs/heads/main:refs/remotes/o/main", "refs/remotes/o/main").as_deref(), Some("refs/heads/main"));
+        assert_eq!(source("+refs/heads/*:refs/remotes/o/*", "refs/remotes/p/x"), None);
         assert!(matches("release/*", "release/1.2") && matches("main", "main") && !matches("main", "mainx"));
         assert!(protected("hotfix/*, staging", "staging") && protected("", "release/2.0") && protected("", "develop") && !protected("staging", "feat"));
     }
