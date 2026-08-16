@@ -48,6 +48,8 @@ pub fn file_items(ui: &mut Ui, path: &str, rev: Option<&str>, acts: &mut Vec<Act
     {
         acts.push(Action::FileView(format!("{dir}/"), Mode::History));
     }
+    // A working-tree compare's "revision" is the file on disk: plain blame.
+    let rev = rev.filter(|r| *r != crate::git::WORKTREE);
     let blame = match rev {
         Some(r) => format!("{} Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
         None => format!("{} Blame", icon::USER_LIST),

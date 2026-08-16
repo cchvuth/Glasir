@@ -31,8 +31,11 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut
     if ui.button("Copy SHAs").clicked() {
         acts.push(Action::Copy(multi.join("\n")));
     }
-    let page = crate::git::Page::Compare { base: &multi[n - 1], head: &multi[0] };
-    crate::ui::links::items(ui, d, &[("compare", page)], &[&multi[n - 1], &multi[0]], acts);
+    // GitHub's base...head leaves the base out: compare from the oldest one's parent (none for a root).
+    if let Some(base) = d.row_of.get(&multi[n - 1]).and_then(|&r| d.commit(r)).and_then(|c| c.parents.first()) {
+        let page = crate::git::Page::Compare { base, head: &multi[0] };
+        crate::ui::links::items(ui, d, &[("compare", page)], &[&multi[n - 1], &multi[0]], acts);
+    }
     crate::ui::bisect::multi_item(ui, d, multi, acts);
 }
 /// The commits from `oldest` up to HEAD (exactly `picked`, if any) back into the Commit

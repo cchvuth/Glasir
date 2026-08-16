@@ -46,7 +46,7 @@ impl RepoTab {
             }
         }
         if let Some(d) = &self.diff
-            && matches!(d.src, DiffSrc::Worktree { .. })
+            && matches!(&d.src, DiffSrc::Worktree { .. }) | matches!(&d.src, DiffSrc::Commit { id, .. } if id == git::WORKTREE)
         {
             self.open_diff(ctx, d.src.clone());
         }
@@ -420,6 +420,43 @@ mod tests {
         let base = info.parents[0].as_str();
         let f = git::commit_diff(&dir, &info.id, Some(base), &info.files.iter().find(|c| c.path == "a").unwrap().clone(), DiffOpts::default()).unwrap();
         assert_eq!(f.hunks[0].lines.iter().filter(|l| l.kind == b'+').count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A working-tree compare (file list and open diff) follows edits on disk, which only
+    /// trigger a status reload.
+    #[test]
+    fn compare_working_tree_follows_edits() {
+        let dir = repo("compare-wt-live");
+        commit(&dir, "a", "1\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let wait = |t: &mut RepoTab| {
+            for _ in 0..1000 {
+                settle(&ctx, t);
+                if t.info_task.is_none() && !t.diff.as_ref().is_some_and(DiffState::loading) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        t.apply(&ctx, Action::Select(super::super::Sel::Compare { from: "HEAD".into(), to: git::WORKTREE.into(), three_dot: false }));
+        wait(&mut t);
+        assert!(t.info.as_ref().unwrap().as_ref().unwrap().files.is_empty());
+        std::fs::write(dir.join("a"), "1\n2\n").unwrap();
+        t.reload(&ctx, false);
+        wait(&mut t);
+        let files = &t.info.as_ref().unwrap().as_ref().unwrap().files;
+        assert_eq!(files.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["a"]);
+        let change = files[0].clone();
+        t.apply(&ctx, Action::Diff(DiffSrc::Commit { id: git::WORKTREE.into(), parent: Some("HEAD".into()), change }));
+        wait(&mut t);
+        std::fs::write(dir.join("a"), "1\n2\n3\n").unwrap();
+        t.reload(&ctx, false);
+        wait(&mut t);
+        let f = t.diff.as_ref().unwrap().file.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(f.hunks[0].lines.iter().filter(|l| l.kind == b'+').count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

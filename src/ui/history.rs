@@ -161,7 +161,7 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         // Wrapped: rows as tall as their lines (the scrollbar's width is left out).
         let cols = if wrap { (((ui.available_width() - 406.0) / cw) as usize).max(1) } else { usize::MAX };
-        let tops = tops(H, b.lines.iter().map(|l| wrapped(l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
+        let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
         egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_viewport(ui, |ui, view| {
             let max = if wrap { 0.0 } else { b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0 };
             ui.set_min_size(vec2(max.max(ui.available_width()), tops[b.lines.len()]));

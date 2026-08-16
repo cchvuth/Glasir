@@ -52,8 +52,9 @@ pub fn bytes(n: u64) -> String {
 }
 
 /// Visual lines `chars` monospace characters take in `cols` columns (`usize::MAX`: no wrapping).
-pub fn wrapped(chars: usize, cols: usize) -> usize {
-    chars.div_ceil(cols.max(1)).max(1)
+/// `chars` is lazy: counting every line's characters each frame is too slow when not wrapping.
+pub fn wrapped(chars: impl FnOnce() -> usize, cols: usize) -> usize {
+    if cols == usize::MAX { 1 } else { chars().div_ceil(cols.max(1)).max(1) }
 }
 
 /// Tops of consecutive rows of `lines` visual lines of height `h` each, then the total.
@@ -86,7 +87,8 @@ pub fn wrap_job(job: &mut egui::text::LayoutJob, cols: usize, cw: f32) {
 mod tests {
     #[test]
     fn wrapped_rows() {
-        assert_eq!((super::wrapped(0, 10), super::wrapped(10, 10), super::wrapped(11, 10), super::wrapped(99, usize::MAX)), (1, 1, 2, 1));
+        let w = |n: usize, cols| super::wrapped(|| n, cols);
+        assert_eq!((w(0, 10), w(10, 10), w(11, 10), super::wrapped(|| unreachable!(), usize::MAX)), (1, 1, 2, 1));
         let t = super::tops(10.0, [1, 3, 1].into_iter());
         assert_eq!(t, [0.0, 10.0, 40.0, 50.0]);
         assert_eq!(super::visible(&t, 0.0, 5.0), 0..1);

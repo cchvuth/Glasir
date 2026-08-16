@@ -155,11 +155,13 @@ impl RepoData {
     /// Commits outside the loaded history count as pushed: no false warning.
     pub fn on_remote(&self, sha: &str, remote: &str) -> bool {
         let Some(&row) = self.row_of.get(sha) else { return true };
-        self.refs
-            .iter()
-            .filter(|r| r.kind == RefKind::Remote && self.split_remote(&r.name).is_some_and(|s| s.0 == remote))
-            .filter_map(|r| self.row_of.get(&r.target))
-            .any(|&tip| self.reachable(tip)[row])
+        // A first-parent graph lacks merge edges; an unloaded (hidden, truncated) tip is unknown.
+        self.view.first_parent
+            || self
+                .refs
+                .iter()
+                .filter(|r| r.kind == RefKind::Remote && self.split_remote(&r.name).is_some_and(|s| s.0 == remote))
+                .any(|r| self.row_of.get(&r.target).is_none_or(|&tip| self.reachable(tip)[row]))
     }
 
     pub fn web_of(&self, remote: &str) -> Option<String> {
@@ -422,6 +424,20 @@ mod tests {
         assert!(d.on_remote(&pushed, "origin") && !d.on_remote(&local, "origin"));
         assert!(!d.on_remote(&pushed, "ghe"), "no tracking branch of ghe");
         assert!(d.on_remote("f".repeat(40).as_str(), "origin"), "unknown commits don't warn");
+        // origin/main ahead of main, hidden: its history isn't loaded, so don't claim "not pushed".
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["reset", "-q", "--soft", "HEAD~1"]);
+        let hidden = View { hidden: vec!["refs/remotes/origin/main".into()], ..Default::default() };
+        assert!(load_all(&dir, 100, hidden).unwrap().on_remote(&pushed, "origin"));
+        // First-parent graphs drop merge edges: a pushed branch merged into origin/main looks unpushed.
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        commit(&dir, "b.txt", "side\n");
+        let side = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "--no-edit", "feature"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        assert!(load_all(&dir, 100, View::default()).unwrap().on_remote(&side, "origin"));
+        assert!(load_all(&dir, 100, View { first_parent: true, ..Default::default() }).unwrap().on_remote(&side, "origin"));
         let webs: Vec<_> = d.webs().into_iter().map(|(r, w)| format!("{r} {w}")).collect();
         assert_eq!(webs, ["ghe https://ghe.corp.se/o/r", "origin https://github.com/o/r"]);
         let _ = std::fs::remove_dir_all(&dir);

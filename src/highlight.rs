@@ -27,7 +27,7 @@ pub fn display(t: &str) -> String {
 
 /// Characters of [`display`]`(t)`.
 pub fn display_len(t: &str) -> usize {
-    t.trim_end_matches('\r').chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().min(2001)
+    t.trim_end_matches('\r').chars().take(2001).map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>().min(2001)
 }
 
 /// `[hunk][line]` spans, or empty when the language is unknown or the diff is huge.
@@ -87,5 +87,12 @@ mod tests {
         assert_eq!(spans.last().unwrap().1.end, text.len()); // covers the line, no trailing newline
         let colors: std::collections::HashSet<_> = spans.iter().map(|s| s.0).collect();
         assert!(colors.len() > 1);
+    }
+
+    #[test]
+    fn display_len_matches_display() {
+        for t in ["", "a\tb\r", &"x".repeat(1999), &"x".repeat(2001), &"\t".repeat(600), &"y".repeat(5_000_000)] {
+            assert_eq!(display_len(t), display(t).chars().count(), "{}", t.len());
+        }
     }
 }

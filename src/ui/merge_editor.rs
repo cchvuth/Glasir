@@ -109,7 +109,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             // Wrapped: rows as tall as their lines (a column's width, less the frame and scrollbar).
             let cols = if wrap { (((ui.available_width() - 30.0) / char_w) as usize).max(1) } else { usize::MAX };
             let tops = tops(row_h, rows.iter().map(|r| match r {
-                Row::Line(t, _) => wrapped(t.chars().count(), cols),
+                Row::Line(t, _) => wrapped(|| t.chars().count(), cols),
                 Row::Head(_) => 1,
             }));
             if scroll && let Some(k) = sel_orig {
@@ -202,10 +202,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
         ui.label(RichText::new("Output").strong());
         ui.label(RichText::new("editable — this is what gets saved").small().color(theme::dim(ui)));
     });
-    let mut area = if wrap { egui::ScrollArea::vertical() } else { egui::ScrollArea::both() }.id_salt("merge_out").max_height((ui.available_height() - footer).max(60.0)).auto_shrink(false);
-    if scroll && m > 0 {
-        area = area.vertical_scroll_offset((ed.output_line(ed.sel) as f32 - 2.0).max(0.0) * row_h);
-    }
+    let area = if wrap { egui::ScrollArea::vertical() } else { egui::ScrollArea::both() }.id_salt("merge_out").max_height((ui.available_height() - footer).max(60.0)).auto_shrink(false);
+    // Start of the line two above the selected conflict, as a char index (lines may wrap).
+    let scroll_to = (scroll && m > 0).then(|| ed.output.split_inclusive('\n').take(ed.output_line(ed.sel).saturating_sub(2)).map(|l| l.chars().count()).sum::<usize>());
     let text_col = theme::text(ui);
     let dim = theme::dim(ui);
     let size = d.size;
@@ -239,7 +238,13 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
         .show(ui, |ui| {
             area.show(ui, |ui| {
                 let te = TextEdit::multiline(&mut ed.output).code_editor().frame(egui::Frame::NONE.inner_margin(crate::theme::INPUT_MARGIN)).min_size(ui.available_size()).layouter(&mut layouter);
-                ui.add_enabled(!thinking, te).changed()
+                let out = ui.add_enabled_ui(!thinking, |ui| te.show(ui)).inner;
+                if let Some(c) = scroll_to {
+                    let y = out.galley_pos.y + out.galley.pos_from_cursor(egui::text::CCursor::new(c)).top();
+                    let r = egui::Rect::from_min_size(pos2(out.galley_pos.x, y), vec2(1.0, row_h));
+                    ui.scroll_to_rect_animation(r, Some(egui::Align::TOP), egui::style::ScrollAnimation::none());
+                }
+                out.response.changed()
             })
             .inner
         })

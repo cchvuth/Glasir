@@ -299,8 +299,11 @@ impl RepoTab {
 
     /// `full`: log + refs + status; otherwise status only.
     pub fn reload(&mut self, ctx: &egui::Context, full: bool) {
-        // The compared refs may have moved: re-query, keeping the old list until then.
-        if full && let Some(Sel::Compare { from, to, three_dot }) = self.sel.clone() {
+        // The compared refs (or, for a working-tree compare, the files) may have changed:
+        // re-query, keeping the old list until then.
+        if let Some(Sel::Compare { from, to, three_dot }) = self.sel.clone()
+            && (full || to == git::WORKTREE)
+        {
             self.compare_query(ctx, from, to, three_dot);
         }
         if self.load.is_some() {

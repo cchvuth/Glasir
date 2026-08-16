@@ -287,9 +287,11 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                 }
             }
         }
-        // Links to the picked lines' new side (removed lines have none); not for a working-tree compare.
+        // Links to the picked lines' new side (removed lines have none); only for a plain commit, not
+        // a working-tree compare or a stash (`<sha>^3` for its untracked files), never on the remote.
         if let (DiffSrc::Commit { id, .. }, Some(f), Some(d)) = (&src, file, d)
-            && id != crate::git::WORKTREE
+            && id.bytes().all(|b| b.is_ascii_hexdigit())
+            && !d.stashes.iter().any(|s| s.id == *id)
         {
             let nums = ds.picked.iter().map(|&(h, l)| f.hunks[h].lines[l].new).filter(|&n| n > 0);
             if let (Some(a), Some(b)) = (nums.clone().min(), nums.max()) {
@@ -372,7 +374,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     // Wrapped: columns of text per line (the scrollbar's width is left out); rows get as tall as their lines.
     let cols = |text_w: f32| if *wrap { ((text_w / cw) as usize).max(1) } else { usize::MAX };
     let (cols_u, cols_s) = (cols(body.width() - 14.0 - NUM_W * 2.0 - 16.0), cols(body.width() / 2.0 - 7.0 - NUM_W - 16.0));
-    let n_lines = |hi: usize, li: usize, cols| wrapped(crate::highlight::display_len(&f.hunks[hi].lines[li].text), cols);
+    let n_lines = |hi: usize, li: usize, cols| wrapped(|| crate::highlight::display_len(&f.hunks[hi].lines[li].text), cols);
     let tops = tops(
         LINE_H,
         rows.iter().map(|r| match *r {

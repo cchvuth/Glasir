@@ -172,7 +172,11 @@ pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
             }
             a.extend(staged.then_some("--cached"));
         }
-        DiffSrc::Commit { id, parent, .. } => a.extend([parent.as_deref()?, id.as_str()]),
+        DiffSrc::Commit { id, parent, .. } => {
+            a.push(parent.as_deref()?);
+            // No second revision: the working tree.
+            a.extend((id != crate::git::WORKTREE).then_some(id.as_str()));
+        }
     }
     a.push("--");
     a.extend(c.old_path.as_deref());
@@ -481,8 +485,14 @@ mod tests {
         assert!(difftool_op(&DiffSrc::Worktree { change: new, staged: false }).is_none());
         let id = "abc".to_owned();
         assert!(difftool_op(&DiffSrc::Commit { id: id.clone(), parent: None, change: change.clone() }).is_none());
-        let c = difftool_op(&DiffSrc::Commit { id, parent: Some("p".into()), change }).unwrap();
+        let c = difftool_op(&DiffSrc::Commit { id, parent: Some("p".into()), change: change.clone() }).unwrap();
         assert_eq!(&c.cmds[0][3..], ["--no-prompt", "p", "abc", "--", "b.txt"]);
+        // Working-tree compare: `<base> -- path` diffs the base against the file on disk.
+        let wt = difftool_op(&DiffSrc::Commit { id: crate::git::WORKTREE.into(), parent: Some("HEAD".into()), change }).unwrap();
+        assert_eq!(&wt.cmds[0][3..], ["--no-prompt", "HEAD", "--", "b.txt"]);
+        std::fs::remove_file(&out).unwrap();
+        exec(&dir, &wt).unwrap();
+        assert!(wait(&|| out.exists()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
