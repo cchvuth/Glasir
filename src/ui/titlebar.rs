@@ -33,13 +33,20 @@ impl App {
             theme::rest(ui, |ui| {
                 let (mut close, mut others, mut drag) = (None, None, None);
                 let mut rects = vec![];
+                // Tabs share the width left of the global buttons (labels cut with "…", the
+                // "+" kept clear), so long branch names never push tabs off the bar.
+                let w = ((ui.available_width() - 40.0) / self.tabs.len().max(1) as f32 - 58.0).clamp(0.0, 260.0);
                 for (i, t) in self.tabs.iter().enumerate() {
                     let active = i == self.active;
                     let dim = theme::dim(ui);
                     let alias = self.s.aliases.get(&t.dir);
                     let tab = |ui: &mut Ui| {
-                        let r = ui.add(egui::Button::new(tab_label(ui, t, alias, active)).frame_when_inactive(false).corner_radius(255).sense(Sense::click_and_drag()));
-                        let r = r.on_hover_text(t.dir.display().to_string());
+                        let label = tab_label(ui, t, alias, active);
+                        let r = ui.scope(|ui| {
+                            ui.set_max_width(w);
+                            ui.add(egui::Button::new(label.clone()).frame_when_inactive(false).corner_radius(255).sense(Sense::click_and_drag()))
+                        });
+                        let r = r.inner.on_hover_text(format!("{}\n{}", label.text, t.dir.display()));
                         let x = theme::pill(ui, RichText::new(icon::X).small().color(dim)).on_hover_text("Close tab (⌘W)");
                         (r, x.clicked())
                     };

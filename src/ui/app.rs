@@ -129,7 +129,7 @@ impl App {
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.mac_cmd && i.key_pressed(Key::Backtick))
             && let Some(t) = self.tabs.get_mut(self.active)
         {
-            t.apply(ctx, if self.s.terminal { Action::ToggleTerminal } else { Action::Terminal });
+            t.apply(ctx, if self.s.terminal || !t.term.tabs.is_empty() { Action::ToggleTerminal } else { Action::Terminal });
         }
         // Off macOS ⌘ is Ctrl, which the shell needs (^R, ^L, ^W, ^Z...).
         if !cfg!(target_os = "macos") && ctx.memory(|m| m.has_focus(super::terminal::id())) {
@@ -259,7 +259,7 @@ impl App {
     fn command_palette(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.palette else { return };
         if p.items.is_empty() {
-            p.items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull, self.s.terminal);
+            p.items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull, self.s.terminal || self.tabs.get(self.active).is_some_and(|t| !t.term.tabs.is_empty()));
         }
         let Some(choice) = palette::show(ctx, p) else { return };
         self.palette = None;

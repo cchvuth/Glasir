@@ -22,7 +22,6 @@ pub(super) fn id() -> egui::Id {
 
 pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path) {
     let ctx = ui.ctx().clone();
-    let mut confirm = ts.confirm;
     let mut close = None;
     theme::bar(ui, |ui| {
         if theme::pill(ui, icon::CARET_DOWN).on_hover_text(format!("Hide ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
@@ -33,27 +32,33 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path) {
         }
         theme::rest(ui, |ui| {
             ui.label(RichText::new(icon::TERMINAL).color(theme::dim(ui)));
+            // Tabs share the width (titles cut with "…"): long shell titles never push them out of the panel.
+            let spare = ui.available_width() - if ts.confirm.is_some() { 130.0 } else { 0.0 };
+            let w = (spare / ts.tabs.len().max(1) as f32 - 50.0).clamp(0.0, 220.0);
             for (i, s) in ts.tabs.iter().enumerate() {
                 let name = if s.title.is_empty() { format!("Shell {}", i + 1) } else { s.title.clone() };
-                if ui.add(egui::Button::selectable(i == ts.active, name)).clicked() {
+                let tab = ui.scope(|ui| {
+                    ui.set_max_width(w);
+                    ui.add(egui::Button::selectable(i == ts.active, &name))
+                });
+                if tab.inner.on_hover_text(&name).clicked() {
                     ts.active = i;
                     ts.focus = true;
                 }
-                if confirm == Some(i) {
+                if ts.confirm == Some(i) {
                     if theme::pill(ui, RichText::new("Stop & close").small().color(theme::DEL)).clicked() {
                         close = Some(i);
                     }
                     if theme::pill(ui, RichText::new("Keep").small()).clicked() {
-                        confirm = None;
+                        ts.confirm = None;
                     }
                 } else if theme::pill(ui, RichText::new(icon::X).small()).on_hover_text("Close this shell").clicked() {
                     // A running command (a rebase in an editor, a push...) would be killed.
-                    if s.busy() { confirm = Some(i) } else { close = Some(i) }
+                    if s.busy() { ts.confirm = Some(i) } else { close = Some(i) }
                 }
             }
         });
     });
-    ts.confirm = confirm;
     if let Some(i) = close {
         ts.close(i);
     }
@@ -71,7 +76,7 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path) {
 fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
     let font = FontId::monospace(12.5);
     let (cw, ch) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
-    let rect = ui.available_rect_before_wrap();
+    let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
     let (cols, lines) = ((rect.width() / cw).max(2.0) as usize, (rect.height() / ch).max(1.0) as usize);
     s.resize(cols as u16, lines as u16, (cw.round() as u16, ch.round() as u16));
     let r = ui.interact(rect, id(), Sense::click_and_drag());
@@ -80,7 +85,8 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
         r.request_focus();
     }
     let focused = r.has_focus();
-    if focused {
+    // A dialog on top (Settings, the shortcut sheet) gets the keys, though egui leaves us the focus.
+    if focused && ui.ctx().memory(|m| m.top_modal_layer()).is_none_or(|l| l == ui.layer_id()) {
         ui.memory_mut(|m| m.set_focus_lock_filter(id(), EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
         input(ui, s);
     }

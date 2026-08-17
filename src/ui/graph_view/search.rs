@@ -40,7 +40,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
         if let Some(e) = &s.error {
             l.on_hover_text(e);
         }
-        let toggle = |ui: &mut Ui, on: bool, text: &str, tip: &str| ui.add(Button::selectable(on, text).frame_when_inactive(false).corner_radius(255)).on_hover_text(tip).clicked();
+        let toggle = |ui: &mut Ui, on: bool, text: &str, tip: &str| ui.add(Button::selectable(on, text).corner_radius(255)).on_hover_text(tip).clicked();
         if toggle(ui, s.filter, icon::FUNNEL, "Filter graph to results") {
             s.filter = !s.filter;
             s.remember();

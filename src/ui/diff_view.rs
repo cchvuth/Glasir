@@ -311,7 +311,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     });
     if ds.image.is_none() {
         ui.add_space(4.0);
-        ui.horizontal(|ui| view_controls(ui, ds, split, wrap, worktree && change.code != '?', &starts, anchor, &mut nav, acts));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.y = 30.0; // the glass groups draw beyond their row height
+            view_controls(ui, ds, split, wrap, worktree && change.code != '?', &starts, anchor, &mut nav, acts)
+        });
     }
     ui.add_space(6.0);
 
@@ -546,13 +549,13 @@ fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, wrap: &mut bool,
         }
     });
     ui.add_space(6.0);
-    theme::group(ui, |ui| {
+    wrap_group(ui, "wrap", |ui| {
         if ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
             *wrap = !*wrap;
         }
     });
     ui.add_space(6.0);
-    theme::group(ui, |ui| {
+    wrap_group(ui, "ws", |ui| {
         let hint = if stageable { "Ignore whitespace changes (git diff -w).\nLine and hunk staging are off while this is on." } else { "Ignore whitespace changes (git diff -w)" };
         if ui.add(egui::Button::selectable(o.ignore_ws, format!("{} Ignore whitespace", icon::PARAGRAPH))).on_hover_text(hint).clicked() {
             acts.push(Action::DiffOpts(DiffOpts { ignore_ws: !o.ignore_ws, ..o }));

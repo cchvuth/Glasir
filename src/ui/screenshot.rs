@@ -49,12 +49,26 @@ impl App {
                         }
                     }
                     "log" => self.show_log = true,
+                    // Settings → Built-in terminal off while shells still run.
+                    "terminal-off" => self.s.terminal = false,
                     // `terminal`, or `terminal:<command>` typed into its shell.
                     q if q.starts_with("terminal") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.apply(&ctx.clone(), Action::ToggleTerminal);
                             if let (Some(cmd), Some(s)) = (q.strip_prefix("terminal:"), t.term.tabs.first()) {
                                 s.write(format!("{cmd}\r").into_bytes());
+                            }
+                        }
+                    }
+                    // `terms`: five shells with long titles (as oh-my-zsh sets them) and a long line.
+                    "terms" => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.apply(&ctx.clone(), Action::ToggleTerminal);
+                            for _ in 0..4 {
+                                t.term.add(ctx, &t.dir.clone());
+                            }
+                            for s in &t.term.tabs {
+                                s.write(&b"printf '\\033]0;%s\\007' \"ann@build-host: ~/src/github.com/example/very-long-repository-name/subdir\"; seq -s . 1 120\r"[..]);
                             }
                         }
                     }
@@ -105,8 +119,8 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Multi(ids));
                         }
                     }
-                    // `diff:<path>` (unstaged or untracked), `diff-ws:<path>` with whitespace ignored and whole-file context.
-                    q if q.starts_with("diff:") || q.starts_with("diff-ws:") => {
+                    // `diff:<path>` (unstaged or untracked), `diff-staged:<path>`, `diff-ws:<path>` with whitespace ignored and whole-file context.
+                    q if q.starts_with("diff:") || q.starts_with("diff-ws:") || q.starts_with("diff-staged:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let (mode, path) = q.split_once(':').unwrap();
                             if mode == "diff-ws" {
@@ -114,7 +128,7 @@ impl App {
                             }
                             let code = t.data.as_ref().and_then(|d| d.status.unstaged.iter().find(|c| c.path == path)).map_or('M', |c| c.code);
                             let change = git::Change { path: path.into(), old_path: None, code };
-                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: false }));
+                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: mode == "diff-staged" }));
                         }
                     }
                     "wrap" => self.s.wrap = true,

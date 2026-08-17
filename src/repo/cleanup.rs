@@ -156,8 +156,8 @@ fn scan(dir: &Path, target: &str, rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
                 // commits and whitespace, so only matching content makes it safe to pre-select.
                 let same = same();
                 (c.why, c.on, c.note) = (Some(Why::Squashed), same, if same { "rebase-merged" } else { "rebase-merged · content differs" }.into());
-            } else if same() {
-                // Merging it would change nothing: its changes are in the target already.
+            } else if same() && git::run(dir, &["diff", "--quiet", &format!("{target}...{}", c.oid), "--"]).is_err() {
+                // Merging it would change nothing: its changes (not none at all) are in the target already.
                 (c.why, c.on, c.note) = (Some(Why::Squashed), true, "squash-merged".into());
             } else {
                 let unpushed = git::run(dir, &["rev-list", "--count", &c.oid, "--not", "--remotes", target])
@@ -397,6 +397,29 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(branches(), "main\nrb\nsq\nwip\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A branch with no net change (empty commits, a commit and its revert) also merges
+    /// to the target's tree, but was never merged: it isn't offered as squash-merged.
+    #[test]
+    fn net_empty_branches_are_not_squash_merged() {
+        let dir = scratch("cleanup-net-empty");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base\n");
+        sh(&dir, &["switch", "-q", "-c", "empty"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "empty"]);
+        sh(&dir, &["switch", "-q", "-c", "reverted", "main"]);
+        commit(&dir, "x", "x\n");
+        sh(&dir, &["revert", "--no-edit", "HEAD"]);
+        sh(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "m", "main moved on\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        scanned(&ctx, &mut t);
+        assert_eq!(shown(&t, now()), []);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

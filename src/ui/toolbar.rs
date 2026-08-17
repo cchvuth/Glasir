@@ -21,7 +21,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
                 acts.push(Action::Reload);
             }
-            if s.terminal && theme::pill(ui, icon::TERMINAL).on_hover_text(format!("Terminal ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
+            if (s.terminal || !t.term.tabs.is_empty()) && theme::pill(ui, icon::TERMINAL).on_hover_text(format!("Terminal ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
                 acts.push(Action::ToggleTerminal);
             }
             ui.menu_button(icon::ARROW_SQUARE_OUT, |ui| open_items(ui, acts)).response.on_hover_text("Open in editor, terminal or file manager");

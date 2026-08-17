@@ -184,7 +184,7 @@ impl App {
                     ui.checkbox(&mut s.cherry_pick_x, "Add \"(cherry picked from commit …)\" to the message")
                         .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing'.");
                     ui.end_row();
-                    ui.label("Terminal");
+                    ui.label("Built-in terminal");
                     ui.checkbox(&mut s.terminal, "Embedded terminal panel (⌃`)")
                         .on_hover_text("Your login shell in the repository folder, below the graph. Off: ⌃` opens the external terminal from Settings → Tools.");
                     ui.end_row();
@@ -334,7 +334,7 @@ impl App {
                         }
                     }
                 });
-                ui.label(RichText::new("Added to every AI prompt. Per repo: `git config glasir.aiInstructions \"…\"` (used after these).").small().color(theme::dim(ui)));
+                ui.label(RichText::new("Added to every AI prompt. Per repo (added after these): `git config glasir.aiInstructions \"…\"`, or `git config glasir.aiFile true` to use the repo's .glasir/ai.md instead.").small().color(theme::dim(ui)));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if st.test.is_some() {
@@ -398,7 +398,7 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
         ui.add(TextEdit::singleline(&mut t.editor).margin(crate::theme::INPUT_MARGIN).hint_text(editor).desired_width(330.0))
             .on_hover_text("Opens files and the repository (toolbar, ⌘P, file menus). {path} is the file; without it the path is appended. Empty = detected.");
         ui.end_row();
-        ui.label("Terminal");
+        ui.label("External terminal");
         ui.add(TextEdit::singleline(&mut t.terminal).margin(crate::theme::INPUT_MARGIN).hint_text(terminal).desired_width(330.0))
             .on_hover_text("Started in the repository folder; {path} = the folder. Empty = your platform's terminal.");
         ui.end_row();

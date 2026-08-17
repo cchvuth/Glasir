@@ -149,10 +149,12 @@ pub const PRESETS: [(&str, &str); 3] = [
 /// Cap on instructions, so a stray value can't bloat every prompt.
 const MAX_INSTRUCTIONS: usize = 8000;
 
-/// This repo's own instructions: `git config glasir.aiInstructions`. Never a file in the
-/// working tree: whoever wrote the checked-out commit (a PR, a fork) would steer the AI.
+/// This repo's own instructions: `.glasir/ai.md` once `git config glasir.aiFile true`
+/// opted in (a cloned repo mustn't steer the AI unasked), else `git config glasir.aiInstructions`.
 fn repo_instructions(dir: &Path) -> String {
-    git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default()
+    let trusted = git::run(dir, &["config", "--bool", "--get", "glasir.aiFile"]).is_ok_and(|v| v.trim() == "true");
+    let text = trusted.then(|| std::fs::read_to_string(dir.join(".glasir/ai.md")).ok()).flatten().filter(|t| !t.trim().is_empty());
+    text.unwrap_or_else(|| git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default())
 }
 
 /// The system prompt plus the user's global and per-repo instructions (when set).
@@ -366,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_instructions_from_config_not_the_working_tree() {
+    fn repo_instructions_from_config_or_an_opted_in_file() {
         let dir = std::env::temp_dir().join(format!("glasir-ai-instr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -376,6 +378,11 @@ mod tests {
         assert_eq!(repo_instructions(&dir).trim(), "from config");
         std::fs::create_dir_all(dir.join(".glasir")).unwrap();
         std::fs::write(dir.join(".glasir/ai.md"), "from a checked-out commit\n").unwrap();
+        assert_eq!(repo_instructions(&dir).trim(), "from config");
+        // A cloned repo's file only counts once the user opted in (local config a clone can't set).
+        git::run(&dir, &["config", "glasir.aiFile", "true"]).unwrap();
+        assert_eq!(repo_instructions(&dir).trim(), "from a checked-out commit");
+        std::fs::write(dir.join(".glasir/ai.md"), "  \n").unwrap();
         assert_eq!(repo_instructions(&dir).trim(), "from config");
         let _ = std::fs::remove_dir_all(&dir);
     }

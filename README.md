@@ -268,8 +268,8 @@ The name fits a Git client:
 - ✨ **Stash messages** and ✨ **conflict resolution** suggestions (into the merge editor).
 - Your token stays in the OS keychain and is only sent to the API URL you set.
 - **Custom instructions** (Settings → AI, with Conventional Commits / Gitmoji / short-subject
-  presets) are added to every AI prompt; per repo use `git config glasir.aiInstructions`
-  (never a file in the repo, which a checked-out branch could plant).
+  presets) are added to every AI prompt; per repo use `git config glasir.aiInstructions`,
+  or the repo's `.glasir/ai.md` once you opt in with `git config glasir.aiFile true`.
 - **Settings → Enable AI features** off hides every AI button and menu item.
 
 ### Workflow and comfort
@@ -281,7 +281,7 @@ The name fits a Git client:
   scrollback, mouse selection, copy / paste, resizing, Alt as Meta (Linux / Windows)
   and input methods. Shells keep running while the panel is hidden; closing a shell
   or quitting with a running command asks first, and closing the tab waits for it.
-  Off in **Settings → Terminal** (idle shells end; a busy one stays shown until done).
+  Off in **Settings → Built-in terminal** (idle shells end; a busy one stays shown until done).
 - **Keyboard shortcut cheat sheet**: press **?** (or ⌘/) anywhere.
 - **Undo right from the toast**: after a commit, checkout, rebase, discard and
   anything else undoable, the confirmation has an **Undo** button.
