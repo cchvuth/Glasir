@@ -41,7 +41,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .size_range(300.0..=720.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut acts)));
-        if s.terminal && t.term.open {
+        if t.term.open {
             egui::Panel::bottom("terminal")
                 .show_separator_line(false)
                 .resizable(true)

@@ -31,6 +31,7 @@ impl App {
             for view in views.split(',') {
                 match view {
                     "settings" => self.open_settings(),
+                    "quit" => self.quit_ask = Some(2),
                     "settings:openai" => {
                         self.s.ai.provider = crate::ai::Provider::OpenAi;
                         ctx.set_zoom_factor(0.6); // so the AI section at the bottom fits

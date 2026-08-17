@@ -1550,6 +1550,7 @@ dependencies = [
  "syntect",
  "ureq",
  "window-vibrancy",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

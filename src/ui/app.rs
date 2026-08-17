@@ -41,6 +41,8 @@ pub struct App {
     pub(super) drop_hint_shot: bool,
     /// The window was asked to close while an op ran: close once it's done.
     quit_pending: bool,
+    /// The window was asked to close while N terminal commands ran: "Quit anyway?".
+    pub(super) quit_ask: Option<usize>,
 }
 
 impl App {
@@ -84,6 +86,7 @@ impl App {
             shortcuts: false,
             drop_hint_shot: false,
             quit_pending: false,
+            quit_ask: None,
             s,
         };
         let active = app.s.active;
@@ -225,6 +228,34 @@ impl App {
         }
     }
 
+    fn quit_dialog(&mut self, ctx: &egui::Context) {
+        let Some(n) = self.quit_ask else { return };
+        let mut done = None;
+        egui::Modal::new(egui::Id::new("quit_terminal")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            ui.heading("Quit Glasir?");
+            ui.label(if n == 1 { "A command is still running in the terminal. Quitting stops it.".into() } else { format!("{n} commands are still running in the terminal. Quitting stops them.") });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.add(egui::Button::new(RichText::new("Quit anyway").strong()).fill(theme::DEL.gamma_multiply(0.6))).clicked() {
+                    done = Some(true);
+                }
+                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                    done = Some(false);
+                }
+            });
+        });
+        if let Some(quit) = done {
+            self.quit_ask = None;
+            if quit {
+                for t in &mut self.tabs {
+                    t.term = Default::default();
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+
     fn command_palette(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.palette else { return };
         if p.items.is_empty() {
@@ -342,11 +373,22 @@ impl eframe::App for App {
         let every = if self.shot.is_some() { 0 } else { self.s.auto_fetch };
         for (i, t) in self.tabs.iter_mut().enumerate() {
             t.auto_fetch(&ctx, every, i == self.active && focused && !self.focused);
+            if !self.s.terminal {
+                t.term.keep_busy();
+            }
         }
         self.focused = focused;
-        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned).or_else(|| t.term.busy().then(|| "the command in the terminal".into())));
+        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
         if hold_close(&ctx, busy.as_deref(), &mut self.quit_pending) {
-            self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.unwrap_or_default()), false);
+            self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.as_deref().unwrap_or_default()), false);
+        }
+        // A shell's job (vim, ssh, a dev server) may never end: ask rather than hold the quit.
+        if busy.is_none() && ctx.input(|i| i.viewport().close_requested()) {
+            let n: usize = self.tabs.iter().map(|t| t.term.running()).sum();
+            if n > 0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit_ask = Some(n);
+            }
         }
         self.shortcuts(&ctx);
 
@@ -389,6 +431,7 @@ impl eframe::App for App {
         self.clone_dialog(&ctx);
         self.settings_dialog(&ctx);
         self.command_palette(&ctx);
+        self.quit_dialog(&ctx);
         if self.shortcuts {
             self.shortcuts = super::shortcuts::show(&ctx);
         }
@@ -425,9 +468,8 @@ fn hold_close(ctx: &egui::Context, busy: Option<&str>, pending: &mut bool) -> bo
     false
 }
 
-/// ⌘Q, the app menu's and the Dock's Quit, and logout send `terminate:`, which winit turns
-/// into an exit without a close request, so `hold_close` never sees it. While an op runs,
-/// cancel the termination and request a close instead, which `hold_close` holds.
+/// ⌘Q and the Dock's Quit send `terminate:`, which winit turns into an exit with no close request,
+/// so `hold_close` never sees it: while an op or terminal command runs, request a close instead.
 #[cfg(target_os = "macos")]
 mod mac_quit {
     use objc2::runtime::{AnyObject, Sel};
@@ -504,6 +546,48 @@ mod close_tests {
         assert!(!held && cmds.contains(&ViewportCommand::Close));
         let (_, cmds) = frame(true, None, &mut pending);
         assert!(!cmds.contains(&ViewportCommand::CancelClose));
+    }
+
+    /// A shell's foreground job (vim, ssh, a dev server) may never end: asking beats holding
+    /// the quit and closing the window minutes later, out of the blue.
+    #[cfg(unix)]
+    #[test]
+    fn quit_with_a_terminal_command_asks_instead_of_waiting() {
+        use eframe::App as _;
+        let dir = std::env::temp_dir().join(format!("glasir-quit-terminal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut step = |app: &mut super::App, close: bool| {
+            let mut raw = RawInput::default();
+            if close {
+                raw.viewports.entry(ViewportId::ROOT).or_default().events.push(ViewportEvent::Close);
+            }
+            let mut out = ctx.run_ui(raw, |ui| app.ui(ui, &mut frame));
+            out.textures_delta.clear();
+            out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+        };
+        let wait = |what: &str, f: &dyn Fn() -> bool| {
+            let t = std::time::Instant::now();
+            while !f() {
+                assert!(t.elapsed().as_secs() < 30, "timed out waiting for {what}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        app.tabs[0].term.add(&ctx, &dir);
+        let s = &app.tabs[0].term.tabs[0];
+        wait("prompt", &|| !s.busy());
+        s.write(&b"sleep 30\r"[..]);
+        wait("busy", &|| s.busy());
+        assert!(step(&mut app, true).contains(&ViewportCommand::CancelClose));
+        assert!(!app.quit_pending && app.quit_ask == Some(1));
+        app.tabs[0].term.tabs[0].write(&b"\x03"[..]);
+        wait("idle", &|| !app.tabs[0].term.busy());
+        assert!(!step(&mut app, false).contains(&ViewportCommand::Close));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

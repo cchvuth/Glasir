@@ -11,7 +11,7 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
-use egui::{Align2, Color32, Event, EventFilter, FontId, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Align2, Color32, Event, EventFilter, FontId, ImeEvent, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -22,8 +22,7 @@ pub(super) fn id() -> egui::Id {
 
 pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path) {
     let ctx = ui.ctx().clone();
-    let confirm_id = id().with("confirm");
-    let mut confirm: Option<usize> = ui.data(|d| d.get_temp(confirm_id)).flatten();
+    let mut confirm = ts.confirm;
     let mut close = None;
     theme::bar(ui, |ui| {
         if theme::pill(ui, icon::CARET_DOWN).on_hover_text(format!("Hide ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
@@ -54,13 +53,10 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path) {
             }
         });
     });
+    ts.confirm = confirm;
     if let Some(i) = close {
-        ts.tabs.remove(i);
-        ts.active = ts.active.min(ts.tabs.len().saturating_sub(1));
-        ts.open &= !ts.tabs.is_empty();
-        confirm = None;
+        ts.close(i);
     }
-    ui.data_mut(|d| d.insert_temp(confirm_id, confirm));
     if let Some(e) = &ts.error {
         ui.colored_label(theme::DEL, e);
     }
@@ -187,6 +183,18 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
     let crow = cur.point.line.0 + off as i32;
     if cur.shape != CursorShape::Hidden && (0..lines as i32).contains(&crow) {
         let cell = Rect::from_min_size(at(crow as usize, cur.point.column.0), vec2(cw, ch));
+        if focused {
+            // Turns on the OS input method (CJK...) while the shell has focus; commits arrive as `Event::Ime`.
+            let to_global = ui.ctx().layer_transform_to_global(ui.layer_id()).unwrap_or_default();
+            ui.output_mut(|o| {
+                o.ime = Some(egui::output::IMEOutput {
+                    purpose: egui::IMEPurpose::Normal,
+                    rect: to_global * rect,
+                    cursor_rect: to_global * cell,
+                    should_interrupt_composition: false,
+                })
+            });
+        }
         let color = theme::accent();
         match cur.shape {
             _ if !focused => painter.rect_stroke(cell.shrink(0.5), 1.0, Stroke::new(1.0, color), egui::StrokeKind::Inside),
@@ -204,20 +212,23 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
 /// of the queue so nothing else (Esc closing a diff, the graph's arrow keys) acts on them.
 fn input(ui: &Ui, s: &Session) {
     let mac = cfg!(target_os = "macos");
-    let events: Vec<Event> = ui.input_mut(|i| {
+    let mut events: Vec<Event> = ui.input_mut(|i| {
         let (mine, rest) = std::mem::take(&mut i.events).into_iter().partition(|e| match e {
-            Event::Text(_) | Event::Paste(_) | Event::Copy | Event::Cut => true,
+            Event::Text(_) | Event::Paste(_) | Event::Copy | Event::Cut | Event::Ime(_) => true,
             Event::Key { modifiers, .. } => !modifiers.mac_cmd, // ⌘ shortcuts stay the app's
             _ => false,
         });
         i.events = rest;
         mine
     });
+    if !mac {
+        alt_as_meta(&mut events);
+    }
     let mut term = s.term.lock();
     let mode = *term.mode();
     for e in events {
         let bytes: Option<Cow<'static, [u8]>> = match e {
-            Event::Text(t) => Some(t.into_bytes().into()),
+            Event::Text(t) | Event::Ime(ImeEvent::Commit(t)) if !t.is_empty() => Some(t.into_bytes().into()),
             Event::Paste(t) => Some(paste(&t, mode.contains(TermMode::BRACKETED_PASTE)).into_bytes().into()),
             // Off macOS, Ctrl+C / Ctrl+X arrive as Copy / Cut: copy a selection, else interrupt.
             Event::Copy => match term.selection_to_string().filter(|t| !t.is_empty()) {
@@ -235,6 +246,19 @@ fn input(ui: &Ui, s: &Session) {
             term.selection = None;
             term.scroll_display(Scroll::Bottom);
             s.write(b);
+        }
+    }
+}
+
+/// Off macOS, Alt is Meta (readline / zsh Alt+B, F, D, .): egui types Alt+B as a plain
+/// "b" after the key press, so that text gets an ESC prefix. Ctrl+Alt is AltGr: left alone.
+fn alt_as_meta(events: &mut [Event]) {
+    let mut meta = false;
+    for e in events {
+        match e {
+            Event::Key { key, pressed: true, modifiers: m, .. } => meta = m.alt && !m.ctrl && !m.mac_cmd && key_bytes(*key, *m, false).is_none(),
+            Event::Text(t) if std::mem::take(&mut meta) => t.insert(0, '\x1b'),
+            _ => {}
         }
     }
 }
@@ -294,7 +318,8 @@ fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Cow<'static, [u
                 _ => b"\x7f",
             }));
         }
-        Key::Space if m.ctrl => return Some(Cow::Borrowed(b"\0")),
+        Key::Space | Key::Num2 if m.ctrl => return Some(Cow::Borrowed(b"\0")),
+        Key::Slash | Key::Minus if m.ctrl => return Some(Cow::Borrowed(b"\x1f")), // ^_: undo
         _ if m.ctrl => {
             // Ctrl+A..Z, Ctrl+[ \ ] -> 0x01..0x1d.
             let name = key.symbol_or_name();
@@ -358,9 +383,18 @@ mod tests {
         assert_eq!(k(Key::OpenBracket, Modifiers::CTRL, false).unwrap(), "\x1b");
         assert_eq!(k(Key::Tab, Modifiers::SHIFT, false).unwrap(), "\x1b[Z");
         assert_eq!(k(Key::Enter, Modifiers::NONE, false).unwrap(), "\r");
+        assert_eq!(k(Key::Slash, Modifiers::CTRL, false).unwrap(), "\x1f"); // readline undo
+        assert_eq!(k(Key::Minus, Modifiers::CTRL, false).unwrap(), "\x1f");
+        assert_eq!(k(Key::Num2, Modifiers::CTRL, false).unwrap(), "\0");
         assert_eq!(k(Key::A, Modifiers::NONE, false), None); // typed as text instead
         assert_eq!(k(Key::C, Modifiers::MAC_CMD, false), None); // ⌘C is the app's
         assert_eq!(paste("a\nb", false), "a\rb");
+        let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let mut ev = vec![key(Key::B, Modifiers::ALT), Event::Text("b".into()), key(Key::B, Modifiers::NONE), Event::Text("b".into())];
+        ev.extend([key(Key::Q, Modifiers::CTRL | Modifiers::ALT), Event::Text("@".into()), key(Key::ArrowLeft, Modifiers::ALT), Event::Text("x".into())]);
+        alt_as_meta(&mut ev);
+        let texts: Vec<_> = ev.iter().filter_map(|e| if let Event::Text(t) = e { Some(t.as_str()) } else { None }).collect();
+        assert_eq!(texts, ["\x1bb", "b", "@", "x"]); // Alt+B is Meta-b; AltGr and Alt+arrow text untouched
         assert_eq!(paste("x\x1b[201~y", true), "\x1b[200~x[201~y\x1b[201~");
     }
 

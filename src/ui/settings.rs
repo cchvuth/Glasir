@@ -334,7 +334,7 @@ impl App {
                         }
                     }
                 });
-                ui.label(RichText::new("Added to every AI prompt. Per repo: `git config glasir.aiInstructions \"…\"` or a .glasir/ai.md file (used after these).").small().color(theme::dim(ui)));
+                ui.label(RichText::new("Added to every AI prompt. Per repo: `git config glasir.aiInstructions \"…\"` (used after these).").small().color(theme::dim(ui)));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if st.test.is_some() {

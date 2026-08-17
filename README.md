@@ -269,7 +269,7 @@ The name fits a Git client:
 - Your token stays in the OS keychain and is only sent to the API URL you set.
 - **Custom instructions** (Settings → AI, with Conventional Commits / Gitmoji / short-subject
   presets) are added to every AI prompt; per repo use `git config glasir.aiInstructions`
-  or a `.glasir/ai.md` file.
+  (never a file in the repo, which a checked-out branch could plant).
 - **Settings → Enable AI features** off hides every AI button and menu item.
 
 ### Workflow and comfort
@@ -278,9 +278,10 @@ The name fits a Git client:
 - **Command log** (⇧⌘L) showing every git command Glasir ran, copyable as shell commands.
 - **Embedded terminal** (⌃`, the toolbar's terminal button or ⌘P): your login shell
   in the repo folder below the graph, with several shell tabs, 256 / true colours,
-  scrollback, mouse selection, copy / paste and resizing. Shells keep running
-  while the panel is hidden; closing a shell, the tab or the app waits for (or asks
-  before stopping) a running command. Off in **Settings → Terminal**.
+  scrollback, mouse selection, copy / paste, resizing, Alt as Meta (Linux / Windows)
+  and input methods. Shells keep running while the panel is hidden; closing a shell
+  or quitting with a running command asks first, and closing the tab waits for it.
+  Off in **Settings → Terminal** (idle shells end; a busy one stays shown until done).
 - **Keyboard shortcut cheat sheet**: press **?** (or ⌘/) anywhere.
 - **Undo right from the toast**: after a commit, checkout, rebase, discard and
   anything else undoable, the confirmation has an **Undo** button.

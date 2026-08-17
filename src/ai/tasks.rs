@@ -146,13 +146,13 @@ pub const PRESETS: [(&str, &str); 3] = [
     ("Imperative short subjects", "Commit subjects are in the imperative mood, at most 50 characters, with no trailing period. Add a body only when the why is not obvious."),
 ];
 
-/// Cap on repo instructions, so a stray file can't bloat every prompt.
+/// Cap on instructions, so a stray value can't bloat every prompt.
 const MAX_INSTRUCTIONS: usize = 8000;
 
-/// This repo's own instructions: `.glasir/ai.md` if present, else `git config glasir.aiInstructions`.
+/// This repo's own instructions: `git config glasir.aiInstructions`. Never a file in the
+/// working tree: whoever wrote the checked-out commit (a PR, a fork) would steer the AI.
 fn repo_instructions(dir: &Path) -> String {
-    let text = std::fs::read_to_string(dir.join(".glasir/ai.md")).ok().filter(|t| !t.trim().is_empty());
-    text.unwrap_or_else(|| git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default())
+    git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default()
 }
 
 /// The system prompt plus the user's global and per-repo instructions (when set).
@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_instructions_from_config_or_file() {
+    fn repo_instructions_from_config_not_the_working_tree() {
         let dir = std::env::temp_dir().join(format!("glasir-ai-instr-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -375,10 +375,8 @@ mod tests {
         git::run(&dir, &["config", "glasir.aiInstructions", "from config"]).unwrap();
         assert_eq!(repo_instructions(&dir).trim(), "from config");
         std::fs::create_dir_all(dir.join(".glasir")).unwrap();
-        std::fs::write(dir.join(".glasir/ai.md"), "  \n").unwrap();
+        std::fs::write(dir.join(".glasir/ai.md"), "from a checked-out commit\n").unwrap();
         assert_eq!(repo_instructions(&dir).trim(), "from config");
-        std::fs::write(dir.join(".glasir/ai.md"), "from file\n").unwrap();
-        assert_eq!(repo_instructions(&dir).trim(), "from file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

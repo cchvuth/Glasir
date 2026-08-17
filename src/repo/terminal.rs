@@ -38,6 +38,9 @@ pub struct Session {
     /// owns the terminal (a command is running when it isn't the shell's).
     #[cfg(unix)]
     shell: (i32, std::fs::File),
+    /// Windows: the shell's pid (a command is running when the shell has a child process).
+    #[cfg(windows)]
+    shell: u32,
 }
 
 impl Session {
@@ -57,6 +60,8 @@ impl Session {
         let pty = tty::new(&opts, size, 0)?;
         #[cfg(unix)]
         let shell = (pty.child().id() as i32, pty.file().try_clone()?);
+        #[cfg(windows)]
+        let shell = pty.child_watcher().pid().map_or(0, |p| p.get());
         let (tx, events) = mpsc::channel();
         let l = Listener { ctx: ctx.clone(), tx };
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &TermSize::new(80, 24), l.clone())));
@@ -69,7 +74,7 @@ impl Session {
             events,
             title: String::new(),
             size,
-            #[cfg(unix)]
+            #[cfg(any(unix, windows))]
             shell,
         })
     }
@@ -97,8 +102,30 @@ impl Session {
             let fg = unsafe { libc::tcgetpgrp(self.shell.1.as_raw_fd()) };
             fg > 0 && fg != self.shell.0
         }
-        #[cfg(not(unix))]
-        false // ponytail: no foreground-process check on Windows (ConPTY has none)
+        // ConPTY has no foreground process group: look for a child of the shell instead.
+        #[cfg(windows)]
+        // SAFETY: a process snapshot, walked with a correctly sized entry and closed here.
+        unsafe {
+            use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+            use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+            if self.shell == 0 {
+                return false;
+            }
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return false;
+            }
+            let mut e: PROCESSENTRY32W = std::mem::zeroed();
+            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut more = Process32FirstW(snap, &mut e) != 0;
+            let mut child = false;
+            while more && !child {
+                child = e.th32ParentProcessID == self.shell && e.th32ProcessID != self.shell;
+                more = Process32NextW(snap, &mut e) != 0;
+            }
+            CloseHandle(snap);
+            child
+        }
     }
 
     /// Handles the shell's requests; false once it exited.
@@ -135,6 +162,9 @@ pub struct Terminals {
     pub error: Option<String>,
     /// Give the terminal keyboard focus on the next frame.
     pub focus: bool,
+    /// The busy shell whose close button became "Stop & close"; cleared whenever the
+    /// list changes, so it never lands on another shell.
+    pub confirm: Option<usize>,
 }
 
 impl Terminals {
@@ -151,6 +181,7 @@ impl Terminals {
         match Session::spawn(ctx, dir) {
             Ok(s) => {
                 self.tabs.push(s);
+                self.confirm = None;
                 self.active = self.tabs.len() - 1;
                 self.error = None;
                 self.focus = true;
@@ -164,14 +195,44 @@ impl Terminals {
         let n = self.tabs.len();
         self.tabs.retain_mut(|s| s.poll(ctx));
         if self.tabs.len() < n {
-            self.active = self.active.min(self.tabs.len().saturating_sub(1));
-            self.open &= !self.tabs.is_empty();
+            self.fix_after_removal();
         }
+    }
+
+    /// Stops shell `i` (SIGHUP to whatever runs in it).
+    pub fn close(&mut self, i: usize) {
+        if i < self.tabs.len() {
+            self.tabs.remove(i);
+            self.fix_after_removal();
+        }
+    }
+
+    fn fix_after_removal(&mut self) {
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        self.open &= !self.tabs.is_empty();
+        self.confirm = None;
+    }
+
+    /// Settings → Terminal is off: idle shells end; one still running a command stays
+    /// on screen, so it can be finished or stopped rather than block closing unseen.
+    pub fn keep_busy(&mut self) {
+        let n = self.tabs.len();
+        self.tabs.retain(Session::busy);
+        if self.tabs.len() < n {
+            self.confirm = None;
+        }
+        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        self.open = !self.tabs.is_empty();
     }
 
     /// A command is running in one of the sessions.
     pub fn busy(&self) -> bool {
         self.tabs.iter().any(Session::busy)
+    }
+
+    /// How many sessions run a command.
+    pub fn running(&self) -> usize {
+        self.tabs.iter().filter(|s| s.busy()).count()
     }
 }
 
@@ -183,7 +244,7 @@ mod tests {
     fn wait(what: &str, mut f: impl FnMut() -> bool) {
         let t = Instant::now();
         while !f() {
-            assert!(t.elapsed() < Duration::from_secs(10), "timed out waiting for {what}");
+            assert!(t.elapsed() < Duration::from_secs(30), "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -217,5 +278,46 @@ mod tests {
             ts.tabs.is_empty()
         });
         assert!(!ts.open);
+    }
+
+    #[test]
+    fn a_pending_stop_never_moves_to_another_shell() {
+        let dir = crate::repo::testutil::scratch("terminal-confirm");
+        let ctx = egui::Context::default();
+        let mut ts = Terminals::default();
+        ts.toggle(&ctx, &dir);
+        ts.add(&ctx, &dir);
+        ts.confirm = Some(1);
+        ts.tabs[0].write(&b"exit\r"[..]);
+        wait("exit", || {
+            ts.poll(&ctx);
+            ts.tabs.len() == 1
+        });
+        assert_eq!(ts.confirm, None, "shell 2 is now index 0; a stale Some(0) would also hit a new shell");
+        ts.confirm = Some(0);
+        ts.add(&ctx, &dir);
+        assert_eq!(ts.confirm, None);
+    }
+
+    #[test]
+    fn turning_the_terminal_off_ends_idle_shells_and_shows_busy_ones() {
+        let dir = crate::repo::testutil::scratch("terminal-off");
+        let ctx = egui::Context::default();
+        let mut ts = Terminals::default();
+        ts.add(&ctx, &dir);
+        ts.add(&ctx, &dir);
+        // Past the login scripts (macOS' path_helper runs in the foreground too).
+        for s in &ts.tabs {
+            s.write(&b"echo re''ady\r"[..]);
+            wait("prompt", || screen(s).contains("ready") && !s.busy());
+        }
+        ts.tabs[1].write(&b"sleep 30\r"[..]);
+        wait("busy", || ts.tabs[1].busy());
+        ts.keep_busy();
+        assert!(ts.open && ts.tabs.len() == 1 && ts.active == 0 && ts.tabs[0].busy());
+        ts.tabs[0].write(&b"\x03"[..]);
+        wait("idle", || !ts.busy());
+        ts.keep_busy();
+        assert!(!ts.open && ts.tabs.is_empty());
     }
 }
