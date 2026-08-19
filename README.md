@@ -4,10 +4,10 @@
 
 *A glass interface over your branching history.*
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshot-dark.webp">
-  <img src="assets/screenshot-light.webp" alt="Glasir showing a commit graph with merged feature branches, tags, a remote and staged changes">
-</picture>
+<p align="center">
+  <img src="assets/screenshot-dark.webp" width="49%" alt="Glasir in the dark Midnight theme: a commit graph with merged feature branches, tags, a remote and staged changes">
+  <img src="assets/screenshot-light.webp" width="49%" alt="The same view in the light Daylight theme">
+</p>
 
 Glasir is a fast, free and open-source Git client with a modern commit graph,
 smart time-saving operations and optional AI helpers (Claude or ChatGPT). Written in
