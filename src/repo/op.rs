@@ -5,7 +5,7 @@ use super::action::{Action, Msg, MultiOp};
 use super::data::RepoData;
 use super::message;
 use super::offer::offer;
-use super::undo::{UndoEntry, UndoKind, keep_backup, save_worktree, split_z, Saved};
+use super::undo::{UndoEntry, UndoKind, keep_backup, on_remotes, save_worktree, split_z, Saved, UNDO_PUSHED};
 use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
@@ -135,7 +135,8 @@ pub enum Dropped {
 }
 
 pub(super) enum Done {
-    Op(Op, Res<String>, Option<(Snapshot, Snapshot)>, Option<Saved>),
+    /// Its ref snapshots before and after, with what [`on_remotes`] says about them.
+    Op(Op, Res<String>, Option<(Snapshot, Snapshot, usize)>, Option<Saved>),
     /// Undo or redo, its result (a redone op's fresh undo), and whether a failed one moved refs.
     Undo(bool, Res<Option<Box<Op>>>, bool),
 }
@@ -726,6 +727,14 @@ impl RepoTab {
             let message = if body.is_empty() { msg.clone() } else { format!("{msg}\n\n{body}") };
             return self.apply(ctx, Action::Reword { commit: commit.clone(), message });
         }
+        if let [cmd, id] = op.cmds[0].as_slice()
+            && cmd == UNDO_PUSHED
+        {
+            if self.undo_top().is_some_and(|t| t.to_string() == *id) {
+                self.undo_redo(ctx, true, true);
+            }
+            return;
+        }
         if op.confirm.is_some() {
             self.confirm = Some(op);
             return;
@@ -759,7 +768,10 @@ impl RepoTab {
                     s
                 });
                 // Even a partly failed op may have moved refs: always offer undo.
-                let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| (b, a)));
+                let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| {
+                    let n = if a == b { 0 } else { on_remotes(&dir, &b, &a) };
+                    (b, a, n)
+                }));
                 Done::Op(op, out, snaps, saved)
             }),
         ));
@@ -815,7 +827,7 @@ impl RepoTab {
                     self.reset_message();
                 }
                 let mut saved = saved.filter(|s| (s.stash.is_some() && !(s.tracked.is_empty() && s.staged.is_empty())) || !s.files.is_empty() || !s.absent.is_empty());
-                if let Some((before, after)) = snaps.filter(|(b, a)| b != a) {
+                if let Some((before, after, on_remote)) = snaps.filter(|(b, a, _)| b != a) {
                     // Git's own `--autostash` (pull, cherry-pick): `reset --keep` would refuse edits the op merged into.
                     let autostash = op.autostash.clone().or_else(|| {
                         (op.undo == Undo::Keep && op.cmds.iter().flatten().any(|a| a == "--autostash")).then(|| format!("autostash to undo {}", op.label))
@@ -823,7 +835,7 @@ impl RepoTab {
                     // A hard reset's files come back in the same step, after the refs: restored first,
                     // they'd block the `reset --keep` back.
                     let saved = saved.take_if(|_| op.cmds.iter().any(|c| c.first().is_some_and(|a| a == "reset")));
-                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash, saved }));
+                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash, saved, on_remote }));
                     self.redo.clear();
                 }
                 // `keep_deleted` left a failed branch delete's revert only if it deleted some.
@@ -870,8 +882,13 @@ impl RepoTab {
             Done::Undo(was_undo, res, moved) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
                 match res {
-                    // A hard reset's files restored: its redo (`reset --keep`) would refuse them.
-                    Ok(fresh) => to.extend(from.pop().filter(|e| !matches!(e.kind, UndoKind::Discard(_) | UndoKind::Refs { saved: Some(_), .. })).map(|mut e| {
+                    // A hard reset's files restored: its redo (`reset --keep`) would refuse them,
+                    // and the redos above it expect its refs.
+                    Ok(_) if from.last().is_some_and(|e| matches!(e.kind, UndoKind::Discard(_) | UndoKind::Refs { saved: Some(_), .. })) => {
+                        from.pop();
+                        to.clear();
+                    }
+                    Ok(fresh) => to.extend(from.pop().map(|mut e| {
                         if let (Some(f), UndoKind::Op { undo, .. }) = (fresh, &mut e.kind) {
                             *undo = f;
                         }
@@ -1468,6 +1485,32 @@ mod tests {
         assert!(t.undo_label().is_some_and(|l| l.starts_with("Reset main")), "{:?}", t.undo_label());
         run(&ctx, &mut t, Action::Undo);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "MINE\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undoing a hard reset drops its redo, and with it the redo of a later step, which would
+    /// expect the reset's refs back.
+    #[test]
+    fn undoing_a_hard_reset_clears_redo() {
+        let dir = scratch("hard-reset-redo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        let c1 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "a", "two\n");
+        std::fs::write(dir.join("a"), "MINE\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut op = super::reset_op(t.data.as_ref().unwrap(), &c1, "--hard");
+        op.confirm = None;
+        run(&ctx, &mut t, Action::Git(op));
+        run(&ctx, &mut t, Action::Git(Op::new("Create branch x", &["branch", "x"]).undo(super::Undo::Keep)));
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(t.redo_label(), Some("Create branch x"));
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "MINE\n");
+        assert_eq!(t.redo_label(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

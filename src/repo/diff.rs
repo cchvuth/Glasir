@@ -161,7 +161,8 @@ fn hunk_op(label: &str, c: &git::Change, f: &FileDiff, mut patch: String, args: 
         let at = patch.find('\n').map_or(0, |i| i + 1);
         patch.insert_str(at, &format!("{ix}\n"));
     }
-    let paths: Vec<String> = c.old_path.iter().chain([&c.path]).cloned().collect();
+    // A copy's patch leaves its source alone; a rename's may edit the old path (`apply_hunk`).
+    let paths: Vec<String> = c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path]).cloned().collect();
     let mut a = vec![APPLY_HUNK];
     a.extend_from_slice(args);
     a.push("--");
@@ -176,6 +177,18 @@ pub(super) const APPLY_HUNK: &str = "!apply-hunk";
 pub(super) fn apply_hunk(dir: &std::path::Path, a: &[&str], patch: &[u8]) -> Res<String> {
     let split = a.iter().position(|x| *x == "--").unwrap_or(a.len());
     let (args, paths) = (&a[1..split], a.get(split + 1..).unwrap_or_default());
+    // A rename's hunk picked where the file still has its old name: edit that one.
+    let retargeted;
+    let patch = match paths {
+        [old, new] if !args.contains(&"--reverse") && !dir.join(new).exists() && dir.join(old).is_file() && !old.contains(['"', '\\', '\t', '\n']) => {
+            let text = String::from_utf8_lossy(patch);
+            let (head, body) = text.split_at(text.find("\n@@ ").map_or(0, |i| i + 1));
+            let index = head.lines().find(|l| l.starts_with("index ")).map(|l| format!("{l}\n")).unwrap_or_default();
+            retargeted = format!("diff --git a/{old} b/{old}\n{index}--- a/{old}\n+++ b/{old}\n{body}");
+            retargeted.as_bytes()
+        }
+        _ => patch,
+    };
     let apply = |more: Option<&str>| {
         let mut cmd = vec!["apply", "--recount", "--whitespace=nowarn"];
         cmd.extend(args);
@@ -546,7 +559,8 @@ mod tests {
     }
 
     /// A hunk op that creates a file (a cherry-picked addition, a reverted rename's old path)
-    /// is its own undo step, and ⌘Z removes that file again; a rename's hunk edits only the new path.
+    /// is its own undo step, and ⌘Z removes that file again; a rename's hunk edits only the new path,
+    /// or the old one where the file wasn't renamed yet.
     #[test]
     fn hunk_ops_that_create_files_undo() {
         let dir = scratch("hunk-new-file");
@@ -589,6 +603,15 @@ mod tests {
         run(&mut t, Action::Undo);
         assert!(!dir.join("n").exists());
         assert_eq!(t.undo_label(), Some("Create branch y"));
+
+        // Picked onto a branch that still has the old name: the edit lands there.
+        sh(&dir, &["checkout", "-q", "-b", "before", &format!("{ren}^")]);
+        let renamed = git::Change { path: "new".into(), old_path: Some("old".into()), code: 'R' };
+        let msgs = run(&mut t, op(&ren, renamed, "Cherry-pick hunk", false));
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M old\n", "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert!(std::fs::read_to_string(dir.join("old")).unwrap().contains("FIVE"));
+        run(&mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

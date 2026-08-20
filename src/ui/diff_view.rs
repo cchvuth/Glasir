@@ -253,6 +253,12 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         if worktree && change.code != '?' && ds.opts.ignore_ws {
             ui.label(RichText::new(format!("{} Line staging off", icon::INFO)).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
+        } else if let (true, Some(f)) = (worktree, file.filter(|f| f.whole_only || f.lossy)) {
+            let (note, why) = match f.whole_only {
+                true => ("git converts it on add", "git add converts this file (CRLF line endings, an LFS or other filter), so the lines shown aren't the ones staged: stage the whole file."),
+                false => ("not UTF-8", "This file isn't valid UTF-8, so its lines are shown approximately and can't be staged one by one: stage the whole file."),
+            };
+            ui.label(RichText::new(format!("{} Line staging off: {note}", icon::INFO)).small().color(theme::MOD)).on_hover_text(why);
         } else if !worktree && !wt_compare && ds.opts.ignore_ws {
             ui.label(RichText::new(format!("{} Hunk actions off", icon::INFO)).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be reverted or cherry-picked from a whitespace-ignoring diff: turn off Ignore whitespace.");

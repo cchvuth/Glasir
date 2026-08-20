@@ -144,17 +144,31 @@ impl RepoTab {
     pub(super) fn finish_split(&mut self) {
         let Some(sp) = self.split.take() else { return };
         (self.summary, self.body) = (String::new(), String::new());
-        let steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
-        let refs: Vec<_> = steps.iter().filter_map(|e| if let UndoKind::Refs { before, after, .. } = &e.kind { Some((before, after)) } else { None }).collect();
-        if let (Some(first), Some(last)) = (refs.first(), refs.last()) {
-            let kind = UndoKind::Refs { before: first.0.clone(), after: last.1.clone(), mode: Undo::Keep, autostash: None, saved: None };
-            self.undo.push(UndoEntry::new(format!("Split {}", &sp.id[..7.min(sp.id.len())]), kind));
-        }
-        // Backed-up discards stay undoable on their own.
+        let mut steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
+        let refs: Vec<_> = steps.iter().filter_map(|e| if let UndoKind::Refs { before, after, .. } = &e.kind { Some((before.clone(), after.clone())) } else { None }).collect();
+        // The newest backup comes back in the split's step, after its refs (like a hard reset's):
+        // a discard on top would be undone first and block the `reset --keep` back.
+        let saved = steps.iter().rposition(|e| matches!(e.kind, UndoKind::Discard(_) | UndoKind::Refs { saved: Some(_), .. })).and_then(|i| {
+            keep_backup(&mut steps[i]);
+            match steps.remove(i).kind {
+                UndoKind::Discard(s) => Some(s),
+                _ => None,
+            }
+        });
+        // Older backups stay undoable on their own, below it.
         self.undo.extend(steps.into_iter().filter_map(|mut e| {
             keep_backup(&mut e);
             matches!(e.kind, UndoKind::Discard(_)).then_some(e)
         }));
+        let label = format!("Split {}", &sp.id[..7.min(sp.id.len())]);
+        match (refs.first().zip(refs.last()), saved) {
+            (Some((first, last)), saved) => {
+                let kind = UndoKind::Refs { before: first.0.clone(), after: last.1.clone(), mode: Undo::Keep, autostash: None, saved, on_remote: 0 };
+                self.undo.push(UndoEntry::new(label, kind));
+            }
+            (None, Some(s)) => self.undo.push(UndoEntry::new(label, UndoKind::Discard(s))),
+            (None, None) => {}
+        }
         self.notes.push(Msg { text: "Split done ✔".into(), error: false });
     }
 }
@@ -368,6 +382,45 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!(std::fs::read_to_string(dir.join("f1")).unwrap(), "mine");
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "3");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Part of the split discarded by a hard reset: one ⌘Z undoes the split and brings the
+    /// discarded edit back (restored first, it would block moving the branch back).
+    #[test]
+    fn finished_split_undoes_a_hard_reset_with_it() {
+        let dir = scratch("split-hard-reset");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1");
+        std::fs::write(dir.join("a"), "2").unwrap();
+        std::fs::write(dir.join("x"), "x").unwrap();
+        sh(&dir, &["add", "a", "x"]);
+        sh(&dir, &["commit", "-q", "-m", "ax"]);
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Split(tip.trim().into()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Stage", &["add", "x"]).light()));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Commit", &["commit", "-q", "-m", "x"]).undo(Undo::Soft)));
+        settle(&ctx, &mut t);
+        let head = sh(&dir, &["rev-parse", "HEAD"]);
+        let mut reset = super::super::reset_op(t.data.as_ref().unwrap(), head.trim(), "--hard");
+        reset.confirm = None;
+        t.apply(&ctx, Action::Git(reset));
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1");
+        t.apply(&ctx, Action::SplitEnd { abort: false });
+        settle(&ctx, &mut t);
+        assert!(t.split.is_none());
+        t.apply(&ctx, Action::Undo);
+        let msgs: Vec<String> = settle(&ctx, &mut t).into_iter().map(|m| m.text).collect();
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "2");
+        assert_eq!(t.undo_label(), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

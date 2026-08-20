@@ -1,7 +1,7 @@
 //! Undo/redo: ref snapshots for ops that move refs, backups of discarded
 //! work so a discard can be undone, and reverting ops for config changes.
 
-use super::op::{Backup, Done, Undo};
+use super::op::{Backup, Done, Op, Undo};
 use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Res, Snapshot};
@@ -66,7 +66,8 @@ pub(super) fn fingerprint(path: &Path) -> Option<u64> {
 pub(super) enum UndoKind {
     /// `autostash`: the op carried uncommitted changes along; undo/redo carries them back.
     /// `saved`: a hard reset's backup, restored once the refs are back (undo only).
-    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String>, saved: Option<Saved> },
+    /// `on_remote`: what [`on_remotes`] said when the op finished (a pull's commits); more later = pushed since.
+    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String>, saved: Option<Saved>, on_remote: usize },
     Discard(Saved),
     /// A config-only op (remotes) and the op that reverts it.
     Op { undo: Box<super::Op>, redo: Box<super::Op> },
@@ -94,6 +95,24 @@ pub(super) fn keep_backup(e: &mut UndoEntry) {
         e.kind = UndoKind::Discard(s);
     }
 }
+
+/// How many of the commits that moving the branches from `after` back to `before` takes off
+/// a remote-tracking branch has.
+pub(super) fn on_remotes(dir: &Path, before: &Snapshot, after: &Snapshot) -> usize {
+    let tips = |s: &Snapshot, not: &str| {
+        let heads = s.refs.iter().filter(|(r, _)| r.starts_with("refs/heads/")).map(|(_, o)| o);
+        heads.chain(Some(&s.head).filter(|h| !h.starts_with("refs/"))).map(|o| format!("{not}{o}\n")).collect::<String>()
+    };
+    let input = tips(after, "") + &tips(before, "^");
+    let count = |extra: &[&str]| {
+        let args: Vec<&str> = ["rev-list", "--count", "--stdin"].into_iter().chain(extra.iter().copied()).collect();
+        git::run_input(dir, &args, Some(input.as_bytes())).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0)
+    };
+    count(&[]).saturating_sub(count(&["--not", "--remotes"]))
+}
+
+/// Pseudo-command of a confirmed undo: the step's id, so it only undoes the step that was asked about.
+pub(super) const UNDO_PUSHED: &str = "__undo_pushed__";
 
 pub(super) fn split_z(s: String) -> Vec<String> {
     s.split('\0').filter(|p| !p.is_empty()).map(String::from).collect()
@@ -295,10 +314,22 @@ impl RepoTab {
         self.redo.last().map(|u| u.label.as_str())
     }
 
-    pub(super) fn undo_redo(&mut self, ctx: &egui::Context, undo: bool) {
+    /// `sure`: the user confirmed dropping commits that were pushed since the step.
+    pub(super) fn undo_redo(&mut self, ctx: &egui::Context, undo: bool, sure: bool) {
         let stack = if undo { &self.undo } else { &self.redo };
         let Some(e) = stack.last() else { return };
         if self.running.is_some() {
+            return;
+        }
+        if let (true, false, UndoKind::Refs { before, after, on_remote, .. }) = (undo, sure, &e.kind)
+            && let n = on_remotes(&self.dir, before, after)
+            && n > *on_remote
+        {
+            let n = n - on_remote;
+            let mut op = Op::new(format!("Undo {}", e.label), &[UNDO_PUSHED, &e.id.to_string()]);
+            let (what, it) = if n == 1 { ("The commit this undoes is".to_owned(), "it") } else { (format!("{n} commits this undoes are"), "them") };
+            op.confirm = Some(format!("{what} already pushed. Undo only moves your local branch: the remote keeps {it}, so dropping {it} there needs a force push (otherwise a pull brings {it} back)."));
+            self.confirm = Some(op);
             return;
         }
         // Moving refs mid merge/rebase would corrupt it; a guided split's own steps are fine.
@@ -310,7 +341,7 @@ impl RepoTab {
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         // Err's flag: the refs didn't move, so the ref steps still hold.
         let job: Box<dyn FnOnce() -> Result<Option<Box<super::Op>>, (String, bool)> + Send> = match &e.kind {
-            UndoKind::Refs { before, after, mode, autostash, saved } => {
+            UndoKind::Refs { before, after, mode, autostash, saved, .. } => {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
                 let (mode, autostash, saved) = (mode.mode(), autostash.clone(), saved.clone().filter(|_| undo));
                 Box::new(move || {
@@ -887,5 +918,54 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["rev-parse", "main"]));
         let _ = std::fs::remove_dir_all(&wt);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⌘Z after Commit & push asks first: the commit is on the remote already. Undoing a
+    /// pull (its commits were on the remote before it ran) doesn't.
+    #[test]
+    fn undo_of_a_pushed_commit_asks_first() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, View};
+        let root = scratch("undo-pushed");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f", "one\n");
+        let one = sh(&a, &["rev-parse", "HEAD"]);
+        commit(&a, "f", "two\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        let two = sh(&a, &["rev-parse", "HEAD"]);
+        sh(&a, &["reset", "-q", "--hard", "HEAD~1"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let pull = || Action::Git(Op::new("Pull", &["merge", "-q", "--ff-only", "@{u}"]).undo(Undo::Keep));
+        t.apply(&ctx, pull());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Undo);
+        assert!(t.confirm.is_none());
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&a, &["rev-parse", "HEAD"]), one);
+        t.apply(&ctx, pull());
+        settle(&ctx, &mut t);
+
+        std::fs::write(a.join("f"), "three\n").unwrap();
+        sh(&a, &["add", "f"]);
+        (t.summary, t.push_after) = ("three".into(), true);
+        t.apply(&ctx, Action::Git(t.commit_op()));
+        settle(&ctx, &mut t);
+        let three = sh(&a, &["rev-parse", "HEAD"]);
+        assert_eq!(sh(&root.join("remote.git"), &["rev-parse", "main"]), three);
+        t.apply(&ctx, Action::Undo);
+        let ask = t.confirm.take().expect("asks before undoing a pushed commit");
+        assert!(ask.confirm.as_deref().unwrap().contains("force push"), "{:?}", ask.confirm);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&a, &["rev-parse", "HEAD"]), three);
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..ask }));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&a, &["rev-parse", "HEAD"]), two);
+        assert_eq!(sh(&a, &["diff", "--cached", "--name-only"]).trim(), "f");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

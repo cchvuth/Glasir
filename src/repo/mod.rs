@@ -653,8 +653,8 @@ impl RepoTab {
             Action::Doctor(remote) => self.doctor = Some(doctor::Doctor::open(ctx, &self.dir, &remote)),
             Action::Patch { ids, save } => self.export_patch(ctx, ids, save),
             Action::ApplyPatch => self.apply_patch(ctx),
-            Action::Undo => self.undo_redo(ctx, true),
-            Action::Redo => self.undo_redo(ctx, false),
+            Action::Undo => self.undo_redo(ctx, true, false),
+            Action::Redo => self.undo_redo(ctx, false, false),
             Action::Reload => self.reload(ctx, true),
             Action::LoadMore => {
                 self.max_commits += crate::repo::PAGE;

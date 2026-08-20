@@ -76,7 +76,8 @@ The name fits a Git client:
   button** appears on each file row on hover, ⌘/⇧-click selects several files (S / U or
   the buttons act on all; a multi-file discard is one backup), drag across diff lines to
   select them, and untracked files can be staged in part too (via intent-to-add; whole
-  files only when `git add` would convert them: CRLF line endings, LFS or other filters).
+  files only when `git add` would convert them: CRLF line endings, LFS or other filters;
+  the diff says so).
 - Unified or split diffs with **syntax highlighting** and **word-level** change marks.
 - Diff controls: **ignore whitespace** (`-w`; line staging pauses while it is on),
   **context** of 3 / 10 lines or the whole file, **previous / next change**
@@ -90,7 +91,8 @@ The name fits a Git client:
 - Commit and amend, with a 72-character guide; ⌘↩ to commit, ⇧⌘↩ to stage everything
   and commit, ⇧⌘M to focus the summary. The commit box also has **Skip hooks**
   (`--no-verify`), **Push after commit** (a rejected push offers pull / force push; ⌘Z
-  undoes the commit locally), a **co-authors** picker (people from the log become
+  of a commit that is already pushed asks first, since dropping it from the remote
+  needs a force push), a **co-authors** picker (people from the log become
   `Co-authored-by` trailers), `commit.template` prefill (its comment lines are stripped),
   and a detached-HEAD warning with **Create branch here**.
 - **Blame** with an age heatmap at any revision (from a commit's file menu or diff),
