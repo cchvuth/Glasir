@@ -104,8 +104,10 @@ pub fn show(
         });
     }
     // Hovering a ref fades what it can't reach; ⌘F fades non-matches.
-    let reach = hovered_ref(ui).and_then(|t| d.row_of.get(&t).copied()).map(|r| d.reachable(r));
-    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || reach.as_ref().is_some_and(|v| !v[r]);
+    // Reachability, links and menus ask the full history: the filtered graph lacks the commits between hits.
+    let full_row = |r: usize| if filtered.is_none() { Some(r) } else { d.commit(r).and_then(|c| all.row_of.get(&c.id).copied()) };
+    let reach = hovered_ref(ui).and_then(|t| all.row_of.get(&t).copied()).map(|r| all.reachable(r));
+    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || reach.as_ref().is_some_and(|v| !full_row(r).is_some_and(|a| v[a]));
 
     // Column widths: [refs, graph]; graph 0 = fit lanes (up to 12). Drag the header to resize.
     let cols_id = egui::Id::new("graph_cols");
@@ -258,8 +260,7 @@ pub fn show(
                     }
                 }
                 resp.context_menu(|ui| match commit {
-                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, d, multi, acts),
-                    // The full graph: "on HEAD's branch" needs the commits between the hits.
+                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, multi, acts),
                     Some(c) => commit_menu(ui, all, c, acts),
                     None => wip_menu(ui, acts),
                 });
@@ -383,10 +384,10 @@ pub fn show(
                     // Right-clicking a pill gives that ref's own menu (all refs here when several).
                     pill_resp.context_menu(|ui| {
                         if ids.len() == 1 {
-                            crate::ui::sidebar::ref_menus::ref_menu(ui, d, rf, acts);
+                            crate::ui::sidebar::ref_menus::ref_menu(ui, all, rf, acts);
                         } else {
                             for &i in ids {
-                                ui.menu_button(ref_label(&d.refs[i]), |ui| crate::ui::sidebar::ref_menus::ref_menu(ui, d, &d.refs[i], acts));
+                                ui.menu_button(ref_label(&d.refs[i]), |ui| crate::ui::sidebar::ref_menus::ref_menu(ui, all, &d.refs[i], acts));
                             }
                         }
                     });

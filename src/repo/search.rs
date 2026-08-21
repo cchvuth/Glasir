@@ -1,7 +1,7 @@
 //! ⌘F commit search: query parser, a background `git log` whose hits stream in, and the filtered
 //! graph (no drawing; the bar is `crate::ui::graph_view::search`).
 
-use super::RepoData;
+use super::{RepoData, Task};
 use crate::git::{self, Commit, Res};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
@@ -142,6 +142,7 @@ pub struct Search {
     /// (run, data generation, hits) the filtered graph was built from, and when.
     filtered_key: (usize, u64, usize),
     filtered_at: std::time::Instant,
+    building: Option<Task<((usize, u64, usize), RepoData)>>,
 }
 
 impl Search {
@@ -167,6 +168,7 @@ impl Search {
             rows_key: Default::default(),
             filtered_key: Default::default(),
             filtered_at: std::time::Instant::now(),
+            building: None,
         }
     }
 
@@ -198,16 +200,25 @@ impl Search {
                 Err(TryRecvError::Disconnected) => self.rx = None,
             }
         }
+        if let Some((key, f)) = Task::poll(&mut self.building) {
+            self.filtered = Some(Arc::new(f));
+            self.filtered_key = key;
+        }
         let fkey = (self.run, d.generation, self.found.len());
         if !self.filter || self.found.is_empty() {
-            self.filtered = None;
-        } else if self.filtered.is_none() || fkey != self.filtered_key {
-            // A rebuild is O(hits): while they stream in, only when their number doubled
-            // or a moment passed; the end of the stream brings it up to date.
+            (self.filtered, self.building) = (None, None);
+        } else if self.filtered.is_none() {
+            // Turning the filter on (or a new query's first hit) shows it in the same frame.
+            (self.filtered_key, self.filtered_at, self.building) = (fkey, std::time::Instant::now(), None);
+            self.filtered = Some(Arc::new(self.filtered_data(d)()));
+        } else if fkey != self.filtered_key && self.building.is_none() {
+            // A rebuild is O(hits), off the UI thread: while they stream in, only when their
+            // number doubled or a moment passed; the end of the stream brings it up to date.
             const EVERY: std::time::Duration = std::time::Duration::from_millis(250);
-            if self.filtered.is_none() || !self.running() || fkey.2 >= 2 * self.filtered_key.2 || self.filtered_at.elapsed() >= EVERY {
-                (self.filtered_key, self.filtered_at) = (fkey, std::time::Instant::now());
-                self.filtered = Some(Arc::new(self.filtered_data(d)));
+            if !self.running() || fkey.2 >= 2 * self.filtered_key.2 || self.filtered_at.elapsed() >= EVERY {
+                self.filtered_at = std::time::Instant::now();
+                let job = self.filtered_data(d);
+                self.building = Some(Task::spawn(ctx, move || (fkey, job())));
             } else {
                 ctx.request_repaint_after(EVERY);
             }
@@ -216,7 +227,7 @@ impl Search {
 
     fn start(&mut self, ctx: &egui::Context, d: &RepoData) {
         self.cancel.cancel();
-        (self.rx, self.cancel, self.error, self.cur, self.filtered) = (None, Default::default(), None, 0, None);
+        (self.rx, self.cancel, self.error, self.cur, self.filtered, self.building) = (None, Default::default(), None, 0, None, None);
         self.found.clear();
         self.run += 1;
         let q = parse(&self.key.0, self.case);
@@ -255,15 +266,21 @@ impl Search {
         });
     }
 
-    /// The history of just the hits. Lanes join hits only (a parent that is no hit would be
-    /// a lane to nowhere), but `log` keeps the real commits: menus read their parents.
-    fn filtered_data(&self, d: &RepoData) -> RepoData {
-        let ids: std::collections::HashSet<&str> = self.found.iter().map(|c| c.id.as_str()).collect();
-        let log = self.found.iter().map(|c| Commit { parents: c.parents.iter().filter(|p| ids.contains(p.as_str())).cloned().collect(), ..c.clone() }).collect();
-        let mut f = RepoData::build(Arc::new(log), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), d.status.clone(), d.view.clone());
-        (f.worktrees, f.submodules, f.lfs, f.config, f.author, f.bisect) = (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.bisect.clone());
-        f.log = Arc::new(self.found.clone());
-        f
+    /// The history of just the hits, as a job for any thread. Lanes join hits only, but `log` keeps the
+    /// real commits: menus read their parents.
+    fn filtered_data(&self, d: &RepoData) -> impl FnOnce() -> RepoData + Send + 'static {
+        let found = self.found.clone();
+        let parts = (d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), d.status.clone(), d.view.clone());
+        let more = (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.bisect.clone());
+        move || {
+            let ids: std::collections::HashSet<&str> = found.iter().map(|c| c.id.as_str()).collect();
+            let log = found.iter().map(|c| Commit { parents: c.parents.iter().filter(|p| ids.contains(p.as_str())).cloned().collect(), ..c.clone() }).collect();
+            let (refs, stashes, remotes, git_dir, origin_head, status, view) = parts;
+            let mut f = RepoData::build(Arc::new(log), refs, stashes, remotes, git_dir, origin_head, status, view);
+            (f.worktrees, f.submodules, f.lfs, f.config, f.author, f.bisect) = more;
+            f.log = Arc::new(found);
+            f
+        }
     }
 
     /// Recomputes `hits` for the graph being drawn (the full or the filtered history).
@@ -334,7 +351,7 @@ mod tests {
         (s.query, s.filter) = (query.into(), filter);
         s.poll(&ctx, d);
         for _ in 0..1000 {
-            if !s.running() {
+            if !s.running() && s.building.is_none() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -342,6 +359,16 @@ mod tests {
         }
         assert_eq!(s.error, None);
         s
+    }
+
+    /// Polls until the background rebuild of the filtered graph (if any) is in.
+    fn settle(s: &mut Search, d: &RepoData) {
+        let ctx = egui::Context::default();
+        s.poll(&ctx, d);
+        while s.building.is_some() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            s.poll(&ctx, d);
+        }
     }
 
     fn search(dir: &std::path::Path, d: &RepoData, query: &str) -> Vec<String> {
@@ -400,13 +427,33 @@ mod tests {
         std::fs::write(dir.join("new.txt"), "x").unwrap();
         sh(&dir, &["add", "new.txt"]);
         let d2 = RepoData::build(d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), git::status(&dir).unwrap(), d.view.clone());
-        s.poll(&egui::Context::default(), &d2);
+        settle(&mut s, &d2);
         assert_eq!(s.filtered.as_ref().unwrap().status.staged.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// While hits stream in, the filtered graph is rebuilt when their number doubles (or
-    /// every so often), not per hit; the end of the stream brings it up to date.
+    /// The filtered graph's lanes skip the commits between hits, so it can't tell what a remote
+    /// branch reaches: menus, links and the hover fade must ask the full history instead.
+    #[test]
+    fn filtered_graph_is_no_reachability_source() {
+        let dir = scratch("search-reach");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for m in ["needle a", "other", "needle c"] {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        sh(&dir, &["remote", "add", "origin", "https://github.com/o/r.git"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let f = finished(&dir, &d, "needle", true).filtered.clone().unwrap();
+        let a = f.log[1].id.clone();
+        assert!(d.on_remote(&a, "origin"));
+        assert!(!f.on_remote(&a, "origin"), "if this holds now, the menus could take the filtered graph again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// While hits stream in, the filtered graph is rebuilt in the background when their number
+    /// doubles (or every so often), not per hit; the end of the stream brings it up to date.
     #[test]
     fn filtered_graph_rebuilds_throttled() {
         let dir = scratch("search-throttle");
@@ -427,13 +474,17 @@ mod tests {
             tx.send(Ok(d.log[sent].clone())).unwrap();
             sent += 1;
             s.poll(&ctx, &d);
+            if sent == 2 {
+                assert!(s.building.is_some() && rows(&s) == 1, "rebuilt off the UI thread; the old graph stays meanwhile");
+            }
+            settle(&mut s, &d);
             assert_eq!(rows(&s), want, "after {sent} hits");
         }
         tx.send(Ok(d.log[sent].clone())).unwrap();
-        s.poll(&ctx, &d);
+        settle(&mut s, &d);
         assert_eq!(rows(&s), 4);
         drop(tx);
-        s.poll(&ctx, &d);
+        settle(&mut s, &d);
         assert_eq!(rows(&s), 5, "the last hits once the stream ends");
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -13,20 +13,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub type Stacks = HashMap<String, (String, String)>;
 
 static FOLLOW: AtomicBool = AtomicBool::new(true);
-static KEEP: Mutex<String> = Mutex::new(String::new());
+static KEEP: Mutex<Option<String>> = Mutex::new(None);
 
 /// Settings → "Keep stacked branches together" and Protected branches, mirrored every frame.
-pub fn set_follow(on: bool, keep: &str) {
+/// True when Protected branches changed (not the first mirror): the stacks need a reload.
+pub fn set_follow(on: bool, keep: &str) -> bool {
     FOLLOW.store(on, Ordering::Relaxed);
     let mut k = KEEP.lock().unwrap_or_else(|e| e.into_inner());
-    if *k != keep {
-        *k = keep.to_owned();
+    let changed = k.as_deref().is_some_and(|k| k != keep);
+    if k.as_deref() != Some(keep) {
+        *k = Some(keep.to_owned());
     }
+    changed
 }
 
 /// A long-lived branch (`release/*`, Settings → Protected branches..): never a stack member.
 pub(super) fn protected(name: &str) -> bool {
-    super::cleanup::protected(&KEEP.lock().unwrap_or_else(|e| e.into_inner()), name)
+    super::cleanup::protected(KEEP.lock().unwrap_or_else(|e| e.into_inner()).as_deref().unwrap_or_default(), name)
 }
 
 fn trunk_name(d: &RepoData, name: &str) -> bool {
@@ -342,6 +345,15 @@ mod tests {
     use super::*;
     use crate::repo::testutil::{commit, identity, scratch, settle, sh};
     use crate::repo::{Action, RepoTab, View};
+
+    /// Editing Protected branches asks for a reload (stack detection reads it), the first mirror doesn't.
+    #[test]
+    fn protected_branches_change_reloads() {
+        assert!(!set_follow(true, ""), "the first mirror at startup");
+        assert!(!set_follow(true, ""));
+        assert!(set_follow(true, "zz-keep-test") && protected("zz-keep-test"));
+        assert!(set_follow(true, ""));
+    }
 
     #[test]
     fn parses_chains_and_skips_trunk() {

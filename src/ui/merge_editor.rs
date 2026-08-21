@@ -2,7 +2,7 @@
 //! output below. It works on the working file's conflict markers, so hand edits to the output stay
 //! the source of truth. State and parsing live in `crate::repo::merge_editor`.
 
-use super::format::{text_job, tops, visible, wrapped};
+use super::format::{lead_top, text_job, tops, visible, wrapped};
 use crate::ai;
 use crate::repo::merge_editor::{Chunk, Editor, Row, Take, conflicts, parse, parts, rebuild, save, stage, whole_ops};
 use crate::repo::{Action, Task};
@@ -114,7 +114,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             }));
             if scroll && let Some(k) = sel_orig {
                 let at = rows.iter().position(|r| matches!(r, Row::Head(h) if *h == k)).unwrap_or(0);
-                area = area.vertical_scroll_offset(tops[at.saturating_sub(2)]);
+                area = area.vertical_scroll_offset(lead_top(&tops, at, row_h));
             }
             egui::Frame::new().fill(theme::faint(ui)).corner_radius(10).inner_margin(6).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0; // contiguous conflict tints; rows exactly `row_h` apart
@@ -203,8 +203,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
         ui.label(RichText::new("editable — this is what gets saved").small().color(theme::dim(ui)));
     });
     let area = if wrap { egui::ScrollArea::vertical() } else { egui::ScrollArea::both() }.id_salt("merge_out").max_height((ui.available_height() - footer).max(60.0)).auto_shrink(false);
-    // Start of the line two above the selected conflict, as a char index (lines may wrap).
-    let scroll_to = (scroll && m > 0).then(|| ed.output.split_inclusive('\n').take(ed.output_line(ed.sel).saturating_sub(2)).map(|l| l.chars().count()).sum::<usize>());
+    // Starts of the line two above the selected conflict and of the conflict, as char indexes (lines may wrap).
+    let line_start = |n: usize| ed.output.split_inclusive('\n').take(n).map(|l| l.chars().count()).sum::<usize>();
+    let scroll_to = (scroll && m > 0).then(|| ed.output_line(ed.sel)).map(|l| (line_start(l.saturating_sub(2)), line_start(l)));
     let text_col = theme::text(ui);
     let dim = theme::dim(ui);
     let size = d.size;
@@ -239,8 +240,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             area.show(ui, |ui| {
                 let te = TextEdit::multiline(&mut ed.output).code_editor().frame(egui::Frame::NONE.inner_margin(crate::theme::INPUT_MARGIN)).min_size(ui.available_size()).layouter(&mut layouter);
                 let out = ui.add_enabled_ui(!thinking, |ui| te.show(ui)).inner;
-                if let Some(c) = scroll_to {
-                    let y = out.galley_pos.y + out.galley.pos_from_cursor(egui::text::CCursor::new(c)).top();
+                if let Some((above, at)) = scroll_to {
+                    let top = |c| out.galley.pos_from_cursor(egui::text::CCursor::new(c)).top();
+                    let y = out.galley_pos.y + top(above).max(top(at) - 2.0 * row_h);
                     let r = egui::Rect::from_min_size(pos2(out.galley_pos.x, y), vec2(1.0, row_h));
                     ui.scroll_to_rect_animation(r, Some(egui::Align::TOP), egui::style::ScrollAnimation::none());
                 }

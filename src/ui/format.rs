@@ -63,6 +63,12 @@ pub fn tops(h: f32, lines: impl Iterator<Item = usize>) -> Vec<f32> {
     std::iter::once(0.0).chain(lines.map(|n| { y += n as f32 * h; y })).collect()
 }
 
+/// Scroll offset showing row `at` with up to two rows above it, but never more than two
+/// visual lines of lead (two wrapped lines above may be taller than the pane).
+pub fn lead_top(tops: &[f32], at: usize, h: f32) -> f32 {
+    tops[at.saturating_sub(2)].max(tops[at] - 2.0 * h)
+}
+
 pub fn visible(tops: &[f32], y0: f32, y1: f32) -> std::ops::Range<usize> {
     let n = tops.len() - 1;
     tops.partition_point(|&t| t <= y0).saturating_sub(1).min(n)..tops.partition_point(|&t| t < y1).min(n)
@@ -90,6 +96,8 @@ mod tests {
         let w = |n: usize, cols| super::wrapped(|| n, cols);
         assert_eq!((w(0, 10), w(10, 10), w(11, 10), super::wrapped(|| unreachable!(), usize::MAX)), (1, 1, 2, 1));
         let t = super::tops(10.0, [1, 3, 1].into_iter());
+        assert_eq!((super::lead_top(&t, 2, 10.0), super::lead_top(&t, 0, 10.0)), (20.0, 0.0), "two rows of a tall line, none above the top");
+        assert_eq!(super::lead_top(&super::tops(10.0, [1, 1, 1].into_iter()), 2, 10.0), 0.0);
         assert_eq!(t, [0.0, 10.0, 40.0, 50.0]);
         assert_eq!(super::visible(&t, 0.0, 5.0), 0..1);
         assert_eq!(super::visible(&t, 15.0, 45.0), 1..3);
