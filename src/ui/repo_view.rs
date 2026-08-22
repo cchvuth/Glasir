@@ -48,7 +48,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                 .default_size(260.0)
                 .size_range(110.0..=900.0)
                 .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 0, bottom: 12 }))
-                .show(ui, |ui| theme::card(ui, 205, |ui| super::terminal::show(ui, &mut t.term, &t.dir)));
+                .show(ui, |ui| theme::card(ui, 205, |ui| super::terminal::show(ui, &mut t.term, &t.dir, s.terminal)));
         }
         egui::CentralPanel::default()
             .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 2, bottom: 12 }))

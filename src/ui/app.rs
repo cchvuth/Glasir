@@ -581,14 +581,59 @@ mod close_tests {
         };
         app.tabs[0].term.add(&ctx, &dir);
         let s = &app.tabs[0].term.tabs[0];
-        wait("prompt", &|| !s.busy());
-        s.write(&b"sleep 30\r"[..]);
-        wait("busy", &|| s.busy());
+        // Not just busy: login scripts and prompt helpers run in the foreground too.
+        s.write(&b"echo sta''rted; sleep 30\r"[..]);
+        wait("busy", &|| screen(s).contains("started") && s.busy());
         assert!(step(&mut app, true).contains(&ViewportCommand::CancelClose));
         assert!(!app.quit_pending && app.quit_ask == Some(1));
         app.tabs[0].term.tabs[0].write(&b"\x03"[..]);
         wait("idle", &|| !app.tabs[0].term.busy());
         assert!(!step(&mut app, false).contains(&ViewportCommand::Close));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn screen(s: &crate::repo::terminal::Session) -> String {
+        s.term.lock().renderable_content().display_iter.map(|i| i.cell.c).collect()
+    }
+
+    /// egui takes focus from widgets under a modal; typing must reach the shell again after it.
+    #[cfg(unix)]
+    #[test]
+    fn the_terminal_gets_its_focus_back_after_a_modal() {
+        use eframe::App as _;
+        let dir = std::env::temp_dir().join(format!("glasir-terminal-focus-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut step = |app: &mut super::App| {
+            let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(Default::default(), egui::vec2(1200.0, 800.0))), ..Default::default() };
+            ctx.run_ui(raw, |ui| app.ui(ui, &mut frame)).textures_delta.clear();
+        };
+        let t = std::time::Instant::now();
+        while app.tabs[0].data.is_none() || app.tabs[0].loading() {
+            assert!(t.elapsed().as_secs() < 30, "timed out loading the repo");
+            step(&mut app);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        app.tabs[0].apply(&ctx, crate::repo::Action::ToggleTerminal);
+        let focused = || ctx.memory(|m| m.has_focus(super::super::terminal::id()));
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        assert!(focused());
+        app.shortcuts = true;
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        app.shortcuts = false;
+        for _ in 0..3 {
+            step(&mut app);
+        }
+        assert!(focused());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

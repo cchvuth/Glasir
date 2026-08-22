@@ -213,16 +213,14 @@ impl Terminals {
         self.confirm = None;
     }
 
-    /// Settings → Terminal is off: idle shells end; one still running a command stays
-    /// on screen, so it can be finished or stopped rather than block closing unseen.
+    /// Settings → Terminal is off: idle shells end; one still running a command is kept
+    /// (shown or hidden) until it finishes or is stopped.
     pub fn keep_busy(&mut self) {
         let n = self.tabs.len();
         self.tabs.retain(Session::busy);
         if self.tabs.len() < n {
-            self.confirm = None;
+            self.fix_after_removal();
         }
-        self.active = self.active.min(self.tabs.len().saturating_sub(1));
-        self.open = !self.tabs.is_empty();
     }
 
     /// A command is running in one of the sessions.
@@ -304,17 +302,20 @@ mod tests {
         let dir = crate::repo::testutil::scratch("terminal-off");
         let ctx = egui::Context::default();
         let mut ts = Terminals::default();
-        ts.add(&ctx, &dir);
+        ts.toggle(&ctx, &dir);
         ts.add(&ctx, &dir);
         // Past the login scripts (macOS' path_helper runs in the foreground too).
         for s in &ts.tabs {
             s.write(&b"echo re''ady\r"[..]);
             wait("prompt", || screen(s).contains("ready") && !s.busy());
         }
-        ts.tabs[1].write(&b"sleep 30\r"[..]);
-        wait("busy", || ts.tabs[1].busy());
+        ts.tabs[1].write(&b"echo sta''rted; sleep 30\r"[..]);
+        wait("busy", || screen(&ts.tabs[1]).contains("started") && ts.tabs[1].busy());
         ts.keep_busy();
         assert!(ts.open && ts.tabs.len() == 1 && ts.active == 0 && ts.tabs[0].busy());
+        ts.open = false; // Hide: the command keeps running out of sight
+        ts.keep_busy();
+        assert!(!ts.open && ts.tabs.len() == 1);
         ts.tabs[0].write(&b"\x03"[..]);
         wait("idle", || !ts.busy());
         ts.keep_busy();

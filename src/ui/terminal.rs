@@ -20,14 +20,15 @@ pub(super) fn id() -> egui::Id {
     egui::Id::new("glasir-terminal")
 }
 
-pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path) {
+/// `new`: Settings → Terminal is on (else the panel only finishes running commands).
+pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path, new: bool) {
     let ctx = ui.ctx().clone();
     let mut close = None;
     theme::bar(ui, |ui| {
         if theme::pill(ui, icon::CARET_DOWN).on_hover_text(format!("Hide ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
             ts.open = false;
         }
-        if theme::pill(ui, icon::PLUS).on_hover_text("New terminal").clicked() {
+        if new && theme::pill(ui, icon::PLUS).on_hover_text("New terminal").clicked() {
             ts.add(&ctx, dir);
         }
         theme::rest(ui, |ui| {
@@ -79,9 +80,15 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
     let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
     let (cols, lines) = ((rect.width() / cw).max(2.0) as usize, (rect.height() / ch).max(1.0) as usize);
     s.resize(cols as u16, lines as u16, (cw.round() as u16, ch.round() as u16));
+    // egui takes the focus from widgets under a modal (Settings, the shortcut sheet): get it back after.
+    let (behind_modal, had_focus) = ui.ctx().memory(|m| (m.top_modal_layer().is_some_and(|l| l != ui.layer_id()), m.has_focus(id())));
+    let restore = id().with("restore");
+    if behind_modal && had_focus {
+        ui.data_mut(|d| d.insert_temp(restore, true));
+    }
     let r = ui.interact(rect, id(), Sense::click_and_drag());
     ui.expand_to_include_rect(rect);
-    if focus || r.clicked() || r.drag_started() {
+    if focus || r.clicked() || r.drag_started() || (!behind_modal && ui.data_mut(|d| d.remove_temp::<bool>(restore)).is_some()) {
         r.request_focus();
     }
     let focused = r.has_focus();

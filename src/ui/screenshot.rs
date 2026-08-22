@@ -50,7 +50,10 @@ impl App {
                     }
                     "log" => self.show_log = true,
                     // Settings → Built-in terminal off while shells still run.
-                    "terminal-off" => self.s.terminal = false,
+                    "terminal-off" => {
+                        std::thread::sleep(std::time::Duration::from_secs(2)); // let a typed `terminal:<command>` start, or its shell ends as idle
+                        self.s.terminal = false;
+                    }
                     // `terminal`, or `terminal:<command>` typed into its shell.
                     q if q.starts_with("terminal") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
