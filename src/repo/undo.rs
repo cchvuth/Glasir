@@ -65,9 +65,10 @@ pub(super) fn fingerprint(path: &Path) -> Option<u64> {
 
 pub(super) enum UndoKind {
     /// `autostash`: the op carried uncommitted changes along; undo/redo carries them back.
-    /// `saved`: a hard reset's backup, restored once the refs are back (undo only).
+    /// `saved`: backups (a hard reset's, a split's), oldest first: restored newest first once the
+    /// refs are back (undo only).
     /// `on_remote`: what [`on_remotes`] said when the op finished (a pull's commits); more later = pushed since.
-    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String>, saved: Option<Saved>, on_remote: usize },
+    Refs { before: Snapshot, after: Snapshot, mode: Undo, autostash: Option<String>, saved: Vec<Saved>, on_remote: usize },
     Discard(Saved),
     /// A config-only op (remotes) and the op that reverts it.
     Op { undo: Box<super::Op>, redo: Box<super::Op> },
@@ -87,13 +88,12 @@ impl UndoEntry {
     }
 }
 
-/// A hard reset's backup outlives its ref step (dropped, or folded into one): a discard of its own.
-pub(super) fn keep_backup(e: &mut UndoEntry) {
-    if let UndoKind::Refs { saved, .. } = &mut e.kind
-        && let Some(s) = saved.take()
-    {
-        e.kind = UndoKind::Discard(s);
-    }
+/// Backups outlive their ref step (dropped, or folded into one): each a discard of its own.
+pub(super) fn keep_backups(steps: Vec<UndoEntry>) -> impl Iterator<Item = UndoEntry> {
+    steps.into_iter().flat_map(|e| match e.kind {
+        UndoKind::Refs { saved, .. } if !saved.is_empty() => saved.into_iter().map(|s| UndoEntry::new(e.label.clone(), UndoKind::Discard(s))).collect(),
+        _ => vec![e],
+    })
 }
 
 /// How many of the commits that moving the branches from `after` back to `before` takes off
@@ -198,6 +198,97 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         files.push((p.clone(), std::fs::read(&path).map_err(|e| refuse(format!("{p}: {e}")))?));
     }
     Ok(Saved { stash, tracked, staged, unmerged, files, overwrite: matches!(b, Backup::Overwrite(_)), absent, index, after: Default::default() })
+}
+
+/// A backed-up path that holds uncommitted work made since its discard, which restoring the
+/// backups would overwrite. A path changed since but clean (committed, like a split's parts) is fine.
+fn overwrites(dir: &Path, saved: &[Saved]) -> Res<Option<String>> {
+    let mut changed: Vec<String> = saved.iter().flat_map(|s| s.after.lock().unwrap().iter().filter(|(p, f)| fingerprint(&dir.join(p)) != *f).map(|(p, _)| p.clone()).collect::<Vec<_>>()).collect();
+    if changed.is_empty() {
+        return Ok(None);
+    }
+    changed.sort_unstable();
+    changed.dedup();
+    // ponytail: paths on the command line (`status` takes no pathspec file): only those changed since,
+    // so few; chunk them if a huge set ever hits the argument limit.
+    let mut args = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--ignored", "--"];
+    args.extend(changed.iter().map(String::as_str));
+    let dirty = split_z(git::run(dir, &args)?);
+    Ok(changed.into_iter().find(|p| dirty.iter().any(|d| d.get(3..) == Some(p.as_str()))))
+}
+
+/// Keeps a backup that can't go back in place as a stash entry: HEAD with the backed-up
+/// paths as the discard found them.
+fn stash_backup(dir: &Path, s: &Saved, msg: &str) -> Res<()> {
+    let idx = git::git_dir(dir)?.join("glasir-backup-index");
+    let git = |args: &[&str]| -> Res<String> {
+        let out = git::cmd(dir).env("GIT_INDEX_FILE", &idx).args(args).output().map_err(|e| e.to_string())?;
+        match out.status.success() {
+            true => Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned()),
+            false => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
+        }
+    };
+    let res = (|| {
+        git(&["read-tree", "HEAD"])?;
+        // `mode,oid,path` entries; a tracked path missing from both the stash and the copies was absent.
+        let mut cache: Vec<String> = vec![];
+        if let (Some(sha), false) = (&s.stash, s.tracked.is_empty()) {
+            let mut ls = vec!["--literal-pathspecs", "ls-tree", "-r", "-z", sha, "--"];
+            ls.extend(s.tracked.iter().map(String::as_str));
+            for l in split_z(git::run(dir, &ls)?) {
+                if let Some((meta, p)) = l.split_once('\t')
+                    && let [mode, _, oid] = meta.split(' ').collect::<Vec<_>>()[..]
+                {
+                    cache.push(format!("{mode},{oid},{p}"));
+                }
+            }
+        }
+        for (p, bytes) in &s.files {
+            let oid = git::run_input(dir, &["hash-object", "-w", "--stdin"], Some(bytes))?;
+            cache.push(format!("100644,{},{p}", oid.trim()));
+        }
+        let mut args = vec!["--literal-pathspecs", "update-index", "--force-remove", "--"];
+        let gone: Vec<&String> = s.tracked.iter().filter(|p| !cache.iter().any(|c| c.splitn(3, ',').nth(2) == Some(p.as_str()))).collect();
+        args.extend(gone.iter().map(|p| p.as_str()));
+        if !gone.is_empty() {
+            git(&args)?;
+        }
+        if !cache.is_empty() {
+            let mut args = vec!["update-index", "--add"];
+            cache.iter().for_each(|c| args.extend(["--cacheinfo", c.as_str()]));
+            git(&args)?;
+        }
+        let tree = git(&["write-tree"])?;
+        let index = git::run(dir, &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "index"])?;
+        let w = git::run(dir, &["commit-tree", &tree, "-p", "HEAD", "-p", index.trim(), "-m", msg])?;
+        git::run(dir, &["stash", "store", "-m", msg, w.trim()]).map(drop)
+    })();
+    let _ = std::fs::remove_file(&idx);
+    res
+}
+
+/// Undo of a ref step's backups once its refs are back: restored newest first. A newer copy of
+/// a path an older backup restores over goes to the stash list, as do all of them when
+/// `keep` (they'd overwrite work made since). Returns the note saying so.
+fn restore_backups(dir: &Path, saved: &mut [Saved], label: &str, keep: Option<&str>) -> Res<Option<String>> {
+    let msg = format!("Glasir: discarded during {label}");
+    let mut kept = 0;
+    for i in (0..saved.len()).rev() {
+        let paths = |s: &Saved| s.after.lock().unwrap().iter().map(|(p, _)| p.clone()).collect::<Vec<_>>();
+        let older: Vec<String> = saved[..i].iter().flat_map(paths).collect();
+        if keep.is_some() || paths(&saved[i]).iter().any(|p| older.contains(p)) {
+            stash_backup(dir, &saved[i], &msg)?;
+            kept += 1;
+        }
+        if keep.is_none() {
+            saved[i].seal(dir);
+            restore_worktree(dir, &saved[i])?;
+        }
+    }
+    Ok((kept > 0).then(|| match keep {
+        Some(p) => format!("{p} changed since it was discarded, so the discarded files weren't put back: they're in the stash list as \"{msg}\"."),
+        None => format!("A file was discarded more than once: the newer copy is in the stash list as \"{msg}\"."),
+    }))
 }
 
 /// Err if a backed-up path changed since the discard: restoring would overwrite that.
@@ -340,34 +431,32 @@ impl RepoTab {
         let dir = self.dir.clone();
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         // Err's flag: the refs didn't move, so the ref steps still hold.
-        let job: Box<dyn FnOnce() -> Result<Option<Box<super::Op>>, (String, bool)> + Send> = match &e.kind {
+        // Ok: a redone op's fresh undo, and a note for the user.
+        let job: Box<dyn FnOnce() -> Result<(Option<Box<super::Op>>, Option<String>), (String, bool)> + Send> = match &e.kind {
             UndoKind::Refs { before, after, mode, autostash, saved, .. } => {
                 let (expect, target) = if undo { (after.clone(), before.clone()) } else { (before.clone(), after.clone()) };
-                let (mode, autostash, saved) = (mode.mode(), autostash.clone(), saved.clone().filter(|_| undo));
+                let (mode, autostash, mut saved) = (mode.mode(), autostash.clone(), if undo { saved.clone() } else { vec![] });
+                let step = e.label.clone();
                 Box::new(move || {
                     // Checked before the refs move, which changes the files: then the restore can't tell.
-                    if let Some(s) = &saved {
-                        unchanged(&dir, s).map_err(|e| (e, true))?;
-                    }
+                    let keep = overwrites(&dir, &saved).map_err(|e| (e, true))?;
                     move_refs(&dir, &expect, &target, mode, autostash.as_deref())?;
-                    let Some(mut s) = saved else { return Ok(None) };
-                    s.seal(&dir);
-                    restore_worktree(&dir, &s).map(|_| None).map_err(|e| (e, false))
+                    restore_backups(&dir, &mut saved, &step, keep.as_deref()).map(|n| (None, n)).map_err(|e| (e, false))
                 })
             }
             UndoKind::Op { undo: u, redo } => {
                 let mut op = if undo { u.clone() } else { redo.clone() };
                 Box::new(move || match undo {
-                    true => super::op::exec(&dir, &op).map(|_| None).map_err(|e| (e, false)),
+                    true => super::op::exec(&dir, &op).map(|_| (None, None)).map_err(|e| (e, false)),
                     // A redone stash save made a new stash: its undo pops that one.
-                    false => super::op::exec_stash(&dir, &mut op).map(|_| op.revert.take()).map_err(|e| (e, false)),
+                    false => super::op::exec_stash(&dir, &mut op).map(|_| (op.revert.take(), None)).map_err(|e| (e, false)),
                 })
             }
             // Restoring discarded work has no meaningful redo.
             UndoKind::Discard(_) if !undo => return,
             UndoKind::Discard(saved) => {
                 let saved = saved.clone();
-                Box::new(move || restore_worktree(&dir, &saved).map(|_| None).map_err(|e| (e, false)))
+                Box::new(move || restore_worktree(&dir, &saved).map(|_| (None, None)).map_err(|e| (e, false)))
             }
         };
         self.running = Some((

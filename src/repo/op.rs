@@ -5,7 +5,7 @@ use super::action::{Action, Msg, MultiOp};
 use super::data::RepoData;
 use super::message;
 use super::offer::offer;
-use super::undo::{UndoEntry, UndoKind, keep_backup, on_remotes, save_worktree, split_z, Saved, UNDO_PUSHED};
+use super::undo::{UndoEntry, UndoKind, keep_backups, on_remotes, save_worktree, split_z, Saved, UNDO_PUSHED};
 use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
@@ -137,8 +137,8 @@ pub enum Dropped {
 pub(super) enum Done {
     /// Its ref snapshots before and after, with what [`on_remotes`] says about them.
     Op(Op, Res<String>, Option<(Snapshot, Snapshot, usize)>, Option<Saved>),
-    /// Undo or redo, its result (a redone op's fresh undo), and whether a failed one moved refs.
-    Undo(bool, Res<Option<Box<Op>>>, bool),
+    /// Undo or redo, its result (a redone op's fresh undo, a note), and whether a failed one moved refs.
+    Undo(bool, Res<(Option<Box<Op>>, Option<String>)>, bool),
 }
 
 /// Pseudo-commands that only check state (and change nothing).
@@ -835,7 +835,7 @@ impl RepoTab {
                     });
                     // A hard reset's files come back in the same step, after the refs: restored first,
                     // they'd block the `reset --keep` back.
-                    let saved = saved.take_if(|_| op.cmds.iter().any(|c| c.first().is_some_and(|a| a == "reset")));
+                    let saved = saved.take_if(|_| op.cmds.iter().any(|c| c.first().is_some_and(|a| a == "reset"))).into_iter().collect();
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash, saved, on_remote }));
                     self.redo.clear();
                 }
@@ -882,14 +882,19 @@ impl RepoTab {
             }
             Done::Undo(was_undo, res, moved) => {
                 let (from, to) = if was_undo { (&mut self.undo, &mut self.redo) } else { (&mut self.redo, &mut self.undo) };
+                if let Ok((_, Some(note))) = &res {
+                    msgs.push(Msg { text: note.clone(), error: true });
+                }
                 match res {
+                    // Restored discarded work has no redo; it moved no refs, so the redos above it hold.
+                    Ok(_) if from.last().is_some_and(|e| matches!(e.kind, UndoKind::Discard(_))) => drop(from.pop()),
                     // A hard reset's files restored: its redo (`reset --keep`) would refuse them,
                     // and the redos above it expect its refs.
-                    Ok(_) if from.last().is_some_and(|e| matches!(e.kind, UndoKind::Discard(_) | UndoKind::Refs { saved: Some(_), .. })) => {
+                    Ok(_) if from.last().is_some_and(|e| matches!(&e.kind, UndoKind::Refs { saved, .. } if !saved.is_empty())) => {
                         from.pop();
                         to.clear();
                     }
-                    Ok(fresh) => to.extend(from.pop().map(|mut e| {
+                    Ok((fresh, _)) => to.extend(from.pop().map(|mut e| {
                         if let (Some(f), UndoKind::Op { undo, .. }) = (fresh, &mut e.kind) {
                             *undo = f;
                         }
@@ -899,8 +904,7 @@ impl RepoTab {
                         // Ref snapshots are unreliable once refs moved (a refusal moves none). Discards
                         // and reverting ops (deleted branches, dropped stashes) stay: they check the state before acting.
                         if moved {
-                            from.iter_mut().for_each(keep_backup);
-                            from.retain(|e| !matches!(e.kind, UndoKind::Refs { .. }));
+                            *from = keep_backups(std::mem::take(from)).filter(|e| !matches!(e.kind, UndoKind::Refs { .. })).collect();
                         }
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
@@ -1486,6 +1490,26 @@ mod tests {
         assert!(t.undo_label().is_some_and(|l| l.starts_with("Reset main")), "{:?}", t.undo_label());
         run(&ctx, &mut t, Action::Undo);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "MINE\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Undoing a discard moves no refs: the redo of a later step stays.
+    #[test]
+    fn undoing_a_discard_keeps_redo() {
+        let dir = scratch("discard-redo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        std::fs::write(dir.join("a"), "MINE\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        run(&ctx, &mut t, Action::Git(Op::new("Discard", &["checkout", "--", "a"]).light().backup(super::Backup::Paths(vec!["a".into()]))));
+        run(&ctx, &mut t, Action::Git(Op::new("Create branch x", &["branch", "x"]).undo(super::Undo::Keep)));
+        run(&ctx, &mut t, Action::Undo);
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "MINE\n");
+        assert_eq!(t.redo_label(), Some("Create branch x"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

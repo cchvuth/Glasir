@@ -2,7 +2,7 @@
 //! stages and commits the parts, then Continue replays the rest of the branch.
 //! The whole split becomes one undo step.
 
-use super::undo::{UndoEntry, UndoKind, keep_backup};
+use super::undo::{UndoEntry, UndoKind, keep_backups};
 use super::{Backup, Choice, Msg, Op, RepoTab, Undo};
 use crate::git;
 use std::collections::{HashMap, HashSet};
@@ -135,39 +135,28 @@ impl RepoTab {
     /// (the abort's own entry stays).
     pub(super) fn split_aborted(&mut self) {
         let Some(sp) = self.split.take() else { return };
-        let mut steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
-        steps.iter_mut().filter(|e| e.label != ABORT).for_each(keep_backup);
-        self.undo.extend(steps.into_iter().filter(|e| matches!(e.kind, UndoKind::Discard(_)) || e.label == ABORT));
+        let (abort, steps): (Vec<_>, Vec<_>) = self.undo.split_off(sp.undo_len.min(self.undo.len())).into_iter().partition(|e| e.label == ABORT);
+        self.undo.extend(keep_backups(steps).filter(|e| matches!(e.kind, UndoKind::Discard(_))));
+        self.undo.extend(abort);
     }
 
     /// The split is done: merge its undo entries into one.
     pub(super) fn finish_split(&mut self) {
         let Some(sp) = self.split.take() else { return };
         (self.summary, self.body) = (String::new(), String::new());
-        let mut steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
+        let steps = self.undo.split_off(sp.undo_len.min(self.undo.len()));
         let refs: Vec<_> = steps.iter().filter_map(|e| if let UndoKind::Refs { before, after, .. } = &e.kind { Some((before.clone(), after.clone())) } else { None }).collect();
-        // The newest backup comes back in the split's step, after its refs (like a hard reset's):
-        // a discard on top would be undone first and block the `reset --keep` back.
-        let saved = steps.iter().rposition(|e| matches!(e.kind, UndoKind::Discard(_) | UndoKind::Refs { saved: Some(_), .. })).and_then(|i| {
-            keep_backup(&mut steps[i]);
-            match steps.remove(i).kind {
-                UndoKind::Discard(s) => Some(s),
-                _ => None,
-            }
-        });
-        // Older backups stay undoable on their own, below it.
-        self.undo.extend(steps.into_iter().filter_map(|mut e| {
-            keep_backup(&mut e);
-            matches!(e.kind, UndoKind::Discard(_)).then_some(e)
-        }));
+        // Every backup comes back in the split's step, newest first after its refs (like a hard
+        // reset's): a discard on top would be undone first and block the `reset --keep` back,
+        // and one below would find its files moved by it.
+        let saved: Vec<_> = keep_backups(steps).filter_map(|e| if let UndoKind::Discard(s) = e.kind { Some(s) } else { None }).collect();
         let label = format!("Split {}", &sp.id[..7.min(sp.id.len())]);
-        match (refs.first().zip(refs.last()), saved) {
-            (Some((first, last)), saved) => {
+        match refs.first().zip(refs.last()) {
+            Some((first, last)) => {
                 let kind = UndoKind::Refs { before: first.0.clone(), after: last.1.clone(), mode: Undo::Keep, autostash: None, saved, on_remote: 0 };
                 self.undo.push(UndoEntry::new(label, kind));
             }
-            (None, Some(s)) => self.undo.push(UndoEntry::new(label, UndoKind::Discard(s))),
-            (None, None) => {}
+            None => self.undo.extend(saved.into_iter().map(|s| UndoEntry::new(label.clone(), UndoKind::Discard(s)))),
         }
         self.notes.push(Msg { text: "Split done ✔".into(), error: false });
     }
@@ -421,6 +410,121 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "2");
         assert_eq!(t.undo_label(), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A HEAD commit `a=2, b=2, c=2, x` on `a=1, b=1, c=1, q=1`, a branch made after it, the split started.
+    fn split_repo(name: &str) -> (std::path::PathBuf, egui::Context, RepoTab, String) {
+        let dir = scratch(name);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a", "b", "c", "q"] {
+            std::fs::write(dir.join(f), "1").unwrap();
+        }
+        sh(&dir, &["add", "a", "b", "c", "q"]);
+        sh(&dir, &["commit", "-q", "-m", "base"]);
+        for f in ["a", "b", "c", "x"] {
+            std::fs::write(dir.join(f), "2").unwrap();
+        }
+        sh(&dir, &["add", "a", "b", "c", "x"]);
+        sh(&dir, &["commit", "-q", "-m", "abcx"]);
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Create branch y", &["branch", "y"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Split(tip.trim().into()));
+        settle(&ctx, &mut t);
+        (dir, ctx, t, tip)
+    }
+
+    fn step(ctx: &egui::Context, t: &mut RepoTab, a: Action) -> Vec<String> {
+        t.apply(ctx, a);
+        settle(ctx, t).into_iter().map(|m| m.text).collect()
+    }
+
+    fn discard(p: &str) -> Action {
+        Action::Git(Op::new("Discard", &["checkout", "--", p]).light().backup(Backup::Paths(vec![p.into()])))
+    }
+
+    fn commit_part(ctx: &egui::Context, t: &mut RepoTab, p: &str) {
+        step(ctx, t, Action::Git(Op::new("Stage", &["add", p]).light()));
+        step(ctx, t, Action::Git(Op::new("Commit", &["commit", "-q", "-m", p]).undo(Undo::Soft)));
+    }
+
+    /// Every backup made during a split comes back with its ⌘Z, newest first (a newer copy of
+    /// the same file goes to the stash list), and the steps before the split stay undoable.
+    #[test]
+    fn finished_split_restores_every_backup() {
+        let read = |dir: &Path, p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
+        for hard in [false, true] {
+            let (dir, ctx, mut t, tip) = split_repo(if hard { "split-backups-3" } else { "split-backups-2" });
+            std::fs::write(dir.join("b"), "FIVE-unique").unwrap();
+            step(&ctx, &mut t, discard("b"));
+            step(&ctx, &mut t, discard("a"));
+            commit_part(&ctx, &mut t, "x");
+            if hard {
+                std::fs::write(dir.join("b"), "SIX").unwrap();
+                let head = sh(&dir, &["rev-parse", "HEAD"]);
+                let mut reset = super::super::reset_op(t.data.as_ref().unwrap(), head.trim(), "--hard");
+                reset.confirm = None;
+                step(&ctx, &mut t, Action::Git(reset));
+                assert_eq!(read(&dir, "c"), "1");
+            } else {
+                commit_part(&ctx, &mut t, "c");
+            }
+            step(&ctx, &mut t, Action::SplitEnd { abort: false });
+            assert!(t.split.is_none());
+            let msgs = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+            assert_eq!((read(&dir, "a"), read(&dir, "b"), read(&dir, "c")), ("2".into(), "FIVE-unique".into(), "2".into()), "{msgs:?}");
+            if hard {
+                assert!(sh(&dir, &["stash", "list"]).lines().count() == 1, "{msgs:?}");
+                assert_eq!(sh(&dir, &["show", "stash@{0}:b"]), "SIX");
+            }
+            assert_eq!(t.undo_label(), Some("Create branch y"), "{msgs:?}");
+            step(&ctx, &mut t, Action::Undo);
+            assert!(sh(&dir, &["branch", "--list", "y"]).is_empty());
+            assert_eq!(t.undo_label(), None);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A file discarded, then edited and committed in the split: ⌘Z undoes the split. One edited
+    /// again and left uncommitted: the split is undone around it, its discarded copy kept in
+    /// the stash list (said once), and the steps before stay undoable.
+    #[test]
+    fn split_undo_never_sticks_on_a_backup() {
+        let (dir, ctx, mut t, tip) = split_repo("split-discard-commit");
+        step(&ctx, &mut t, discard("a"));
+        std::fs::write(dir.join("a"), "3").unwrap();
+        commit_part(&ctx, &mut t, "a");
+        step(&ctx, &mut t, Action::Git(Op::new("Stage", &["add", "-A"]).light()));
+        step(&ctx, &mut t, Action::Git(Op::new("Commit", &["commit", "-q", "-m", "rest"]).undo(Undo::Soft)));
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
+        assert_eq!(t.undo_label(), Some("Create branch y"));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, ctx, mut t, tip) = split_repo("split-discard-edit");
+        std::fs::write(dir.join("q"), "E1").unwrap();
+        step(&ctx, &mut t, discard("q"));
+        commit_part(&ctx, &mut t, ".");
+        std::fs::write(dir.join("q"), "E2").unwrap();
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        assert!(t.split.is_none());
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("stash")), "{msgs:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("q")).unwrap(), "E2");
+        assert_eq!(t.undo_label(), Some("Create branch y"), "{msgs:?}");
+        sh(&dir, &["checkout", "--", "q"]);
+        sh(&dir, &["stash", "apply", "-q"]);
+        assert_eq!(std::fs::read_to_string(dir.join("q")).unwrap(), "E1");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M q\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
