@@ -212,8 +212,8 @@ pub(super) fn labels(dir: &Path) -> [String; 2] {
 }
 
 /// Conflicted files "Mark all resolved" may stage: both sides present (a deleted side is a
-/// decision to make), a text file git merges (`-merge` / `binary` keep our side without
-/// markers), and no conflict markers left.
+/// decision to make), a text file git merges (`-merge` / `binary`, or a side git sees as
+/// binary content, keep our side without markers), and no conflict markers left.
 pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
     st.conflicted
         .iter()
@@ -222,7 +222,9 @@ pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
             let p = dir.join(&c.path);
             let text = std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&p).ok()).and_then(|b| String::from_utf8(b).ok());
             let (n, merged) = attrs(dir, &c.path);
-            merged && text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n)))
+            // git's binary test: a NUL in the first 8000 bytes of any side.
+            let binary = || (1..=3).any(|i| git::run_raw(dir, &["cat-file", "blob", &format!(":{i}:{}", c.path)], None).is_ok_and(|b| b[..b.len().min(8000)].contains(&0)));
+            merged && text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n))) && !binary()
         })
         .map(|c| c.path.clone())
         .collect()
@@ -503,7 +505,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `-merge` / `binary` files keep our side without markers: never bulk-resolvable.
+    /// `-merge` / `binary` files, and files whose content git sees as binary, keep our side
+    /// without markers: never bulk-resolvable.
     #[test]
     fn unmergeable_files_are_not_resolvable() {
         use crate::repo::testutil::{commit, identity, scratch, sh};
@@ -514,12 +517,15 @@ mod tests {
         for f in ["yarn.lock", "a.svg", "a.txt"] {
             commit(&dir, f, "base\n");
         }
+        commit(&dir, "bin.txt", "base\n");
         sh(&dir, &["checkout", "-q", "-b", "feature"]);
         for f in ["yarn.lock", "a.svg", "a.txt"] {
             commit(&dir, f, "feature\n");
         }
+        std::fs::write(dir.join("bin.txt"), "feature\0\n").unwrap();
+        sh(&dir, &["commit", "-qam", "binary"]);
         sh(&dir, &["checkout", "-q", "main"]);
-        for f in ["yarn.lock", "a.svg", "a.txt"] {
+        for f in ["yarn.lock", "a.svg", "a.txt", "bin.txt"] {
             commit(&dir, f, "main\n");
         }
         assert!(git::run(&dir, &["merge", "feature"]).is_err());

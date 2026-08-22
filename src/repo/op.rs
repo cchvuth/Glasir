@@ -740,7 +740,8 @@ impl RepoTab {
             return;
         }
         if let Some((busy, _)) = &self.running {
-            self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
+            let why = super::tools::waiting(busy).map_or_else(|| format!("'{busy}' is still running."), |k| format!("the external {k} tool is open. Close it (or press Cancel) to continue."));
+            self.notes.push(Msg { text: format!("'{}' skipped: {why}", op.label), error: true });
             return;
         }
         let op = super::stack::follow(op, self.data.as_ref());

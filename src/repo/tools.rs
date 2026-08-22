@@ -154,10 +154,23 @@ pub fn tool(d: &super::RepoData, diff: bool) -> Result<&str, String> {
     Ok(t)
 }
 
+const MERGE_TOOL: &str = "Open in external merge tool";
+const DIFF_TOOL: &str = "Open in external diff tool";
+
+/// For the op running as `label`: the kind of tool window ("merge" / "diff") it waits on,
+/// which holds every other op until it closes.
+pub fn waiting(label: &str) -> Option<&'static str> {
+    match label {
+        MERGE_TOOL => Some("merge"),
+        DIFF_TOOL => Some("diff"),
+        _ => None,
+    }
+}
+
 /// `git mergetool` for one conflicted file, waiting until the tool closes. It rebuilds the
 /// working file from the index stages, dropping any hand edits, so the file is backed up first (⌘Z).
 pub fn mergetool_op(path: &str) -> Op {
-    Op::new("Open in external merge tool", &["--literal-pathspecs", "mergetool", "--gui", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
+    Op::new(MERGE_TOOL, &["--literal-pathspecs", "mergetool", "--gui", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
 }
 
 /// `git difftool` for the file a diff shows; `None` where there is nothing to compare
@@ -181,7 +194,7 @@ pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
     a.push("--");
     a.extend(c.old_path.as_deref());
     a.push(&c.path);
-    Some(Op::new("Open in external diff tool", &a).light())
+    Some(Op::new(DIFF_TOOL, &a).light())
 }
 
 /// `prog` on PATH (with Windows' .exe / .cmd), or as given when it is a path.
@@ -392,6 +405,9 @@ mod tests {
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
         t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
+        // Other ops wait for the tool window: say so, and how to go on.
+        t.apply(&ctx, Action::Git(crate::repo::Op::new("Stage z", &["add", "z"])));
+        assert!(t.notes.iter().any(|m| m.text.contains("'Stage z' skipped") && m.text.contains("merge tool is open") && m.text.contains("Cancel")), "{:?}", t.notes.iter().map(|m| &m.text).collect::<Vec<_>>());
         settle(&ctx, &mut t);
         let read = || std::fs::read_to_string(dir.join("a.txt")).unwrap();
         assert!((0..200).any(|_| read() == "feature\n" || { std::thread::sleep(std::time::Duration::from_millis(25)); false }));
