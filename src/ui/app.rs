@@ -17,6 +17,8 @@ pub struct App {
     pub(super) shot: Option<(String, u32)>,
     /// `GLASIR_PERF=1`: per-frame CPU times, summarised on stderr every 2 s.
     perf: Option<(std::time::Instant, Vec<f32>)>,
+    /// Protected branches changed: tabs reload once the Settings dialog closes, not per keystroke.
+    stacks_stale: bool,
     /// Screenshot view `scroll-bench`: scroll the graph a page per frame.
     pub(super) bench: Option<usize>,
     pub(super) tabs: Vec<RepoTab>,
@@ -69,6 +71,7 @@ impl App {
         let mut app =
             App {
             shot,
+            stacks_stale: false,
             perf: std::env::var_os("GLASIR_PERF").map(|_| (std::time::Instant::now(), vec![])),
             bench: None,
             tabs: vec![],
@@ -342,7 +345,9 @@ impl eframe::App for App {
         crate::repo::tools::set(&self.s.tools);
         crate::repo::avatars::set_enabled(self.s.avatars);
         crate::repo::merge_opts::set_pick_x(self.s.cherry_pick_x);
-        if crate::repo::stack::set_follow(self.s.stacks, &self.s.keep_branches) {
+        self.stacks_stale |= crate::repo::stack::set_follow(self.s.stacks, &self.s.keep_branches);
+        if self.stacks_stale && self.settings.is_none() {
+            self.stacks_stale = false;
             self.tabs.iter_mut().for_each(|t| t.reload(&ctx, true));
         }
         self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here

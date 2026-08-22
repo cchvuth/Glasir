@@ -452,6 +452,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A hit older than the loaded page is only in the filtered graph: menus take its parent from there.
+    #[test]
+    fn filtered_graph_holds_hits_beyond_the_page() {
+        let dir = scratch("search-page");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for m in ["needle a", "b", "needle c", "d", "needle e", "f"] {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        let d = load_all(&dir, 3, View::default()).unwrap();
+        let f = finished(&dir, &d, "needle", true).filtered.clone().unwrap();
+        let old = f.log.iter().find(|c| c.summary == "needle a").unwrap().id.clone();
+        assert!(!d.row_of.contains_key(&old));
+        assert!(d.first_parent(&old).or_else(|| f.first_parent(&old)).is_none(), "the root has no parent");
+        let c = f.log.iter().find(|c| c.summary == "needle c").unwrap().id.clone();
+        assert!(!d.row_of.contains_key(&c) && f.first_parent(&c).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// While hits stream in, the filtered graph is rebuilt in the background when their number
     /// doubles (or every so often), not per hit; the end of the stream brings it up to date.
     #[test]

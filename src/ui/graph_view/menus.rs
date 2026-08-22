@@ -7,7 +7,9 @@ use crate::repo::merge_opts::{Merge, merge_op, pick_op};
 use crate::theme::{self, icon};
 use egui::Ui;
 
-pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut Vec<Action>) {
+/// `d`: the full history; `shown`: the graph on screen (the search hits while filtering, which also
+/// holds hits older than `d`'s loaded page).
+pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, shown: &RepoData, multi: &[String], acts: &mut Vec<Action>) {
     let n = multi.len();
     for (kind, label) in [
         (MultiOp::CherryPick, format!("Cherry-pick {n} commits")),
@@ -32,7 +34,7 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut
         acts.push(Action::Copy(multi.join("\n")));
     }
     // GitHub's base...head leaves the base out: compare from the oldest one's parent (none for a root).
-    if let Some(base) = d.row_of.get(&multi[n - 1]).and_then(|&r| d.commit(r)).and_then(|c| c.parents.first()) {
+    if let Some(base) = d.first_parent(&multi[n - 1]).or_else(|| shown.first_parent(&multi[n - 1])) {
         let page = crate::git::Page::Compare { base, head: &multi[0] };
         crate::ui::links::items(ui, d, &[("compare", page)], &[&multi[n - 1], &multi[0]], acts);
     }

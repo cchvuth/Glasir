@@ -105,9 +105,10 @@ pub fn show(
     }
     // Hovering a ref fades what it can't reach; ⌘F fades non-matches.
     // Reachability, links and menus ask the full history: the filtered graph lacks the commits between hits.
+    // A hit older than the loaded page isn't in `all`: it can't be judged, so it stays unfaded.
     let full_row = |r: usize| if filtered.is_none() { Some(r) } else { d.commit(r).and_then(|c| all.row_of.get(&c.id).copied()) };
     let reach = hovered_ref(ui).and_then(|t| all.row_of.get(&t).copied()).map(|r| all.reachable(r));
-    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || reach.as_ref().is_some_and(|v| !full_row(r).is_some_and(|a| v[a]));
+    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || reach.as_ref().is_some_and(|v| !full_row(r).is_none_or(|a| v[a]));
 
     // Column widths: [refs, graph]; graph 0 = fit lanes (up to 12). Drag the header to resize.
     let cols_id = egui::Id::new("graph_cols");
@@ -260,7 +261,7 @@ pub fn show(
                     }
                 }
                 resp.context_menu(|ui| match commit {
-                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, multi, acts),
+                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
                     Some(c) => commit_menu(ui, all, c, acts),
                     None => wip_menu(ui, acts),
                 });

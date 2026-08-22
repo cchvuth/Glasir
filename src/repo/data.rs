@@ -106,6 +106,11 @@ impl RepoData {
         if self.wip && row == 0 { None } else { self.log.get(row - self.wip as usize) }
     }
 
+    /// The first parent of commit `id` (`None`: a root, or `id` is not in this history).
+    pub fn first_parent(&self, id: &str) -> Option<&String> {
+        self.commit(*self.row_of.get(id)?)?.parents.first()
+    }
+
     /// `r` as a revision: its short name (that's what merge messages quote), or its full ref when
     /// git would read the short one as something else (tag `x` beats branch `x`, local branch
     /// `origin/x` beats the remote's, `stash` / `ORIG_HEAD`-style names beat every branch).
