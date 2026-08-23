@@ -323,7 +323,8 @@ pub fn reset_op(d: &RepoData, id: &str, mode: &str) -> Op {
         "--mixed" => Undo::Mixed,
         _ => Undo::Keep,
     };
-    let want = format!("refs/heads/{head} {}", d.status.head.as_deref().unwrap_or(""));
+    // As `head_state` puts it: no ref when detached.
+    let want = format!("{} {}", d.status.branch.as_deref().map(|b| format!("refs/heads/{b}")).unwrap_or_default(), d.status.head.as_deref().unwrap_or(""));
     let op = Op::new(format!("Reset {head} to {short} ({})", &mode[2..]), &[super::rebase::HEAD_IS, &want]).then(&["reset", "-q", mode, id, "--"]).undo(undo);
     if mode != "--hard" {
         return op;
@@ -833,9 +834,9 @@ impl RepoTab {
                     let autostash = op.autostash.clone().or_else(|| {
                         (op.undo == Undo::Keep && op.cmds.iter().flatten().any(|a| a == "--autostash")).then(|| format!("autostash to undo {}", op.label))
                     });
-                    // A hard reset's files come back in the same step, after the refs: restored first,
-                    // they'd block the `reset --keep` back.
-                    let saved = saved.take_if(|_| op.cmds.iter().any(|c| c.first().is_some_and(|a| a == "reset"))).into_iter().collect();
+                    // An op that moved refs (a hard reset, a rebase abort) gets its files back in the same
+                    // step, after the refs: restored first, they'd block the `reset --keep` back.
+                    let saved = saved.take().into_iter().collect();
                     self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Refs { before, after, mode: op.undo, autostash, saved, on_remote }));
                     self.redo.clear();
                 }
@@ -859,7 +860,11 @@ impl RepoTab {
                 match (op.label.as_str(), res.is_ok()) {
                     _ if op.custom => {}
                     (super::split::FINISH, true) => self.finish_split(),
-                    (super::split::FINISH, false) => self.split = None,
+                    // Stopped on a conflict in a later commit: the split ends with that rebase (below).
+                    (super::split::FINISH, false) => match self.split.as_mut() {
+                        Some(sp) if sp.rebase && self.data.as_ref().is_some_and(|d| git::state(&d.git_dir) == git::State::Rebasing) => sp.replaying = true,
+                        _ => self.split = None,
+                    },
                     (super::split::ABORT, true) => self.split_aborted(),
                     (l, false) if l.starts_with("Split ") => self.split = None,
                     // Show the WIP panel with the uncommitted parts (selected on reload).
@@ -868,6 +873,9 @@ impl RepoTab {
                     // revert the new commits: unstage, so only the uncommitted rest remains.
                     (l, false) if l.starts_with("Compose ") => self.run(ctx, Op::new("Unstage all", &["reset", "-q"]).light()),
                     _ => {}
+                }
+                if self.split.as_ref().is_some_and(|sp| sp.replaying) && self.data.as_ref().is_some_and(|d| git::state(&d.git_dir) != git::State::Rebasing) {
+                    self.split_replayed(op.label == "Abort rebase");
                 }
                 // Hunk buttons patch the shown diff: mark it stale now, not after the status reload,
                 // or a second click re-applies the old patch wherever its context still matches.
@@ -904,10 +912,16 @@ impl RepoTab {
                         // Ref snapshots are unreliable once refs moved (a refusal moves none). Discards
                         // and reverting ops (deleted branches, dropped stashes) stay: they check the state before acting.
                         if moved {
+                            // A ref step's own backups are in the stash list already (`restore_backups`).
+                            from.pop_if(|e| matches!(e.kind, UndoKind::Refs { .. }));
                             *from = keep_backups(std::mem::take(from)).filter(|e| !matches!(e.kind, UndoKind::Refs { .. })).collect();
                         }
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
+                }
+                // Undone past its first step: the split is over.
+                if self.split.as_ref().is_some_and(|sp| self.undo.len() <= sp.undo_len) {
+                    self.split = None;
                 }
                 self.reload(ctx, true);
             }
@@ -1226,6 +1240,8 @@ mod tests {
             t.apply(&ctx, Action::Undo);
             settle(&ctx, &mut t);
             assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "wip\n");
+            // One step: restored before the refs, the conflicted `f` would block moving them back.
+            assert_eq!(t.undo_label(), None);
             sh(&dir, &["checkout", "-q", "-f", "main"]);
             sh(&dir, &["branch", "-f", "feat", feat.trim()]);
         }

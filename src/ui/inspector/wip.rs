@@ -148,7 +148,7 @@ impl RepoTab {
 
     /// Guided split: Continue / Abort, above whatever the inspector shows.
     pub(super) fn split_banner(&self, ui: &mut Ui, acts: &mut Vec<Action>) {
-        let Some(sp) = &self.split else { return };
+        let Some(sp) = self.split.as_ref().filter(|sp| !sp.replaying) else { return };
         let busy = self.busy().is_some();
         egui::Frame::new().fill(theme::accent().gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -175,7 +175,7 @@ impl RepoTab {
 
         // A bisect has its own banner above the graph.
         // A guided split has its own banner (`split_banner`), shown for any selection.
-        if self.split.is_none() && !matches!(d.state, State::Clean | State::Bisecting) {
+        if self.split.as_ref().is_none_or(|sp| sp.replaying) && !matches!(d.state, State::Clean | State::Bisecting) {
             let (what, cmd) = match d.state {
                 State::Merging => ("Merge", "merge"),
                 State::Rebasing => ("Rebase", "rebase"),
