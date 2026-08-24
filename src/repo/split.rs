@@ -28,14 +28,17 @@ pub struct Split {
 pub(super) const FINISH: &str = "Finish split";
 pub(super) const ABORT: &str = "Abort split";
 
-/// What `reset --hard <rev>` loses: paths whose worktree bytes differ from `rev`.
-/// Not the split commit's own content, which the abort brings back anyway.
+/// What `reset --hard <rev>` and then `rebase --abort` lose: paths whose worktree bytes differ
+/// from `rev`, and ignored files in either one's way. Not the split commit's own content, which
+/// the abort brings back anyway.
 fn changed_since(dir: &Path, rev: &str) -> Backup {
     let z = |args: &[&str]| git::run(dir, args).map(|o| o.split('\0').filter(|p| !p.is_empty()).map(String::from).collect::<Vec<_>>());
-    let (Ok(mut paths), Ok(untracked)) = (z(&["diff", "--name-only", "-z", "--no-renames", rev]), z(&["ls-files", "-z", "--others", "--exclude-standard"])) else {
+    let orig = super::undo::rebase_orig(dir).map(|o| o.trim().to_owned());
+    let revs: Vec<&str> = [Some(rev), orig.as_deref()].into_iter().flatten().collect();
+    let (Ok(mut paths), Ok(untracked), Ok(ignored)) = (z(&["diff", "--name-only", "-z", "--no-renames", rev]), z(&["ls-files", "-z", "--others", "--exclude-standard"]), super::undo::in_the_way(dir, &revs)) else {
         return Backup::All;
     };
-    paths.extend(untracked);
+    paths.extend(untracked.into_iter().chain(ignored));
     paths.sort_unstable();
     paths.dedup();
     if paths.is_empty() {
@@ -703,6 +706,117 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1", "{msgs:?}");
         step(&ctx, &mut t, Action::Undo);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Some stash entry holds `want` at `p` (in its files or, `^2`, its index).
+    fn stashed(dir: &Path, p: &str, want: &str) -> bool {
+        sh(dir, &["stash", "list", "--format=%H"]).lines().any(|h| [format!("{h}:{p}"), format!("{h}^2:{p}")].iter().any(|r| git::run(dir, &["show", r]).is_ok_and(|s| s == want)))
+    }
+
+    /// `base` (a=1, plus `files`), then a HEAD commit `C` with a=2 and `change`, a branch made after it, the split started.
+    fn custom_split(name: &str, files: &[(&str, &str)], change: &[(&str, &str)]) -> (std::path::PathBuf, egui::Context, RepoTab, String) {
+        let dir = scratch(name);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for (i, set) in [files, change].into_iter().enumerate() {
+            for (f, v) in set.iter().chain(&[("a", if i == 0 { "1" } else { "2" })]) {
+                std::fs::create_dir_all(dir.join(f).parent().unwrap()).unwrap();
+                std::fs::write(dir.join(f), v).unwrap();
+            }
+            sh(&dir, &["add", "-A"]);
+            sh(&dir, &["commit", "-q", "-m", if i == 0 { "base" } else { "C" }]);
+        }
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        step(&ctx, &mut t, Action::Git(Op::new("Create branch y", &["branch", "y"]).undo(Undo::Keep)));
+        step(&ctx, &mut t, Action::Split(tip.trim().into()));
+        (dir, ctx, t, tip)
+    }
+
+    /// r2-1: a discarded file `d` where the split's tip has a folder `d` (and the reverse) goes to
+    /// the stash list; ⌘Z never sticks on it.
+    #[test]
+    fn split_undo_keeps_a_backup_that_clashes_with_the_tree() {
+        for file in [true, false] {
+            let (dir, ctx, mut t, tip) = match file {
+                true => custom_split("split-clash-file", &[], &[("d/f", "df")]),
+                false => custom_split("split-clash-dir", &[("d", "1")], &[("d", "2"), ("x", "x")]),
+            };
+            let p = if file { "d" } else { "d/f" };
+            let _ = std::fs::remove_dir_all(dir.join("d"));
+            let _ = std::fs::remove_file(dir.join("d"));
+            std::fs::create_dir_all(dir.join(p).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(p), "PRECIOUS").unwrap();
+            step(&ctx, &mut t, clean(p));
+            if !file {
+                std::fs::remove_dir(dir.join("d")).unwrap();
+                std::fs::write(dir.join("d"), "2").unwrap();
+            }
+            commit_part(&ctx, &mut t, if file { "a" } else { "." });
+            step(&ctx, &mut t, Action::SplitEnd { abort: false });
+            assert!(t.split.is_none());
+            let msgs = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+            assert!(stashed(&dir, p, "PRECIOUS"), "{msgs:?}");
+            assert_eq!(msgs.iter().filter(|m| m.contains("stash")).count(), 1, "{msgs:?}");
+            assert_eq!(t.undo_label(), Some("Create branch y"), "{msgs:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// A staged version that differs from the file, discarded by a hard reset in the split,
+    /// comes back staged with ⌘Z of the split.
+    #[test]
+    fn split_undo_restores_a_staged_version() {
+        let (dir, ctx, mut t, tip) = custom_split("split-staged", &[("b", "1")], &[("x", "x")]);
+        commit_part(&ctx, &mut t, "x");
+        std::fs::write(dir.join("b"), "STAGED").unwrap();
+        step(&ctx, &mut t, Action::Git(Op::new("Stage", &["add", "b"]).light()));
+        std::fs::write(dir.join("b"), "WORK").unwrap();
+        let head = sh(&dir, &["rev-parse", "HEAD"]);
+        let mut reset = super::super::reset_op(t.data.as_ref().unwrap(), head.trim(), "--hard");
+        reset.confirm = None;
+        step(&ctx, &mut t, Action::Git(reset));
+        step(&ctx, &mut t, Action::Git(Op::new("Restore a", &["checkout", "-q", tip.trim(), "--", "a"]).light()));
+        step(&ctx, &mut t, Action::Git(Op::new("Commit", &["commit", "-q", "-m", "a"]).undo(Undo::Soft)));
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "WORK", "{msgs:?}");
+        assert_eq!(sh(&dir, &["show", ":b"]), "STAGED", "{msgs:?}");
+        assert_eq!(sh(&dir, &["stash", "list"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An ignored file made during an older split, where a later commit tracks that path:
+    /// the abort overwrites it, so it's backed up and ⌘Z brings it back (or keeps it stashed).
+    #[test]
+    fn split_abort_backs_up_ignored_files_in_the_way() {
+        let dir = scratch("split-abort-ignored");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, ".gitignore", ".env\n");
+        commit(&dir, "a", "1");
+        std::fs::write(dir.join("x"), "x").unwrap();
+        commit(&dir, "a", "2");
+        std::fs::write(dir.join(".env"), "committed").unwrap();
+        sh(&dir, &["add", "-f", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "D"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        step(&ctx, &mut t, Action::Split(sh(&dir, &["rev-parse", "HEAD~1"]).trim().into()));
+        assert!(t.split.as_ref().is_some_and(|s| s.rebase));
+        std::fs::write(dir.join(".env"), "PRECIOUS").unwrap();
+        step(&ctx, &mut t, Action::SplitEnd { abort: true });
+        assert_eq!(t.undo_label(), Some(ABORT));
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        let on_disk = std::fs::read_to_string(dir.join(".env")).is_ok_and(|s| s == "PRECIOUS");
+        assert!(on_disk || stashed(&dir, ".env", "PRECIOUS"), "{msgs:?}");
+        assert_eq!(t.undo_label(), None, "{msgs:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

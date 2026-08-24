@@ -162,7 +162,7 @@ pub fn run_raw(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> 
     exec(cmd(dir), dir, args, input)
 }
 
-pub(super) fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> {
+pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> {
     let cancel = SCOPE.with_borrow(Clone::clone).unwrap_or_default();
     if cancel.0.lock().unwrap().0 {
         return Err(CANCELLED.into());
