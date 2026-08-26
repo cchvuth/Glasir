@@ -60,6 +60,14 @@ fn changed_since(dir: &Path, rev: &str) -> Backup {
     Backup::Paths(paths)
 }
 
+/// Untracked files, ignored ones too, in the way of the commits after `id` that Continue replays.
+fn replayed_way(dir: &Path, id: &str) -> Backup {
+    let Some(orig) = super::undo::rebase_orig(dir) else { return Backup::All };
+    // ponytail: one `ls-tree` per later commit, run only when untracked files exist; fine for a split's few.
+    let later = git::run(dir, &["rev-list", &format!("{id}..{}", orig.trim())]).unwrap_or_default();
+    super::undo::in_the_way(dir, &later.lines().collect::<Vec<_>>()).map_or(Backup::All, Backup::Paths)
+}
+
 impl RepoTab {
     pub(super) fn start_split(&mut self, ctx: &egui::Context, commit: String) {
         let Some(d) = &self.data else { return };
@@ -100,7 +108,6 @@ impl RepoTab {
             self.split = None;
             return self.notes.push(Msg { text: "The split already ended or HEAD moved; nothing was reset.".into(), error: true });
         }
-        let cont = || Op::new(FINISH, &["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep);
         if abort {
             let op = match sp.rebase {
                 // Track the commit's files again first: `rebase --abort` won't overwrite its now-untracked added files.
@@ -119,16 +126,21 @@ impl RepoTab {
         left.extend(ign.split('\0').filter(|p| !p.is_empty()));
         left.sort_unstable();
         left.dedup();
+        // Replaying the later commits overwrites ignored files where one of them puts a file.
+        let way = sp.rebase.then(|| replayed_way(&self.dir, &sp.id));
         if left.is_empty() {
-            return if sp.rebase { self.run(ctx, cont()) } else { self.finish_split() };
+            return match way {
+                Some(b) => self.run(ctx, Op::new(FINISH, &["-c", "core.editor=true", "rebase", "--continue"]).backup(b).undo(Undo::Keep)),
+                None => self.finish_split(),
+            };
         }
         let message = if self.summary.trim().is_empty() { sp.message.clone() } else { format!("{}\n\n{}", self.summary.trim(), self.body.trim()).trim().to_owned() };
         let mut add = vec!["--literal-pathspecs", "add", "-A", "-f", "--"];
         add.extend(&left);
         let mut rest = Op::new(FINISH, &add).then(&["commit", "-q", "-F", "-"]).input(message).undo(Undo::Keep);
         // No "continue anyway": git refuses `rebase --continue` with uncommitted tracked changes.
-        if sp.rebase {
-            rest = rest.then(&["-c", "core.editor=true", "rebase", "--continue"]);
+        if let Some(b) = way {
+            rest = rest.then(&["-c", "core.editor=true", "rebase", "--continue"]).backup(b);
         }
         let ops = vec![("Commit the rest as the last part".to_owned(), rest)];
         let n = left.len();
@@ -817,6 +829,117 @@ mod tests {
         let on_disk = std::fs::read_to_string(dir.join(".env")).is_ok_and(|s| s == "PRECIOUS");
         assert!(on_disk || stashed(&dir, ".env", "PRECIOUS"), "{msgs:?}");
         assert_eq!(t.undo_label(), None, "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `.gitignore` = `.env`, a=1, then `C` (a=2, x) and `D` (force-added `.env`): an ignored
+    /// path a later commit tracks.
+    fn ignored_repo(name: &str) -> (std::path::PathBuf, egui::Context, RepoTab, String) {
+        let dir = scratch(name);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, ".gitignore", ".env\n");
+        commit(&dir, "a", "1");
+        std::fs::write(dir.join("x"), "x").unwrap();
+        sh(&dir, &["add", "x"]);
+        commit(&dir, "a", "2");
+        std::fs::write(dir.join(".env"), "committed").unwrap();
+        sh(&dir, &["add", "-f", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "D"]);
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        step(&ctx, &mut t, Action::Git(Op::new("Create branch y", &["branch", "y"]).undo(Undo::Keep)));
+        (dir, ctx, t, tip)
+    }
+
+    /// ⌘Z of a finished HEAD split, and of an older split's start, moves the refs onto a
+    /// commit that tracks an ignored file made since: that file goes to the stash list, said once.
+    #[test]
+    fn split_undo_keeps_an_ignored_file_in_its_way() {
+        let dir = scratch("split-undo-ignored");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, ".gitignore", ".env\n");
+        commit(&dir, "a", "1");
+        std::fs::write(dir.join("a"), "2").unwrap();
+        std::fs::write(dir.join(".env"), "committed").unwrap();
+        sh(&dir, &["add", "-f", "a", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "C"]);
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        step(&ctx, &mut t, Action::Split(tip.trim().into()));
+        std::fs::remove_file(dir.join(".env")).unwrap();
+        commit_part(&ctx, &mut t, "a");
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        assert_eq!(t.undo_label().map(|l| l.starts_with("Split ")), Some(true));
+        std::fs::write(dir.join(".env"), "PRECIOUS").unwrap();
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        assert!(stashed(&dir, ".env", "PRECIOUS"), "{msgs:?}");
+        assert_eq!(msgs.iter().filter(|m| m.contains("stash")).count(), 1, "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let (dir, ctx, mut t, tip) = ignored_repo("split-undo-start-ignored");
+        step(&ctx, &mut t, Action::Split(sh(&dir, &["rev-parse", "HEAD~1"]).trim().into()));
+        // The commit's changes dropped outside, so the checkout back goes through.
+        sh(&dir, &["checkout", "--", "a"]);
+        std::fs::remove_file(dir.join("x")).unwrap();
+        std::fs::write(dir.join(".env"), "PRECIOUS").unwrap();
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        assert!(t.split.is_none());
+        assert_eq!(t.data.as_ref().unwrap().state, git::State::Clean);
+        assert!(stashed(&dir, ".env", "PRECIOUS"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Finish of an older split replays a later commit that tracks an ignored file made
+    /// during the split: it's backed up, and ⌘Z keeps it (in the stash list: the path is tracked).
+    #[test]
+    fn split_finish_backs_up_an_ignored_file_a_later_commit_tracks() {
+        let (dir, ctx, mut t, tip) = ignored_repo("split-finish-ignored");
+        step(&ctx, &mut t, Action::Split(sh(&dir, &["rev-parse", "HEAD~1"]).trim().into()));
+        assert!(t.split.as_ref().is_some_and(|s| s.rebase));
+        std::fs::write(dir.join(".env"), "PRECIOUS").unwrap();
+        commit_part(&ctx, &mut t, "x");
+        commit_part(&ctx, &mut t, "a");
+        let msgs = step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        assert!(t.split.is_none(), "{msgs:?}");
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip, "{msgs:?}");
+        let on_disk = std::fs::read_to_string(dir.join(".env")).is_ok_and(|s| s == "PRECIOUS");
+        assert!(on_disk || stashed(&dir, ".env", "PRECIOUS"), "{msgs:?}");
+        assert_eq!(t.undo_label(), Some("Create branch y"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A staged-only version an older split's Abort discards comes back staged with ⌘Z.
+    #[test]
+    fn split_abort_undo_restores_a_staged_version() {
+        let (dir, ctx, mut t, _) = older_repo("split-abort-staged");
+        std::fs::write(dir.join("q"), "STAGED").unwrap();
+        step(&ctx, &mut t, Action::Git(Op::new("Stage", &["add", "q"]).light()));
+        std::fs::write(dir.join("q"), "WORK").unwrap();
+        step(&ctx, &mut t, Action::SplitEnd { abort: true });
+        assert_eq!(std::fs::read_to_string(dir.join("q")).unwrap(), "1");
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(std::fs::read_to_string(dir.join("q")).unwrap(), "WORK", "{msgs:?}");
+        assert!(sh(&dir, &["show", ":q"]) == "STAGED" || stashed(&dir, "q", "STAGED"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name git won't store (`git~1`) is never discarded: no backup could hold it.
+    #[test]
+    fn a_name_git_cannot_store_is_not_discarded() {
+        let (dir, ctx, mut t, _) = split_repo("split-unstorable");
+        std::fs::write(dir.join("git~1"), "PRECIOUS").unwrap();
+        let msgs = step(&ctx, &mut t, clean("git~1"));
+        assert_eq!(std::fs::read_to_string(dir.join("git~1")).ok().as_deref(), Some("PRECIOUS"), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("Nothing was discarded")), "{msgs:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

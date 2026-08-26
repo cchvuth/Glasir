@@ -403,6 +403,10 @@ fn branch_cmd(dir: &Path, a: &[&str]) -> Res<String> {
             git::run(dir, &["branch", flag, n])
         }
         [BRANCH_RESTORE, n, oid, kv @ ..] => {
+            // Back already (a retry after a partly failed undo, or recreated outside): done.
+            if git::run(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{n}")]).is_ok_and(|o| o.trim() == *oid) {
+                return Ok(String::new());
+            }
             let out = git::run(dir, &["branch", n, oid])?;
             for p in kv.chunks(2) {
                 if let [k, v] = p {
@@ -574,7 +578,7 @@ fn paths_token(dir: &Path, paths: &[String]) -> Res<String> {
     a.extend(paths.iter().map(String::as_str));
     let mut h = std::hash::DefaultHasher::new();
     (git::run(dir, &["rev-parse", "HEAD"])?, git::run(dir, &a)?).hash(&mut h);
-    paths.iter().for_each(|p| super::undo::fingerprint(&dir.join(p)).hash(&mut h));
+    paths.iter().for_each(|p| super::undo::fingerprint(dir, p).hash(&mut h));
     Ok(format!("{:x}", h.finish()))
 }
 
@@ -893,6 +897,7 @@ impl RepoTab {
                 if let Ok((_, Some(note))) = &res {
                     msgs.push(Msg { text: note.clone(), error: true });
                 }
+                let ok = res.is_ok();
                 match res {
                     // Restored discarded work has no redo; it moved no refs, so the redos above it hold.
                     Ok(_) if from.last().is_some_and(|e| matches!(e.kind, UndoKind::Discard(_))) => drop(from.pop()),
@@ -919,9 +924,14 @@ impl RepoTab {
                         msgs.push(Msg { text: format!("Undo/redo failed:\n{e}"), error: true });
                     }
                 }
-                // Undone past its first step: the split is over.
-                if self.split.as_ref().is_some_and(|sp| self.undo.len() <= sp.undo_len) {
-                    self.split = None;
+                // Undone past its first step: the split is over, an older commit's rebase too (the
+                // undo put HEAD and the files back; `--quit` leaves them).
+                if let Some(sp) = self.split.take_if(|sp| self.undo.len() <= sp.undo_len)
+                    && sp.rebase
+                    && ok
+                    && git::git_dir(&self.dir).is_ok_and(|g| git::state(&g) == git::State::Rebasing)
+                {
+                    let _ = git::run(&self.dir, &["rebase", "--quit"]);
                 }
                 self.reload(ctx, true);
             }

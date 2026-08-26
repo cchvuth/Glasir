@@ -13,7 +13,7 @@ pub(super) struct Saved {
     /// `git stash create` commit holding the tracked files' contents.
     pub(super) stash: Option<String>,
     pub(super) tracked: Vec<String>,
-    /// `Backup::All`: paths whose index differs from HEAD (some only there: "MM" back to HEAD, "AD").
+    /// Paths whose index differs from HEAD (some only there: "MM" back to HEAD, "AD"); `Backup::All`: every one.
     pub(super) staged: Vec<String>,
     /// `Backup::Paths`: paths that were conflicted; undo brings the conflict back.
     pub(super) unmerged: Vec<String>,
@@ -23,7 +23,7 @@ pub(super) struct Saved {
     pub(super) overwrite: bool,
     /// Untracked paths that didn't exist (once sealed: that the op created), removed on undo.
     pub(super) absent: Vec<String>,
-    /// `Backup::All` with a real `stash create` commit: undo also restores its index (`^2`).
+    /// A real `stash create` commit: undo also restores the `staged` paths from its index (`^2`).
     pub(super) index: bool,
     /// What each path held right after the op (`seal`): undo refuses once one changed.
     /// Shared with the undo job, which re-seals what it restored so a half-done undo can be retried.
@@ -37,12 +37,24 @@ impl Saved {
         let mut paths: Vec<&String> = self.tracked.iter().chain(&self.staged).chain(&self.absent).chain(self.files.iter().map(|(p, _)| p)).collect();
         paths.sort_unstable();
         paths.dedup();
-        *self.after.lock().unwrap() = paths.into_iter().map(|p| (p.clone(), fingerprint(&dir.join(p)))).collect();
+        *self.after.lock().unwrap() = paths.into_iter().map(|p| (p.clone(), fingerprint(dir, p))).collect();
     }
 }
 
-/// A hash of what's at `path` (None = nothing), to tell whether it changed.
-pub(super) fn fingerprint(path: &Path) -> Option<u64> {
+/// A hash of what's at `p` (None = nothing), to tell whether it changed. A file (or symlink)
+/// where a folder above `p` goes counts as `p`'s: restoring `p` would replace it.
+pub(super) fn fingerprint(dir: &Path, p: &str) -> Option<u64> {
+    let mut above = dir.to_path_buf();
+    for part in Path::new(p).parent().into_iter().flat_map(Path::components) {
+        above.push(part);
+        if std::fs::symlink_metadata(&above).is_ok_and(|m| !m.is_dir()) {
+            return content(&above).map(|h| !h);
+        }
+    }
+    content(&dir.join(p))
+}
+
+fn content(path: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     use std::io::Read;
     let meta = std::fs::symlink_metadata(path).ok()?;
@@ -153,10 +165,10 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
         _ => untracked,
     };
     // Unborn branch: `tracked` already lists every index entry.
-    let staged = match b {
-        Backup::All | Backup::Reset(..) => git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]).map(split_z).unwrap_or_default(),
-        _ => vec![],
-    };
+    let mut staged = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", "HEAD"]).map(split_z).unwrap_or_default();
+    if let Backup::Paths(_) | Backup::Overwrite(_) = b {
+        staged.retain(|p| tracked.contains(p));
+    }
     let unmerged = match b {
         Backup::All | Backup::Reset(..) => vec![],
         _ => split_z(git::run(dir, &["diff", "--name-only", "-z", "--diff-filter=U"]).map_err(refuse)?).into_iter().filter(|p| tracked.contains(p)).collect(),
@@ -165,10 +177,14 @@ pub(super) fn save_worktree(dir: &Path, b: &Backup) -> Res<Saved> {
     if let Some(p) = tracked.iter().chain(&staged).chain(&untracked).find(|p| p.contains('\u{FFFD}')) {
         return Err(refuse(format!("{p}: file name isn't valid UTF-8")));
     }
+    // A name git won't index can't go in a stash entry, so an undo couldn't keep it safe.
+    if let Some(p) = unindexable(dir, &untracked).map_err(refuse)? {
+        return Err(refuse(format!("{p}: git can't store this file name")));
+    }
     // `stash create` fails before the first commit and while the index has conflicts:
     // then the tracked files' bytes are copied like untracked ones (`stash` = None).
     let created = (!tracked.is_empty() || !staged.is_empty()).then(|| git::run(dir, &["stash", "create"]).ok()).flatten();
-    let index = matches!(b, Backup::All | Backup::Reset(..)) && created.as_ref().is_some_and(|s| !s.trim().is_empty());
+    let index = created.as_ref().is_some_and(|s| !s.trim().is_empty());
     let stash = created.and_then(|s| {
         // No tracked file changed yet: HEAD already holds their contents (e.g. a
         // restore from history about to overwrite a clean file).
@@ -236,14 +252,15 @@ fn same_path(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
-/// A backed-up path that holds work made since its discard, which restoring the backups would
+/// Backed-up paths that hold work made since their discard, which restoring the backups would
 /// overwrite. Fine only when gone, or tracked under that exact name and clean (committed,
 /// like a split's parts): anything else there (untracked, another case, a folder) is kept.
-fn overwrites(dir: &Path, saved: &[Saved]) -> Res<Option<String>> {
-    let mut changed: Vec<String> = saved.iter().flat_map(|s| s.after.lock().unwrap().iter().filter(|(p, f)| fingerprint(&dir.join(p)) != *f).map(|(p, _)| p.clone()).collect::<Vec<_>>()).collect();
-    changed.retain(|p| std::fs::symlink_metadata(dir.join(p)).is_ok());
+fn overwrites(dir: &Path, saved: &[Saved]) -> Res<Vec<String>> {
+    let mut changed: Vec<String> = saved.iter().flat_map(|s| s.after.lock().unwrap().iter().filter(|(p, f)| fingerprint(dir, p) != *f).map(|(p, _)| p.clone()).collect::<Vec<_>>()).collect();
+    // Gone is fine; a file where its folder goes is not.
+    changed.retain(|p| fingerprint(dir, p).is_some());
     if changed.is_empty() {
-        return Ok(None);
+        return Ok(changed);
     }
     changed.sort_unstable();
     changed.dedup();
@@ -259,19 +276,43 @@ fn overwrites(dir: &Path, saved: &[Saved]) -> Res<Option<String>> {
     let tracked = with(&["ls-files", "-z"])?;
     let dirty = with(&["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all", "--ignored"])?;
     let clean = |p: &str| tracked.iter().any(|t| t == p) && !dirty.iter().filter_map(|d| d.get(3..)).any(|d| same_path(d, p) || d.to_lowercase().starts_with(&format!("{}/", p.to_lowercase())));
-    Ok(changed.into_iter().find(|p| !clean(p)))
+    Ok(changed.into_iter().filter(|p| !clean(p)).collect())
+}
+
+/// Runs git on the scratch index `idx`; input through stdin: thousands of paths don't fit on a command line.
+fn on_index(dir: &Path, idx: &Path, args: &[&str], input: &str) -> Res<String> {
+    let mut c = git::cmd(dir);
+    c.env("GIT_INDEX_FILE", idx);
+    git::exec(c, dir, args, Some(input.as_bytes())).map(|o| String::from_utf8_lossy(&o).trim().to_owned())
+}
+
+/// Adds index entries `<mode> <oid>\t<path>\0` to `idx`; returns the first path it skipped:
+/// `--index-info` won't index some names (`git~1`, `.git.`) and only says "Ignoring path".
+fn add_entries(dir: &Path, idx: &Path, info: &str) -> Res<Option<String>> {
+    on_index(dir, idx, &["update-index", "-z", "--index-info"], info)?;
+    let have: std::collections::HashSet<String> = split_z(on_index(dir, idx, &["ls-files", "-z"], "")?).into_iter().collect();
+    Ok(split_z(info.into()).into_iter().filter_map(|e| e.split_once('\t').map(|(_, p)| p.to_owned())).find(|p| !have.contains(p)))
+}
+
+/// The first of `paths` git won't put in an index.
+fn unindexable(dir: &Path, paths: &[String]) -> Res<Option<String>> {
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let idx = git::git_dir(dir)?.join("glasir-check-index");
+    let _ = std::fs::remove_file(&idx);
+    let blob = git::run_input(dir, &["hash-object", "-w", "--stdin"], Some(b""))?;
+    let info: String = paths.iter().map(|p| format!("100644 {}\t{p}\0", blob.trim())).collect();
+    let res = add_entries(dir, &idx, &info);
+    let _ = std::fs::remove_file(&idx);
+    res
 }
 
 /// Keeps a backup as a stash entry: commit `base` with the backed-up paths as the discard
 /// found them, its index (`^2`) with the staged ones. Returns the entry's commit.
 fn stash_backup(dir: &Path, s: &Saved, msg: &str, base: &str) -> Res<String> {
     let idx = git::git_dir(dir)?.join("glasir-backup-index");
-    // Paths and entries go through stdin: thousands of them don't fit on a command line.
-    let git = |args: &[&str], input: &str| {
-        let mut c = git::cmd(dir);
-        c.env("GIT_INDEX_FILE", &idx);
-        git::exec(c, dir, args, Some(input.as_bytes())).map(|o| String::from_utf8_lossy(&o).trim().to_owned())
-    };
+    let git = |args: &[&str], input: &str| on_index(dir, &idx, args, input);
     // `base`'s tree with `paths` as `src` has them (gone where it hasn't), then `files` on top.
     let tree = |src: Option<&str>, paths: &[String], files: &[(String, Vec<u8>)]| -> Res<String> {
         git(&["read-tree", base], "")?;
@@ -309,7 +350,9 @@ fn stash_backup(dir: &Path, s: &Saved, msg: &str, base: &str) -> Res<String> {
             git(&["update-index", "--force-remove", "-z", "--stdin"], &gone)?;
         }
         // `--index-info` replaces a folder where a file goes (or the reverse) on its own.
-        git(&["update-index", "-z", "--index-info"], &info)?;
+        if let Some(p) = add_entries(dir, &idx, &info)? {
+            return Err(format!("git can't store the file name {p}"));
+        }
         git(&["write-tree"], "")
     };
     let res = (|| {
@@ -335,12 +378,18 @@ fn stash_backup(dir: &Path, s: &Saved, msg: &str, base: &str) -> Res<String> {
 /// Undo of a ref step with backups: `move_refs` moves its refs, then the backups go back newest
 /// first. Each is a stash entry before anything moves, so none lives only in memory while a
 /// restore can fail, skip or overwrite. An entry is dropped once its backup is back, and stays
-/// when that failed, when an older backup restores over the same path, or for all of them when
-/// `keep` (they'd overwrite work made since). Never fails once the refs are back: returns one
-/// note naming what stayed. Err's flag: nothing moved (the step holds, its entries are dropped);
-/// without it the move failed partway and every backup stays in the stash list.
-fn restore_backups(dir: &Path, saved: &mut [Saved], label: &str, keep: Option<&str>, base: &str, move_refs: impl FnOnce() -> Result<(), (String, bool)>) -> Result<Option<String>, (String, bool)> {
+/// when that failed, when an older backup restores over the same path, or when it holds one of
+/// `keep` (it would overwrite work made since). `way`: untracked files the move itself overwrites
+/// (git's checkout and `reset --keep` treat ignored ones as expendable), kept the same way unless
+/// still there as they were. Never fails once the refs are back: returns one note naming what
+/// stayed. Err's flag: nothing moved (the step holds, its entries are dropped); without it the
+/// move failed partway and every backup stays in the stash list.
+fn restore_backups(dir: &Path, saved: &mut [Saved], label: &str, keep: &[String], base: &str, way: Vec<String>, move_refs: impl FnOnce() -> Result<(), (String, bool)>) -> Result<Option<String>, (String, bool)> {
     let msg = format!("Glasir: discarded during {label}");
+    let way = match way.is_empty() {
+        true => None,
+        false => Some(save_worktree(dir, &Backup::Paths(way)).map_err(|e| (format!("Nothing was undone: the files in its way couldn't be kept ({e})."), true))?),
+    };
     let drop_entries = |shas: &[String]| {
         let list = git::stashes(dir).unwrap_or_default();
         // Deepest first: dropping one renumbers the entries above it.
@@ -349,7 +398,7 @@ fn restore_backups(dir: &Path, saved: &mut [Saved], label: &str, keep: Option<&s
         }
     };
     let mut shas = vec![];
-    for s in saved.iter() {
+    for s in way.iter().chain(saved.iter()) {
         match stash_backup(dir, s, &msg, base) {
             Ok(sha) => shas.push(sha),
             Err(e) => {
@@ -366,31 +415,38 @@ fn restore_backups(dir: &Path, saved: &mut [Saved], label: &str, keep: Option<&s
         }
         return Err((if shas.is_empty() { e } else { format!("{e}\n\n{}", kept(shas.len(), "The discarded files weren't put back".into())) }, false));
     }
-    if let Some(p) = keep {
-        return Ok((!shas.is_empty()).then(|| kept(shas.len(), format!("{p} changed since it was discarded, so the discarded files weren't put back"))));
+    let (mut done, mut why) = (vec![], vec![]);
+    let off = way.is_some() as usize;
+    if let Some(w) = &way {
+        match w.files.iter().find(|(p, b)| std::fs::read(dir.join(p)).ok().as_ref() != Some(b)) {
+            Some((p, _)) => why.push(format!("{p} was in the way of the undo")),
+            None => done.push(shas[0].clone()),
+        }
     }
-    let (mut done, mut failed, mut twice) = (vec![], None, 0);
+    let (mut failed, mut twice) = (None, 0);
     for i in (0..saved.len()).rev() {
         let paths = |s: &Saved| s.after.lock().unwrap().iter().map(|(p, _)| p.clone()).collect::<Vec<_>>();
+        if let Some(p) = paths(&saved[i]).into_iter().find(|p| keep.iter().any(|k| same_path(k, p))) {
+            why.push(format!("{p} changed since it was discarded, so its backup wasn't put back"));
+            continue;
+        }
         let older: Vec<String> = saved[..i].iter().flat_map(paths).collect();
         saved[i].seal(dir);
         match restore_worktree(dir, &saved[i]) {
             Err(e) => failed = failed.or(Some(e)),
             Ok(()) if paths(&saved[i]).iter().any(|p| older.iter().any(|o| same_path(o, p))) => twice += 1,
-            Ok(()) => done.push(shas[i].clone()),
+            Ok(()) => done.push(shas[off + i].clone()),
         }
     }
     drop_entries(&done);
-    let n = shas.len() - done.len();
-    Ok(match failed {
-        Some(e) => Some(kept(n, format!("Some discarded files couldn't be put back ({e})"))),
-        None => (twice > 0).then(|| kept(n, "A file was discarded more than once, so the newer copy wasn't kept in place".into())),
-    })
+    why.extend(failed.map(|e| format!("Some discarded files couldn't be put back ({e})")));
+    why.extend((twice > 0).then(|| "A file was discarded more than once, so the newer copy wasn't kept in place".to_owned()));
+    Ok((shas.len() > done.len()).then(|| kept(shas.len() - done.len(), why.join("; "))))
 }
 
 /// Err if a backed-up path changed since the discard: restoring would overwrite that.
 fn unchanged(dir: &Path, s: &Saved) -> Res<()> {
-    match s.after.lock().unwrap().iter().find(|(p, f)| fingerprint(&dir.join(p)) != *f) {
+    match s.after.lock().unwrap().iter().find(|(p, f)| fingerprint(dir, p) != *f) {
         Some((p, _)) => Err(format!("{p} changed since the discard, and undoing it would overwrite that. Move the file aside, then undo again.")),
         None => Ok(()),
     }
@@ -400,7 +456,7 @@ pub(super) fn restore_worktree(dir: &Path, s: &Saved) -> Res<()> {
     unchanged(dir, s)?;
     let mut after = s.after.lock().unwrap();
     // What this undo itself changed is no "change since" for a retry after a later step fails.
-    let mut reseal = |ps: &[&String]| after.iter_mut().filter(|(p, _)| ps.contains(&p)).for_each(|(p, f)| *f = fingerprint(&dir.join(&*p)));
+    let mut reseal = |ps: &[&String]| after.iter_mut().filter(|(p, _)| ps.contains(&p)).for_each(|(p, f)| *f = fingerprint(dir, p));
     let tracked: std::collections::HashSet<&String> = s.tracked.iter().collect();
     let mut staged_since = None;
     // Only the discarded paths, so other edits made since don't block the restore.
@@ -548,24 +604,31 @@ impl RepoTab {
                 let step = e.label.clone();
                 // The stash entries' base: where the refs go, so applying one later only adds the files.
                 let base = target.refs.get(&target.head).unwrap_or(&target.head).clone();
+                // None: an unborn branch, no files in its way.
+                let tip = target.refs.get(&target.head).or(Some(&target.head).filter(|h| !h.starts_with("refs/"))).cloned();
                 Box::new(move || {
                     // Checked before the refs move, which changes the files: then the restore can't tell.
                     let keep = overwrites(&dir, &saved).map_err(|e| (e, true))?;
+                    // Only a move of HEAD's commit writes files.
+                    let head = git::run(&dir, &["rev-parse", "-q", "--verify", "HEAD"]).unwrap_or_default();
+                    let way = tip.filter(|t| *t != head.trim()).map_or(Ok(vec![]), |t| in_the_way(&dir, &[&t])).map_err(|e| (e, true))?;
+                    // ponytail: regular files only; a symlink in the way loses just its link.
+                    let way = way.into_iter().filter(|p| std::fs::symlink_metadata(dir.join(p)).is_ok_and(|m| m.is_file())).collect();
                     let mv = || move_refs(&dir, &expect, &target, mode, autostash.as_deref());
-                    restore_backups(&dir, &mut saved, &step, keep.as_deref(), &base, mv).map(|n| (None, n))
+                    restore_backups(&dir, &mut saved, &step, &keep, &base, way, mv).map(|n| (None, n))
                 })
             }
             UndoKind::Op { undo: u, redo } => {
                 let mut op = if undo { u.clone() } else { redo.clone() };
                 Box::new(move || {
-                    // Failed: the ref steps hold unless it moved refs (a refused stash pop moves none).
-                    let before = git::snapshot(&dir).ok();
+                    // Failed: every step holds. A retry of this one finishes what it started (a
+                    // branch restore skips the branches back already); a ref step checks the refs itself.
                     let res = match undo {
                         true => super::op::exec(&dir, &op).map(|_| (None, None)),
                         // A redone stash save made a new stash: its undo pops that one.
                         false => super::op::exec_stash(&dir, &mut op).map(|_| (op.revert.take(), None)),
                     };
-                    res.map_err(|e| (e, before.is_some() && git::snapshot(&dir).ok() == before))
+                    res.map_err(|e| (e, true))
                 })
             }
             // Restoring discarded work has no meaningful redo.
@@ -578,7 +641,7 @@ impl RepoTab {
                     unchanged(&dir, &saved[0]).map_err(|e| (e, true))?;
                     match git::run(&dir, &["rev-parse", "-q", "--verify", "HEAD"]) {
                         // Like a ref step's: a restore that fails partway keeps the backup in the stash list.
-                        Ok(head) => restore_backups(&dir, &mut saved, &step, None, head.trim(), || Ok(())).map(|n| (None, n)),
+                        Ok(head) => restore_backups(&dir, &mut saved, &step, &[], head.trim(), vec![], || Ok(())).map(|n| (None, n)),
                         // No commit to base a stash entry on.
                         Err(_) => restore_worktree(&dir, &saved[0]).map(|_| (None, None)).map_err(|e| (e, true)),
                     }
@@ -1050,12 +1113,16 @@ mod tests {
         let dir = crate::repo::testutil::scratch("undo-fp");
         let (mut a, p) = (vec![b'x'; 200_000], dir.join("f"));
         std::fs::write(&p, &a).unwrap();
-        let before = fingerprint(&p);
+        let before = fingerprint(&dir, "f");
         a[150_000] = b'y';
         std::fs::write(&p, &a).unwrap();
-        assert_ne!(fingerprint(&p), before);
+        assert_ne!(fingerprint(&dir, "f"), before);
         std::fs::remove_file(&p).unwrap();
-        assert_eq!(fingerprint(&p), None);
+        assert_eq!(fingerprint(&dir, "f"), None);
+        // A file where its folder goes is something there.
+        assert_eq!(fingerprint(&dir, "f/x"), None);
+        std::fs::write(&p, "in the way").unwrap();
+        assert!(fingerprint(&dir, "f/x").is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1305,5 +1372,142 @@ mod tests {
         assert!(git::run(&dir, &["rev-parse", "--verify", "x"]).is_err());
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "MINE\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn tab(dir: &Path) -> (egui::Context, RepoTab) {
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.to_path_buf(), 100, crate::repo::View::default());
+        crate::repo::testutil::settle(&ctx, &mut t);
+        (ctx, t)
+    }
+
+    fn step(ctx: &egui::Context, t: &mut RepoTab, a: crate::repo::Action) -> Vec<String> {
+        t.apply(ctx, a);
+        crate::repo::testutil::settle(ctx, t).into_iter().map(|m| m.text).collect()
+    }
+
+    /// Some stash entry holds `want` at `p`.
+    fn in_stash(dir: &Path, p: &str, want: &str) -> bool {
+        let list = git::run(dir, &["stash", "list", "--format=%H"]).unwrap_or_default();
+        list.lines().any(|h| git::run(dir, &["show", &format!("{h}:{p}")]).is_ok_and(|s| s == want))
+    }
+
+    /// r3: a staged new `d/x` discarded (Discard all, or the file's own discard), then a file `d`
+    /// made where its folder was: ⌘Z never replaces that file with the folder.
+    #[test]
+    fn undo_discard_keeps_a_file_where_a_folder_was() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op};
+        for all in [true, false] {
+            let dir = scratch(if all { "undo-dir-file-all" } else { "undo-dir-file-one" });
+            sh(&dir, &["init", "-q", "-b", "main"]);
+            identity(&dir);
+            commit(&dir, "keep", "k\n");
+            std::fs::create_dir(dir.join("d")).unwrap();
+            std::fs::write(dir.join("d/x"), "STAGED NEW\n").unwrap();
+            sh(&dir, &["add", "d/x"]);
+            let (ctx, mut t) = tab(&dir);
+            let op = match all {
+                true => Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::All),
+                false => Op::new("Discard", &["--literal-pathspecs", "rm", "-fq", "--", "d/x"]).light().backup(Backup::Paths(vec!["d/x".into()])),
+            };
+            step(&ctx, &mut t, Action::Git(op));
+            assert!(!dir.join("d").exists());
+            std::fs::write(dir.join("d"), "NEW WORK\n").unwrap();
+            let msgs = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(std::fs::read_to_string(dir.join("d")).ok().as_deref(), Some("NEW WORK\n"), "{msgs:?}");
+            std::fs::remove_file(dir.join("d")).unwrap();
+            step(&ctx, &mut t, Action::Undo);
+            assert_eq!(std::fs::read_to_string(dir.join("d/x")).ok().as_deref(), Some("STAGED NEW\n"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// r3: after a hard reset, a backed-up file's folder replaced by a file: ⌘Z keeps that file
+    /// and the backup (in the stash list).
+    #[test]
+    fn hard_reset_undo_keeps_a_file_where_a_folder_was() {
+        use crate::repo::testutil::*;
+        let dir = scratch("undo-reset-dir-file");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        std::fs::create_dir(dir.join("d")).unwrap();
+        commit(&dir, "d/x", "base\n");
+        let c0 = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "y", "y\n");
+        let c1 = sh(&dir, &["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("d/x"), "MINE\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        hard_reset(&ctx, &mut t, &c0);
+        std::fs::remove_dir_all(dir.join("d")).unwrap();
+        std::fs::write(dir.join("d"), "NEW WORK\n").unwrap();
+        let msgs = step(&ctx, &mut t, crate::repo::Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), c1, "{msgs:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("d")).ok().as_deref(), Some("NEW WORK\n"), "{msgs:?}");
+        assert!(in_stash(&dir, "d/x", "MINE\n"), "{msgs:?}");
+        assert_eq!(msgs.iter().filter(|m| m.contains("stash")).count(), 1, "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// r3: an untracked file with a name git won't index (`git~1`) refuses its discard, so a
+    /// restore that fails partway can't lose it.
+    #[test]
+    fn discard_refuses_a_name_git_cannot_store() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op};
+        let dir = scratch("undo-unstorable");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "keep", "k\n");
+        std::fs::create_dir(dir.join("a")).unwrap();
+        std::fs::write(dir.join("a/b.txt"), "AB\n").unwrap();
+        std::fs::write(dir.join("git~1"), "SECRET\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        let paths = vec!["a/b.txt".to_owned(), "git~1".to_owned()];
+        let msgs = step(&ctx, &mut t, Action::Git(Op::new("Discard 2 files", &["--literal-pathspecs", "clean", "-fq", "--", "a/b.txt", "git~1"]).light().backup(Backup::Paths(paths))));
+        let _ = std::fs::remove_dir_all(dir.join("a"));
+        std::fs::write(dir.join("a"), "IN THE WAY\n").unwrap();
+        let msgs = [msgs, step(&ctx, &mut t, Action::Undo)].concat();
+        let kept = std::fs::read_to_string(dir.join("git~1")).is_ok_and(|s| s == "SECRET\n") || in_stash(&dir, "git~1", "SECRET\n");
+        assert!(kept, "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// r3: a branch restore that finds a branch already back at its commit skips it, and a
+    /// failed one keeps every step: ⌘Z never sticks or wipes the steps below.
+    #[test]
+    fn branch_restore_never_sticks() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, Op, Undo};
+        for same in [true, false] {
+            let dir = scratch(if same { "undo-branch-same" } else { "undo-branch-other" });
+            sh(&dir, &["init", "-q", "-b", "main"]);
+            identity(&dir);
+            commit(&dir, "keep", "k\n");
+            sh(&dir, &["branch", "a"]);
+            sh(&dir, &["branch", "b"]);
+            let (ctx, mut t) = tab(&dir);
+            step(&ctx, &mut t, Action::Git(Op::new("Create branch x", &["branch", "x"]).undo(Undo::Keep)));
+            let op = crate::repo::delete_branches(t.data.as_ref().unwrap(), "Delete a, b".into(), &["a", "b"], true);
+            step(&ctx, &mut t, Action::Git(op));
+            let labels = |t: &RepoTab| t.undo.iter().map(|e| e.label.clone()).collect::<Vec<_>>();
+            if same {
+                sh(&dir, &["branch", "b"]);
+            } else {
+                commit(&dir, "other", "o\n");
+                sh(&dir, &["branch", "b"]);
+                sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+                let msgs = step(&ctx, &mut t, Action::Undo);
+                assert_eq!(labels(&t), ["Create branch x", "Delete a, b"], "{msgs:?}");
+                sh(&dir, &["branch", "-D", "b"]);
+            }
+            let msgs = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(labels(&t), ["Create branch x"], "{msgs:?}");
+            step(&ctx, &mut t, Action::Undo);
+            assert!(t.undo.is_empty());
+            assert!(git::run(&dir, &["rev-parse", "--verify", "x"]).is_err());
+            assert_eq!(sh(&dir, &["branch", "--format=%(refname:short)"]), "a\nb\nmain\n");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }
