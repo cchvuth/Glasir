@@ -38,9 +38,14 @@ pub struct Session {
     /// owns the terminal (a command is running when it isn't the shell's).
     #[cfg(unix)]
     shell: (i32, std::fs::File),
-    /// Windows: the shell's pid (a command is running when the shell has a child process).
+    /// Windows: the shell's pid and creation time (a command is running when the shell
+    /// has a child process).
     #[cfg(windows)]
-    shell: u32,
+    shell: (u32, u64),
+    /// Windows: the last `busy()` answer and when it was taken; a process snapshot is
+    /// too slow to take every frame.
+    #[cfg(windows)]
+    seen: std::cell::Cell<Option<(std::time::Instant, bool)>>,
 }
 
 impl Session {
@@ -61,7 +66,7 @@ impl Session {
         #[cfg(unix)]
         let shell = (pty.child().id() as i32, pty.file().try_clone()?);
         #[cfg(windows)]
-        let shell = pty.child_watcher().pid().map_or(0, |p| p.get());
+        let shell = (pty.child_watcher().pid().map_or(0, |p| p.get()), created(pty.child_watcher().raw_handle()));
         let (tx, events) = mpsc::channel();
         let l = Listener { ctx: ctx.clone(), tx };
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &TermSize::new(80, 24), l.clone())));
@@ -76,6 +81,8 @@ impl Session {
             size,
             #[cfg(any(unix, windows))]
             shell,
+            #[cfg(windows)]
+            seen: Default::default(),
         })
     }
 
@@ -102,29 +109,17 @@ impl Session {
             let fg = unsafe { libc::tcgetpgrp(self.shell.1.as_raw_fd()) };
             fg > 0 && fg != self.shell.0
         }
-        // ConPTY has no foreground process group: look for a child of the shell instead.
         #[cfg(windows)]
-        // SAFETY: a process snapshot, walked with a correctly sized entry and closed here.
-        unsafe {
-            use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-            use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
-            if self.shell == 0 {
-                return false;
+        {
+            let now = std::time::Instant::now();
+            match self.seen.get() {
+                Some((at, b)) if now - at < std::time::Duration::from_millis(500) => b,
+                _ => {
+                    let b = has_child(self.shell);
+                    self.seen.set(Some((now, b)));
+                    b
+                }
             }
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap == INVALID_HANDLE_VALUE {
-                return false;
-            }
-            let mut e: PROCESSENTRY32W = std::mem::zeroed();
-            e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            let mut more = Process32FirstW(snap, &mut e) != 0;
-            let mut child = false;
-            while more && !child {
-                child = e.th32ParentProcessID == self.shell && e.th32ProcessID != self.shell;
-                more = Process32NextW(snap, &mut e) != 0;
-            }
-            CloseHandle(snap);
-            child
         }
     }
 
@@ -142,6 +137,56 @@ impl Session {
             }
         }
         true
+    }
+}
+
+/// A process handle's creation time (0 if unknown).
+#[cfg(windows)]
+fn created(h: windows_sys::Win32::Foundation::HANDLE) -> u64 {
+    use windows_sys::Win32::Foundation::FILETIME;
+    let mut t = [FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 }; 4];
+    let [c, e, k, u] = &mut t;
+    // SAFETY: GetProcessTimes only writes the four FILETIMEs passed in.
+    if unsafe { windows_sys::Win32::System::Threading::GetProcessTimes(h, c, e, k, u) } == 0 {
+        return 0;
+    }
+    (t[0].dwHighDateTime as u64) << 32 | t[0].dwLowDateTime as u64
+}
+
+/// ConPTY has no foreground process group: look for a child of the shell instead.
+/// A process orphaned before the shell started may still name the shell's (reused)
+/// pid as its parent, so only processes created after the shell count.
+#[cfg(windows)]
+fn has_child((shell, born): (u32, u64)) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    if shell == 0 {
+        return false;
+    }
+    // SAFETY: a process snapshot walked with a correctly sized entry; every handle
+    // opened here is closed here.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut e: PROCESSENTRY32W = std::mem::zeroed();
+        e.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut more = Process32FirstW(snap, &mut e) != 0;
+        let mut child = false;
+        while more && !child {
+            if e.th32ParentProcessID == shell && e.th32ProcessID != shell {
+                let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, e.th32ProcessID);
+                if !h.is_null() {
+                    child = created(h) >= born;
+                    CloseHandle(h);
+                }
+            }
+            more = Process32NextW(snap, &mut e) != 0;
+        }
+        CloseHandle(snap);
+        child
     }
 }
 
@@ -234,7 +279,7 @@ impl Terminals {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
@@ -253,6 +298,7 @@ mod tests {
         c.display_iter.map(|i| i.cell.c).collect()
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_runs_in_the_repo_and_reports_busy_commands() {
         let dir = crate::repo::testutil::scratch("terminal");
@@ -278,6 +324,7 @@ mod tests {
         assert!(!ts.open);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_pending_stop_never_moves_to_another_shell() {
         let dir = crate::repo::testutil::scratch("terminal-confirm");
@@ -297,6 +344,7 @@ mod tests {
         assert_eq!(ts.confirm, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn turning_the_terminal_off_ends_idle_shells_and_shows_busy_ones() {
         let dir = crate::repo::testutil::scratch("terminal-off");
@@ -320,5 +368,26 @@ mod tests {
         wait("idle", || !ts.busy());
         ts.keep_busy();
         assert!(!ts.open && ts.tabs.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_is_busy_while_a_command_runs() {
+        let dir = crate::repo::testutil::scratch("terminal-win");
+        let ctx = egui::Context::default();
+        let mut ts = Terminals::default();
+        ts.toggle(&ctx, &dir);
+        assert!(ts.open && ts.tabs.len() == 1, "{:?}", ts.error);
+        let s = &ts.tabs[0];
+        // The echoed command line shows the pieces; only the output joins them.
+        s.write(&b"echo ('re'+'ady')\r"[..]);
+        wait("prompt", || screen(s).contains("ready") && !s.busy());
+        s.write(&b"ping -n 6 127.0.0.1; echo ('do'+'ne')\r"[..]);
+        wait("busy", || s.busy());
+        wait("done", || screen(s).contains("done"));
+        wait("idle", || !s.busy());
+        ts.close(0);
+        assert!(!ts.open && ts.tabs.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -348,7 +348,7 @@ impl RepoTab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repo::testutil::{commit, identity, scratch, settle, sh};
+    use crate::repo::testutil::{commit, identity, scratch, sh};
 
     fn ids(c: &[Commit]) -> Vec<Vec<usize>> {
         c.iter().map(|c| c.units.clone()).collect()
@@ -611,9 +611,9 @@ mod tests {
         plan.fill(r#"{"commits":[{"message":"l and f","units":[3,1]},{"message":"g","units":[2]}]}"#).unwrap();
         let ctx = egui::Context::default();
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, super::super::View::default());
-        settle(&ctx, &mut t);
+        crate::repo::testutil::settle(&ctx, &mut t);
         t.run(&ctx, plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap());
-        settle(&ctx, &mut t);
+        crate::repo::testutil::settle(&ctx, &mut t);
         assert_eq!(g(&["log", "-1", "--format=%s"]), "l and f\n");
         assert!(g(&["ls-tree", "HEAD", "l"]).starts_with("120000 "));
         assert_eq!(g(&["status", "--porcelain"]), " M g\n");

@@ -36,7 +36,7 @@ libc = "0.2"
 
 # Windows: does an embedded shell have a child process? (already in the tree)
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 window-vibrancy = "0.8.1"
