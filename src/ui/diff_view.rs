@@ -219,7 +219,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         if let Some(op) = crate::repo::tools::difftool_op(&src) {
             let tool = d.map_or(Err(String::new()), |d| crate::repo::tools::tool(d, true));
             let b = ui.add_enabled(tool.is_ok(), egui::Button::new(icon::GIT_DIFF).frame_when_inactive(false).corner_radius(255));
-            let b = b.on_hover_text(format!("Open in external diff tool ({}); Glasir waits until you close it", tool.as_deref().unwrap_or_default()));
+            let b = b.on_hover_text(format!("Open in external diff tool ({}); other actions keep working while it is open", tool.as_deref().unwrap_or_default()));
             if b.on_disabled_hover_text(tool.err().unwrap_or_default()).clicked() {
                 acts.push(Action::Git(op));
             }

@@ -452,10 +452,10 @@ pub fn remove_worktree_and_branch(d: &RepoData, remove: &[&str], b: &str) -> Op 
 const STASH_LIST: &str = "!stash-list";
 const STASH_DROP: &str = "!stash-drop";
 const STASH_HAS: &str = "!stash-has";
-const STASH_POP: &str = "!stash-pop";
-const STASH_APPLY: &str = "!stash-apply";
+pub(super) const STASH_POP: &str = "!stash-pop";
+pub(super) const STASH_APPLY: &str = "!stash-apply";
 const STASH_RENAME: &str = "!stash-rename";
-const STASH_UNPOP: &str = "!stash-unpop";
+pub(super) const STASH_UNPOP: &str = "!stash-unpop";
 
 fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
     let short = |id: &str| id[..7.min(id.len())].to_owned();
@@ -740,14 +740,19 @@ impl RepoTab {
             }
             return;
         }
+        if self.tool_blocks(&op.label, |p| super::tools::touches(&op, p)) {
+            return;
+        }
         if op.confirm.is_some() {
             self.confirm = Some(op);
             return;
         }
         if let Some((busy, _)) = &self.running {
-            let why = super::tools::waiting(busy).map_or_else(|| format!("'{busy}' is still running."), |k| format!("the external {k} tool is open. Close it (or press Cancel) to continue."));
-            self.notes.push(Msg { text: format!("'{}' skipped: {why}", op.label), error: true });
+            self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
             return;
+        }
+        if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
+            return self.open_tool(ctx, op, kind);
         }
         let op = super::stack::follow(op, self.data.as_ref());
         let dir = self.dir.clone();

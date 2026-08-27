@@ -90,13 +90,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             }
             if let Some(label) = t.busy() {
                 ui.spinner();
-                match crate::repo::tools::waiting(label) {
-                    Some(k) => {
-                        let text = RichText::new(format!("Waiting for the {k} tool: close it to continue")).color(theme::dim(ui));
-                        ui.label(text).on_hover_text(format!("The external {k} tool is open. Other actions wait until you close it (or press Cancel)."));
-                    }
-                    None => theme::progress(ui, &format!("{label}…"), t.progress()),
-                }
+                theme::progress(ui, &format!("{label}…"), t.progress());
                 if t.cancellable() && theme::group(ui, |ui| theme::pill(ui, format!("{} Cancel", icon::STOP_CIRCLE))).clicked() {
                     acts.push(Action::Cancel);
                 }

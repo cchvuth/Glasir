@@ -104,6 +104,8 @@ pub struct RepoTab {
     /// Whitespace / context options for every diff opened in this tab.
     pub diff_opts: git::DiffOpts,
     running: Option<(String, Task<Done>)>,
+    /// External merge / diff tool windows open beside the op slot.
+    pub ext_tools: Vec<tools::Open>,
     /// Stops the running op's git command (not set for undo/redo).
     cancel: Option<git::Cancel>,
     undo: Vec<UndoEntry>,
@@ -215,6 +217,7 @@ impl RepoTab {
             diff: None,
             diff_opts: Default::default(),
             running: None,
+            ext_tools: vec![],
             cancel: None,
             undo: vec![],
             redo: vec![],
@@ -450,6 +453,7 @@ impl RepoTab {
         self.poll_absorb();
         self.poll_diff();
         self.poll_op(ctx, msgs);
+        self.poll_tools(ctx, msgs);
         self.sync_msg_edit(ctx);
     }
 
@@ -660,6 +664,7 @@ impl RepoTab {
                 self.max_commits += crate::repo::PAGE;
                 self.reload(ctx, true);
             }
+            Action::CloseTool(path) => self.close_tool(&path),
             Action::Cancel => {
                 if let Some(c) = &self.cancel {
                     c.cancel();

@@ -2,8 +2,9 @@
 //! the file manager, and the user's custom commands ({repo} {branch} {sha} {path}).
 
 use super::op::{Backup, Op, Undo};
-use super::DiffSrc;
-use crate::git::Res;
+use super::undo::{fingerprint, save_worktree, Saved, UndoEntry, UndoKind};
+use super::{DiffSrc, Msg, RepoTab, Task};
+use crate::git::{self, Res};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -157,9 +158,8 @@ pub fn tool(d: &super::RepoData, diff: bool) -> Result<&str, String> {
 const MERGE_TOOL: &str = "Open in external merge tool";
 const DIFF_TOOL: &str = "Open in external diff tool";
 
-/// For the op running as `label`: the kind of tool window ("merge" / "diff") it waits on,
-/// which holds every other op until it closes.
-pub fn waiting(label: &str) -> Option<&'static str> {
+/// For a tool op's label: the kind of tool window ("merge" / "diff") it opens.
+pub(super) fn kind(label: &str) -> Option<&'static str> {
     match label {
         MERGE_TOOL => Some("merge"),
         DIFF_TOOL => Some("diff"),
@@ -167,14 +167,14 @@ pub fn waiting(label: &str) -> Option<&'static str> {
     }
 }
 
-/// `git mergetool` for one conflicted file, waiting until the tool closes. It rebuilds the
-/// working file from the index stages, dropping any hand edits, so the file is backed up first (⌘Z).
+/// `git mergetool` for one conflicted file. It runs beside other ops ([`Open`]); the file is
+/// backed up before the tool starts, and ⌘Z restores it if the tool changed it.
 pub fn mergetool_op(path: &str) -> Op {
     Op::new(MERGE_TOOL, &["--literal-pathspecs", "mergetool", "--gui", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
 }
 
 /// `git difftool` for the file a diff shows; `None` where there is nothing to compare
-/// (untracked files, root commits). Waits until the tool closes, so its errors show.
+/// (untracked files, root commits). Watched like a merge tool, so its errors show.
 pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
     let mut a = vec!["--literal-pathspecs", "difftool", "--gui", "--no-prompt"];
     let c = src.change();
@@ -195,6 +195,108 @@ pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
     a.extend(c.old_path.as_deref());
     a.push(&c.path);
     Some(Op::new(DIFF_TOOL, &a).light())
+}
+
+/// An external merge / diff tool window, watched outside the op slot so other ops run meanwhile.
+pub struct Open {
+    pub kind: &'static str,
+    pub path: String,
+    cancel: git::Cancel,
+    task: Task<(Op, Res<String>, Option<Saved>)>,
+}
+
+/// Commands that rewrite the working tree beyond the paths they name.
+const WHOLE_TREE: &[&str] = &["checkout", "switch", "reset", "restore", "rebase", "merge", "pull", "stash", "cherry-pick", "revert", "am", "clean", "apply", "mergetool", super::stack::RESTACK, super::merge_opts::PICK_NEW, super::rebase::ABORT_ANY, super::op::STASH_POP, super::op::STASH_APPLY, super::op::STASH_UNPOP];
+
+/// Whether `op` would change `path`: it names it (or a folder holding it), or rewrites the tree
+/// without naming paths (a hard reset, checkout, rebase, discard all).
+pub(super) fn touches(op: &Op, path: &str) -> bool {
+    let named = |p: &str| p == path || p == "." || p == ":/" || path.strip_prefix(p.trim_end_matches('/')).is_some_and(|r| r.starts_with('/'));
+    let backup = match &op.backup {
+        Some(Backup::Paths(ps) | Backup::Overwrite(ps)) => ps.iter().any(|p| named(p)),
+        Some(Backup::All | Backup::Reset(..)) => true,
+        None => false,
+    };
+    let input = op.input.as_deref().is_some_and(|i| i.split(|&b| b == 0).any(|p| std::str::from_utf8(p).is_ok_and(named)));
+    backup
+        || input
+        || op.cmds.iter().any(|c| {
+            let dashes = c.iter().position(|a| a == "--");
+            let paths = dashes.is_some() || c.iter().any(|a| a.starts_with("--pathspec-from-file"));
+            // The subcommand: past global options (`-c key=value`, `--literal-pathspecs`).
+            let mut args = c.iter();
+            let sub = std::iter::from_fn(|| {
+                let a = args.next()?;
+                if a == "-c" || a == "-C" {
+                    args.next();
+                }
+                Some(a)
+            })
+            .find(|a| !a.starts_with('-'));
+            dashes.is_some_and(|i| c[i + 1..].iter().any(|p| named(p))) || (!paths && sub.is_some_and(|s| WHOLE_TREE.contains(&s.as_str())))
+        })
+}
+
+impl RepoTab {
+    /// Starts a merge / diff tool op beside the op slot. The backup is taken before the tool
+    /// starts and kept only if the file changed by the time it exits.
+    pub(super) fn open_tool(&mut self, ctx: &egui::Context, op: Op, kind: &'static str) {
+        let path = op.cmds[0].last().cloned().unwrap_or_default();
+        let (dir, cancel, file) = (self.dir.clone(), git::Cancel::default(), path.clone());
+        let c = cancel.clone();
+        let task = Task::spawn(ctx, move || {
+            let saved = match op.backup.as_ref().map(|b| save_worktree(&dir, b)).transpose() {
+                Ok(s) => s,
+                Err(e) => return (op, Err(e), None),
+            };
+            let before = fingerprint(&dir, &file);
+            let out = c.scope(|| super::op::exec(&dir, &op));
+            let saved = saved.filter(|_| fingerprint(&dir, &file) != before).map(|mut s| {
+                s.seal(&dir);
+                s
+            });
+            (op, out, saved)
+        });
+        self.ext_tools.push(Open { kind, path, cancel, task });
+    }
+
+    pub(super) fn close_tool(&self, path: &str) {
+        self.ext_tools.iter().filter(|t| t.path == path).for_each(|t| t.cancel.cancel());
+    }
+
+    /// The path of an open merge tool that `touched` says an op would change: a note says why it waits.
+    pub(super) fn tool_blocks(&mut self, label: &str, touched: impl Fn(&str) -> bool) -> bool {
+        let Some(t) = self.ext_tools.iter().find(|t| t.kind == "merge" && touched(&t.path)) else { return false };
+        let text = format!("'{label}' skipped: the external merge tool is open on {}. Close it (or press Cancel in the conflict banner) first.", t.path);
+        self.notes.push(Msg { text, error: true });
+        true
+    }
+
+    /// Finishes the tools that closed: errors toast, a changed file's backup becomes an undo step.
+    pub(super) fn poll_tools(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
+        let mut done = vec![];
+        self.ext_tools.retain(|t| match t.task.0.try_recv() {
+            Ok(r) => {
+                done.push(r);
+                false
+            }
+            Err(e) => e == std::sync::mpsc::TryRecvError::Empty,
+        });
+        for (op, res, saved) in done {
+            match res {
+                Err(e) if e == git::CANCELLED => msgs.push(Msg { text: format!("{} cancelled", op.label), error: false }),
+                Err(e) => msgs.push(Msg { text: format!("{} failed:\n{e}", op.label), error: true }),
+                Ok(_) => {}
+            }
+            if let Some(s) = saved {
+                self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Discard(s)));
+                self.redo.clear();
+                msgs.push(Msg { text: format!("{} ✔ ⌘Z restores the file as it was before", op.label), error: false });
+            }
+            self.refresh_diff(ctx);
+            self.reload(ctx, false);
+        }
+    }
 }
 
 /// `prog` on PATH (with Windows' .exe / .cmd), or as given when it is a path.
@@ -381,13 +483,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The merge tool's backup undoes what the tool wrote (sealed once it exits), and a
+    #[test]
+    fn ops_touching_a_tools_file() {
+        let p = "src/a.txt";
+        let op = |args: &[&str]| Op::new("x", args);
+        for o in [
+            op(&["--literal-pathspecs", "add", "--", "src/a.txt"]),
+            op(&["checkout", "--", "src"]),
+            op(&["-c", "core.editor=true", "merge", "--continue"]),
+            op(&["reset", "--hard", "HEAD"]),
+            op(&["stash", "push", "-u"]),
+            op(&["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input("b\0src/a.txt\0"),
+            op(&["clean", "-fd"]).backup(Backup::All),
+        ] {
+            assert!(touches(&o, p), "{:?}", o.cmds);
+        }
+        for o in [
+            op(&["--literal-pathspecs", "add", "--", "src/ab.txt", "z"]),
+            op(&["reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"]).input("b\0"),
+            op(&["fetch", "--all"]),
+            op(&["branch", "-f", "x", "HEAD"]),
+            op(&["commit", "-F", "-"]),
+        ] {
+            assert!(!touches(&o, p), "{:?}", o.cmds);
+        }
+    }
+
+    /// The merge tool runs beside other ops: only ops on its file (or the whole tree) wait.
+    /// Its backup undoes what the tool wrote, an unchanged file leaves no undo step, and a
     /// failing tool shows its error.
     #[cfg(unix)]
     #[test]
-    fn merge_tool_backup_undoes_and_errors_show() {
+    fn merge_tool_runs_beside_ops_and_undoes() {
         use crate::repo::testutil::settle;
-        use crate::repo::{Action, RepoTab, View};
+        use crate::repo::{Action, Msg, RepoTab, View};
         let dir = scratch("mergetool-undo");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
@@ -398,29 +527,57 @@ mod tests {
         commit(&dir, "a.txt", "main\n");
         assert!(crate::git::run(&dir, &["merge", "feature"]).is_err());
         std::fs::write(dir.join("a.txt"), "hand edit\n").unwrap();
-        for kv in [["merge.tool", "fake"], ["mergetool.fake.cmd", "sleep 1; cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"], ["mergetool.keepBackup", "false"]] {
+        for kv in [["merge.tool", "fake"], ["mergetool.fake.cmd", "sleep 2; cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"], ["mergetool.keepBackup", "false"]] {
             sh(&dir, &["config", kv[0], kv[1]]);
         }
         let ctx = egui::Context::default();
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
+        let texts = |m: &[Msg]| m.iter().map(|m| m.text.clone()).collect::<Vec<_>>();
+        let closed = |t: &mut RepoTab| {
+            let mut msgs = vec![];
+            assert!((0..400).any(|_| {
+                t.poll(&ctx, &mut msgs);
+                t.ext_tools.is_empty() || { std::thread::sleep(std::time::Duration::from_millis(25)); false }
+            }));
+            msgs.extend(settle(&ctx, t));
+            msgs
+        };
         t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
-        // Other ops wait for the tool window: say so, and how to go on.
-        t.apply(&ctx, Action::Git(crate::repo::Op::new("Stage z", &["add", "z"])));
-        assert!(t.notes.iter().any(|m| m.text.contains("'Stage z' skipped") && m.text.contains("merge tool is open") && m.text.contains("Cancel")), "{:?}", t.notes.iter().map(|m| &m.text).collect::<Vec<_>>());
-        settle(&ctx, &mut t);
+        assert!(t.busy().is_none() && t.ext_tools.len() == 1);
+        std::fs::write(dir.join("z"), "z\n").unwrap();
+        t.apply(&ctx, Action::Git(crate::repo::Op::new("Stage z", &["--literal-pathspecs", "add", "--", "z"]).light()));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().all(|m| !m.error) && t.notes.is_empty(), "{:?} {:?}", texts(&msgs), texts(&t.notes));
+        assert!(sh(&dir, &["status", "--porcelain"]).contains("A  z"));
+        // The tool's file, or the whole tree: refused while it is open.
+        t.apply(&ctx, Action::Git(crate::repo::Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", "a.txt"]).light()));
+        t.apply(&ctx, Action::Git(crate::repo::sequencer_op("merge", true)));
+        assert!(t.ext_tools.len() == 1 && t.busy().is_none());
+        let notes = texts(&std::mem::take(&mut t.notes));
+        assert!(notes.len() == 2 && notes.iter().all(|n| n.contains("skipped") && n.contains("merge tool is open on a.txt")), "{notes:?}");
+        let msgs = closed(&mut t);
+        assert!(msgs.iter().all(|m| !m.error), "{:?}", texts(&msgs));
         let read = || std::fs::read_to_string(dir.join("a.txt")).unwrap();
-        assert!((0..200).any(|_| read() == "feature\n" || { std::thread::sleep(std::time::Duration::from_millis(25)); false }));
+        assert_eq!(read(), "feature\n");
         t.apply(&ctx, Action::Undo);
         let msgs = settle(&ctx, &mut t);
-        assert!(msgs.iter().all(|m| !m.error), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert!(msgs.iter().all(|m| !m.error), "{:?}", texts(&msgs));
         assert_eq!(read(), "hand edit\n");
         assert!(sh(&dir, &["status", "--porcelain"]).contains("UU a.txt"));
 
+        // Closed without saving: nothing to undo.
+        sh(&dir, &["config", "mergetool.fake.cmd", "true"]);
+        let undo = t.undo_label().map(str::to_owned);
+        t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
+        closed(&mut t);
+        assert_eq!((t.undo_label().map(str::to_owned), read()), (undo, "hand edit\n".into()));
+        sh(&dir, &["checkout", "-m", "--", "a.txt"]);
+
         sh(&dir, &["config", "mergetool.fake.cmd", "echo tool broke >&2; exit 3"]);
         t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
-        let msgs = settle(&ctx, &mut t);
-        assert!(msgs.iter().any(|m| m.error && m.text.contains("tool broke")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        let msgs = closed(&mut t);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("tool broke")), "{:?}", texts(&msgs));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

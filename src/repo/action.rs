@@ -126,6 +126,8 @@ pub enum Action {
     Redo,
     Reload,
     Cancel,
+    /// Stop the external merge tool open on this path.
+    CloseTool(String),
 }
 
 pub fn op(label: impl Into<String>, args: &[&str]) -> Action {

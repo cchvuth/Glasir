@@ -34,10 +34,15 @@ impl Saved {
     /// Records the paths' state after the discard ran.
     pub(super) fn seal(&mut self, dir: &Path) {
         self.absent.retain(|p| std::fs::symlink_metadata(dir.join(p)).is_ok());
+        *self.after.lock().unwrap() = self.paths().into_iter().map(|p| (p.clone(), fingerprint(dir, p))).collect();
+    }
+
+    /// Every path the backup restores.
+    pub(super) fn paths(&self) -> Vec<&String> {
         let mut paths: Vec<&String> = self.tracked.iter().chain(&self.staged).chain(&self.absent).chain(self.files.iter().map(|(p, _)| p)).collect();
         paths.sort_unstable();
         paths.dedup();
-        *self.after.lock().unwrap() = paths.into_iter().map(|p| (p.clone(), fingerprint(dir, p))).collect();
+        paths
     }
 }
 
@@ -575,6 +580,16 @@ impl RepoTab {
         let stack = if undo { &self.undo } else { &self.redo };
         let Some(e) = stack.last() else { return };
         if self.running.is_some() {
+            return;
+        }
+        let touched = |p: &str| match &e.kind {
+            UndoKind::Discard(s) => s.paths().iter().any(|q| *q == p),
+            UndoKind::Op { undo: u, redo } => super::tools::touches(if undo { u } else { redo }, p),
+            UndoKind::Refs { .. } => true,
+        };
+        if let Some(open) = self.ext_tools.iter().find(|t| t.kind == "merge" && touched(&t.path)).map(|t| t.path.clone()) {
+            let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
+            self.tool_blocks(&label, |p| p == open);
             return;
         }
         if let (true, false, UndoKind::Refs { before, after, on_remote, .. }) = (undo, sure, &e.kind)

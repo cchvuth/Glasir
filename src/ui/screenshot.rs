@@ -113,7 +113,7 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Git(Op::new(args[0], &args)));
                         }
                     }
-                    // `mergetool:<path>`: the external merge tool open (other ops wait for it).
+                    // `mergetool:<path>`: the external merge tool open (listed in the conflict banner).
                     q if q.starts_with("mergetool:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             t.apply(&ctx.clone(), Action::Git(crate::repo::tools::mergetool_op(&q[10..])));

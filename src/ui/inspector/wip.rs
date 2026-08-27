@@ -27,6 +27,20 @@ fn stash_files_item(ui: &mut Ui, cs: &[Change], staged: bool, acts: &mut Vec<Act
     clicked
 }
 
+/// The external merge tools open on conflicted files, each with Cancel.
+fn open_tools(ui: &mut Ui, tools: &[crate::repo::tools::Open], acts: &mut Vec<Action>) {
+    for tool in tools.iter().filter(|o| o.kind == "merge") {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(RichText::new(format!("Merge tool open on {}", tool.path)).small());
+            let b = theme::small(ui, true, format!("{} Cancel", icon::STOP_CIRCLE));
+            if b.on_hover_text("Stop the merge tool. Changes it saved stay (⌘Z restores the file as before).").clicked() {
+                acts.push(Action::CloseTool(tool.path.clone()));
+            }
+        });
+    }
+}
+
 /// Menu of people from the loaded log to credit with `Co-authored-by` trailers.
 fn coauthors_menu(ui: &mut Ui, d: &RepoData, coauthors: &mut Vec<(String, String)>) {
     {
@@ -188,6 +202,7 @@ impl RepoTab {
                 if !s.conflicted.is_empty() {
                     ui.label(format!("{} conflicted file(s) — resolve, then continue.", s.conflicted.len()));
                 }
+                open_tools(ui, &self.ext_tools, acts);
                 ui.horizontal(|ui| {
                     let cont = ui.add_enabled(s.conflicted.is_empty(), egui::Button::new("Continue"));
                     if cont.on_disabled_hover_text(format!("{} file(s) still have unresolved conflicts: resolve them (or mark them resolved) first", s.conflicted.len())).clicked() {
@@ -369,6 +384,10 @@ impl RepoTab {
                             }
                         });
                     });
+                    // No banner outside a merge / rebase (a conflicted stash apply): list the tools here.
+                    if matches!(d.state, State::Clean | State::Bisecting) {
+                        open_tools(ui, &self.ext_tools, acts);
+                    }
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0); // type label hugs its row
                     for c in &s.conflicted {
                         let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path), None);
@@ -396,7 +415,7 @@ impl RepoTab {
                             }
                             let tool = crate::repo::tools::tool(d, false);
                             let b = ui.add_enabled(tool.is_ok() && has == [true, true], egui::Button::new(format!("{} Open in external merge tool", icon::ARROW_SQUARE_OUT)));
-                            let b = b.on_hover_text(format!("git mergetool ({}). Your current file is backed up first (⌘Z); Glasir waits until you close the tool.", tool.as_deref().unwrap_or_default()));
+                            let b = b.on_hover_text(format!("git mergetool ({}). Your current file is backed up first (⌘Z); other actions keep working while the tool is open.", tool.as_deref().unwrap_or_default()));
                             let why = tool.err().unwrap_or_else(|| "One side deleted this file; use the merge editor instead.".into());
                             if b.on_disabled_hover_text(why).clicked() {
                                 acts.push(Action::Git(crate::repo::tools::mergetool_op(&c.path)));
