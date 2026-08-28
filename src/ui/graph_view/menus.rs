@@ -2,7 +2,7 @@
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
 use crate::git::{Commit, Ref, RefKind, State};
-use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Sel, Undo, branch_checkout, prompt, stash_prompt};
+use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Search, Sel, Undo, branch_checkout, prompt, stash_prompt};
 use crate::repo::merge_opts::{Merge, merge_op, pick_op};
 use crate::theme::{self, icon};
 use egui::Ui;
@@ -125,7 +125,16 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, rev: &str, acts:
     }
 }
 
-pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>) {
+/// Is commit `id` on HEAD's own history? A commit older than the loaded page is asked of git.
+pub(super) fn on_branch(ui: &Ui, d: &RepoData, search: Option<&Search>, id: &str) -> bool {
+    let Some(head) = d.status.head.as_deref() else { return false };
+    match d.row_of.get(head).zip(d.row_of.get(id)) {
+        Some((&h, &r)) => d.reachable(h)[r],
+        None => search.and_then(|s| s.is_ancestor(ui.ctx(), id, head)).unwrap_or(false),
+    }
+}
+
+pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts: &mut Vec<Action>) {
     let short = &c.id[..c.id.len().min(7)];
     let refs: Vec<&Ref> = d.refs_at.get(&c.id).map(|v| v.iter().map(|&i| &d.refs[i]).collect()).unwrap_or_default();
     for r in refs.iter().filter(|r| r.kind != RefKind::Tag && !r.head) {
@@ -184,7 +193,6 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action>
         }
     }
     // Only HEAD's own history: for another branch's commit it would be a rebase onto it.
-    let on_branch = d.status.head.as_ref().and_then(|h| d.row_of.get(h)).zip(d.row_of.get(&c.id)).is_some_and(|(&h, &r)| d.reachable(h)[r]);
     if d.status.branch.is_some() && !is_head && on_branch && ui.button("Edit history after this commit (interactive rebase)…").clicked() {
         acts.push(Action::Rebase { base: c.id.clone(), label: short.into() });
     }

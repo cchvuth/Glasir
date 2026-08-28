@@ -3,9 +3,10 @@
 
 use super::{RepoData, Task};
 use crate::git::{self, Commit, Res};
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 /// More hits than this stop the search (each is a loaded commit).
@@ -143,6 +144,8 @@ pub struct Search {
     filtered_key: (usize, u64, usize),
     filtered_at: std::time::Instant,
     building: Option<Task<((usize, u64, usize), RepoData)>>,
+    /// (commit, tip) -> is the commit an ancestor of the tip; `None` while git is still asked.
+    ancestry: Arc<Mutex<HashMap<(String, String), Option<bool>>>>,
 }
 
 impl Search {
@@ -169,7 +172,28 @@ impl Search {
             filtered_key: Default::default(),
             filtered_at: std::time::Instant::now(),
             building: None,
+            ancestry: Default::default(),
         }
+    }
+
+    /// Is `commit` an ancestor of `tip` (or `tip` itself)? For hits older than the loaded page,
+    /// which the loaded graph can't judge: git answers off the UI thread, cached per pair.
+    /// `None` until then (a failing git counts as "no").
+    // ponytail: one git process per visible old hit; batch them if that ever shows up in a profile.
+    pub(crate) fn is_ancestor(&self, ctx: &egui::Context, commit: &str, tip: &str) -> Option<bool> {
+        let key = (commit.to_owned(), tip.to_owned());
+        let mut m = self.ancestry.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&v) = m.get(&key) {
+            return v;
+        }
+        m.insert(key.clone(), None);
+        let (cache, dir, ctx) = (self.ancestry.clone(), self.dir.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            let yes = git::run(&dir, &["merge-base", "--is-ancestor", &key.0, &key.1]).is_ok();
+            cache.lock().unwrap_or_else(|e| e.into_inner()).insert(key, Some(yes));
+            ctx.request_repaint();
+        });
+        None
     }
 
     pub(crate) fn running(&self) -> bool {
@@ -300,6 +324,17 @@ impl Search {
             self.history.retain(|h| *h != q);
             self.history.insert(0, q);
             self.history.truncate(10);
+        }
+    }
+
+    /// Is a hit reachable from the hovered ref, per the loaded graph? `reach`: the rows the ref reaches
+    /// (`None`: its tip isn't loaded), `complete`: no unloaded parent in its ancestry, `row`: the hit's row
+    /// (`None`: older than the loaded page). `None` result: ask git.
+    pub(crate) fn judge(reach: Option<&[bool]>, complete: bool, row: Option<usize>) -> Option<bool> {
+        match (reach, row) {
+            (Some(v), Some(r)) => Some(v[r]),
+            (Some(_), None) if complete => Some(false),
+            _ => None,
         }
     }
 
@@ -505,6 +540,45 @@ mod tests {
         drop(tx);
         settle(&mut s, &d);
         assert_eq!(rows(&s), 5, "the last hits once the stream ends");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn judges_hover_reachability() {
+        let v = [false, true];
+        assert_eq!(Search::judge(Some(&v), false, Some(1)), Some(true));
+        assert_eq!(Search::judge(Some(&v), false, Some(0)), Some(false));
+        assert_eq!(Search::judge(Some(&v), true, None), Some(false), "a complete ancestry holds no older hit");
+        assert_eq!(Search::judge(Some(&v), false, None), None, "an open ancestry may");
+        assert_eq!(Search::judge(None, true, Some(1)), None, "an unloaded tip is git's to judge");
+    }
+
+    /// Hits older than the loaded page are judged by git, off the thread asking, and cached.
+    #[test]
+    fn asks_git_for_old_ancestry() {
+        let dir = scratch("search-ancestry");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for m in ["a", "b"] {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        sh(&dir, &["switch", "-q", "-c", "side", "HEAD~"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "c"]);
+        let rev = |r: &str| sh(&dir, &["rev-parse", r]).trim().to_owned();
+        let (a, main, side) = (rev("main~"), rev("main"), rev("side"));
+        let s = Search::open(dir.clone());
+        let ctx = egui::Context::default();
+        assert_eq!(s.is_ancestor(&ctx, &a, &main), None, "asked, not yet answered");
+        let ask = |c: &str, t: &str| loop {
+            if let Some(v) = s.is_ancestor(&ctx, c, t) {
+                return v;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        assert!(ask(&a, &main));
+        assert!(ask(&a, &side));
+        assert!(!ask(&main, &side));
+        assert_eq!(s.is_ancestor(&ctx, &main, &side), Some(false), "cached");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

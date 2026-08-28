@@ -121,6 +121,11 @@ impl Graph {
         seen
     }
 
+    /// Does any of the rows in `seen` have a parent that isn't loaded?
+    pub fn has_unloaded_parent(&self, seen: &[bool]) -> bool {
+        self.edges.iter().any(|e| e.to == NONE && seen[e.from as usize])
+    }
+
     /// Every edge touching `rows` (plus neighbours in the same chunks), each once.
     pub fn edges_in(&self, rows: Range<usize>) -> impl Iterator<Item = &Edge> {
         let (k0, k1) = (rows.start / CHUNK, rows.end.div_ceil(CHUNK).min(self.chunks.len()));
@@ -176,6 +181,8 @@ mod tests {
         assert_eq!(g.reachable(0), [true, true, true, true, false]);
         assert_eq!(g.reachable(2), [false, false, true, true, false]);
         assert_eq!(g.reachable(4), [false, false, false, false, true]);
+        assert!(!g.has_unloaded_parent(&g.reachable(0)));
+        assert!(g.has_unloaded_parent(&g.reachable(4)));
     }
 
     #[test]

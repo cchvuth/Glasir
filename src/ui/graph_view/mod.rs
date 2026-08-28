@@ -17,7 +17,7 @@ use dnd::{BranchDrag, CommitDrag};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
 use crate::ui::format::{initials, relative_time};
 use hover::{hover_ref, hovered_ref};
-use menus::{checkout_action, commit_menu, multi_menu, wip_menu};
+use menus::{checkout_action, commit_menu, multi_menu, on_branch, wip_menu};
 
 /// Closed outline of a rounded rect (for dashed borders).
 fn rounded(b: Rect, r: f32) -> Vec<Pos2> {
@@ -105,10 +105,20 @@ pub fn show(
     }
     // Hovering a ref fades what it can't reach; ⌘F fades non-matches.
     // Reachability, links and menus ask the full history: the filtered graph lacks the commits between hits.
-    // A hit older than the loaded page isn't in `all`: it can't be judged, so it stays unfaded.
+    // A hit older than the loaded page isn't in `all`: a complete ancestry rules it out, else git is asked.
     let full_row = |r: usize| if filtered.is_none() { Some(r) } else { d.commit(r).and_then(|c| all.row_of.get(&c.id).copied()) };
-    let reach = hovered_ref(ui).and_then(|t| all.row_of.get(&t).copied()).map(|r| all.reachable(r));
-    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || reach.as_ref().is_some_and(|v| !full_row(r).is_none_or(|a| v[a]));
+    let tip = hovered_ref(ui);
+    let reach = tip.as_ref().and_then(|t| all.row_of.get(t).copied()).map(|r| all.reachable(r));
+    let complete = filtered.is_some() && reach.as_ref().is_some_and(|v| !all.graph.has_unloaded_parent(v));
+    let ctx = ui.ctx().clone();
+    let hover_dims = |r: usize| {
+        let Some(t) = &tip else { return false };
+        // The WIP row sits above HEAD: it belongs to the hovered ref only if that is HEAD's.
+        let Some(c) = d.commit(r) else { return all.status.head.as_ref() != Some(t) };
+        let known = Search::judge(reach.as_ref().map(|v| v.as_slice()), complete, full_row(r));
+        !known.or_else(|| search.and_then(|s| s.is_ancestor(&ctx, &c.id, t))).unwrap_or(true)
+    };
+    let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || hover_dims(r);
 
     // Column widths: [refs, graph]; graph 0 = fit lanes (up to 12). Drag the header to resize.
     let cols_id = egui::Id::new("graph_cols");
@@ -262,7 +272,7 @@ pub fn show(
                 }
                 resp.context_menu(|ui| match commit {
                     Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
-                    Some(c) => commit_menu(ui, all, c, acts),
+                    Some(c) => commit_menu(ui, all, c, on_branch(ui, all, search, &c.id), acts),
                     None => wip_menu(ui, acts),
                 });
             }
