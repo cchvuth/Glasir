@@ -13,7 +13,7 @@ pub fn items(ui: &mut Ui, d: &RepoData, pages: &[(&str, Page)], shas: &[&str], a
     let draw = |ui: &mut Ui, acts: &mut Vec<Action>| {
         for (remote, web) in &webs {
             let at = if webs.len() == 1 { crate::git::host(web).unwrap_or_default() } else { remote.to_string() };
-            let missing = shas.iter().any(|s| !d.on_remote(s, remote));
+            let missing = shas.iter().any(|s| !d.on_remote(ui.ctx(), s, remote));
             let warn = format!("Not on {remote} yet (no remote-tracking branch contains it): the link would 404. Push first.");
             for (what, page) in pages {
                 let url = page.url(web);

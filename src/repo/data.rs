@@ -50,6 +50,8 @@ pub struct RepoData {
     pub generation: u64,
     /// Tip row -> rows reachable from it (hover highlight).
     reach: std::sync::Mutex<HashMap<usize, Arc<Vec<bool>>>>,
+    /// (commit, remote) -> pushed, as git answers it when the graph can't (`on_remote`).
+    asked: std::sync::Mutex<HashMap<(String, String), Result<bool, super::Task<bool>>>>,
 }
 
 /// Per-repo graph filter, persisted in `Settings` by repo path. Refs are full names.
@@ -157,16 +159,47 @@ impl RepoData {
     }
 
     /// Is commit `sha` in a remote-tracking branch of `remote`? (Else its web page 404s.)
-    /// Commits outside the loaded history count as pushed: no false warning.
-    pub fn on_remote(&self, sha: &str, remote: &str) -> bool {
-        let Some(&row) = self.row_of.get(sha) else { return true };
-        // A first-parent graph lacks merge edges; an unloaded (hidden, truncated) tip is unknown.
-        self.view.first_parent
-            || self
-                .refs
-                .iter()
-                .filter(|r| r.kind == RefKind::Remote && self.split_remote(&r.name).is_some_and(|s| s.0 == remote))
-                .any(|r| self.row_of.get(&r.target).is_none_or(|&tip| self.reachable(tip)[row]))
+    /// What the loaded graph can't tell, git answers in the background (repainting `ctx`);
+    /// until then, or if git fails (an unknown commit), it counts as pushed: no false warning.
+    pub fn on_remote(&self, ctx: &egui::Context, sha: &str, remote: &str) -> bool {
+        let tips: Vec<&Ref> =
+            self.refs.iter().filter(|r| r.kind == RefKind::Remote && self.split_remote(&r.name).is_some_and(|s| s.0 == remote)).collect();
+        if tips.is_empty() {
+            return false;
+        }
+        if let Some(known) = self.on_remote_in_graph(sha, &tips) {
+            return known;
+        }
+        let mut asked = self.asked.lock().unwrap_or_else(|e| e.into_inner());
+        let e = asked.entry((sha.to_owned(), remote.to_owned())).or_insert_with(|| {
+            let (dir, sha) = (self.git_dir.clone(), sha.to_owned());
+            let not: String = tips.iter().map(|r| format!("^{}\n", r.full)).collect();
+            // Nothing listed: excluding the tips' history excluded `sha`, so one of them contains it.
+            Err(super::Task::spawn(ctx, move || {
+                git::run_input(&dir, &["rev-list", "-n1", "--stdin", &sha, "--"], Some(not.as_bytes())).map_or(true, |o| o.trim().is_empty())
+            }))
+        });
+        if let Err(t) = e
+            && let Ok(v) = t.0.try_recv()
+        {
+            *e = Ok(v);
+        }
+        *e.as_ref().unwrap_or(&true)
+    }
+
+    /// `on_remote` from the loaded graph, `None` when it can't tell: a first-parent graph lacks
+    /// merge edges, and a commit or tip outside it (hidden, past the page) has no row.
+    fn on_remote_in_graph(&self, sha: &str, tips: &[&Ref]) -> Option<bool> {
+        let row = *self.row_of.get(sha).filter(|_| !self.view.first_parent)?;
+        let mut all = true;
+        for r in tips {
+            match self.row_of.get(&r.target) {
+                Some(&tip) if self.reachable(tip)[row] => return Some(true),
+                Some(_) => {}
+                None => all = false,
+            }
+        }
+        all.then_some(false)
     }
 
     pub fn web_of(&self, remote: &str) -> Option<String> {
@@ -311,7 +344,24 @@ impl RepoData {
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             },
             reach: Default::default(),
+            asked: Default::default(),
         }
+    }
+}
+
+#[cfg(test)]
+impl RepoData {
+    /// `on_remote` once git has answered.
+    pub fn on_remote_now(&self, sha: &str, remote: &str) -> bool {
+        let ctx = egui::Context::default();
+        for _ in 0..1000 {
+            let v = self.on_remote(&ctx, sha, remote);
+            if !self.asked.lock().unwrap().get(&(sha.into(), remote.into())).is_some_and(Result::is_err) {
+                return v;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("git never answered");
     }
 }
 
@@ -426,23 +476,30 @@ mod tests {
         commit(&dir, "a.txt", "two\n");
         let local = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
         let d = load_all(&dir, 100, View::default()).unwrap();
-        assert!(d.on_remote(&pushed, "origin") && !d.on_remote(&local, "origin"));
-        assert!(!d.on_remote(&pushed, "ghe"), "no tracking branch of ghe");
-        assert!(d.on_remote("f".repeat(40).as_str(), "origin"), "unknown commits don't warn");
+        assert!(d.on_remote_now(&pushed, "origin") && !d.on_remote_now(&local, "origin"));
+        assert!(!d.on_remote_now(&pushed, "ghe"), "no tracking branch of ghe");
+        assert!(d.on_remote_now("f".repeat(40).as_str(), "origin"), "unknown commits don't warn");
         // origin/main ahead of main, hidden: its history isn't loaded, so don't claim "not pushed".
         sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
         sh(&dir, &["reset", "-q", "--soft", "HEAD~1"]);
         let hidden = View { hidden: vec!["refs/remotes/origin/main".into()], ..Default::default() };
-        assert!(load_all(&dir, 100, hidden).unwrap().on_remote(&pushed, "origin"));
+        assert!(load_all(&dir, 100, hidden).unwrap().on_remote_now(&pushed, "origin"));
         // First-parent graphs drop merge edges: a pushed branch merged into origin/main looks unpushed.
         sh(&dir, &["checkout", "-q", "-b", "feature"]);
         commit(&dir, "b.txt", "side\n");
         let side = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
         sh(&dir, &["checkout", "-q", "main"]);
         sh(&dir, &["merge", "-q", "--no-ff", "--no-edit", "feature"]);
+        // Not pushed, and only a merge's second parent reaches it: the first-parent graph can't tell.
+        for keep in [true, false] {
+            if !keep {
+                sh(&dir, &["branch", "-q", "-D", "feature"]);
+            }
+            assert!(!load_all(&dir, 100, View { first_parent: true, ..Default::default() }).unwrap().on_remote_now(&side, "origin"));
+        }
         sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
-        assert!(load_all(&dir, 100, View::default()).unwrap().on_remote(&side, "origin"));
-        assert!(load_all(&dir, 100, View { first_parent: true, ..Default::default() }).unwrap().on_remote(&side, "origin"));
+        assert!(load_all(&dir, 100, View::default()).unwrap().on_remote_now(&side, "origin"));
+        assert!(load_all(&dir, 100, View { first_parent: true, ..Default::default() }).unwrap().on_remote_now(&side, "origin"));
         let webs: Vec<_> = d.webs().into_iter().map(|(r, w)| format!("{r} {w}")).collect();
         assert_eq!(webs, ["ghe https://ghe.corp.se/o/r", "origin https://github.com/o/r"]);
         let _ = std::fs::remove_dir_all(&dir);

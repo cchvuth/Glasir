@@ -482,8 +482,8 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         let f = finished(&dir, &d, "needle", true).filtered.clone().unwrap();
         let a = f.log[1].id.clone();
-        assert!(d.on_remote(&a, "origin"));
-        assert!(!f.on_remote(&a, "origin"), "if this holds now, the menus could take the filtered graph again");
+        assert!(d.on_remote_now(&a, "origin"));
+        assert!(!f.on_remote_now(&a, "origin"), "if this holds now, the menus could take the filtered graph again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
