@@ -13,13 +13,14 @@ pub fn restore_file(d: &RepoData, label: String, source: &str, path: &str, what:
         // An untracked or half-resolved file: undo can't bring it back, so ask.
         o.confirm(format!("Overwrite your local {path} with {what}? This can't be undone."))
     } else {
-        o.backup(Backup::Overwrite(vec![path.to_owned()]))
+        o.backup(Backup::Paths(vec![path.to_owned()]))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::repo::op::exec;
+    use crate::repo::testutil::{run_backed, undo_files};
     use crate::repo::testutil::{commit, identity, scratch, sh};
     use crate::repo::{View, data::load_all};
 
@@ -40,10 +41,9 @@ mod tests {
         let o = super::restore_file(&d, "Restore".into(), &c2, "a.txt", "v2");
         assert!(o.backup.is_some() && o.confirm.is_none());
         assert!(super::restore_file(&d, "Restore".into(), &c2, "new.txt", "v2").confirm.is_some());
-        let saved = crate::repo::undo::save_worktree(&dir, o.backup.as_ref().unwrap()).unwrap();
-        exec(&dir, &o).unwrap();
+        let saved = run_backed(&dir, &o).unwrap().unwrap();
         assert_eq!(read(), "v2\n");
-        crate::repo::undo::restore_worktree(&dir, &saved).unwrap();
+        undo_files(&dir, &saved).unwrap();
         assert_eq!(read(), "v3\n");
         exec(&dir, &o).unwrap();
         exec(&dir, &super::restore_file(&d, "Restore".into(), &format!("{c2}^"), "a.txt", "v1")).unwrap();
@@ -56,8 +56,7 @@ mod tests {
         sh(&dir, &["rm", "-qf", "a.txt"]);
         sh(&dir, &["commit", "-q", "-m", "rm"]);
         let o = super::restore_file(&d, "Restore".into(), &c2, "a.txt", "v2");
-        crate::repo::undo::save_worktree(&dir, o.backup.as_ref().unwrap()).unwrap();
-        exec(&dir, &o).unwrap();
+        run_backed(&dir, &o).unwrap();
         assert_eq!(read(), "v2\n");
 
         // An ignored local file (once tracked) isn't in status; undo still puts it back.
@@ -69,10 +68,9 @@ mod tests {
         sh(&dir, &["commit", "-q", "-m", "ignore .env"]);
         std::fs::write(dir.join(".env"), "SECRET=mine\n").unwrap();
         let o = super::restore_file(&load_all(&dir, 100, View::default()).unwrap(), "Restore".into(), &c_env, ".env", "v1");
-        let saved = crate::repo::undo::save_worktree(&dir, o.backup.as_ref().unwrap()).unwrap();
-        exec(&dir, &o).unwrap();
+        let saved = run_backed(&dir, &o).unwrap().unwrap();
         assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "OLD=1\n");
-        crate::repo::undo::restore_worktree(&dir, &saved).unwrap();
+        undo_files(&dir, &saved).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join(".env")).unwrap(), "SECRET=mine\n");
         let _ = std::fs::remove_dir_all(&dir);
     }

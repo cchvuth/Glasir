@@ -7,7 +7,7 @@
 //! - `op`: `Op` builder, running/finishing ops, shared op builders
 //!   (push/pull/fetch/stash/commit, `branch_checkout`)
 //! - `offer`: one-click fixes for failed ops
-//! - `undo`: undo/redo and discard backups
+//! - `undo`: undo/redo: ref steps, durable file backups (`git::Snap`), one transition for both
 //! - `diff` (+ `image_diff`), `ai_job`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
 //! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
 //! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
@@ -282,6 +282,10 @@ impl RepoTab {
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
         t.watcher_task = Some(Task::spawn(ctx, move || watch::watch(&c, &d)));
+        // Backups whose undo step went with an earlier session: kept 14 days, then pruned.
+        let d = t.dir.clone();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |n| n.as_secs());
+        std::thread::spawn(move || git::prune(&d, now, 14));
         t.reload(ctx, true);
         t
     }

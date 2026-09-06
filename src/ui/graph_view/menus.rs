@@ -324,7 +324,7 @@ pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {
         acts.push(Action::Git(
             Op::new("Discard all", &["reset", "--hard", "-q"])
                 .then(&["clean", "-fdq"])
-                .backup(crate::repo::Backup::All)
+                .backup(crate::repo::Backup::Tree { revs: vec![], untracked: true })
                 .confirm("Discard ALL uncommitted changes, including untracked files? (Undo with ⌘Z.)"),
         ));
     }

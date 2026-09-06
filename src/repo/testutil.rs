@@ -39,3 +39,20 @@ pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) -> Vec<super::
     }
     panic!("op didn't finish");
 }
+
+/// Tests: runs `op` with its backup, as the app does; the files it changed.
+pub(super) fn run_backed(dir: &Path, op: &super::Op) -> git::Res<Option<super::undo::Files>> {
+    let before = op.backup.as_ref().map(|b| super::undo::backup(dir, b, &op.label)).transpose()?.flatten();
+    super::op::exec(dir, op)?;
+    before.map_or(Ok(None), |s| super::undo::backed_up(dir, s, &op.label))
+}
+
+/// Tests: the undo of those files alone; its note.
+pub(super) fn undo_files(dir: &Path, f: &super::undo::Files) -> git::Res<Option<String>> {
+    super::undo::transition(dir, "Undo", None, &[(f.after.clone(), f.before.clone(), f.before.paths.clone())]).map(|r| r.0)
+}
+
+/// Tests: a ref step's undo, from where the refs are now back to `to`.
+pub(super) fn move_back(dir: &Path, to: &git::Snapshot, mode: super::Undo) -> git::Res<Option<String>> {
+    super::undo::transition(dir, "Undo", Some((git::snapshot(dir)?, to.clone(), mode)), &[]).map(|r| r.0)
+}

@@ -53,7 +53,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "local edit\n");
 
         // Undo puts everything back: main at its old tip, checked out, no new branch.
-        git::restore(&dir, &before, "--keep").unwrap();
+        crate::repo::testutil::move_back(&dir, &before, crate::repo::Undo::Keep).unwrap();
         assert_eq!(git::snapshot(&dir).unwrap(), before);
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "local edit\n");
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "oops 1, edited\n");

@@ -167,7 +167,7 @@ fn hunk_op(label: &str, c: &git::Change, f: &FileDiff, mut patch: String, args: 
     a.extend_from_slice(args);
     a.push("--");
     a.extend(paths.iter().map(String::as_str));
-    Op::new(label, &a).input(patch).backup(Backup::Overwrite(paths))
+    Op::new(label, &a).input(patch).backup(Backup::Paths(paths))
 }
 
 /// `exec` pseudo-command: `APPLY_HUNK [apply args] -- paths`, the patch as input. If the lines

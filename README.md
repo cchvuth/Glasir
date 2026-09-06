@@ -107,8 +107,11 @@ The name fits a Git client:
 
 ### Undo everything
 - ⌘Z / ⇧⌘Z undo and redo commits, amends, checkouts, merges, rebases, resets,
-  branch / tag changes, cherry-picks, and **discarded work** (discards are backed
-  up first and refused if the backup fails).
+  branch / tag changes, cherry-picks, and **discarded work**: it is backed up as git
+  objects first (exact bytes, exec bits, symlinks, staged versions, any size; the
+  discard is refused if that fails). Undo never refuses over your edits: files you
+  changed since stay as they are, a backup that can't go back waits in the stash list
+  as "Glasir: …", and a failed undo offers Retry or Skip.
 
 ### Branches, merges and rebases
 - **Drag a branch onto another** to merge, rebase or push.

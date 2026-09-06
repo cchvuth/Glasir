@@ -553,7 +553,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ⌘Z of an interactive cherry-pick carries an uncommitted edit of a picked file back.
+    /// ⌘Z of an interactive cherry-pick keeps an uncommitted edit of a picked file as it is
+    /// (never merged or refused), and says so.
     #[test]
     fn cherry_pick_undo_keeps_overlapping_edit() {
         use super::super::testutil::settle;
@@ -578,9 +579,11 @@ mod tests {
         settle(&ctx, &mut t);
         assert_ne!(g(&["rev-parse", "HEAD"]), tip);
         t.apply(&ctx, Action::Undo);
-        settle(&ctx, &mut t);
+        let msgs = settle(&ctx, &mut t);
         assert_eq!(g(&["rev-parse", "HEAD"]), tip);
-        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), lines(19, "nineteen"));
+        let both = lines(19, "nineteen").replace("\n2\n", "\ntwo\n");
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), both);
+        assert!(msgs.iter().any(|m| m.text.contains("Kept your changes to f")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

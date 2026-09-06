@@ -331,7 +331,7 @@ mod tests {
         assert!(left.contains("+both-16") && !left.contains("fix-"), "{left}");
         assert_eq!(std::fs::read_to_string(dir.join("other")).unwrap(), "unstaged\n");
 
-        git::restore(&dir, &snap, "--soft").unwrap();
+        crate::repo::testutil::move_back(&dir, &snap, crate::repo::Undo::Soft).unwrap();
         assert_eq!(g(&["rev-parse", "HEAD"]).trim(), orig);
         assert_eq!(g(&["diff", "--cached"]), before);
 

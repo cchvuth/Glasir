@@ -91,7 +91,7 @@ mod tests {
         let (v1, light) = (tag("v1").unwrap(), tag("light").unwrap());
         assert_eq!((v1.target.as_str(), v1.message.as_str()), (head.as_str(), "Release one\n\n## Notes"));
         assert_eq!((light.target.as_str(), light.message.as_str()), (head.as_str(), ""));
-        git::restore(&dir, &before, "--keep").unwrap();
+        crate::repo::testutil::move_back(&dir, &before, crate::repo::Undo::Keep).unwrap();
         assert_ne!(tag("v1").unwrap().target, head);
 
         exec(&dir, &push_all("origin")).unwrap();

@@ -88,7 +88,6 @@ mod tests {
     use crate::repo::data::{View, load_all};
     use crate::repo::op::{Undo, exec};
     use crate::repo::testutil::{commit, identity, scratch, sh};
-    use crate::repo::undo::move_refs;
 
     #[test]
     fn push_pull_and_lease_against_bare_remote() {
@@ -240,11 +239,11 @@ mod tests {
         };
         carried("feat", "1 feat\n2\n3\n4\n5 mine\n");
 
-        // Undo and redo carry the changes back and forth too.
-        let msg = op.autostash.as_deref();
-        move_refs(&dir, &after, &before, Undo::Keep.mode(), msg).unwrap();
-        carried("main", "1\n2\n3\n4\n5 mine\n");
-        move_refs(&dir, &before, &after, Undo::Keep.mode(), msg).unwrap();
+        // Undo and redo move the branch, never merging: the edited a.txt stays as it is, and is said.
+        let undo = |from: &git::Snapshot, to: &git::Snapshot| crate::repo::undo::transition(&dir, "Undo", Some((from.clone(), to.clone(), Undo::Keep)), &[]).unwrap().0;
+        assert!(undo(&after, &before).is_some_and(|n| n.contains("a.txt")));
+        carried("main", "1 feat\n2\n3\n4\n5 mine\n");
+        undo(&before, &after);
         carried("feat", "1 feat\n2\n3\n4\n5 mine\n");
 
         // Conflicting: markers in the file, and the stash is kept.

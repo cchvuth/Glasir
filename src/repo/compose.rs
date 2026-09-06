@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(rev("HEAD^{tree}"), tree, "same end result");
         assert_eq!(wip(), before, "uncommitted changes untouched");
         // Undo (the op's `Undo::Soft`): the old commits, with nothing else changed.
-        git::restore(&dir, &snap, Undo::Soft.mode()).unwrap();
+        crate::repo::testutil::move_back(&dir, &snap, Undo::Soft).unwrap();
         assert_eq!((rev("HEAD"), wip()), (c3.clone(), before.clone()));
         // A failed step (apply refuses trailing whitespace) rolls everything back.
         g(&["config", "apply.whitespace", "error"]);

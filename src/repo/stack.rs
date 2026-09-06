@@ -558,9 +558,13 @@ mod tests {
         // A plain rebase (`--update-refs`) puts it back too.
         sh(&dir, &["branch", "-f", "c-backup", "c"]);
         let backup = sh(&dir, &["rev-parse", "c-backup"]);
+        // main moves on: a same-second `--force-rebase` can rewrite to the very same commits.
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "m1", "m1\n");
+        sh(&dir, &["checkout", "-q", "c"]);
         t.reload(&ctx, true);
         settle(&ctx, &mut t);
-        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "--force-rebase", "main"]).undo(Undo::Keep)));
+        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "main"]).undo(Undo::Keep)));
         settle(&ctx, &mut t);
         assert_ne!(sh(&dir, &["rev-parse", "c"]), backup);
         assert_eq!(sh(&dir, &["rev-parse", "c-backup"]), backup);
