@@ -301,10 +301,11 @@ pub fn sequencer_op(cmd: &str, abort: bool) -> Op {
         (false, "am") => ("Skip this patch".into(), "--skip"),
         _ => ("Skip this commit".into(), "--skip"),
     };
+    // Backed up as every op that moves HEAD is (`run`).
     let op = Op::new(label, &[cmd, flag]).undo(Undo::Keep);
     match (cmd, abort) {
-        ("rebase", false) => op.backup(Backup::Tree { revs: vec![], untracked: false }).confirm("Skip discards all uncommitted changes, not just this commit's (⌘Z restores them)."),
-        ("rebase", true) => op.backup(Backup::Tree { revs: vec![], untracked: false }).confirm("Abort discards all uncommitted changes (⌘Z restores them)."),
+        ("rebase", false) => op.confirm("Skip discards all uncommitted changes, not just this commit's (⌘Z restores them)."),
+        ("rebase", true) => op.confirm("Abort discards all uncommitted changes (⌘Z restores them)."),
         _ => op,
     }
 }
@@ -756,8 +757,16 @@ impl RepoTab {
         self.running = Some((
             label,
             Task::spawn(ctx, move || {
-                // Durable before anything runs: Err refuses the op.
-                let saved = match op.backup.as_ref().map(|b| backup(&dir, b, &op.label)).transpose() {
+                // Durable before anything runs: Err refuses the op. One that moves HEAD (checkout,
+                // merge, rebase, continue, abort...) backs up what git may overwrite there: ignored
+                // files where its commits put one, and a stopped merge's resolutions.
+                let named = || Backup::Tree { revs: op.cmds.iter().flatten().cloned().collect(), untracked: false };
+                let b = op.backup.clone().or_else(|| (op.undo == Undo::Keep).then(named));
+                // ponytail: a pull fetches first so its backup sees what it merges (a second, empty fetch).
+                if op.backup.is_none() && op.cmds[0][0] == "pull" {
+                    let _ = cancel.scope(|| git::run(&dir, &["fetch", "--progress"]));
+                }
+                let saved = match b.as_ref().map(|b| backup(&dir, b, &op.label)).transpose() {
                     Ok(s) => s.flatten(),
                     Err(e) => return Done::Op(op, Err(e), None, Ok(None)),
                 };
@@ -883,13 +892,14 @@ impl RepoTab {
                 }
             }
             Done::Undo(was_undo, id, res) => {
-                let ok = res.is_ok();
+                // Its refs moved back: else a rebase that runs now isn't the split's (a terminal's).
+                let moved = res.as_ref().is_ok_and(|r| r.2);
                 self.undone(was_undo, id, res, msgs);
                 // Undone past its first step: the split is over, an older commit's rebase too (the
                 // undo put HEAD and the files back; `--quit` leaves them).
                 if let Some(sp) = self.split.take_if(|sp| self.undo.len() <= sp.undo_len)
                     && sp.rebase
-                    && ok
+                    && moved
                     && git::git_dir(&self.dir).is_ok_and(|g| git::state(&g) == git::State::Rebasing)
                 {
                     let _ = git::run(&self.dir, &["rebase", "--quit"]);

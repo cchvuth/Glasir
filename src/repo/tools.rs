@@ -269,7 +269,11 @@ impl RepoTab {
     }
 
     /// Finishes the tools that closed: errors toast, a changed file's backup becomes an undo step.
+    /// Waits while an op, undo or redo runs: a new step then would clear the redo it moves.
     pub(super) fn poll_tools(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
+        if self.running.is_some() {
+            return;
+        }
         let mut done = vec![];
         self.ext_tools.retain(|t| match t.task.0.try_recv() {
             Ok(r) => {

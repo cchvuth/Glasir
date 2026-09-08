@@ -70,8 +70,8 @@ pub(super) fn split_z(s: String) -> Vec<String> {
     s.split('\0').filter(|p| !p.is_empty()).map(String::from).collect()
 }
 
-/// What backup `b` covers, and the commits whose content needs no backup (a tree's HEAD and the
-/// commits it resets to: a reset writes what they hold; none for paths, which go back as they were).
+/// What backup `b` covers, and the commits whose content needs no backup (HEAD and the commits
+/// a tree names: a reset writes what they hold; none for paths, which go back as they were).
 pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
     let (revs, untracked) = match b {
         Backup::Paths(ps) => return Ok((ps.clone(), vec![])),
@@ -83,13 +83,25 @@ pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
     let mut ps: BTreeSet<String> = z(&["diff", "--name-only", "-z", "--no-renames", &base])?.into_iter().collect();
     ps.extend(z(&["diff", "--cached", "--name-only", "-z", "--no-renames", &base])?);
     ps.extend(z(&["ls-files", "-z", "-u"])?.iter().filter_map(|l| Some(l.split_once('\t')?.1.to_owned())));
+    ps.extend(git::flagged(dir)?);
     ps.extend(if untracked { z(&["ls-files", "-z", "-o", "--exclude-standard"])? } else { vec![] });
-    // Untracked and ignored files where the op puts a file: the commits it resets to, and a
-    // stopped rebase's own commits (an abort resets to them; skip and continue pick them).
-    let orig = git::git_dir(dir).ok().and_then(|g| ["rebase-merge", "rebase-apply"].iter().find_map(|d| std::fs::read_to_string(g.join(d).join("orig-head")).ok())).map(|o| o.trim().to_owned());
+    // Untracked and ignored files where the op may put a file: the commits it names, the
+    // upstream (a pull), and what a stopped merge, pick, revert or rebase still applies.
+    let g = git::git_dir(dir)?;
+    let read = |f: &str| std::fs::read_to_string(g.join(f)).unwrap_or_default();
+    let orig = ["rebase-merge", "rebase-apply"].iter().map(|d| read(&format!("{d}/orig-head")).trim().to_owned()).find(|o| !o.is_empty());
+    let todo = read("sequencer/todo");
+    let picks = todo.lines().filter_map(|l| l.split_whitespace().nth(1)).flat_map(|c| [c.to_owned(), format!("{c}^")]);
+    let up = git::run(dir, &["rev-parse", "-q", "--verify", "@{upstream}"]).ok();
+    let others = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REVERT_HEAD^"].map(String::from).into_iter().chain(picks).chain(orig.clone()).chain(up);
+    // (name, named by the op); an `@{…}` that doesn't resolve would stop cat-file.
+    let names: Vec<(String, bool)> = revs.iter().map(|r| (r.trim().to_owned(), true)).chain(others.map(|o| (o.trim().to_owned(), false))).filter(|(n, _)| !n.is_empty() && !n.starts_with('-') && !n.contains('\n') && !n.contains("@{")).collect();
+    let input: String = names.iter().map(|(n, _)| format!("{n}^{{commit}}\n")).collect();
+    let found = git::run_input(dir, &["cat-file", "--batch-check=%(objectname)"], Some(input.as_bytes()))?;
+    let commits: Vec<(&str, bool)> = found.lines().zip(names.iter().map(|n| n.1)).filter(|(l, _)| l.len() >= 40 && l.bytes().all(|b| b.is_ascii_hexdigit())).collect();
     let mut way = vec![];
-    for r in revs.iter().chain(&orig) {
-        way.extend(z(&["diff-tree", "-r", "--name-only", "-z", "--no-renames", &base, r])?);
+    for c in commits.iter().map(|c| c.0).collect::<BTreeSet<_>>() {
+        way.extend(z(&["diff-tree", "-r", "--name-only", "-z", "--no-renames", &base, c])?);
     }
     if let Some(o) = &orig {
         way.extend(z(&["log", "--format=", "--name-only", "-z", "--no-renames", &format!("{base}..{o}")])?);
@@ -97,14 +109,16 @@ pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
     let index: HashSet<String> = if way.is_empty() { HashSet::new() } else { z(&["ls-files", "-z"])?.into_iter().collect() };
     let there = |p: &str| std::fs::symlink_metadata(dir.join(p)).is_ok() || git::ancestors(p).any(|a| std::fs::symlink_metadata(dir.join(a)).is_ok_and(|m| !m.is_dir()));
     ps.extend(way.into_iter().filter(|p| !index.contains(p) && there(p)));
-    Ok((ps.into_iter().collect(), head.into_iter().chain(revs.iter().cloned()).collect()))
+    let like = head.into_iter().chain(commits.iter().filter(|c| c.1).map(|c| c.0.to_owned()));
+    Ok((ps.into_iter().collect(), like.collect()))
 }
 
-/// Backs up what `b` covers before an op runs. Err refuses the op: nothing has run yet.
+/// Backs up what `b` covers before an op runs (None: nothing there). Err refuses the op:
+/// nothing has run yet.
 pub(super) fn backup(dir: &Path, b: &Backup, label: &str) -> Res<Option<Snap>> {
-    let refuse = |e: String| format!("Nothing was discarded: couldn't back it up first ({e}).");
+    let refuse = |e: String| format!("Nothing was changed: couldn't back up your files first ({e}).");
     let (scope, like) = scope(dir, b).map_err(refuse)?;
-    git::snap(dir, &scope, &like, &format!("Glasir backup: {label}")).map_err(refuse)
+    if scope.is_empty() { Ok(None) } else { git::snap(dir, &scope, &like, &format!("Glasir backup: {label}")).map_err(refuse) }
 }
 
 /// The op's files once it ran (`before`: from [`backup`]): None when it changed none of them
@@ -172,8 +186,13 @@ fn tip(s: &Snapshot) -> Option<String> {
     s.refs.get(&s.head).cloned().or_else(|| (!s.head.starts_with("refs/")).then(|| s.head.clone()))
 }
 
+/// Where ref `r` (or `HEAD`) is in `s`.
+pub(super) fn at<'a>(s: &'a Snapshot, r: &str) -> Option<&'a String> {
+    if r == "HEAD" { Some(&s.head) } else { s.refs.get(r) }
+}
+
 /// The refs that differ between `a` and `b`, and `HEAD` when it does.
-fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
+pub(super) fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
     let m: BTreeSet<&String> = a.refs.keys().chain(b.refs.keys()).filter(|r| a.refs.get(*r) != b.refs.get(*r)).collect();
     m.into_iter().cloned().chain((a.head != b.head).then(|| "HEAD".to_owned())).collect()
 }
@@ -185,7 +204,6 @@ fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
 pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapshot, Undo)>, legs: &[(Snap, Snap, Vec<String>)]) -> Res<(Option<String>, bool)> {
     let mut notes = vec![];
     let cur_refs = git::snapshot(dir)?;
-    let at = |s: &Snapshot, r: &str| if r == "HEAD" { Some(s.head.clone()) } else { s.refs.get(r).cloned() };
     let valid = refs.as_ref().is_none_or(|(f, t, _)| moved(f, t).iter().all(|r| at(&cur_refs, r) == at(f, r) || at(&cur_refs, r) == at(t, r)));
     if !valid {
         notes.push(format!("{label}: its branches changed outside Glasir since, so {}.", if legs.is_empty() { "nothing was moved" } else { "only its files were put back" }));
@@ -662,7 +680,7 @@ mod tests {
         // Refused up front (a name git can't store): no ref at all; refused by its guard: none either.
         std::fs::write(dir.join("git~1"), "x").unwrap();
         let msgs = step(&ctx, &mut t, clean("git~1"));
-        assert!(msgs.iter().any(|m| m.contains("Nothing was discarded")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("Nothing was changed")), "{msgs:?}");
         std::fs::remove_file(dir.join("git~1")).unwrap();
         std::fs::write(dir.join("keep"), "edit 2\n").unwrap();
         let mut stale = reset_op(t.data.as_ref().unwrap(), &rev(&dir, "HEAD"), "--hard");
@@ -696,8 +714,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 4: a tab dropped with its steps keeps the backups; a later open prunes them after 14 days
-    /// (not before). 5: pruning never touches stash entries, user refs or other Glasir refs.
+    /// 4: a session that ended (its pid runs no more) leaves its backups; a later open prunes them
+    /// after 14 days (not before). 5: pruning never touches stash entries, user refs or other Glasir refs.
     #[test]
     fn backups_of_lost_steps_are_pruned_after_two_weeks() {
         let dir = repo("undo-policy-prune");
@@ -705,6 +723,12 @@ mod tests {
             let (ctx, mut t) = tab(&dir);
             std::fs::write(dir.join("keep"), "edit\n").unwrap();
             step(&ctx, &mut t, discard("keep"));
+        }
+        // As made by a Glasir that quit since.
+        for l in sh(&dir, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/glasir/backups/"]).lines() {
+            let (r, o) = l.split_once(' ').unwrap();
+            sh(&dir, &["update-ref", &r.replace(&format!("-{}-", std::process::id()), &format!("-{}-", i32::MAX - 1)), o]);
+            sh(&dir, &["update-ref", "-d", r]);
         }
         assert_eq!(backups(&dir), 2);
         std::fs::write(dir.join("keep"), "kept by an undo\n").unwrap();
@@ -966,7 +990,7 @@ mod tests {
         let dir = repo("undo-fffd");
         std::fs::write(dir.join("caf\u{FFFD}.txt"), "x\n").unwrap();
         let op = Op::new("Discard all", &["clean", "-fdq"]).backup(Backup::Tree { revs: vec![], untracked: true });
-        assert!(run_backed(&dir, &op).is_err_and(|e| e.contains("Nothing was discarded")));
+        assert!(run_backed(&dir, &op).is_err_and(|e| e.contains("Nothing was changed")));
         assert!(dir.join("caf\u{FFFD}.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1249,7 +1273,7 @@ mod tests {
         let (ctx, mut t) = tab(&dir);
         let paths = vec!["a/b.txt".to_owned(), "git~1".to_owned()];
         let msgs = step(&ctx, &mut t, Action::Git(Op::new("Discard 2 files", &["--literal-pathspecs", "clean", "-fq", "--", "a/b.txt", "git~1"]).light().backup(Backup::Paths(paths))));
-        assert!(msgs.iter().any(|m| m.contains("Nothing was discarded")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("Nothing was changed")), "{msgs:?}");
         assert_eq!((read(&dir, "git~1"), read(&dir, "a/b.txt")), (Some("SECRET\n".into()), Some("AB\n".into())));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1626,6 +1650,211 @@ mod tests {
         step(&ctx, &mut t, Action::Undo);
         assert_eq!(read(&dir, "d/f").as_deref(), Some("PRECIOUS"));
         assert!(t.undo.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- every op that moves HEAD backs up what git would overwrite ----
+
+    /// A checkout overwrites an ignored file the target tracks; ⌘Z brings it back.
+    /// Abort merge throws a hand resolution away; ⌘Z brings it back.
+    #[test]
+    fn checkout_and_merge_abort_back_up_what_they_overwrite() {
+        let dir = repo("undo-way-checkout");
+        commit(&dir, "f", "1\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, ".env", "committed\n");
+        commit(&dir, "f", "B\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "M\n");
+        std::fs::write(dir.join(".git/info/exclude"), ".env\n").unwrap();
+        std::fs::write(dir.join(".env"), "PRECIOUS\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        let msgs = step(&ctx, &mut t, Action::Git(Op::new("Checkout feat", &["checkout", "feat", "--"]).undo(Undo::Keep)));
+        assert_eq!(read(&dir, ".env").as_deref(), Some("committed\n"), "{msgs:?}");
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, ".env").as_deref(), Some("PRECIOUS\n"), "{msgs:?}");
+        std::fs::remove_file(dir.join(".env")).unwrap();
+        assert!(git::run(&dir, &["merge", "feat"]).is_err());
+        std::fs::write(dir.join("f"), "RESOLVED BY HAND\n").unwrap();
+        step(&ctx, &mut t, Action::Git(super::super::sequencer_op("merge", true)));
+        assert_eq!(read(&dir, "f").as_deref(), Some("M\n"));
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, "f").as_deref(), Some("RESOLVED BY HAND\n"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pull overwrites an ignored file the fetched commits track; ⌘Z brings it back.
+    #[test]
+    fn pull_backs_up_an_ignored_file_it_overwrites() {
+        let root = scratch("undo-way-pull");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        sh(&root, &["clone", "-q", "remote.git", "b"]);
+        let (a, b) = (root.join("a"), root.join("b"));
+        identity(&a);
+        commit(&a, "keep", "k\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        identity(&b);
+        sh(&b, &["pull", "-q", "origin", "main"]);
+        sh(&b, &["branch", "-q", "-u", "origin/main"]);
+        commit(&a, "local.cfg", "UPSTREAM\n");
+        sh(&a, &["push", "-q", "origin", "main"]);
+        std::fs::write(b.join(".git/info/exclude"), "local.cfg\n").unwrap();
+        std::fs::write(b.join("local.cfg"), "MY LOCAL\n").unwrap();
+        let (ctx, mut t) = tab(&b);
+        step(&ctx, &mut t, Action::Git(super::super::pull_op(super::super::PullMode::Merge)));
+        assert_eq!(read(&b, "local.cfg").as_deref(), Some("UPSTREAM\n"));
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&b, "local.cfg").as_deref(), Some("MY LOCAL\n"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The banner's Continue rebase replays a commit that tracks an ignored file made meanwhile.
+    #[test]
+    fn continue_rebase_backs_up_an_ignored_file_it_overwrites() {
+        let dir = repo("undo-way-continue");
+        commit(&dir, ".gitignore", ".env\n");
+        commit(&dir, "f", "1\n");
+        sh(&dir, &["checkout", "-q", "-b", "topic"]);
+        commit(&dir, "f", "T\n");
+        std::fs::write(dir.join(".env"), "committed").unwrap();
+        sh(&dir, &["add", "-f", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "env"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "M\n");
+        sh(&dir, &["checkout", "-q", "topic"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, Action::Git(Op::new("Rebase", &["rebase", "main"]).undo(Undo::Keep)));
+        std::fs::write(dir.join("f"), "RES\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        std::fs::write(dir.join(".env"), "PRECIOUS").unwrap();
+        step(&ctx, &mut t, Action::Git(Op::new("Continue rebase", &["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep)));
+        assert_eq!(read(&dir, ".env").as_deref(), Some("committed"));
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert!(safe(&dir, ".env", "PRECIOUS"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An assume-unchanged edit counts as a local change: a ref undo keeps it.
+    #[test]
+    fn ref_undo_keeps_an_assume_unchanged_edit() {
+        let dir = repo("undo-assume");
+        commit(&dir, "cfg", "main cfg\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "cfg", "x cfg\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, Action::Git(Op::new("Checkout x", &["checkout", "x", "--"]).undo(Undo::Keep)));
+        sh(&dir, &["update-index", "--assume-unchanged", "cfg"]);
+        std::fs::write(dir.join("cfg"), "MY LOCAL CFG\n").unwrap();
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, "cfg").as_deref(), Some("MY LOCAL CFG\n"), "{msgs:?}");
+        assert_eq!(sh(&dir, &["symbolic-ref", "--short", "HEAD"]), "main\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A FIFO where a backed-up file was never hangs ⌘Z: it counts as changed.
+    #[cfg(unix)]
+    #[test]
+    fn undo_never_reads_a_fifo() {
+        let dir = repo("undo-fifo");
+        std::fs::write(dir.join("keep"), "P15\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, discard("keep"));
+        std::fs::remove_file(dir.join("keep")).unwrap();
+        assert!(std::process::Command::new("mkfifo").arg(dir.join("keep")).status().unwrap().success());
+        let fifo = dir.join("keep");
+        // Unblocks a reader that hangs, so the test fails instead of hanging.
+        let guard = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(8));
+            let _ = std::fs::OpenOptions::new().write(true).open(fifo).map(drop);
+        });
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert!(in_stash(&dir, "keep", "P15\n") && t.undo.is_empty(), "{msgs:?}");
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Names that `--stdin-paths` would rewrite (a leading quote, a trailing CR) are
+    /// backed up as themselves, beside the file their rewrite names.
+    #[cfg(unix)]
+    #[test]
+    fn odd_names_are_backed_up_as_themselves() {
+        for odd in ["\"notes\"", "x\r"] {
+            let dir = repo("undo-oddname");
+            let plain = odd.trim_matches(['"', '\r']);
+            std::fs::write(dir.join(odd), "SECRET").unwrap();
+            std::fs::write(dir.join(plain), "OTHER").unwrap();
+            let (ctx, mut t) = tab(&dir);
+            step(&ctx, &mut t, Action::Git(Op::new("Discard", &["--literal-pathspecs", "clean", "-fq", "--", odd]).light().backup(Backup::Paths(vec![odd.into()]))));
+            assert!(read(&dir, odd).is_none());
+            let msgs = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(read(&dir, odd).as_deref(), Some("SECRET"), "{odd:?} {msgs:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        // A hard reset over an edit to `"q"` beside a clean `q` is backed up and undone.
+        let dir = repo("undo-oddname-reset");
+        std::fs::write(dir.join("\"q\""), "base").unwrap();
+        std::fs::write(dir.join("q"), "Q").unwrap();
+        sh(&dir, &["add", "."]);
+        sh(&dir, &["commit", "-q", "-m", "q"]);
+        std::fs::write(dir.join("\"q\""), "MINE").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        hard_reset(&ctx, &mut t, &rev(&dir, "HEAD"));
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, "\"q\"").as_deref(), Some("MINE"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A merge tool closing while a redo runs keeps the step being redone.
+    #[cfg(unix)]
+    #[test]
+    fn a_merge_tool_closing_mid_redo_keeps_the_step() {
+        let dir = repo("undo-tool-redo");
+        commit(&dir, "c.txt", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        commit(&dir, "c.txt", "feature\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "c.txt", "main\n");
+        assert!(git::run(&dir, &["merge", "feature"]).is_err());
+        for kv in [["merge.tool", "fake"], ["mergetool.fake.cmd", "cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"], ["mergetool.keepBackup", "false"]] {
+            sh(&dir, &["config", kv[0], kv[1]]);
+        }
+        std::fs::write(dir.join("keep"), "MINE\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, discard("keep"));
+        step(&ctx, &mut t, Action::Undo);
+        t.apply(&ctx, Action::Git(super::super::tools::mergetool_op("c.txt")));
+        // The tool exits at once; its result waits for a poll.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        t.apply(&ctx, Action::Redo);
+        assert!(t.running.is_some());
+        let mut msgs = vec![];
+        t.poll_tools(&ctx, &mut msgs);
+        settle(&ctx, &mut t);
+        while !t.ext_tools.is_empty() {
+            settle(&ctx, &mut t);
+        }
+        assert_eq!(read(&dir, "keep").as_deref(), Some("k\n"));
+        assert!(labels(&t).contains(&"Discard".to_owned()), "{:?}", labels(&t));
+        assert_eq!(backups_settle(&dir, 4), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pruning skips the backups of a live session (another tab, a linked worktree, another
+    /// Glasir) however old, and names it can't read; an ended session's go after 14 days.
+    #[test]
+    fn prune_never_takes_a_live_steps_backup() {
+        let dir = repo("undo-prune-live");
+        let c = sh(&dir, &["commit-tree", "-m", "b", &rev(&dir, "HEAD^{tree}")]).trim().to_owned();
+        let (me, gone) = (std::process::id(), i32::MAX as u32 - 1);
+        let names = [format!("1-{me}-1"), format!("1-{gone}-1"), "1-x-1".into()];
+        for n in &names {
+            sh(&dir, &["update-ref", &format!("refs/glasir/backups/{n}"), &c]);
+        }
+        let later = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 15 * 86_400;
+        git::prune(&dir, later, 14);
+        assert_eq!(sh(&dir, &["for-each-ref", "--format=%(refname:lstrip=3)", "refs/glasir/backups/"]), format!("1-{me}-1\n1-x-1\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

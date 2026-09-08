@@ -185,9 +185,9 @@ pub fn leaves(dir: &Path, scope: &[String]) -> Res<Vec<String>> {
 }
 
 /// Each leaf's raw (mode, oid) on disk, None when no file is there (a tracked file that is a
-/// folder now). A nested repo or submodule is `(DIR, FOREIGN)`, a file that can't be read
-/// (or named, with a newline or as non-UTF-8) `(mode, FOREIGN)`. Without exec bits to read
-/// (Windows, `core.filemode=false`) a file keeps its index mode. Git streams them, any size.
+/// folder now). A nested repo or submodule is `(DIR, FOREIGN)`; a file that can't be read, isn't
+/// a plain file (a FIFO would block the read) or has a non-UTF-8 name `(mode, FOREIGN)`. Without
+/// exec bits to read (Windows, `core.filemode=false`) a file keeps its index mode. Any size.
 fn hash(dir: &Path, leaves: &[String], index: &Blobs, write: bool) -> Res<HashMap<String, Option<(u32, String)>>> {
     let filemode = cfg!(unix) && run(dir, &["config", "--type=bool", "core.filemode"]).map_or(true, |s| s.trim() != "false");
     let w: &[&str] = if write { &["-w"] } else { &[] };
@@ -211,9 +211,9 @@ fn hash(dir: &Path, leaves: &[String], index: &Blobs, write: bool) -> Res<HashMa
                 #[cfg(unix)]
                 let x = filemode && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0;
                 #[cfg(not(unix))]
-                let x = m.is_file() && filemode;
+                let x = false;
                 let mode = if x || (!filemode && index.get(p).is_some_and(|e| e.0 == 0o100755)) { 0o100755 } else { 0o100644 };
-                if !p.contains(['\n', '\u{FFFD}']) {
+                if m.is_file() && !p.contains('\u{FFFD}') {
                     files.push((p, mode));
                     continue;
                 }
@@ -222,13 +222,23 @@ fn hash(dir: &Path, leaves: &[String], index: &Blobs, write: bool) -> Res<HashMa
         };
         out.insert(p.clone(), e);
     }
-    let args = [&["hash-object", "--no-filters", "--stdin-paths"], w].concat();
-    let one = |ps: &[&(&String, u32)]| run_input(dir, &args, Some(ps.iter().map(|(p, _)| format!("{p}\n")).collect::<String>().as_bytes())).map(|o| o.lines().map(String::from).collect::<Vec<_>>());
-    // One that can't be read stops the batch: then one at a time.
-    let oids = one(&files.iter().collect::<Vec<_>>()).ok().filter(|o| o.len() == files.len());
-    let oids = oids.unwrap_or_else(|| files.iter().map(|f| one(&[f]).map_or(FOREIGN.into(), |o| o.concat())).collect());
+    let oids = hash_paths(dir, &[&["hash-object", "--no-filters"], w].concat(), &files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>());
     out.extend(files.into_iter().zip(oids).map(|((p, mode), oid)| (p.clone(), Some((mode, oid)))));
     Ok(out)
+}
+
+/// `hash-object` (`args`) of each path, in order; [`FOREIGN`] for one it can't read. Names
+/// `--stdin-paths` would rewrite (a leading `"` is C-unquoted, a trailing CR dropped) or split go
+/// as arguments, as does every name once the batch failed (an unreadable file stops it).
+fn hash_paths(dir: &Path, args: &[&str], ps: &[&str]) -> Vec<String> {
+    let odd = |p: &&str| p.starts_with('"') || p.ends_with('\r') || p.contains('\n');
+    let input: String = ps.iter().filter(|p| !odd(p)).map(|p| format!("{p}\n")).collect();
+    let out = if input.is_empty() { String::new() } else { run_input(dir, &[args, &["--stdin-paths"]].concat(), Some(input.as_bytes())).unwrap_or_default() };
+    let (ok, mut batch) = (out.lines().count() == input.lines().count(), out.lines());
+    ps.iter().map(|p| match ok && !odd(p) {
+        true => batch.next().unwrap_or_default().to_owned(),
+        false => run(dir, &[args, &["--", p]].concat()).map_or(FOREIGN.into(), |o| o.trim().to_owned()),
+    }).collect()
 }
 
 fn commit(dir: &Path, tree: &str, parents: &[&str], msg: &str) -> Res<String> {
@@ -278,11 +288,7 @@ fn snap_in(dir: &Path, scope: &[String], like: &[String], msg: &str, base: &str,
     let trees = like.iter().map(|c| tree(dir, c)).collect::<Res<Vec<_>>>()?;
     // Compared as git would commit them too: a CRLF checkout (autocrlf) is no change.
     let differ: Vec<&String> = all.iter().filter(|p| disk[*p].as_ref().is_some_and(|d| d.0 != 0o120000 && trees.iter().any(|t| t.get(*p).is_some_and(|e| e != d)))).collect();
-    let list: String = differ.iter().map(|p| format!("{p}\n")).collect();
-    let clean: HashMap<&String, String> = match differ.is_empty() {
-        true => HashMap::new(),
-        false => differ.iter().copied().zip(run_input(dir, &["hash-object", "--stdin-paths"], Some(list.as_bytes())).unwrap_or_default().lines().map(String::from)).collect(),
-    };
+    let clean: HashMap<&String, String> = differ.iter().copied().zip(hash_paths(dir, &["hash-object"], &differ.iter().map(|p| p.as_str()).collect::<Vec<_>>())).collect();
     let in_like = |p: &String, e: Option<&(u32, String)>, raw: bool| trees.iter().any(|t| t.get(p) == e || (!raw && t.get(p).zip(e).is_some_and(|(a, b)| a.0 == b.0 && clean.get(p) == Some(&a.1))));
     let paths: Vec<String> = all.iter().filter(|p| like.is_empty() || unmerged.contains(*p) || !in_like(p, disk[*p].as_ref(), false) || !in_like(p, index.get(*p), true)).cloned().collect();
     if !like.is_empty() && paths.is_empty() {
@@ -400,7 +406,7 @@ pub fn move_files(dir: &Path, from: &str, tip: &str, mode: &str, skip: &[Entry])
     let staged: HashSet<String> = z(run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", from])?).into_iter().chain(unmerged).collect();
     let mut dirty = HashSet::new();
     if mode == "--keep" {
-        dirty.extend(z(run(dir, &["diff", "--name-only", "-z", "--no-renames"])?));
+        dirty.extend(z(run(dir, &["diff", "--name-only", "-z", "--no-renames"])?).into_iter().chain(flagged(dir)?));
         // Untracked or ignored files at a path, under it, or where a folder above it goes.
         let found: Vec<String> = leaves(dir, &d)?.into_iter().filter(|l| !index.contains_key(l) && lstat(dir, l).is_ok()).map(|l| key(l.trim_end_matches('/'), ic)).collect();
         let near = related(&found);
@@ -415,6 +421,12 @@ pub fn move_files(dir: &Path, from: &str, tip: &str, mode: &str, skip: &[Entry])
     set_index(dir, &only, tip)?;
     let differ: HashSet<String> = z(run(dir, &["diff", "--name-only", "-z", "--no-renames"])?).into_iter().chain(z(run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", tip])?)).collect();
     Ok(d.into_iter().filter(|p| (staged.contains(p) || dirty.contains(p)) && (differ.contains(p) || lstat(dir, p).is_ok_and(|m| m.is_dir()))).collect())
+}
+
+/// Index entries marked assume-unchanged or skip-worktree: `git diff` never shows their edits.
+pub fn flagged(dir: &Path) -> Res<Vec<String>> {
+    let v = z(run(dir, &["ls-files", "-v", "-z"])?);
+    Ok(v.into_iter().filter_map(|l| l.split_once(' ').filter(|(t, _)| t.starts_with(|c: char| c.is_ascii_lowercase() || c == 'S')).map(|(_, p)| p.to_owned())).collect())
 }
 
 /// Moves the refs in `moved` (and `HEAD`) from `cur` to `to` in one transaction: all or none.
@@ -454,10 +466,26 @@ pub fn drop_backups(dir: &Path, refs: &[String]) {
     }
 }
 
-/// Deletes the backup refs older than `days` at `now` (seconds since 1970): those whose undo
-/// step went with the app or the history. Never touches anything outside `refs/glasir/backups/`.
+/// Whether process `pid` still runs; when unsure, it does.
+fn running(pid: u32) -> bool {
+    #[cfg(unix)]
+    return i32::try_from(pid).is_ok_and(|p| p > 0 && (unsafe { libc::kill(p, 0) } == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)));
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError};
+        let h = windows_sys::Win32::System::Threading::OpenProcess(windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        // An exited process someone still holds a handle to counts too: its backups stay longer.
+        (!h.is_null() && CloseHandle(h) != 0) || GetLastError() == ERROR_ACCESS_DENIED
+    }
+}
+
+/// Deletes the backup refs older than `days` at `now` (seconds since 1970) whose step is gone
+/// with the session that made it (the pid in their name runs no more): never one a running
+/// Glasir may still undo (another tab, a linked worktree, another window). Never touches
+/// anything outside `refs/glasir/backups/`.
 pub fn prune(dir: &Path, now: u64, days: u64) {
     let out = run(dir, &["for-each-ref", "--format=%(refname)%00%(committerdate:unix)", PREFIX]).unwrap_or_default();
-    let old: Vec<String> = out.lines().filter_map(|l| l.split_once('\0')).filter(|(_, t)| t.parse::<u64>().is_ok_and(|t| t + days * 86_400 < now)).map(|(r, _)| r.to_owned()).collect();
+    let gone = |r: &str| r[PREFIX.len()..].split('-').nth(1).and_then(|p| p.parse().ok()).is_some_and(|p| !running(p));
+    let old: Vec<String> = out.lines().filter_map(|l| l.split_once('\0')).filter(|(r, t)| t.parse::<u64>().is_ok_and(|t| t + days * 86_400 < now) && gone(r)).map(|(r, _)| r.to_owned()).collect();
     drop_backups(dir, &old);
 }

@@ -116,7 +116,9 @@ impl Editor {
             args.push("--autostash");
         }
         args.push(&self.base);
-        let mut op = Op::new(label, &args).undo(Undo::Keep);
+        // Its picks put files where ignored ones may sit: what they hold counts as named.
+        let revs = std::iter::once(&self.base).chain(self.items.iter().map(|i| &i.id)).cloned().collect();
+        let mut op = Op::new(label, &args).undo(Undo::Keep).backup(super::Backup::Tree { revs, untracked: false });
         // Checked again when it runs: a confirm dialog may wait while HEAD moves.
         if !self.head.is_empty() {
             op.cmds.insert(0, vec![HEAD_IS.into(), self.head.clone()]);
@@ -553,8 +555,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ⌘Z of an interactive cherry-pick keeps an uncommitted edit of a picked file as it is
-    /// (never merged or refused), and says so.
+    /// ⌘Z of an interactive cherry-pick that carried an uncommitted edit of a picked file puts
+    /// the file back as it was: the edit kept, the pick gone (never merged or refused).
     #[test]
     fn cherry_pick_undo_keeps_overlapping_edit() {
         use super::super::testutil::settle;
@@ -581,9 +583,8 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         let msgs = settle(&ctx, &mut t);
         assert_eq!(g(&["rev-parse", "HEAD"]), tip);
-        let both = lines(19, "nineteen").replace("\n2\n", "\ntwo\n");
-        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), both);
-        assert!(msgs.iter().any(|m| m.text.contains("Kept your changes to f")));
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), lines(19, "nineteen"), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(g(&["diff", "--cached", "--name-only"]), "");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

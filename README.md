@@ -109,7 +109,9 @@ The name fits a Git client:
 - ⌘Z / ⇧⌘Z undo and redo commits, amends, checkouts, merges, rebases, resets,
   branch / tag changes, cherry-picks, and **discarded work**: it is backed up as git
   objects first (exact bytes, exec bits, symlinks, staged versions, any size; the
-  discard is refused if that fails). Undo never refuses over your edits: files you
+  discard is refused if that fails). So are ignored files a checkout, pull, merge,
+  rebase or Continue would overwrite, and a merge's hand resolutions before Abort.
+  Undo never refuses over your edits: files you
   changed since stay as they are, a backup that can't go back waits in the stash list
   as "Glasir: …", and a failed undo offers Retry or Skip.
 
