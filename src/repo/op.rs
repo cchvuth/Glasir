@@ -5,7 +5,7 @@ use super::action::{Action, Msg, MultiOp};
 use super::data::RepoData;
 use super::message;
 use super::offer::offer;
-use super::undo::{Files, Refs, UndoEntry, UndoKind, backed_up, backup, on_remotes, split_z, UNDO_RETRY, UNDO_SKIP};
+use super::undo::{Files, Refs, UndoEntry, backed_up, backup, on_remotes, UNDO_RETRY, UNDO_SKIP};
 use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
@@ -66,6 +66,8 @@ pub enum Backup {
     /// Every uncommitted change (`untracked`: untracked files too), and untracked or ignored
     /// files where the commits it resets to (`revs`, a stopped rebase's own) put a file.
     Tree { revs: Vec<String>, untracked: bool },
+    /// The paths stash `id` (a commit) touches: an apply or pop.
+    Stash(String),
 }
 
 impl Op {
@@ -139,12 +141,11 @@ pub(super) enum Done {
 }
 
 /// Pseudo-commands that only check state (and change nothing).
-const GUARDS: [&str; 7] = [
+const GUARDS: [&str; 6] = [
     super::diff::DIFF_IS,
     super::rebase::HEAD_IS,
     super::rebase::REFS_AT,
     super::merge_opts::CLEAN,
-    super::merge_opts::TREE_IS,
     super::merge_opts::PICK_NEW,
     super::remotes::PR_GUARD,
 ];
@@ -166,7 +167,6 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 false => Err("The branch changed since this was prepared, so nothing was rewritten. Try again.".into()),
             },
             [super::merge_opts::CLEAN] => super::merge_opts::clean(dir),
-            [super::merge_opts::TREE_IS, ..] => super::merge_opts::tree_is(dir, &a),
             [super::merge_opts::PICK_NEW, ..] => super::merge_opts::pick_new(dir, &a),
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
@@ -441,12 +441,9 @@ pub fn remove_worktree_and_branch(d: &RepoData, remove: &[&str], b: &str) -> Op 
     op.input(format!("verify refs/heads/{b} {}\n", r.target))
 }
 
-/// `exec` pseudo-commands that name stashes by commit id, since `stash@{n}` shifts whenever
-/// a stash is made or dropped (CLI, another tab): `STASH_LIST n ids..` fails unless the
-/// first `n` stashes are exactly `ids`, `STASH_DROP id` / `STASH_POP id` drop / pop wherever `id` is now,
-/// `STASH_APPLY id` applies it (pop and apply restore its staged state when they can),
-/// `STASH_HAS ids..` fails unless every commit still exists, `STASH_RENAME id msg` stores it again
-/// with a new message (on top) and drops the old entry, and `STASH_UNPOP id msg token` undoes a pop.
+/// `exec` pseudo-commands naming stashes by commit id, since `stash@{n}` shifts when one is made or dropped elsewhere.
+/// `STASH_LIST n ids..` fails unless the first `n` stashes are `ids`; `STASH_DROP`, `STASH_POP` and `STASH_APPLY id` act wherever `id` is now;
+/// `STASH_HAS ids..` fails unless they all exist; `STASH_RENAME id msg` stores it again with a new message; `STASH_UNPOP id msg` lists a popped one again.
 const STASH_LIST: &str = "!stash-list";
 const STASH_DROP: &str = "!stash-drop";
 const STASH_HAS: &str = "!stash-has";
@@ -495,24 +492,11 @@ fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
                 None => Ok(String::new()),
             }
         }
-        [STASH_UNPOP, id, msg, token] => {
-            if git::stashes(dir)?.iter().any(|s| s.id == *id) {
-                return Err(format!("Stash {} is already in the stash list.", short(id)));
-            }
-            // Its files were clean before the pop: they go back to HEAD, unless they changed since.
-            let paths = match token.is_empty() {
-                true => vec![],
-                false => {
-                    let paths = stash_paths(dir, id)?;
-                    if paths_token(dir, &paths)? != *token {
-                        return Err("Files from that stash changed since the pop, so it wasn't undone (that would lose those changes).".into());
-                    }
-                    paths
-                }
-            };
-            git::run(dir, &["stash", "store", "-m", msg, id])?;
-            reset_paths(dir, &paths).map(|_| String::new())
-        }
+        // Its files go back with the step's backup: this only puts the entry back.
+        [STASH_UNPOP, id, msg] => match git::stashes(dir)?.iter().any(|s| s.id == *id) {
+            true => Ok(String::new()),
+            false => git::run(dir, &["stash", "store", "-m", msg, id]),
+        },
         [STASH_HAS, ids @ ..] => match ids.iter().find(|id| git::run(dir, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_err()) {
             Some(id) => Err(format!("Stash {} no longer exists (git gc pruned it), so no stash was touched.", short(id))),
             None => Ok(String::new()),
@@ -540,81 +524,16 @@ fn apply_stash(dir: &Path, id: &str, target: &str, pop: bool) -> Res<String> {
     git::run(dir, &["stash", verb, target]).map(|_| format!("Its staged changes came back unstaged: {why}."))
 }
 
-/// Every path stash `id` touches: tracked changes, staged changes and untracked files (`^3`).
-fn stash_paths(dir: &Path, id: &str) -> Res<Vec<String>> {
-    let mut paths = split_z(git::run(dir, &["diff", "--name-only", "-z", "--no-renames", &format!("{id}^1"), id])?);
-    paths.extend(split_z(git::run(dir, &["diff", "--name-only", "-z", "--no-renames", &format!("{id}^1"), &format!("{id}^2")])?));
-    paths.extend(git::run(dir, &["ls-tree", "-r", "-z", "--name-only", &format!("{id}^3")]).map(split_z).unwrap_or_default());
-    paths.sort_unstable();
-    paths.dedup();
-    Ok(paths)
-}
-
-/// Those of `paths` that are in HEAD.
-fn head_paths(dir: &Path, paths: &[String]) -> Res<Vec<String>> {
-    let mut a = vec!["ls-tree", "-r", "-z", "--name-only", "HEAD", "--"];
-    a.extend(paths.iter().map(String::as_str));
-    Ok(split_z(git::run(dir, &a)?).into_iter().filter(|p| paths.contains(p)).collect())
-}
-
-// ponytail: paths go on the command line; a stash of ~20k files would hit the argv limit.
-/// Whether `paths` are exactly as in HEAD (index and working tree), so a pop's undo can put them back there.
-fn paths_clean(dir: &Path, paths: &[String]) -> bool {
-    let mut a = vec!["--literal-pathspecs", "status", "--porcelain", "-z", "--untracked-files=all", "--"];
-    a.extend(paths.iter().map(String::as_str));
-    let Ok(head) = head_paths(dir, paths) else { return false };
-    !paths.iter().any(|p| p.contains('\u{FFFD}'))
-        && git::run(dir, &a).is_ok_and(|o| o.is_empty())
-        // Not in HEAD: must not exist at all (an ignored file would be lost).
-        && paths.iter().filter(|p| !head.contains(p)).all(|p| std::fs::symlink_metadata(dir.join(p)).is_err())
-}
-
-/// The state of `paths` (HEAD, index entries, file contents): a pop's undo refuses once it changed.
-fn paths_token(dir: &Path, paths: &[String]) -> Res<String> {
-    use std::hash::{Hash, Hasher};
-    let mut a = vec!["--literal-pathspecs", "ls-files", "-s", "-z", "--"];
-    a.extend(paths.iter().map(String::as_str));
-    let mut h = std::hash::DefaultHasher::new();
-    (git::run(dir, &["rev-parse", "HEAD"])?, git::run(dir, &a)?).hash(&mut h);
-    format!("{:?}", git::current(dir, paths)?).hash(&mut h);
-    Ok(format!("{:x}", h.finish()))
-}
-
-/// Put `paths` back as in HEAD: from HEAD if there, else out of the index and the working tree.
-fn reset_paths(dir: &Path, paths: &[String]) -> Res<()> {
-    let head = head_paths(dir, paths)?;
-    let nul = |ps: &[&String]| ps.iter().map(|p| format!("{p}\0")).collect::<String>().into_bytes();
-    if !head.is_empty() {
-        git::run_input(dir, &["--literal-pathspecs", "checkout", "HEAD", "--pathspec-from-file=-", "--pathspec-file-nul"], Some(&nul(&head.iter().collect::<Vec<_>>())))?;
-    }
-    let rest: Vec<&String> = paths.iter().filter(|p| !head.contains(p)).collect();
-    if !rest.is_empty() {
-        git::run_input(dir, &["--literal-pathspecs", "rm", "-q", "-f", "--cached", "--ignore-unmatch", "--pathspec-from-file=-", "--pathspec-file-nul"], Some(&nul(&rest)))?;
-    }
-    for p in rest {
-        match std::fs::remove_file(dir.join(p)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{p}: {e}")),
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 /// Runs `op` like `exec`, and gives a stash save, pop or rename its undo, which needs what
-/// only the run knows: the stash commit a save made, the state of a popped stash's files
-/// before and after, a renamed stash's old message. A revert holding a bare `STASH_UNPOP`
-/// (create a branch from a stash) gets that command filled in.
+/// only the run knows: the stash commit a save made, a popped stash's message (its files go
+/// back with the op's backup), a renamed stash's old message.
 pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
     let saving = op.cmds.iter().any(|c| c.iter().skip_while(|a| a.starts_with("--")).take(2).eq(["stash", "push"]));
     let top = || git::run(dir, &["rev-parse", "-q", "--verify", "refs/stash"]).map(|s| s.trim().to_owned()).unwrap_or_default();
     let before = saving.then(top);
     let find = |cmd: &str| op.cmds.iter().find(|c| c.len() >= 2 && c[0] == cmd).map(|c| c[1].clone());
     let stash = |id: Option<String>| id.and_then(|id| git::stashes(dir).ok()?.into_iter().find(|s| s.id == id));
-    // Before the pop: its files must be clean for the undo to put them back.
-    let popped = stash(find(STASH_POP)).map(|s| {
-        let paths = stash_paths(dir, &s.id).ok().filter(|p| paths_clean(dir, p));
-        (s, paths)
-    });
+    let popped = stash(find(STASH_POP));
     let renamed = stash(find(STASH_RENAME));
     let out = exec(dir, op);
     if let Err(e) = out {
@@ -629,13 +548,10 @@ pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
     if before.is_some_and(|b| b != now) && !now.is_empty() {
         op.revert = revert("Pop stash", vec![STASH_POP.into(), now]);
     }
-    if let Some((s, paths)) = popped {
-        let token = paths.and_then(|p| paths_token(dir, &p).ok()).unwrap_or_default();
-        let cmd = vec![STASH_UNPOP.into(), s.id, s.message, token];
-        match op.revert.as_mut().and_then(|r| r.cmds.iter_mut().find(|c| c[0] == STASH_UNPOP)) {
-            Some(c) => *c = cmd,
-            None => op.revert = revert("Restore stash", cmd),
-        }
+    if let Some(s) = popped {
+        // Redo drops it again (the files come back with the step's backup).
+        op.revert = revert("Restore stash", vec![STASH_UNPOP.into(), s.id.clone(), s.message]);
+        op.revert.as_mut().into_iter().for_each(|r| r.revert = revert("Drop stash", vec![STASH_DROP.into(), s.id.clone()]));
     }
     if let Some(s) = renamed {
         op.revert = revert("Rename stash back", vec![STASH_RENAME.into(), s.id, s.message]);
@@ -645,14 +561,12 @@ pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
 
 /// Pop this stash wherever it is in the list now.
 pub fn pop_stash(s: &git::Stash) -> Op {
-    let mut op = Op::new("Pop stash", &[]);
-    op.cmds = vec![vec![STASH_POP.into(), s.id.clone()]];
-    op
+    Op { cmds: vec![vec![STASH_POP.into(), s.id.clone()]], ..Op::new("Pop stash", &[]) }.backup(Backup::Stash(s.id.clone()))
 }
 
 /// Apply this stash, keeping it.
 pub fn apply_stash_op(s: &git::Stash) -> Op {
-    Op { cmds: vec![vec![STASH_APPLY.into(), s.id.clone()]], ..Op::new("Apply stash", &[]) }
+    Op { cmds: vec![vec![STASH_APPLY.into(), s.id.clone()]], ..Op::new("Apply stash", &[]) }.backup(Backup::Stash(s.id.clone()))
 }
 
 /// Give this stash the message `{}` (a prompt); it moves to the top of the list.
@@ -662,11 +576,8 @@ pub fn rename_stash(s: &git::Stash) -> Op {
 
 /// `git stash branch {}`: a new branch at the stash's base, checked out, with the stash popped
 /// onto it. One ⌘Z puts the stash back, returns to the branch you were on and deletes the new one.
-pub fn stash_branch(d: &RepoData, s: &git::Stash) -> Op {
-    let back = d.status.branch.as_deref().or(d.status.head.as_deref()).unwrap_or("HEAD");
-    let mut undo = Op::new("Delete branch from stash", &[]);
-    undo.cmds = vec![vec![STASH_UNPOP.into()], vec!["checkout".into(), back.into(), "--".into()], [BRANCH_DELETE, "{}", &s.base, "-D"].map(String::from).to_vec()];
-    Op::new("Create branch from stash", &["checkout", "-b", "{}", &s.base, "--"]).then(&[STASH_POP, &s.id]).revert(undo)
+pub fn stash_branch(s: &git::Stash) -> Op {
+    Op::new("Create branch from stash", &["checkout", "-b", "{}", &s.base, "--"]).then(&[STASH_POP, &s.id]).undo(Undo::Keep).backup(Backup::Stash(s.id.clone()))
 }
 
 /// Drop these stashes in one op, by commit id, after checking the list is still the one shown.
@@ -761,7 +672,8 @@ impl RepoTab {
                 // merge, rebase, continue, abort...) backs up what git may overwrite there: ignored
                 // files where its commits put one, and a stopped merge's resolutions.
                 let named = || Backup::Tree { revs: op.cmds.iter().flatten().cloned().collect(), untracked: false };
-                let b = op.backup.clone().or_else(|| (op.undo == Undo::Keep).then(named));
+                let b = op.backup.clone().or_else(|| matches!(op.undo, Undo::Keep | Undo::Mixed).then(named));
+                let head = git::head(&dir);
                 // ponytail: a pull fetches first so its backup sees what it merges (a second, empty fetch).
                 if op.backup.is_none() && op.cmds[0][0] == "pull" {
                     let _ = cancel.scope(|| git::run(&dir, &["fetch", "--progress"]));
@@ -775,10 +687,8 @@ impl RepoTab {
                 let out = cancel.scope(|| exec_stash(&dir, &mut op));
                 if out.is_err() {
                     keep_deleted(&dir, &mut op);
-                } else {
-                    super::merge_opts::seal(&dir, &mut op);
                 }
-                let files = saved.map_or(Ok(None), |s| backed_up(&dir, s, &op.label));
+                let files = b.map_or(Ok(None), |b| backed_up(&dir, &b, saved, head.as_deref(), &op.label));
                 // Even a partly failed op may have moved refs: always offer undo.
                 let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| {
                     let n = if a == b { 0 } else { on_remotes(&dir, &b, &a) };
@@ -843,20 +753,20 @@ impl RepoTab {
                     None
                 });
                 let refs = snaps.filter(|(b, a, _)| b != a).map(|(before, after, on_remote)| Refs { before, after, mode: op.undo, on_remote });
-                if refs.is_some() || files.is_some() {
-                    // Light ops toast nothing, but a discard deserves a visible way back.
-                    if files.is_some() && op.light && res.is_ok() {
-                        msgs.push(Msg { text: format!("{} ✔ changes backed up", op.label), error: false });
-                    }
-                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Step { refs, files: files.into_iter().collect() }));
-                    self.clear_redo();
-                }
                 // `keep_deleted` left a failed branch delete's revert only if it deleted some.
                 let partial = op.revert.as_ref().is_some_and(|u| u.cmds.first().is_some_and(|c| c[0] == BRANCH_RESTORE));
-                if let (true, Some(undo)) = (res.is_ok() || partial, &op.revert) {
-                    // Keeps its revert: a redo returns it, refreshed for a stash save or pop (`exec_stash`).
-                    let redo = Op { confirm: None, ..op.clone() };
-                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Op { undo: undo.clone(), redo: Box::new(redo) }));
+                // Its revert's own revert is its redo (a pop's: drop the stash again), else the op
+                // itself, refreshed for a stash save (`exec_stash`).
+                let ops = op.revert.clone().filter(|_| res.is_ok() || partial).map(|mut u| {
+                    let redo = u.revert.take().unwrap_or_else(|| Box::new(Op { confirm: None, ..op.clone() }));
+                    (u, redo)
+                });
+                // Light ops toast nothing, but a discard deserves a visible way back.
+                if files.is_some() && op.light && res.is_ok() {
+                    msgs.push(Msg { text: format!("{} ✔ changes backed up", op.label), error: false });
+                }
+                if refs.is_some() || files.is_some() || ops.is_some() {
+                    self.undo.push(UndoEntry::new(op.label.clone(), refs, files.into_iter().collect(), ops));
                     self.clear_redo();
                 }
                 // A guided split ends (or never started): see `split.rs`.
@@ -1859,7 +1769,7 @@ mod tests {
     }
 
     /// Pop restores the staged state; ⌘Z puts the same stash back and the files as they were,
-    /// redo pops again; once a popped file changed, undo refuses.
+    /// redo pops again; a popped file changed since stays (its backup goes to the stash list).
     #[test]
     fn stash_pop_undo_redo() {
         let (dir, ctx, mut t) = stash_repo("stash-pop");
@@ -1882,16 +1792,17 @@ mod tests {
             assert_eq!(sh(&dir, &["status", "--porcelain"]), "M  a\n M b\n?? new\n");
         }
         std::fs::write(dir.join("new"), "edited after the pop\n").unwrap();
-        run(&ctx, &mut t, Action::Undo);
-        assert!(t.choice.take().is_some_and(|c| c.text.contains("changed since the pop") && c.ops.len() == 2));
+        let msgs = run(&ctx, &mut t, Action::Undo);
+        assert!(t.choice.is_none() && msgs.iter().any(|m| m.text.contains("new changed since")));
         assert_eq!(std::fs::read_to_string(dir.join("new")).unwrap(), "edited after the pop\n");
-        assert_eq!(sh(&dir, &["stash", "list"]), "");
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: s\nGlasir: Undo Pop stash\n");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M b\n?? new\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A pop merged into a file that had staged changes: undo puts the stash back but leaves the file.
+    /// A pop merged into a file that had staged changes: undo puts the stash back and the file as it was.
     #[test]
-    fn stash_pop_onto_staged_file_undo_keeps_it() {
+    fn stash_pop_onto_staged_file_undo_puts_it_back() {
         let (dir, ctx, mut t) = stash_repo("stash-pop-dirty");
         std::fs::write(dir.join("a"), "1x\n2\n3\n").unwrap();
         sh(&dir, &["stash", "push", "-q"]);
@@ -1903,8 +1814,8 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1x\n2\n3z\n");
         run(&ctx, &mut t, Action::Undo);
         assert_eq!(sh(&dir, &["rev-parse", "refs/stash"]).trim(), s.id);
-        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1x\n2\n3z\n");
-        assert_eq!(sh(&dir, &["show", ":a"]), "1\n2\n3z\n");
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1\n2\n3z\n");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "M  a\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1961,7 +1872,7 @@ mod tests {
         commit(&dir, "b", "later\n");
         run(&ctx, &mut t, Action::Reload);
         let s = t.data.as_ref().unwrap().stashes[0].clone();
-        let op = super::stash_branch(t.data.as_ref().unwrap(), &s);
+        let op = super::stash_branch(&s);
         run(&ctx, &mut t, Action::Git(fill(super::super::action::prompt("", "", op), "from-stash")));
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "from-stash\n");
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), base);

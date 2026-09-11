@@ -109,8 +109,10 @@ The name fits a Git client:
 - ⌘Z / ⇧⌘Z undo and redo commits, amends, checkouts, merges, rebases, resets,
   branch / tag changes, cherry-picks, and **discarded work**: it is backed up as git
   objects first (exact bytes, exec bits, symlinks, staged versions, any size; the
-  discard is refused if that fails). So are ignored files a checkout, pull, merge,
-  rebase or Continue would overwrite, and a merge's hand resolutions before Abort.
+  discard is refused if that fails). So are ignored files any op would overwrite
+  (checkout, pull, merge, squash merge, rebase and its replayed commits, revert,
+  cherry-pick, stash apply or pop, Continue), staged versions a mixed reset drops,
+  and a merge's hand resolutions before Abort or Restore conflict markers.
   Undo never refuses over your edits: files you
   changed since stay as they are, a backup that can't go back waits in the stash list
   as "Glasir: …", and a failed undo offers Retry or Skip.
@@ -133,7 +135,7 @@ The name fits a Git client:
   without committing**, an optional `-x` "(cherry picked from …)" line (Settings),
   a warning before picking a commit whose change is already in HEAD, and reverting
   a merge commit says it goes against parent 1. All undoable; the staged variants
-  need a clean tree and refuse to undo over later edits.
+  need a clean tree, and their undo keeps edits made since.
 - **Interactive rebase editor**: pick, reword, squash, fixup, drop and reorder,
   with single-key shortcuts.
 - **One-click history edits**: reword, squash into parent, drop, or
@@ -222,8 +224,8 @@ The name fits a Git client:
 - **Stashes**: stash all (with your own message, or git's default), staged only,
   a single file (right-click it in the WIP lists), or with an AI-written message;
   ⌘Z pops a fresh stash back. Apply and pop bring staged changes back staged
-  (or say why they came back unstaged); ⌘Z after a pop puts the stash back and
-  its files as they were. Rename a stash, create a branch from it (at the
+  (or say why they came back unstaged); ⌘Z after an apply or pop puts its files
+  back as they were (and a popped stash back in the list). Rename a stash, create a branch from it (at the
   commit it was made on, stash popped; one ⌘Z undoes it all), delete
   (⌘/⇧-click several to delete them at once; ⌘Z brings them back in place);
   apply a single file from a stash.

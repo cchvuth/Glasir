@@ -2,7 +2,7 @@
 //! the file manager, and the user's custom commands ({repo} {branch} {sha} {path}).
 
 use super::op::{Backup, Op, Undo};
-use super::undo::{Files, UndoEntry, UndoKind, backed_up, backup};
+use super::undo::{Files, UndoEntry, backed_up, backup};
 use super::{DiffSrc, Msg, RepoTab, Task};
 use crate::git::{self, Res};
 use serde::{Deserialize, Serialize};
@@ -167,6 +167,11 @@ pub(super) fn kind(label: &str) -> Option<&'static str> {
     }
 }
 
+/// Put a conflicted file's markers back (the WIP conflict menu).
+pub fn restore_markers_op(path: &str) -> Op {
+    Op::new("Restore conflict", &["--literal-pathspecs", "checkout", "-m", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
+}
+
 /// `git mergetool` for one conflicted file. It runs beside other ops ([`Open`]); the file is
 /// backed up before the tool starts, and ⌘Z restores it if the tool changed it.
 pub fn mergetool_op(path: &str) -> Op {
@@ -214,7 +219,7 @@ pub(super) fn touches(op: &Op, path: &str) -> bool {
     let named = |p: &str| p == path || p == "." || p == ":/" || path.strip_prefix(p.trim_end_matches('/')).is_some_and(|r| r.starts_with('/'));
     let backup = match &op.backup {
         Some(Backup::Paths(ps)) => ps.iter().any(|p| named(p)),
-        Some(Backup::Tree { .. }) => true,
+        Some(Backup::Tree { .. } | Backup::Stash(_)) => true,
         None => false,
     };
     let input = op.input.as_deref().is_some_and(|i| i.split(|&b| b == 0).any(|p| std::str::from_utf8(p).is_ok_and(named)));
@@ -250,7 +255,7 @@ impl RepoTab {
                 Err(e) => return (op, Err(e), Ok(None)),
             };
             let out = c.scope(|| super::op::exec(&dir, &op));
-            let files = saved.map_or(Ok(None), |s| backed_up(&dir, s, &op.label));
+            let files = op.backup.as_ref().map_or(Ok(None), |b| backed_up(&dir, b, saved, None, &op.label));
             (op, out, files)
         });
         self.ext_tools.push(Open { kind, path, cancel, task });
@@ -290,7 +295,7 @@ impl RepoTab {
             }
             match files {
                 Ok(Some(f)) => {
-                    self.undo.push(UndoEntry::new(op.label.clone(), UndoKind::Step { refs: None, files: vec![f] }));
+                    self.undo.push(UndoEntry::new(op.label.clone(), None, vec![f], None));
                     self.clear_redo();
                     msgs.push(Msg { text: format!("{} ✔ ⌘Z restores the file as it was before", op.label), error: false });
                 }

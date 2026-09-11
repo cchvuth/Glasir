@@ -306,13 +306,27 @@ fn snap_in(dir: &Path, scope: &[String], like: &[String], msg: &str, base: &str,
         }
     };
     let (w, u) = (put(tmp, true)?, put(tmp2, false)?);
-    let c = commit(dir, &w, &[base, &commit(dir, &i_tree, &[base], "index")?, &commit(dir, &u, &[], "untracked files")?], msg)?;
+    let unmerged = paths.iter().filter(|p| unmerged.contains(*p)).cloned().collect();
+    kept(dir, &w, &i_tree, &u, base, msg).map(|(commit, refname)| Some(Snap { commit, refname, paths, unmerged }))
+}
+
+/// A stash-shaped commit (files `w`, index `i`, untracked files `u` on `base`) and the new
+/// `refs/glasir/backups/*` ref that keeps it.
+fn kept(dir: &Path, w: &str, i: &str, u: &str, base: &str, msg: &str) -> Res<(String, String)> {
+    let c = commit(dir, w, &[base, &commit(dir, i, &[base], "index")?, &commit(dir, u, &[], "untracked files")?], msg)?;
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
     let refname = format!("{PREFIX}{ms}-{}-{}", std::process::id(), SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
     run(dir, &["update-ref", &refname, &c, ""])?;
-    let unmerged = paths.iter().filter(|p| unmerged.contains(*p)).cloned().collect();
-    Ok(Some(Snap { commit: c, refname, paths, unmerged }))
+    Ok((c, refname))
+}
+
+/// The backup of a tree that was clean at commit `base`, made after the fact: files and index
+/// as `base` has them, no untracked files. Covers no paths yet.
+pub fn clean_snap(dir: &Path, base: &str, msg: &str) -> Res<Snap> {
+    let t = format!("{base}^{{tree}}");
+    let (commit, refname) = kept(dir, &t, &t, &empty_tree(dir)?, base, msg)?;
+    Ok(Snap { commit, refname, paths: vec![], unmerged: vec![] })
 }
 
 /// What `scope` holds now, read without writing objects: a file that can't be read is [`FOREIGN`].
@@ -353,40 +367,41 @@ pub fn view(dir: &Path, s: &Snap, scope: &[String]) -> Res<View> {
     Ok(v)
 }
 
-/// Puts `plan` on disk: a gone entry's file is removed (with the folders that leaves empty),
-/// the others written with their raw bytes and modes. Then each one's index entry: its `idx`,
-/// else `head`'s (or none); conflict stages go.
-pub fn write(dir: &Path, plan: &[Entry], head: &str) -> Res<()> {
-    for e in plan.iter().filter(|e| e.disk.is_none()) {
-        match std::fs::remove_file(dir.join(&e.name)) {
+/// Puts `files` on disk: a gone entry's file is removed (with the folders that leaves empty; a
+/// submodule's folder only while empty), the others written with their modes: `raw` bytes as
+/// backed up, else as git checks them out (filters, line endings). Then each of `index`'s index
+/// entry: its `idx`, else `head`'s (or none); conflict stages go.
+pub fn write(dir: &Path, files: &[Entry], index: &[Entry], head: &str, raw: bool) -> Res<()> {
+    for e in files.iter().filter(|e| e.disk.is_none()) {
+        let p = dir.join(&e.name);
+        match std::fs::remove_file(&p) {
+            Err(_) if lstat(dir, &e.name).is_ok_and(|m| m.is_dir()) => drop(std::fs::remove_dir(&p)),
             Err(err) if !gone(&err) => return Err(format!("{}: {err}", e.name)),
             _ => ancestors(&e.name).rev().take_while(|a| std::fs::remove_dir(dir.join(a)).is_ok()).for_each(drop),
         }
     }
-    let put: Vec<(&str, Option<&(u32, String)>)> = plan.iter().filter_map(|e| Some((e.name.as_str(), Some(e.disk.as_ref()?)))).collect();
-    // Raw bytes as backed up: no line-ending conversion or filters (`--attr-source`: git 2.40).
+    let put: Vec<(&str, Option<&(u32, String)>)> = files.iter().filter_map(|e| Some((e.name.as_str(), Some(e.disk.as_ref()?)))).collect();
+    // Raw: no line-ending conversion or filters (`--attr-source`: git 2.40).
     let attr = format!("--attr-source={}", empty_tree(dir)?);
-    let new = super::env::parse_version(&run(dir, &["--version"])?).is_some_and(|v| v >= (2, 40));
-    let args: Vec<&str> = ["-c", "core.autocrlf=false"].into_iter().chain(new.then_some(attr.as_str())).chain(["checkout-index", "-f", "-z", "--stdin"]).collect();
+    let new = raw && super::env::parse_version(&run(dir, &["--version"])?).is_some_and(|v| v >= (2, 40));
+    let mut args: Vec<&str> = if raw { vec!["-c", "core.autocrlf=false"] } else { vec![] };
+    args.extend(new.then_some(attr.as_str()).into_iter().chain(["checkout-index", "-f", "-z", "--stdin"]));
     if !put.is_empty() {
         scratch(dir, |tmp| {
             on_index(dir, tmp, &["update-index", "-z", "--index-info"], &info(put.iter().copied(), &"0".repeat(head.len())))?;
             on_index(dir, tmp, &args, &put.iter().map(|(p, _)| format!("{p}\0")).collect::<String>())
         })?;
     }
-    set_index(dir, plan, head)
-}
-
-/// Each entry's index entry, conflict stages cleared: its `idx` (mode 0: none), else `head`'s.
-fn set_index(dir: &Path, plan: &[Entry], head: &str) -> Res<()> {
-    if plan.is_empty() {
-        return Ok(());
+    // Each index entry, conflict stages cleared: its `idx` (mode 0: none), else `head`'s.
+    if !index.is_empty() {
+        let (tip, zero) = (tree(dir, head)?, "0".repeat(head.len()));
+        let set = index.iter().filter_map(|e| Some((e.name.as_str(), Some(e.idx.as_ref().map_or(tip.get(&e.name), |i| Some(i).filter(|i| i.0 != 0))?))));
+        let input = info(index.iter().map(|e| (e.name.as_str(), None)), &zero) + &info(set, &zero);
+        run_input(dir, &["update-index", "-z", "--index-info"], Some(input.as_bytes()))?;
     }
-    let (tip, zero) = (tree(dir, head)?, "0".repeat(head.len()));
-    let set = plan.iter().filter_map(|e| Some((e.name.as_str(), Some(e.idx.as_ref().map_or(tip.get(&e.name), |i| Some(i).filter(|i| i.0 != 0))?))));
-    let input = info(plan.iter().map(|e| (e.name.as_str(), None)), &zero) + &info(set, &zero);
-    run_input(dir, &["update-index", "-z", "--index-info"], Some(input.as_bytes()))?;
-    let _ = run(dir, &["update-index", "-q", "--refresh"]);
+    if !files.is_empty() || !index.is_empty() {
+        let _ = run(dir, &["update-index", "-q", "--refresh"]);
+    }
     Ok(())
 }
 
@@ -417,8 +432,7 @@ pub fn move_files(dir: &Path, from: &str, tip: &str, mode: &str, skip: &[Entry])
     let full: Vec<Entry> = rest.clone().filter(|p| mode == "--keep" && !dirty.contains(*p)).map(|p| Entry { name: p.clone(), disk: files.get(p).cloned(), idx: None, unmerged: false }).collect();
     // Index entries only: the files stay as they are.
     let only: Vec<Entry> = rest.filter(|p| mode != "--keep" || dirty.contains(*p)).map(|p| Entry { name: p.clone(), disk: None, idx: None, unmerged: false }).collect();
-    write(dir, &full, tip)?;
-    set_index(dir, &only, tip)?;
+    write(dir, &full, &[&full[..], &only].concat(), tip, false)?;
     let differ: HashSet<String> = z(run(dir, &["diff", "--name-only", "-z", "--no-renames"])?).into_iter().chain(z(run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", tip])?)).collect();
     Ok(d.into_iter().filter(|p| (staged.contains(p) || dirty.contains(p)) && (differ.contains(p) || lstat(dir, p).is_ok_and(|m| m.is_dir()))).collect())
 }

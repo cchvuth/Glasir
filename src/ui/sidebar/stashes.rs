@@ -77,7 +77,7 @@ pub fn stash_menu(ui: &mut Ui, d: &RepoData, s: &crate::git::Stash, acts: &mut V
         acts.push(prompt("Rename stash", s.message.as_str(), rename_stash(s)));
     }
     if ui.button("Create branch from stash…").on_hover_text("A new branch at the commit the stash was made on, with the stash popped onto it").clicked() {
-        acts.push(prompt("New branch from stash", "", stash_branch(d, s)));
+        acts.push(prompt("New branch from stash", "", stash_branch(s)));
     }
     if ui.button("Delete stash").clicked() {
         acts.push(Action::Git(drop_stashes(&d.stashes, std::slice::from_ref(&s.id))));

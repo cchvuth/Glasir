@@ -315,9 +315,12 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     on_branch(dir, commit)?;
     pending_autosquash(Editor::load(dir, &format!("{commit}^"), short)?.items.iter().map(|i| i.message.as_str()))?;
     // Soft: undo puts the folded-in changes back in the index (`--keep` would drop them).
+    // Backed up: the replayed commits may put files where ignored ones sit.
+    let base = format!("{commit}^");
     Ok(Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
-        .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &format!("{commit}^")])
-        .undo(Undo::Soft))
+        .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &base])
+        .undo(Undo::Soft)
+        .backup(super::Backup::Tree { revs: vec![base], untracked: false }))
 }
 
 /// Uncommit `commit` so it can be split: HEAD is just reset; an older commit

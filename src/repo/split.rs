@@ -2,7 +2,7 @@
 //! stages and commits the parts, then Continue replays the rest of the branch.
 //! The whole split becomes one undo step.
 
-use super::undo::{Files, Refs, UndoEntry, UndoKind, at, moved};
+use super::undo::{Files, Refs, UndoEntry, at, copy, moved};
 use super::{Backup, Choice, Msg, Op, RepoTab, Undo};
 use crate::git;
 
@@ -136,7 +136,7 @@ impl RepoTab {
     fn fold_split(&mut self, sp: &Split, abort: bool) {
         let (mut refs, mut files, mut rest): (Option<Refs>, Vec<Files>, Vec<UndoEntry>) = (None, vec![], vec![]);
         for e in self.undo.split_off(sp.undo_len.min(self.undo.len())) {
-            let UndoEntry { kind: UndoKind::Step { refs: r, files: f }, .. } = e else { rest.push(e); continue };
+            let UndoEntry { refs: r, files: f, ops: None, .. } = e else { rest.push(e); continue };
             files.extend(f);
             refs = match (refs, r) {
                 (Some(mut acc), Some(r)) => {
@@ -157,18 +157,9 @@ impl RepoTab {
         let refs = refs.filter(|r| r.before != r.after);
         if refs.is_some() || !files.is_empty() {
             let label = if abort { ABORT.to_owned() } else { format!("Split {}", &sp.id[..7.min(sp.id.len())]) };
-            self.undo.push(UndoEntry::new(label, UndoKind::Step { refs, files }));
+            self.undo.push(UndoEntry::new(label, refs, files, None));
         }
         self.undo.extend(rest);
-    }
-}
-
-/// Sets ref `r` (or `HEAD`) in `to` as it is in `from`.
-fn copy(to: &mut git::Snapshot, from: &git::Snapshot, r: &str) {
-    match (r, from.refs.get(r)) {
-        ("HEAD", _) => to.head = from.head.clone(),
-        (_, Some(o)) => drop(to.refs.insert(r.to_owned(), o.clone())),
-        (_, None) => drop(to.refs.remove(r)),
     }
 }
 

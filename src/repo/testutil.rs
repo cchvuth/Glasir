@@ -44,7 +44,7 @@ pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) -> Vec<super::
 pub(super) fn run_backed(dir: &Path, op: &super::Op) -> git::Res<Option<super::undo::Files>> {
     let before = op.backup.as_ref().map(|b| super::undo::backup(dir, b, &op.label)).transpose()?.flatten();
     super::op::exec(dir, op)?;
-    before.map_or(Ok(None), |s| super::undo::backed_up(dir, s, &op.label))
+    op.backup.as_ref().map_or(Ok(None), |b| super::undo::backed_up(dir, b, before, None, &op.label))
 }
 
 /// Tests: the undo of those files alone; its note.

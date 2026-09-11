@@ -1,17 +1,14 @@
 //! Merge and cherry-pick variants. Squash merge and cherry-pick without committing
-//! leave their result staged, so they only run on a clean tree and are undone by a
-//! guarded `reset --hard` (the guard refuses once anything changed after the op).
+//! leave their result staged, so they only run on a clean tree (their undo puts back
+//! the files they changed, like any other).
 
 use super::op::{Op, Undo};
-use super::rebase::head_state;
 use crate::git::{self, Res};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// `exec` pseudo-command: fails unless nothing is uncommitted and no operation is in progress.
 pub(super) const CLEAN: &str = "!tree-clean";
-/// `exec` pseudo-command: `TREE_IS head tree` fails unless HEAD and the staged tree are still the op's result.
-pub(super) const TREE_IS: &str = "!tree-is";
 /// `exec` pseudo-command: `PICK_NEW id...` fails if a commit's change is already in HEAD.
 pub(super) const PICK_NEW: &str = "!pick-new";
 /// How [`pick_new`]'s refusal starts.
@@ -52,7 +49,7 @@ pub fn merge_op(target: &str, rev: &str, how: Option<Merge>) -> Op {
         Some(Merge::Squash) => {
             let mut op = Op::new(format!("Squash merge {target}"), &["merge", "--squash", rev]);
             op.cmds.insert(0, vec![CLEAN.into()]);
-            return op;
+            op
         }
     };
     op.undo = Undo::Keep;
@@ -71,11 +68,9 @@ pub fn pick_op(label: impl Into<String>, ids: &[&str], merge: bool, no_commit: b
         a.extend(["-m", "1"]);
     }
     a.extend(ids);
-    let mut op = Op::new(label, &a);
+    let mut op = Op::new(label, &a).undo(Undo::Keep);
     if no_commit {
         op.cmds.insert(0, vec![CLEAN.into()]);
-    } else {
-        op.undo = Undo::Keep;
     }
     if !merge {
         op.cmds.insert(0, std::iter::once(PICK_NEW).chain(ids.iter().copied()).map(String::from).collect());
@@ -89,36 +84,6 @@ pub(super) fn clean(dir: &Path) -> Res<String> {
         return Err("Commit, stash or discard your uncommitted changes first (and finish any merge or rebase in progress): this leaves its result uncommitted, and undoing it must not touch other work.".into());
     }
     Ok(String::new())
-}
-
-pub(super) fn tree_is(dir: &Path, a: &[&str]) -> Res<String> {
-    let [_, head, tree] = a else { return Err("bad tree guard".into()) };
-    let same = head_state(dir) == *head
-        && git::run(dir, &["write-tree"]).is_ok_and(|t| t.trim() == *tree)
-        && git::run(dir, &["diff", "--name-only", "-z"])?.trim_matches('\0').is_empty();
-    if !same {
-        return Err("The branch or the working tree changed since this, so nothing was undone. Discard or commit the changes yourself.".into());
-    }
-    // `reset --hard` silently overwrites an untracked file standing where the op deleted one.
-    let gone = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--diff-filter=D", "HEAD"])?;
-    if let Some(p) = gone.split('\0').find(|p| !p.is_empty() && dir.join(p).symlink_metadata().is_ok()) {
-        return Err(format!("{p} exists again as an untracked file, and undoing would overwrite it. Move it aside, then undo again."));
-    }
-    Ok(String::new())
-}
-
-/// After a successful staged op: undo is a guarded `reset --hard` back to the clean tree
-/// (none if the op changed nothing).
-pub(super) fn seal(dir: &Path, op: &mut Op) {
-    if !op.cmds.iter().any(|c| c[0] == CLEAN) {
-        return;
-    }
-    let Ok(tree) = git::run(dir, &["write-tree"]) else { return };
-    let tree = tree.trim();
-    if git::run(dir, &["rev-parse", "HEAD^{tree}"]).is_ok_and(|t| t.trim() == tree) {
-        return;
-    }
-    op.revert = Some(Box::new(Op::new(format!("Undo {}", op.label), &[TREE_IS, &head_state(dir), tree]).then(&["reset", "--hard", "-q"])));
 }
 
 pub(super) fn pick_new(dir: &Path, a: &[&str]) -> Res<String> {
@@ -199,51 +164,43 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert!(sh(&dir, &["status", "--porcelain"]).trim().is_empty());
-        assert!(!dir.join("one").exists() && !dir.join(".git/SQUASH_MSG").exists());
+        assert!(!dir.join("one").exists());
         t.apply(&ctx, Action::Redo);
         settle(&ctx, &mut t);
         assert!(dir.join("two").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Both refuse a dirty tree; an edit made after the op stays through its undo (the
+    /// backup of that file goes to the stash list), as does a file where it deleted one.
     #[test]
-    fn staged_ops_refuse_dirty_tree_and_unsafe_undo() {
+    fn staged_ops_refuse_dirty_tree_and_undo_keeps_later_edits() {
         let dir = repo("staged-refuse");
         std::fs::write(dir.join("base"), "edited\n").unwrap();
         let e = exec(&dir, &merge_op("feat", "feat", Some(Merge::Squash))).unwrap_err();
         assert!(e.contains("uncommitted"), "{e}");
         assert!(sh(&dir, &["status", "--porcelain"]).contains("base"));
         sh(&dir, &["checkout", "-q", "--", "base"]);
-
-        let mut op = pick_op("Cherry-pick", &["feat"], false, true);
-        exec(&dir, &op).unwrap();
-        seal(&dir, &mut op);
-        let undo = *op.revert.clone().unwrap();
-        // an edit made after the op blocks the undo
-        std::fs::write(dir.join("two"), "mine\n").unwrap();
-        assert!(exec(&dir, &undo).is_err());
-        assert_eq!(std::fs::read_to_string(dir.join("two")).unwrap(), "mine\n");
-        sh(&dir, &["checkout", "-q", "--", "two"]);
-        exec(&dir, &undo).unwrap();
-        assert!(sh(&dir, &["status", "--porcelain"]).trim().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn undo_refuses_to_overwrite_untracked_file() {
-        let dir = repo("undo-untracked");
         sh(&dir, &["checkout", "-q", "feat"]);
         sh(&dir, &["rm", "-q", "one"]);
         sh(&dir, &["commit", "-q", "-m", "rm one"]);
         sh(&dir, &["checkout", "-q", "main"]);
-        sh(&dir, &["merge", "-q", "feat~1"]);
-        let mut op = merge_op("feat", "feat", Some(Merge::Squash));
-        exec(&dir, &op).unwrap();
-        seal(&dir, &mut op);
-        std::fs::write(dir.join("one"), "precious\n").unwrap();
-        let e = exec(&dir, op.revert.as_ref().unwrap()).unwrap_err();
-        assert!(e.contains("untracked"), "{e}");
-        assert_eq!(std::fs::read_to_string(dir.join("one")).unwrap(), "precious\n");
+        sh(&dir, &["merge", "-q", "feat~2"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        for op in [pick_op("Cherry-pick", &["feat~1"], false, true), merge_op("feat", "feat", Some(Merge::Squash))] {
+            t.apply(&ctx, Action::Git(op));
+            settle(&ctx, &mut t);
+            let (p, mine) = if dir.join("one").exists() { ("two", "mine\n") } else { ("one", "precious\n") };
+            std::fs::write(dir.join(p), mine).unwrap();
+            t.apply(&ctx, Action::Undo);
+            let msgs = settle(&ctx, &mut t);
+            assert_eq!(std::fs::read_to_string(dir.join(p)).unwrap(), mine);
+            assert!(msgs.iter().any(|n| n.text.contains("stash list")), "{p}");
+            let _ = std::fs::remove_file(dir.join(p));
+            sh(&dir, &["reset", "-q", "--hard"]);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -274,12 +231,11 @@ mod tests {
         let dir = repo("pick-nc");
         let two = sh(&dir, &["rev-parse", "feat"]);
         let head = sh(&dir, &["rev-parse", "HEAD"]);
-        let mut op = pick_op("Cherry-pick", &[two.trim()], false, true);
+        let op = pick_op("Cherry-pick", &[two.trim()], false, true);
         exec(&dir, &op).unwrap();
-        seal(&dir, &mut op);
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), head);
         assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "two");
-        assert!(op.revert.is_some());
+        assert_eq!(op.undo, Undo::Keep);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -425,7 +425,7 @@ impl RepoTab {
                             }
                             open_items(ui, d, head, &c.path, false, acts);
                             if ui.button("Restore conflict markers").clicked() {
-                                acts.push(Action::Git(Op::new("Restore conflict", &["--literal-pathspecs", "checkout", "-m", "--", &c.path]).light()));
+                                acts.push(Action::Git(crate::repo::tools::restore_markers_op(&c.path)));
                             }
                         });
                         if resp.clicked() {

@@ -1,13 +1,13 @@
 //! Undo/redo: a step holds the refs an op moved and durable backups of the files it changed
 //! (`git::Snap`, before and after). One transition serves both: a file goes back only where it
 //! is as the op left it (else its backup goes to the stash list), and a ref move writes only
-//! clean paths, so it never refuses. Config-only ops keep a reverting op instead.
+//! clean paths, so it never refuses. What neither covers (remotes, the stash list) runs as ops.
 
 use super::op::{Backup, Done, Op, Undo};
 use super::task::Task;
 use super::{Choice, Msg, RepoTab};
 use crate::git::{self, Entry, Res, Snap, Snapshot};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 pub(super) struct Refs {
@@ -25,24 +25,22 @@ pub(super) struct Files {
     pub(super) after: Snap,
 }
 
-pub(super) enum UndoKind {
-    /// Refs moved before -> after (None: only files changed); files oldest first.
-    Step { refs: Option<Refs>, files: Vec<Files> },
-    /// A config-only op (remotes) and the op that reverts it.
-    Op { undo: Box<Op>, redo: Box<Op> },
-}
-
 pub(super) struct UndoEntry {
     pub(super) label: String,
-    pub(super) kind: UndoKind,
+    /// Refs moved before -> after (None: none moved).
+    pub(super) refs: Option<Refs>,
+    /// The files it changed, oldest first.
+    pub(super) files: Vec<Files>,
+    /// (undo, redo) ops for the rest, run after the files: remotes, the stash list.
+    pub(super) ops: Option<(Box<Op>, Box<Op>)>,
     /// Unique, increasing: a toast's Undo button stays live while its step is on top.
     id: u64,
 }
 
 impl UndoEntry {
-    pub(super) fn new(label: String, kind: UndoKind) -> Self {
+    pub(super) fn new(label: String, refs: Option<Refs>, files: Vec<Files>, ops: Option<(Box<Op>, Box<Op>)>) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        UndoEntry { label, kind, id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
+        UndoEntry { label, refs, files, ops, id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
     }
 }
 
@@ -70,46 +68,73 @@ pub(super) fn split_z(s: String) -> Vec<String> {
     s.split('\0').filter(|p| !p.is_empty()).map(String::from).collect()
 }
 
+/// Uncommitted paths against `base`: changed, staged, conflicted, flagged.
+fn dirty(dir: &Path, base: &str) -> Res<BTreeSet<String>> {
+    let z = |args: &[&str]| git::run(dir, args).map(split_z);
+    let mut ps: BTreeSet<String> = z(&["diff", "--name-only", "-z", "--no-renames", base])?.into_iter().collect();
+    ps.extend(z(&["diff", "--cached", "--name-only", "-z", "--no-renames", base])?);
+    ps.extend(z(&["ls-files", "-z", "-u"])?.iter().filter_map(|l| Some(l.split_once('\t')?.1.to_owned())));
+    ps.extend(git::flagged(dir)?);
+    Ok(ps)
+}
+
+/// Every path stash `id` touches: tracked changes, staged changes and untracked files (`^3`).
+fn stash_paths(dir: &Path, id: &str) -> Res<Vec<String>> {
+    let z = |args: &[&str]| git::run(dir, args).map(split_z);
+    let mut ps: BTreeSet<String> = z(&["diff", "--name-only", "-z", "--no-renames", &format!("{id}^1"), id])?.into_iter().collect();
+    ps.extend(z(&["diff", "--name-only", "-z", "--no-renames", &format!("{id}^1"), &format!("{id}^2")])?);
+    ps.extend(z(&["ls-tree", "-r", "-z", "--name-only", &format!("{id}^3")]).unwrap_or_default());
+    Ok(ps.into_iter().collect())
+}
+
 /// What backup `b` covers, and the commits whose content needs no backup (HEAD and the commits
 /// a tree names: a reset writes what they hold; none for paths, which go back as they were).
 pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
     let (revs, untracked) = match b {
         Backup::Paths(ps) => return Ok((ps.clone(), vec![])),
+        Backup::Stash(id) => return Ok((stash_paths(dir, id)?, vec![])),
         Backup::Tree { revs, untracked } => (revs, *untracked),
     };
     let z = |args: &[&str]| git::run(dir, args).map(split_z);
     let head = git::head(dir);
-    let base = head.clone().map_or_else(|| git::empty_tree(dir), Ok)?;
-    let mut ps: BTreeSet<String> = z(&["diff", "--name-only", "-z", "--no-renames", &base])?.into_iter().collect();
-    ps.extend(z(&["diff", "--cached", "--name-only", "-z", "--no-renames", &base])?);
-    ps.extend(z(&["ls-files", "-z", "-u"])?.iter().filter_map(|l| Some(l.split_once('\t')?.1.to_owned())));
-    ps.extend(git::flagged(dir)?);
+    let base_tree = head.clone().map_or_else(|| git::empty_tree(dir), Ok)?;
+    let mut ps = dirty(dir, &base_tree)?;
     ps.extend(if untracked { z(&["ls-files", "-z", "-o", "--exclude-standard"])? } else { vec![] });
-    // Untracked and ignored files where the op may put a file: the commits it names, the
-    // upstream (a pull), and what a stopped merge, pick, revert or rebase still applies.
+    // Untracked and ignored files where the op may put a file: any commit between HEAD and
+    // what it names, their parents (a revert), the upstream (a pull), and what a stopped merge,
+    // pick, revert or rebase still applies.
     let g = git::git_dir(dir)?;
     let read = |f: &str| std::fs::read_to_string(g.join(f)).unwrap_or_default();
-    let orig = ["rebase-merge", "rebase-apply"].iter().map(|d| read(&format!("{d}/orig-head")).trim().to_owned()).find(|o| !o.is_empty());
+    let orig = ["rebase-merge", "rebase-apply"].map(|d| read(&format!("{d}/orig-head")).trim().to_owned());
     let todo = read("sequencer/todo");
-    let picks = todo.lines().filter_map(|l| l.split_whitespace().nth(1)).flat_map(|c| [c.to_owned(), format!("{c}^")]);
+    let picks = todo.lines().filter_map(|l| l.split_whitespace().nth(1)).map(String::from);
     let up = git::run(dir, &["rev-parse", "-q", "--verify", "@{upstream}"]).ok();
-    let others = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REVERT_HEAD^"].map(String::from).into_iter().chain(picks).chain(orig.clone()).chain(up);
+    let others = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].map(String::from).into_iter().chain(picks).chain(orig).chain(up);
     // (name, named by the op); an `@{…}` that doesn't resolve would stop cat-file.
     let names: Vec<(String, bool)> = revs.iter().map(|r| (r.trim().to_owned(), true)).chain(others.map(|o| (o.trim().to_owned(), false))).filter(|(n, _)| !n.is_empty() && !n.starts_with('-') && !n.contains('\n') && !n.contains("@{")).collect();
-    let input: String = names.iter().map(|(n, _)| format!("{n}^{{commit}}\n")).collect();
+    let input: String = names.iter().map(|(n, _)| format!("{n}^{{commit}}\n{n}^^{{commit}}\n")).collect();
     let found = git::run_input(dir, &["cat-file", "--batch-check=%(objectname)"], Some(input.as_bytes()))?;
-    let commits: Vec<(&str, bool)> = found.lines().zip(names.iter().map(|n| n.1)).filter(|(l, _)| l.len() >= 40 && l.bytes().all(|b| b.is_ascii_hexdigit())).collect();
+    // (commit, named by the op, a parent)
+    let found: Vec<(&str, bool, bool)> = found.lines().zip(names.iter().flat_map(|n| [(n.1, false), (false, true)])).filter(|(l, _)| l.len() >= 40 && l.bytes().all(|b| b.is_ascii_hexdigit())).map(|(l, (n, p))| (l, n, p)).collect();
+    let tips: BTreeSet<&str> = head.iter().map(String::as_str).chain(found.iter().map(|c| c.0)).collect();
     let mut way = vec![];
-    for c in commits.iter().map(|c| c.0).collect::<BTreeSet<_>>() {
-        way.extend(z(&["diff-tree", "-r", "--name-only", "-z", "--no-renames", &base, c])?);
-    }
-    if let Some(o) = &orig {
-        way.extend(z(&["log", "--format=", "--name-only", "-z", "--no-renames", &format!("{base}..{o}")])?);
+    if found.iter().any(|c| Some(c.0) != head.as_deref()) {
+        // What each commit since their common base changed (a replay writes those) ...
+        let mut a: Vec<&str> = vec!["merge-base", "--octopus"];
+        a.extend(&tips);
+        let base = git::run(dir, &a).ok().and_then(|b| Some(format!("^{}", b.lines().next()?.trim()))).unwrap_or_default();
+        let input = tips.iter().map(|t| format!("{t}\n")).collect::<String>() + &base;
+        // ponytail: the newest 3000 commits (~150 ms); a longer replay's oldest go unchecked.
+        way = split_z(git::run_input(dir, &["log", "-n", "3000", "--format=", "--name-only", "-z", "--no-renames", "--stdin"], Some(input.as_bytes()))?);
+        // ... and where each of them differs from HEAD (a far checkout).
+        for c in found.iter().filter(|c| !c.2).map(|c| c.0).collect::<BTreeSet<_>>() {
+            way.extend(z(&["diff-tree", "-r", "--name-only", "-z", "--no-renames", &base_tree, c])?);
+        }
     }
     let index: HashSet<String> = if way.is_empty() { HashSet::new() } else { z(&["ls-files", "-z"])?.into_iter().collect() };
     let there = |p: &str| std::fs::symlink_metadata(dir.join(p)).is_ok() || git::ancestors(p).any(|a| std::fs::symlink_metadata(dir.join(a)).is_ok_and(|m| !m.is_dir()));
     ps.extend(way.into_iter().filter(|p| !index.contains(p) && there(p)));
-    let like = head.into_iter().chain(commits.iter().filter(|c| c.1).map(|c| c.0.to_owned()));
+    let like = head.into_iter().chain(found.iter().filter(|c| c.1).map(|c| c.0.to_owned()));
     Ok((ps.into_iter().collect(), like.collect()))
 }
 
@@ -121,10 +146,23 @@ pub(super) fn backup(dir: &Path, b: &Backup, label: &str) -> Res<Option<Snap>> {
     if scope.is_empty() { Ok(None) } else { git::snap(dir, &scope, &like, &format!("Glasir backup: {label}")).map_err(refuse) }
 }
 
-/// The op's files once it ran (`before`: from [`backup`]): None when it changed none of them
-/// (it failed, say), and their backups go. Err: a note, what it replaced is in the stash list.
-pub(super) fn backed_up(dir: &Path, before: Snap, label: &str) -> Result<Option<Files>, String> {
-    let scope = before.paths.clone();
+/// The op's files once it ran (`before`: from [`backup`] of `b`, taken at HEAD `head`): None
+/// when it changed none of them (it failed, say), and their backups go. A tree backup of an op
+/// that left HEAD there (a squash merge) also covers the tracked files it changed: those were
+/// clean then (None: all were). Err: a note, what it replaced is in the stash list.
+pub(super) fn backed_up(dir: &Path, b: &Backup, before: Option<Snap>, head: Option<&str>, label: &str) -> Result<Option<Files>, String> {
+    let still = head.filter(|h| matches!(b, Backup::Tree { .. }) && git::head(dir).as_deref() == Some(h) && git::git_dir(dir).is_ok_and(|g| git::state(&g) == git::State::Clean));
+    let more = still.map_or(Ok(BTreeSet::new()), |h| dirty(dir, h)).unwrap_or_default();
+    let before = match (before, still) {
+        (Some(s), _) => s,
+        (None, Some(h)) if !more.is_empty() => match git::clean_snap(dir, h, &format!("Glasir backup: {label}")) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        },
+        _ => return Ok(None),
+    };
+    let scope: Vec<String> = before.paths.iter().cloned().chain(more).collect::<BTreeSet<_>>().into_iter().collect();
+    let before = Snap { paths: scope.clone(), ..before };
     match git::snap(dir, &scope, &[], &format!("Glasir backup: after {label}")) {
         Ok(Some(after)) if git::view(dir, &before, &scope).is_ok_and(|b| git::view(dir, &after, &scope).is_ok_and(|a| a == b)) => {
             git::drop_backups(dir, &[before.refname, after.refname]);
@@ -140,19 +178,24 @@ pub(super) fn backed_up(dir: &Path, before: Snap, label: &str) -> Result<Option<
     }
 }
 
-fn same(a: Option<&Entry>, b: Option<&Entry>) -> bool {
-    fn st(e: Option<&Entry>) -> (Option<&(u32, String)>, Option<&(u32, String)>, bool) {
-        e.map_or((None, None, false), |e| (e.disk.as_ref(), e.idx.as_ref(), e.unmerged))
-    }
-    let foreign = |e: Option<&Entry>| e.is_some_and(|e| [&e.disk, &e.idx].into_iter().flatten().any(|(_, o)| o == git::FOREIGN));
-    !foreign(a) && !foreign(b) && st(a) == st(b)
+type Half<'a> = (Option<&'a (u32, String)>, bool);
+
+/// A path's two halves: its file, and its index entry (staged version, conflicted).
+fn halves(e: Option<&Entry>) -> [Half<'_>; 2] {
+    e.map_or([(None, false); 2], |e| [(e.disk.as_ref(), false), (e.idx.as_ref(), e.unmerged)])
+}
+
+/// Equal, and readable: a [`git::FOREIGN`] file equals nothing.
+fn eq(a: Half, b: Half) -> bool {
+    a == b && a.0.is_none_or(|(_, o)| o != git::FOREIGN)
 }
 
 /// Legs (from, to) in the order they apply (undo: newest first, from=after to=before; redo:
-/// oldest first, from=before to=after). A path moves from `from` to `to` only while it holds
-/// `from` and no path at, under or above it changed since. Returns the entries to write (where
-/// the result differs from `cur`) and each leg not fully applied, with the paths that changed.
-pub(super) fn plan(cur: &git::View, legs: &[(git::View, git::View)]) -> (Vec<Entry>, Vec<(usize, Vec<String>)>) {
+/// oldest first, from=before to=after). Each half (file, index entry) a leg changes moves from
+/// `from` to `to` only while it holds `from` and nothing at, under or above the path changed in
+/// the way since. Returns the entries whose file, and those whose index entry, differ from
+/// `cur`, and each leg not fully applied, with the paths that changed.
+pub(super) fn plan(cur: &git::View, legs: &[(git::View, git::View)]) -> (Vec<Entry>, Vec<Entry>, Vec<(usize, Vec<String>)>) {
     let mut v = cur.clone();
     let mut partial = vec![];
     for (i, (from, to)) in legs.iter().enumerate() {
@@ -162,13 +205,37 @@ pub(super) fn plan(cur: &git::View, legs: &[(git::View, git::View)]) -> (Vec<Ent
             v.keys().filter(|k| related(k)).cloned().collect()
         };
         keys.extend(touched);
-        let changed: BTreeSet<String> = keys.iter().filter(|k| !same(v.get(*k), from.get(*k)) && !same(v.get(*k), to.get(*k))).cloned().collect();
+        // Clashes: a half the leg moves changed since; strays: a path it leaves alone changed.
+        let (mut want, mut clash, mut stray) = (BTreeMap::new(), vec![], vec![]);
+        for k in &keys {
+            let (c, f, t) = (halves(v.get(k)), halves(from.get(k)), halves(to.get(k)));
+            let moves: Vec<usize> = (0..2).filter(|&h| !eq(f[h], t[h])).collect();
+            if moves.is_empty() {
+                if (0..2).any(|h| !eq(c[h], f[h])) {
+                    stray.push(k.clone());
+                }
+            } else if moves.iter().any(|&h| !eq(c[h], f[h]) && !eq(c[h], t[h])) {
+                clash.push(k.clone());
+            } else if moves.iter().any(|&h| !eq(c[h], t[h])) {
+                want.insert(k.clone(), moves);
+            }
+        }
+        let near = git::related(want.keys());
+        let changed: Vec<String> = clash.into_iter().chain(stray.into_iter().filter(|k| near(k))).collect();
         let blocked = git::related(&changed);
-        let apply: Vec<&String> = keys.iter().filter(|k| same(v.get(*k), from.get(*k)) && !same(v.get(*k), to.get(*k)) && !blocked(k)).collect();
-        for k in apply {
-            match to.get(k) {
-                Some(e) => drop(v.insert(k.clone(), e.clone())),
-                None => drop(v.remove(k)),
+        for (k, moves) in want.iter().filter(|(k, _)| !blocked(k)) {
+            let t = to.get(k);
+            let name = [&v, from, to].iter().find_map(|m| m.get(k)).map_or(k.clone(), |e| e.name.clone());
+            let mut e = v.get(k).cloned().unwrap_or(Entry { name, disk: None, idx: None, unmerged: false });
+            for h in moves {
+                match h {
+                    0 => e.disk = t.and_then(|t| t.disk.clone()),
+                    _ => (e.idx, e.unmerged) = t.map_or((None, false), |t| (t.idx.clone(), t.unmerged)),
+                }
+            }
+            match e.disk.is_none() && e.idx.is_none() && !e.unmerged {
+                true => drop(v.remove(k)),
+                false => drop(v.insert(k.clone(), e)),
             }
         }
         if !changed.is_empty() {
@@ -176,9 +243,18 @@ pub(super) fn plan(cur: &git::View, legs: &[(git::View, git::View)]) -> (Vec<Ent
             partial.push((i, changed.iter().map(name).collect()));
         }
     }
-    let keys: BTreeSet<&String> = cur.keys().chain(v.keys()).collect();
-    let writes = keys.into_iter().filter(|k| cur.get(*k) != v.get(*k)).map(|k| v.get(k).cloned().unwrap_or_else(|| Entry { name: cur[k].name.clone(), disk: None, idx: None, unmerged: false })).collect();
-    (writes, partial)
+    let (mut files, mut index) = (vec![], vec![]);
+    for k in cur.keys().chain(v.keys()).collect::<BTreeSet<_>>() {
+        let (a, b) = (halves(cur.get(k)), halves(v.get(k)));
+        let e = || v.get(k).cloned().unwrap_or_else(|| Entry { name: cur[k].name.clone(), disk: None, idx: None, unmerged: false });
+        if a[0] != b[0] {
+            files.push(e());
+        }
+        if a[1] != b[1] {
+            index.push(e());
+        }
+    }
+    (files, index, partial)
 }
 
 /// `s`'s checked-out commit (None: an unborn branch).
@@ -189,6 +265,15 @@ fn tip(s: &Snapshot) -> Option<String> {
 /// Where ref `r` (or `HEAD`) is in `s`.
 pub(super) fn at<'a>(s: &'a Snapshot, r: &str) -> Option<&'a String> {
     if r == "HEAD" { Some(&s.head) } else { s.refs.get(r) }
+}
+
+/// Sets ref `r` (or `HEAD`) in `to` as it is in `from`.
+pub(super) fn copy(to: &mut Snapshot, from: &Snapshot, r: &str) {
+    match (r, from.refs.get(r)) {
+        ("HEAD", _) => to.head = from.head.clone(),
+        (_, Some(o)) => drop(to.refs.insert(r.to_owned(), o.clone())),
+        (_, None) => drop(to.refs.remove(r)),
+    }
 }
 
 /// The refs that differ between `a` and `b`, and `HEAD` when it does.
@@ -215,10 +300,10 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
         return Err(format!("{} is in use in another worktree (checked out, or being rebased or bisected there); finish there or switch that worktree to another branch first, then try again.", r.strip_prefix("refs/heads/").unwrap_or(&r)));
     }
     let head_now = git::head(dir).map_or_else(|| git::empty_tree(dir), Ok)?;
-    let final_head = match &refs {
-        Some((_, t, _)) => tip(t).map_or_else(|| git::empty_tree(dir), Ok)?,
-        None => head_now.clone(),
-    };
+    // Where HEAD ends up: the refs it moves as in `to`, the others as they are now.
+    let mut end = cur_refs.clone();
+    refs.iter().for_each(|(mv, t, _)| mv.iter().for_each(|r| copy(&mut end, t, r)));
+    let final_head = tip(&end).map_or_else(|| git::empty_tree(dir), Ok)?;
     let scope: Vec<String> = legs.iter().flat_map(|l| l.2.iter().cloned()).collect::<BTreeSet<_>>().into_iter().collect();
     let cur = if legs.is_empty() { git::View::new() } else { git::current(dir, &scope)? };
     let views: Vec<(git::View, git::View)> = legs.iter().map(|(from, to, sc)| {
@@ -227,21 +312,23 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
             Default::default()
         })
     }).collect();
-    let (writes, partial) = plan(&cur, &views);
+    let (files, mut index, partial) = plan(&cur, &views);
     if let Some((_, _, mode)) = &refs
         && final_head != head_now
     {
-        let kept = git::move_files(dir, &head_now, &final_head, mode.mode(), &writes)?;
+        // An index entry that follows HEAD follows the new one: every path written gets one.
+        index.extend(files.iter().filter(|f| !index.iter().any(|i| i.name == f.name)).cloned().collect::<Vec<_>>());
+        let kept = git::move_files(dir, &head_now, &final_head, mode.mode(), &index)?;
         if !kept.is_empty() {
             notes.push(format!("Kept your changes to {} (they now differ from {}).", kept.join(", "), &final_head[..final_head.len().min(7)]));
         }
     }
-    git::write(dir, &writes, &final_head)?;
+    git::write(dir, &files, &index, &final_head, true)?;
     if let Some((mv, to, _)) = &refs {
         git::move_refs(dir, &cur_refs, to, mv, label)?;
     }
     // A resolution undone gets its conflict back (git's resolve-undo), while that merge still runs.
-    let written: HashSet<&str> = writes.iter().map(|e| e.name.as_str()).collect();
+    let written: HashSet<&str> = index.iter().map(|e| e.name.as_str()).collect();
     let whole = legs.iter().enumerate().filter(|(i, _)| !partial.iter().any(|(p, _)| p == i));
     let unresolve: Vec<&str> = whole.flat_map(|(_, l)| l.1.unmerged.iter().map(String::as_str)).filter(|p| written.contains(p)).collect();
     if !unresolve.is_empty() && git::git_dir(dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting)) {
@@ -274,8 +361,7 @@ impl RepoTab {
 
     /// A new step makes the redos stale: their backups go (off the UI thread).
     pub(super) fn clear_redo(&mut self) {
-        let files = self.redo.drain(..).flat_map(|e| if let UndoKind::Step { files, .. } = e.kind { files } else { vec![] });
-        let refs: Vec<String> = files.flat_map(|f| [f.before.refname, f.after.refname]).collect();
+        let refs: Vec<String> = self.redo.drain(..).flat_map(|e| e.files).flat_map(|f| [f.before.refname, f.after.refname]).collect();
         if !refs.is_empty() {
             let dir = self.dir.clone();
             std::thread::spawn(move || git::drop_backups(&dir, &refs));
@@ -293,11 +379,24 @@ impl RepoTab {
         }
         let Some(e) = stack.pop() else { return };
         let msg = format!("Glasir: {} {}", if undo { "Undo" } else { "Redo" }, e.label);
-        let files = if let UndoKind::Step { files, .. } = &e.kind { &files[..] } else { &[] };
-        // A backup that couldn't be kept stays in refs/glasir/backups (pruned in 14 days).
-        let kept: Vec<String> = files.iter().filter(|f| git::keep(&self.dir, &(if undo { &f.before } else { &f.after }).commit, &msg).is_ok()).flat_map(|f| [f.before.refname.clone(), f.after.refname.clone()]).collect();
-        git::drop_backups(&self.dir, &kept);
-        let text = format!("Skipped {}{}.", e.label, if kept.is_empty() { String::new() } else { format!(": its files are in the stash list as \"{msg}\"") });
+        // Each side the files no longer hold: a half-done step may have overwritten either. One
+        // that couldn't be kept stays in refs/glasir/backups (pruned in 14 days).
+        let (mut done, mut names) = (vec![], BTreeSet::new());
+        for f in &e.files {
+            let cur = git::current(&self.dir, &f.before.paths).ok();
+            for (s, name) in [(&f.before, msg.clone()), (&f.after, format!("{msg} (its result)"))] {
+                let need = cur.is_none() || git::view(&self.dir, s, &f.before.paths).ok() != cur;
+                if need && git::keep(&self.dir, &s.commit, &name).is_ok() {
+                    names.insert(format!("\"{name}\""));
+                } else if need {
+                    continue;
+                }
+                done.push(s.refname.clone());
+            }
+        }
+        git::drop_backups(&self.dir, &done);
+        let names = names.into_iter().collect::<Vec<_>>().join(" and ");
+        let text = format!("Skipped {}{}.", e.label, if names.is_empty() { String::new() } else { format!(": its files are in the stash list as {names}") });
         self.notes.push(Msg { text, error: false });
         self.reload(ctx, true);
     }
@@ -309,17 +408,17 @@ impl RepoTab {
         if self.running.is_some() {
             return;
         }
-        let touched = |p: &str| match &e.kind {
-            UndoKind::Step { refs: Some(_), .. } => true,
-            UndoKind::Step { files, .. } => files.iter().any(|f| f.before.paths.iter().any(|q| q == p || p.strip_prefix(q.as_str()).is_some_and(|r| r.starts_with('/')))),
-            UndoKind::Op { undo: u, redo } => super::tools::touches(if undo { u } else { redo }, p),
+        let touched = |p: &str| {
+            e.refs.is_some()
+                || e.files.iter().any(|f| f.before.paths.iter().any(|q| q == p || p.strip_prefix(q.as_str()).is_some_and(|r| r.starts_with('/'))))
+                || e.ops.as_ref().is_some_and(|(u, r)| super::tools::touches(if undo { u } else { r }, p))
         };
         let label = format!("{} {}", if undo { "Undo" } else { "Redo" }, e.label);
         if let Some(open) = self.ext_tools.iter().find(|t| t.kind == "merge" && touched(&t.path)).map(|t| t.path.clone()) {
             self.tool_blocks(&label, |p| p == open);
             return;
         }
-        if let (true, false, UndoKind::Step { refs: Some(r), .. }) = (undo, sure, &e.kind)
+        if let (true, false, Some(r)) = (undo, sure, &e.refs)
             && let n = on_remotes(&self.dir, &r.before, &r.after)
             && n > r.on_remote
         {
@@ -332,32 +431,30 @@ impl RepoTab {
         }
         // Moving refs mid merge/rebase would corrupt it; a guided split's own steps are fine.
         let busy = self.data.as_ref().is_some_and(|d| !matches!(git::state(&d.git_dir), git::State::Clean | git::State::Bisecting));
-        if busy && self.split.as_ref().is_none_or(|sp| sp.replaying) && matches!(e.kind, UndoKind::Step { refs: Some(_), .. }) {
+        if busy && self.split.as_ref().is_none_or(|sp| sp.replaying) && e.refs.is_some() {
             return self.notes.push(Msg { text: "Finish or abort the operation in progress first, then undo.".into(), error: true });
         }
         let dir = self.dir.clone();
         // Ok: a redone op's fresh undo, a note, and whether the refs were still valid.
         type Job = Box<dyn FnOnce() -> Res<(Option<Box<Op>>, Option<String>, bool)> + Send>;
-        let job: Job = match &e.kind {
-            UndoKind::Step { refs, files } => {
-                // Undo: from after to before, newest first; redo: the other way, oldest first.
-                let refs = refs.as_ref().map(|r| if undo { (r.after.clone(), r.before.clone(), r.mode) } else { (r.before.clone(), r.after.clone(), r.mode) });
-                let mut legs: Vec<(Snap, Snap, Vec<String>)> = files.iter().map(|f| if undo { (f.after.clone(), f.before.clone(), f.before.paths.clone()) } else { (f.before.clone(), f.after.clone(), f.before.paths.clone()) }).collect();
-                if undo {
-                    legs.reverse();
-                }
-                let l = label.clone();
-                Box::new(move || transition(&dir, &l, refs, &legs).map(|(note, valid)| (None, note, valid)))
-            }
-            UndoKind::Op { undo: u, redo } => {
-                let mut op = if undo { u.clone() } else { redo.clone() };
-                Box::new(move || match undo {
-                    true => super::op::exec(&dir, &op).map(|_| (None, None, true)),
-                    // A redone stash save made a new stash: its undo pops that one.
-                    false => super::op::exec_stash(&dir, &mut op).map(|_| (op.revert.take(), None, true)),
-                })
-            }
-        };
+        // Undo: from after to before, newest first; redo: the other way, oldest first.
+        let refs = e.refs.as_ref().map(|r| if undo { (r.after.clone(), r.before.clone(), r.mode) } else { (r.before.clone(), r.after.clone(), r.mode) });
+        let mut legs: Vec<(Snap, Snap, Vec<String>)> = e.files.iter().map(|f| if undo { (f.after.clone(), f.before.clone(), f.before.paths.clone()) } else { (f.before.clone(), f.after.clone(), f.before.paths.clone()) }).collect();
+        if undo {
+            legs.reverse();
+        }
+        let op = e.ops.as_ref().map(|(u, r)| if undo { (**u).clone() } else { (**r).clone() });
+        let l = label.clone();
+        let job: Job = Box::new(move || {
+            let (note, valid) = if refs.is_some() || !legs.is_empty() { transition(&dir, &l, refs, &legs)? } else { (None, true) };
+            let fresh = match op {
+                Some(op) if undo => super::op::exec(&dir, &op).map(|_| None)?,
+                // A redone stash save made a new stash: its undo pops that one.
+                Some(mut op) => super::op::exec_stash(&dir, &mut op).map(|_| op.revert.take())?,
+                None => None,
+            };
+            Ok((fresh, note, valid))
+        });
         let id = e.id;
         self.running = Some((label, Task::spawn(ctx, move || Done::Undo(undo, id, job()))));
     }
@@ -371,12 +468,12 @@ impl RepoTab {
         match res {
             Ok((fresh, note, valid)) => {
                 if let Some(mut e) = at.map(|i| from.remove(i)) {
-                    match &mut e.kind {
-                        UndoKind::Op { undo: revert, .. } => *revert = fresh.unwrap_or_else(|| revert.clone()),
-                        UndoKind::Step { refs, .. } => *refs = refs.take().filter(|_| valid),
+                    if let (Some(f), Some((u, _))) = (fresh, &mut e.ops) {
+                        *u = f;
                     }
-                    // Nothing left to redo when its refs changed outside and it had no files.
-                    if !matches!(&e.kind, UndoKind::Step { refs: None, files } if files.is_empty()) {
+                    e.refs = e.refs.take().filter(|_| valid);
+                    // Nothing left to redo when its refs changed outside and it had nothing else.
+                    if e.refs.is_some() || !e.files.is_empty() || e.ops.is_some() {
                         to.push(e);
                     }
                 }
@@ -508,22 +605,29 @@ mod tests {
     #[test]
     fn plan_writes_what_still_holds_the_op_result() {
         let (after, before) = (view(&[e("a", Some("1"), None)]), view(&[e("a", Some("mine"), Some("st"))]));
-        // Equal to `from`: goes to `to`.
-        let (w, p) = plan(&view(&[e("a", Some("1"), None)]), &[(after.clone(), before.clone())]);
-        assert_eq!((w, p), (vec![e("a", Some("mine"), Some("st"))], vec![]));
+        // Equal to `from`: goes to `to`, file and index entry.
+        let mine = e("a", Some("mine"), Some("st"));
+        assert_eq!(plan(&view(&[e("a", Some("1"), None)]), &[(after.clone(), before.clone())]), (vec![mine.clone()], vec![mine], vec![]));
         // Already at `to`: nothing to write.
-        assert_eq!(plan(&before, &[(after.clone(), before.clone())]), (vec![], vec![]));
+        assert_eq!(plan(&before, &[(after.clone(), before.clone())]), (vec![], vec![], vec![]));
         // Changed since: nothing written, the leg is partial.
-        let (w, p) = plan(&view(&[e("a", Some("new"), None)]), &[(after.clone(), before.clone())]);
-        assert_eq!((w, p), (vec![], vec![(0, vec!["a".to_owned()])]));
+        assert_eq!(plan(&view(&[e("a", Some("new"), None)]), &[(after.clone(), before.clone())]), (vec![], vec![], vec![(0, vec!["a".to_owned()])]));
         // Unreadable now: never equal, never overwritten.
         let mut f = e("a", None, None);
         f.disk = Some((0o100644, git::FOREIGN.into()));
-        let (w, p) = plan(&view(&[f]), &[(view(&[e("a", Some("1"), None)]), view(&[e("a", Some("2"), None)]))]);
-        assert!(w.is_empty() && p.len() == 1);
+        let (w, i, p) = plan(&view(&[f]), &[(view(&[e("a", Some("1"), None)]), view(&[e("a", Some("2"), None)]))]);
+        assert!(w.is_empty() && i.is_empty() && p.len() == 1);
         // Gone in `to`: removed; missing from a view = absent.
-        let (w, _) = plan(&view(&[e("u", Some("x"), None)]), &[(view(&[e("u", Some("x"), None)]), view(&[]))]);
-        assert_eq!(w, vec![e("u", None, None)]);
+        assert_eq!(plan(&view(&[e("u", Some("x"), None)]), &[(view(&[e("u", Some("x"), None)]), view(&[]))]), (vec![e("u", None, None)], vec![], vec![]));
+    }
+
+    /// A half the leg doesn't move (a mixed reset's file) is neither checked nor written, and
+    /// a change to a path it leaves alone is no clash.
+    #[test]
+    fn plan_moves_only_the_halves_a_leg_changed() {
+        let leg = (view(&[e("f", Some("w"), None), e("g", Some("g"), None)]), view(&[e("f", Some("w"), Some("st")), e("g", Some("g"), None)]));
+        let cur = view(&[e("f", Some("edited"), None), e("g", Some("edited"), None)]);
+        assert_eq!(plan(&cur, &[leg]), (vec![], vec![e("f", Some("edited"), Some("st"))], vec![]));
     }
 
     #[test]
@@ -531,16 +635,15 @@ mod tests {
         let leg = (view(&[e("d/x", None, None)]), view(&[e("d/x", Some("x"), None)]));
         // A file where the folder goes (an ancestor), or something new under a path: the related key stays.
         for cur in [view(&[e("d", Some("new"), None)]), view(&[e("d/x/y", Some("y"), None)])] {
-            let (w, p) = plan(&cur, &[leg.clone()]);
+            let (w, _, p) = plan(&cur, &[leg.clone()]);
             assert!(w.is_empty(), "{w:?}");
             assert_eq!(p.len(), 1);
         }
         // An unrelated change doesn't block it.
-        let (w, p) = plan(&view(&[e("dd", Some("new"), None)]), &[leg.clone()]);
-        assert_eq!((w, p), (vec![e("d/x", Some("x"), None)], vec![]));
+        assert_eq!(plan(&view(&[e("dd", Some("new"), None)]), &[leg.clone()]), (vec![e("d/x", Some("x"), None)], vec![], vec![]));
         // Keys are folded case: `README` now where `Readme` was backed up is the same path.
         let leg = (view(&[e("readme", None, None)]), view(&[e("Readme", Some("mine"), None)]));
-        let (w, p) = plan(&view(&[e("README", Some("theirs"), None)]), &[leg]);
+        let (w, _, p) = plan(&view(&[e("README", Some("theirs"), None)]), &[leg]);
         assert!(w.is_empty() && p.len() == 1);
     }
 
@@ -549,12 +652,10 @@ mod tests {
         // Two discards of `b` (FIVE then SIX), undone newest first: SIX goes back, FIVE is kept.
         let five = (view(&[e("b", Some("1"), None)]), view(&[e("b", Some("FIVE"), None)]));
         let six = (view(&[e("b", Some("1"), None)]), view(&[e("b", Some("SIX"), None)]));
-        let (w, p) = plan(&view(&[e("b", Some("1"), None)]), &[six.clone(), five.clone()]);
-        assert_eq!((w, p), (vec![e("b", Some("SIX"), None)], vec![(1, vec!["b".to_owned()])]));
+        assert_eq!(plan(&view(&[e("b", Some("1"), None)]), &[six.clone(), five.clone()]), (vec![e("b", Some("SIX"), None)], vec![], vec![(1, vec!["b".to_owned()])]));
         // A chain that hands the path on: undo of a discard, then of a restore under it.
         let restore = (view(&[e("b", Some("FIVE"), None)]), view(&[e("b", Some("old"), None)]));
-        let (w, p) = plan(&view(&[e("b", Some("1"), None)]), &[five, restore]);
-        assert_eq!((w, p), (vec![e("b", Some("old"), None)], vec![]));
+        assert_eq!(plan(&view(&[e("b", Some("1"), None)]), &[five, restore]), (vec![e("b", Some("old"), None)], vec![], vec![]));
     }
 
     // ---- git layer: leaves, snap ----
@@ -1199,7 +1300,7 @@ mod tests {
         step(&ctx, &mut t, Action::Undo);
         assert!(t.choice.take().is_some_and(|c| c.text.contains("would be overwritten")));
         assert_eq!(labels(&t), before);
-        assert!(matches!(t.undo[1].kind, UndoKind::Step { refs: Some(_), .. }));
+        assert!(t.undo[1].refs.is_some());
         sh(&dir, &["checkout", "--", "a"]);
         step(&ctx, &mut t, Action::Undo);
         assert_eq!(read(&dir, "a").as_deref(), Some("STASHED\n"));
@@ -1855,6 +1956,255 @@ mod tests {
         let later = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 15 * 86_400;
         git::prune(&dir, later, 14);
         assert_eq!(sh(&dir, &["for-each-ref", "--format=%(refname:lstrip=3)", "refs/glasir/backups/"]), format!("1-{me}-1\n1-x-1\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    /// A redo that wrote files, then failed on a stale ref lock, then Skip: both
+    /// sides of the step's files stay in the stash list (the user's work is the `before` one).
+    #[test]
+    fn x3_skip_after_a_half_done_redo_keeps_both_sides() {
+        let dir = repo("x3-skip");
+        commit(&dir, "f", "1\n");
+        commit(&dir, "f", "2\n");
+        std::fs::write(dir.join("f"), "MINE\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        hard_reset(&ctx, &mut t, &rev(&dir, "HEAD~1"));
+        step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, "f").as_deref(), Some("MINE\n"));
+        std::fs::write(dir.join(".git/refs/heads/main.lock"), "").unwrap();
+        step(&ctx, &mut t, Action::Redo);
+        let c = t.choice.take().expect("redo fails");
+        std::fs::remove_file(dir.join(".git/refs/heads/main.lock")).unwrap();
+        step(&ctx, &mut t, Action::Git(c.ops[1].1.clone()));
+        assert!(safe(&dir, "f", "MINE\n"), "{}", sh(&dir, &["stash", "list"]));
+        assert_eq!((t.undo.len(), t.redo.len(), backups(&dir)), (0, 0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A mixed reset (and a HEAD split, which is one) backs up a partly staged file;
+    /// ⌘Z brings the staged version back and never touches the file, even edited since.
+    #[test]
+    fn x3_mixed_undo_restores_the_index_only() {
+        for split in [false, true] {
+            let dir = repo(&format!("x3-mixed-{split}"));
+            commit(&dir, "f", "1\n");
+            commit(&dir, "g", "2\n");
+            let (ctx, mut t) = tab(&dir);
+            std::fs::write(dir.join("f"), "STAGED\n").unwrap();
+            sh(&dir, &["add", "f"]);
+            std::fs::write(dir.join("f"), "WORK\n").unwrap();
+            match split {
+                true => drop(step(&ctx, &mut t, Action::Split(rev(&dir, "HEAD")))),
+                false => {
+                    let mut op = reset_op(t.data.as_ref().unwrap(), &rev(&dir, "HEAD~1"), "--mixed");
+                    op.confirm = None;
+                    step(&ctx, &mut t, Action::Git(op));
+                }
+            }
+            assert_eq!(rev(&dir, "HEAD"), rev(&dir, "main"));
+            std::fs::write(dir.join("f"), "EDITED SINCE\n").unwrap();
+            let m = step(&ctx, &mut t, Action::Undo);
+            assert!(t.choice.is_none() && m.is_empty(), "{split}: {m:?}");
+            assert_eq!(sh(&dir, &["show", ":f"]), "STAGED\n", "{split}");
+            assert_eq!(read(&dir, "f").as_deref(), Some("EDITED SINCE\n"));
+            assert_eq!(sh(&dir, &["stash", "list"]), "");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// `.gitignore` has `.env`; feat force-adds `.env`='theirs'. The user's ignored `.env`='MINE'.
+    fn ignored_env(name: &str) -> (std::path::PathBuf, String) {
+        let dir = repo(name);
+        commit(&dir, ".gitignore", ".env\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(dir.join(".env"), "theirs\n").unwrap();
+        sh(&dir, &["add", "-f", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "env"]);
+        let c = rev(&dir, "HEAD");
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join(".env"), "MINE\n").unwrap();
+        (dir, c)
+    }
+
+    /// Squash merge, cherry-pick -n, stash apply and pop leave HEAD where it was: they back up
+    /// the ignored file they overwrite, and ⌘Z puts it back and takes their changes out.
+    #[test]
+    fn x3_file_only_ops_back_up_and_undo() {
+        for kind in 0..4 {
+            let (dir, c) = ignored_env(&format!("x3-fileonly-{kind}"));
+            let (ctx, mut t) = tab(&dir);
+            let op = match kind {
+                0 => super::super::merge_opts::merge_op("feat", "feat", Some(super::super::merge_opts::Merge::Squash)),
+                1 => super::super::merge_opts::pick_op("Cherry-pick", &[&c], false, true),
+                _ => {
+                    std::fs::rename(dir.join(".env"), dir.join("mine")).unwrap();
+                    std::fs::write(dir.join(".env"), "theirs\n").unwrap();
+                    sh(&dir, &["add", "-f", ".env"]);
+                    sh(&dir, &["stash", "push", "-q"]);
+                    std::fs::rename(dir.join("mine"), dir.join(".env")).unwrap();
+                    step(&ctx, &mut t, Action::Reload);
+                    let s = git::stashes(&dir).unwrap().remove(0);
+                    if kind == 2 { super::super::apply_stash_op(&s) } else { super::super::pop_stash(&s) }
+                }
+            };
+            let m = step(&ctx, &mut t, Action::Git(op));
+            assert_eq!(read(&dir, ".env").as_deref(), Some("theirs\n"), "{kind}: {m:?}");
+            assert_eq!(labels(&t).len(), 1, "{kind}: {m:?}");
+            let m = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(read(&dir, ".env").as_deref(), Some("MINE\n"), "{kind}: {m:?}");
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), "", "{kind}");
+            assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), usize::from(kind >= 2), "{kind}");
+            step(&ctx, &mut t, Action::Redo);
+            assert_eq!(read(&dir, ".env").as_deref(), Some("theirs\n"), "{kind}");
+            assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), usize::from(kind == 2), "{kind}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// Ops that replay commits (rebase onto, rebase <b> onto, amend into an older commit,
+    /// revert, drop) write files the commits they name never hold: one commit adds `.env`, a
+    /// later one removes it. The user's ignored `.env` is backed up and ⌘Z brings it back.
+    #[test]
+    fn x3_replays_back_up_what_their_commits_overwrite() {
+        for kind in 0..5 {
+            let dir = repo(&format!("x3-replay-{kind}"));
+            commit(&dir, ".gitignore", ".env\n");
+            commit(&dir, "a", "1\n");
+            let x = rev(&dir, "HEAD");
+            let feat = kind < 3;
+            if feat {
+                sh(&dir, &["checkout", "-q", "-b", "feat"]);
+            }
+            std::fs::write(dir.join(".env"), "committed\n").unwrap();
+            sh(&dir, &["add", "-f", ".env"]);
+            sh(&dir, &["commit", "-q", "-m", "add env"]);
+            sh(&dir, &["rm", "-q", "--cached", ".env"]);
+            std::fs::remove_file(dir.join(".env")).unwrap();
+            sh(&dir, &["commit", "-q", "-m", "drop env"]);
+            let drop_env = rev(&dir, "HEAD");
+            if feat {
+                sh(&dir, &["checkout", "-q", "main"]);
+                commit(&dir, "m", "m\n");
+                sh(&dir, &["checkout", "-q", if kind == 1 { "main" } else { "feat" }]);
+            } else {
+                commit(&dir, "z", "z\n");
+            }
+            std::fs::write(dir.join(".env"), "MINE\n").unwrap();
+            let (ctx, mut t) = tab(&dir);
+            let act = match kind {
+                0 => Action::Git(Op::new("Rebase onto main", &["rebase", "main"]).undo(Undo::Keep)),
+                1 => Action::Git(Op::new("Rebase feat onto main", &["rebase", "main", "feat"]).undo(Undo::Keep)),
+                2 => {
+                    std::fs::write(dir.join("a"), "2\n").unwrap();
+                    sh(&dir, &["add", "a"]);
+                    Action::AmendInto(x.clone())
+                }
+                3 => Action::Git(Op::new("Revert", &["revert", "--no-edit", &drop_env]).undo(Undo::Keep)),
+                _ => Action::Rewrite { commit: drop_env.clone(), act: super::super::rebase::Act::Drop, message: None },
+            };
+            let m = step(&ctx, &mut t, act);
+            if let Some(op) = t.confirm.take() {
+                let m = step(&ctx, &mut t, Action::Git(Op { confirm: None, ..op }));
+                assert!(t.choice.is_none(), "{m:?}");
+            }
+            assert!(read(&dir, ".env").as_deref() != Some("MINE\n"), "{kind}: the op ran: {m:?}");
+            let m = step(&ctx, &mut t, Action::Undo);
+            assert_eq!(read(&dir, ".env").as_deref(), Some("MINE\n"), "{kind}: {m:?} {:?}", labels(&t));
+            if kind == 2 {
+                assert_eq!(sh(&dir, &["show", ":a"]), "2\n");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// "Restore conflict markers" over a half-done resolution: ⌘Z brings the resolution back.
+    #[test]
+    fn x3_restore_conflict_markers_is_undoable() {
+        let dir = repo("x3-markers");
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "theirs\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "ours\n");
+        let _ = git::run(&dir, &["merge", "feat"]);
+        std::fs::write(dir.join("f"), "MY RESOLUTION\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, Action::Git(super::super::tools::restore_markers_op("f")));
+        assert!(read(&dir, "f").unwrap().contains("<<<<<<<"));
+        step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, "f").as_deref(), Some("MY RESOLUTION\n"));
+        assert!(sh(&dir, &["ls-files", "-u"]).contains("\tf"), "still conflicted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ref moves that add or remove an unpopulated submodule (an empty folder) never stick.
+    #[test]
+    fn x3_submodule_ref_moves_complete() {
+        for kind in 0..3 {
+            let root = scratch(&format!("x3-sub-{kind}"));
+            let (sub, dir) = (root.join("sub"), root.join("main"));
+            for d in [&sub, &dir] {
+                std::fs::create_dir_all(d).unwrap();
+                sh(d, &["init", "-q", "-b", "main"]);
+                identity(d);
+                commit(d, "keep", "k\n");
+            }
+            sh(&dir, &["checkout", "-q", "-b", "feat"]);
+            sh(&dir, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.to_str().unwrap(), "lib"]);
+            sh(&dir, &["commit", "-q", "-m", "sub"]);
+            sh(&dir, &["checkout", "-q", if kind == 2 { "feat" } else { "main" }]);
+            if kind == 1 {
+                commit(&dir, "m", "m\n");
+            }
+            let _ = std::fs::remove_dir_all(dir.join("lib"));
+            let at = rev(&dir, "HEAD");
+            let (ctx, mut t) = tab(&dir);
+            let op = match kind {
+                0 => Op::new("Checkout feat", &["checkout", "feat", "--"]).undo(Undo::Keep),
+                1 => super::super::merge_opts::merge_op("feat", "feat", None),
+                _ => Op::new("Checkout main", &["checkout", "main", "--"]).undo(Undo::Keep),
+            };
+            step(&ctx, &mut t, Action::Git(op));
+            assert_ne!(rev(&dir, "HEAD"), at);
+            for (a, want) in [(Action::Undo, at.clone()), (Action::Redo, rev(&dir, "HEAD")), (Action::Undo, at.clone())] {
+                let m = step(&ctx, &mut t, a);
+                assert!(t.choice.is_none(), "{kind}: {m:?}");
+                assert_eq!((rev(&dir, "HEAD"), sh(&dir, &["status", "--porcelain"])), (want, String::new()), "{kind}: {m:?}");
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    /// ⌘Z of "Create branch y" after a commit made in a terminal leaves HEAD's files alone.
+    #[test]
+    fn x3_ref_undo_keeps_files_of_a_branch_it_does_not_move() {
+        let dir = repo("x3-branch-files");
+        commit(&dir, "a", "1\n");
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, branch("y"));
+        commit(&dir, "a", "TERMINAL\n");
+        step(&ctx, &mut t, Action::Reload);
+        step(&ctx, &mut t, Action::Undo);
+        assert_eq!((sh(&dir, &["status", "--porcelain"]), sh(&dir, &["branch", "--list", "y"])), (String::new(), String::new()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A ref move writes files as git checks them out: through a smudge filter.
+    #[test]
+    fn x3_ref_moves_check_files_out_through_filters() {
+        let dir = repo("x3-filter");
+        sh(&dir, &["config", "filter.up.smudge", "tr a-z A-Z"]);
+        sh(&dir, &["config", "filter.up.clean", "tr A-Z a-z"]);
+        commit(&dir, ".gitattributes", "*.txt filter=up\n");
+        commit(&dir, "f.txt", "hello\n");
+        sh(&dir, &["checkout", "-q", "-b", "b"]);
+        commit(&dir, "f.txt", "world\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, Action::Git(Op::new("Checkout b", &["checkout", "b", "--"]).undo(Undo::Keep)));
+        step(&ctx, &mut t, Action::Undo);
+        assert_eq!((read(&dir, "f.txt").as_deref(), sh(&dir, &["status", "--porcelain"])), (Some("HELLO\n"), String::new()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

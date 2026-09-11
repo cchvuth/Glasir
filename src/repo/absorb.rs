@@ -198,7 +198,9 @@ impl Plan {
         let mut op = op
             .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-q", "-i", "--autosquash", "--autostash", &base])
             .then(&["read-tree", "--reset", &self.index])
-            .undo(Undo::Soft);
+            .undo(Undo::Soft)
+            // The replayed commits may put files where ignored ones sit.
+            .backup(super::Backup::Tree { revs: vec![base.clone()], untracked: false });
         op.on_fail = [&[super::rebase::ABORT_ANY][..], &["reset", "-q", "--soft", &self.head], &["read-tree", "--reset", &self.index]]
             .iter()
             .map(|a| a.iter().map(|s| s.to_string()).collect())
