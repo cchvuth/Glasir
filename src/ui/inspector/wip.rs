@@ -528,7 +528,7 @@ impl RepoTab {
                                 clear = true;
                             }
                         } else if !s.staged.is_empty() && theme::small(ui, true, "Unstage all").clicked() {
-                            acts.push(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));
+                            acts.push(Action::Git(crate::repo::unstage_all_op()));
                         }
                     });
                 });

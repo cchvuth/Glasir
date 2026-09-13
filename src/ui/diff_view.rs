@@ -241,13 +241,12 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             }
         }
         if worktree {
-            let path = change.path.as_str();
             if staged {
                 if ui.button("Unstage file").clicked() {
                     acts.push(Action::Git(crate::repo::unstage_op(&change)));
                 }
             } else if ui.button("Stage file").clicked() {
-                acts.push(Action::Git(Op::new("Stage", &["--literal-pathspecs", "add", "--", path]).light()));
+                acts.extend(crate::repo::stage_files_op("Stage", std::slice::from_ref(&change)).map(Action::Git));
             }
         }
         if worktree && change.code != '?' && ds.opts.ignore_ws {

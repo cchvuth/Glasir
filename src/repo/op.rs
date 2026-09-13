@@ -68,6 +68,9 @@ pub enum Backup {
     Tree { revs: Vec<String>, untracked: bool },
     /// The paths stash `id` (a commit) touches: an apply or pop.
     Stash(String),
+    /// Those of these paths (none: all) whose staged version differs from HEAD and the file: a
+    /// stage or unstage drops it. None such, the common case: no backup.
+    Staged(Vec<String>),
 }
 
 impl Op {
@@ -237,14 +240,21 @@ pub fn stage_all_op(s: &git::Status) -> Option<Op> {
 
 /// Stage these unstaged changes in one op (a rename's old path too, so its deletion is staged).
 pub fn stage_files_op(label: &str, cs: &[git::Change]) -> Option<Op> {
-    let paths: String = cs.iter().flat_map(|c| c.old_path.iter().chain([&c.path])).map(|p| format!("{p}\0")).collect();
-    (!paths.is_empty()).then(|| Op::new(label, &["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
+    let all: Vec<String> = cs.iter().flat_map(|c| c.old_path.iter().chain([&c.path])).cloned().collect();
+    let paths: String = all.iter().map(|p| format!("{p}\0")).collect();
+    (!paths.is_empty()).then(|| Op::new(label, &["--literal-pathspecs", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light().backup(Backup::Staged(all)))
 }
 
 /// Unstage these staged changes in one op; None for an empty list (no pathspec would reset everything).
 pub fn unstage_files_op(cs: &[git::Change]) -> Option<Op> {
-    let paths: String = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).map(|p| format!("{p}\0")).collect();
-    (!paths.is_empty()).then(|| Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light())
+    let all: Vec<String> = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).cloned().collect();
+    let paths: String = all.iter().map(|p| format!("{p}\0")).collect();
+    (!paths.is_empty()).then(|| Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light().backup(Backup::Staged(all)))
+}
+
+/// Unstage everything (WIP list, ⇧⌘U, palette).
+pub fn unstage_all_op() -> Op {
+    Op::new("Unstage all", &["reset", "-q"]).light().backup(Backup::Staged(vec![]))
 }
 
 /// Discard several unstaged changes as one op: a single confirmation and one backup, so one ⌘Z
@@ -290,7 +300,8 @@ pub fn unstage_op(c: &git::Change) -> Op {
     let mut args = vec!["--literal-pathspecs", "reset", "-q", "--"];
     args.extend(c.old_path.as_deref().filter(|_| c.code == 'R'));
     args.push(&c.path);
-    Op::new("Unstage", &args).light()
+    let paths = args[4..].iter().map(|p| p.to_string()).collect();
+    Op::new("Unstage", &args).light().backup(Backup::Staged(paths))
 }
 
 /// The in-progress banner's Skip / Abort of a merge, rebase, cherry-pick, revert or am.
@@ -674,9 +685,15 @@ impl RepoTab {
                 let named = || Backup::Tree { revs: op.cmds.iter().flatten().cloned().collect(), untracked: false };
                 let b = op.backup.clone().or_else(|| matches!(op.undo, Undo::Keep | Undo::Mixed).then(named));
                 let head = git::head(&dir);
-                // ponytail: a pull fetches first so its backup sees what it merges (a second, empty fetch).
-                if op.backup.is_none() && op.cmds[0][0] == "pull" {
-                    let _ = cancel.scope(|| git::run(&dir, &["fetch", "--progress"]));
+                // ponytail: a pull, or an op that fetches what it checks out (a pull request), fetches
+                // first so its backup sees those commits (a second, empty fetch).
+                let fetch: Option<Vec<&str>> = match op.cmds[0][0].as_str() {
+                    "pull" => Some(vec!["fetch", "--progress"]),
+                    "fetch" if op.cmds.len() > 1 => Some(op.cmds[0].iter().map(String::as_str).collect()),
+                    _ => None,
+                };
+                if let (None, Some(_), Some(f)) = (&op.backup, &b, fetch) {
+                    let _ = cancel.scope(|| git::run(&dir, &f));
                 }
                 if let Some(e) = super::undo::recursed(&dir, &op) {
                     return Done::Op(op, Err(e), None, Ok(None));
@@ -1922,5 +1939,50 @@ mod tests {
         assert!(msgs.iter().any(|m| m.error && m.text.contains("stash was saved anyway")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
         assert!(t.undo_label().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unstage, Unstage all and Stage of a partly staged file drop its staged version: backed
+    /// up, so ⌘Z puts it back (and not an older step). Nothing lost: light, no step, no backup.
+    #[test]
+    fn staging_over_a_staged_version_undoes() {
+        type Build = fn(&git::Status) -> Op;
+        let ops: [(&str, Build); 4] = [
+            ("unstage", |s| super::unstage_op(&s.staged[0])),
+            ("unstage files", |s| super::unstage_files_op(&s.staged).unwrap()),
+            ("unstage all", |_| super::unstage_all_op()),
+            ("stage", |s| super::stage_files_op("Stage", &s.unstaged).unwrap()),
+        ];
+        for (name, build) in ops {
+            let dir = scratch(&format!("partly-staged-{}", name.replace(' ', "-")));
+            sh(&dir, &["init", "-q", "-b", "main"]);
+            identity(&dir);
+            commit(&dir, "f", "HEAD\n");
+            let ctx = egui::Context::default();
+            let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+            settle(&ctx, &mut t);
+            run(&ctx, &mut t, Action::Git(Op::new("Create branch x", &["branch", "x"]).undo(super::Undo::Keep)));
+            std::fs::write(dir.join("f"), "STAGED\n").unwrap();
+            sh(&dir, &["add", "f"]);
+            std::fs::write(dir.join("f"), "WORK\n").unwrap();
+            run(&ctx, &mut t, Action::Reload);
+            let op = build(&t.data.as_ref().unwrap().status);
+            let label = op.label.clone();
+            run(&ctx, &mut t, Action::Git(op));
+            assert_ne!(sh(&dir, &["show", ":f"]), "STAGED\n", "{name}");
+            assert_eq!(t.undo_label(), Some(label.as_str()), "{name}");
+            run(&ctx, &mut t, Action::Undo);
+            assert_eq!(sh(&dir, &["show", ":f"]), "STAGED\n", "{name}");
+            assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "WORK\n", "{name}");
+            assert!(git::run(&dir, &["rev-parse", "--verify", "x"]).is_ok(), "{name}");
+            // Fully staged (or not staged at all): nothing to lose, no step and no backup.
+            sh(&dir, if name == "stage" { &["reset", "-q", "--", "f"][..] } else { &["add", "f"] });
+            run(&ctx, &mut t, Action::Reload);
+            let (n, refs) = (t.undo.len(), sh(&dir, &["for-each-ref", "refs/glasir/backups/"]));
+            let op = build(&t.data.as_ref().unwrap().status);
+            run(&ctx, &mut t, Action::Git(op));
+            assert_eq!(sh(&dir, &["show", ":f"]), if name == "stage" { "WORK\n" } else { "HEAD\n" }, "{name}");
+            assert_eq!((t.undo.len(), sh(&dir, &["for-each-ref", "refs/glasir/backups/"])), (n, refs), "{name}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

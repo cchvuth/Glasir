@@ -102,7 +102,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
         if let Some(o) = crate::repo::stage_all_op(&d.status) {
             v.push(git("Stage all changes", Action::Git(o)));
         }
-        v.push(git("Unstage all changes", Action::Git(Op::new("Unstage all", &["reset", "-q"]).light())));
+        v.push(git("Unstage all changes", Action::Git(crate::repo::unstage_all_op())));
         if !d.status.staged.is_empty() && d.state == crate::git::State::Clean {
             v.push(item(icon::ARROWS_IN, "Absorb staged changes…", "into the commits they belong to", Cmd::Tab(Action::Absorb)));
         }

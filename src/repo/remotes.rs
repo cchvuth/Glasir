@@ -451,4 +451,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }
+
+    /// The PR commit tracks a file that is ignored here: backed up before the checkout
+    /// overwrites it (the backup is worked out after the fetch), so ⌘Z brings it back.
+    #[test]
+    fn pr_checkout_backs_up_an_ignored_file_it_tracks() {
+        use crate::repo::testutil::settle;
+        use crate::repo::{Action, RepoTab};
+        let up = scratch("pr-ignored-up");
+        sh(&up, &["init", "-q", "--bare", "-b", "main"]);
+        let dir = scratch("pr-ignored");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, ".gitignore", ".env\n");
+        sh(&dir, &["remote", "add", "origin", &up.to_string_lossy()]);
+        sh(&dir, &["push", "-q", "origin", "main"]);
+        sh(&dir, &["checkout", "-q", "-b", "pr"]);
+        std::fs::write(dir.join(".env"), "committed\n").unwrap();
+        sh(&dir, &["add", "-f", ".env"]);
+        sh(&dir, &["commit", "-q", "-m", "pr"]);
+        sh(&dir, &["push", "-q", "origin", "pr:refs/pull/1/head"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["branch", "-D", "pr"]);
+        std::fs::write(dir.join(".env"), "MINE\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut op = pr_checkout("origin");
+        for a in op.cmds.iter_mut().flatten() {
+            *a = a.replace("{}", "1");
+        }
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        let read = || std::fs::read_to_string(dir.join(".env")).unwrap_or_default();
+        assert_eq!(read(), "committed\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!((sh(&dir, &["branch", "--show-current"]).trim(), read().as_str()), ("main", "MINE\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
 }

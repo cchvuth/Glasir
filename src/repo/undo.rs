@@ -93,6 +93,12 @@ pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
     let (revs, untracked) = match b {
         Backup::Paths(ps) => return Ok((ps.clone(), vec![])),
         Backup::Stash(id) => return Ok((stash_paths(dir, id)?, vec![])),
+        Backup::Staged(ps) => {
+            let staged: BTreeSet<String> = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().collect();
+            let want: HashSet<&String> = ps.iter().collect();
+            let both = git::run(dir, &["diff", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().filter(|p| staged.contains(p) && (ps.is_empty() || want.contains(p)));
+            return Ok((both.collect(), vec![]));
+        }
         Backup::Tree { revs, untracked } => (revs, *untracked),
     };
     let z = |args: &[&str]| git::run(dir, args).map(split_z);

@@ -173,9 +173,12 @@ pub fn restore_markers_op(path: &str) -> Op {
 }
 
 /// `git mergetool` for one conflicted file. It runs beside other ops ([`Open`]); the file is
-/// backed up before the tool starts, and ⌘Z restores it if the tool changed it.
+/// backed up before the tool starts, and ⌘Z restores it if the tool changed it. So is
+/// `<file>.orig`, where `mergetool.keepBackup` (on by default) moves git's backup over any
+/// file there; its temporary files have the pid in their names.
 pub fn mergetool_op(path: &str) -> Op {
-    Op::new(MERGE_TOOL, &["--literal-pathspecs", "mergetool", "--gui", "--no-prompt", "--", path]).light().backup(Backup::Paths(vec![path.into()]))
+    let paths = vec![path.into(), format!("{path}.orig")];
+    Op::new(MERGE_TOOL, &["--literal-pathspecs", "mergetool", "--gui", "--no-prompt", "--", path]).light().backup(Backup::Paths(paths))
 }
 
 /// `git difftool` for the file a diff shows; `None` where there is nothing to compare
@@ -218,7 +221,7 @@ const WHOLE_TREE: &[&str] = &["checkout", "switch", "reset", "restore", "rebase"
 pub(super) fn touches(op: &Op, path: &str) -> bool {
     let named = |p: &str| p == path || p == "." || p == ":/" || path.strip_prefix(p.trim_end_matches('/')).is_some_and(|r| r.starts_with('/'));
     let backup = match &op.backup {
-        Some(Backup::Paths(ps)) => ps.iter().any(|p| named(p)),
+        Some(Backup::Paths(ps) | Backup::Staged(ps)) => ps.iter().any(|p| named(p)),
         Some(Backup::Tree { .. } | Backup::Stash(_)) => true,
         None => false,
     };
@@ -598,6 +601,45 @@ mod tests {
         t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
         let msgs = closed(&mut t);
         assert!(msgs.iter().any(|m| m.error && m.text.contains("tool broke")), "{:?}", texts(&msgs));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `git mergetool` keeps its backup as `<file>.orig` (keepBackup defaults to true), over
+    /// one of the user's own: ⌘Z puts that back too.
+    #[cfg(unix)]
+    #[test]
+    fn merge_tool_undo_restores_an_orig_file() {
+        use crate::repo::testutil::settle;
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("mergetool-orig");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        commit(&dir, "a.txt", "feature\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a.txt", "main\n");
+        assert!(crate::git::run(&dir, &["merge", "feature"]).is_err());
+        for kv in [["merge.tool", "fake"], ["mergetool.fake.cmd", "cp \"$REMOTE\" \"$MERGED\""], ["mergetool.fake.trustExitCode", "true"]] {
+            sh(&dir, &["config", kv[0], kv[1]]);
+        }
+        std::fs::write(dir.join("a.txt.orig"), "MINE\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
+        let mut msgs = vec![];
+        assert!((0..400).any(|_| {
+            t.poll(&ctx, &mut msgs);
+            t.ext_tools.is_empty() || { std::thread::sleep(std::time::Duration::from_millis(25)); false }
+        }));
+        settle(&ctx, &mut t);
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
+        assert_ne!(read("a.txt.orig"), "MINE\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(read("a.txt.orig"), "MINE\n");
+        assert!(sh(&dir, &["status", "--porcelain"]).contains("UU a.txt"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

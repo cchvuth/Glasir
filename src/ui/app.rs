@@ -7,7 +7,7 @@ use super::toasts::Toast;
 use super::welcome::CloneDlg;
 use super::{command_log, graph_view, palette, repo_view};
 use crate::git;
-use crate::repo::{Action, Msg, Op, RepoTab, Search, Sel, Task, fetch_op};
+use crate::repo::{Action, Msg, RepoTab, Search, Sel, Task, fetch_op, unstage_all_op};
 use crate::theme::{self, icon};
 use egui::{Frame, Key, Margin, RichText, Ui};
 use std::path::{Path, PathBuf};
@@ -196,7 +196,7 @@ impl App {
             act = Some(Action::Select(Sel::Wip));
         }
         if cmd && shift && pressed(Key::U) {
-            act = Some(Action::Git(Op::new("Unstage all", &["reset", "-q"]).light()));
+            act = Some(Action::Git(unstage_all_op()));
         }
         // S / U: stage / unstage the files selected in the WIP lists (not while typing or in a dialog).
         let plain = ctx.input(|i| !i.modifiers.any()) && ctx.memory(|m| m.top_modal_layer().is_none());
