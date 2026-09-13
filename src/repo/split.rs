@@ -94,11 +94,13 @@ impl RepoTab {
         let message = if self.summary.trim().is_empty() { sp.message.clone() } else { format!("{}\n\n{}", self.summary.trim(), self.body.trim()).trim().to_owned() };
         let mut add = vec!["--literal-pathspecs", "add", "-A", "-f", "--"];
         add.extend(&left);
-        let mut rest = Op::new(FINISH, &add).then(&["commit", "-q", "-F", "-"]).input(message).undo(Undo::Soft);
+        let rest = Op::new(FINISH, &add).then(&["commit", "-q", "-F", "-"]).input(message);
         // No "continue anyway": git refuses `rebase --continue` with uncommitted tracked changes.
-        if sp.rebase {
-            rest = rest.then(&["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep);
-        }
+        // A HEAD split's add replaces staged versions: backed up, for a refused commit (a hook) too.
+        let rest = match sp.rebase {
+            true => rest.then(&["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep),
+            false => rest.undo(Undo::Soft).backup(Backup::Paths(left.iter().map(|p| p.to_string()).collect())),
+        };
         let ops = vec![("Commit the rest as the last part".to_owned(), rest)];
         let n = left.len();
         let text = format!("{n} file{} from {} not committed yet: {}.", if n == 1 { " is" } else { "s are" }, &sp.id[..7.min(sp.id.len())], left.join(", "));
@@ -129,14 +131,17 @@ impl RepoTab {
         }
     }
 
-    /// The split's ref steps as one, pushed with their backups (oldest first) where the split
-    /// started; other entries made meanwhile (a branch delete, a stash) stay their own steps
-    /// above it. Each ref goes from where it was before a step first moved it to where the last
-    /// left it (or, moved outside meanwhile, from there): other refs (a tag, a fetch) are no part of it.
+    /// The split's own steps folded into one, backups oldest first, on top. Each ref goes from before its first move to after its last;
+    /// other steps (a branch, tag or stash made meanwhile) stay their own, under it.
     fn fold_split(&mut self, sp: &Split, abort: bool) {
         let (mut refs, mut files, mut rest): (Option<Refs>, Vec<Files>, Vec<UndoEntry>) = (None, vec![], vec![]);
+        let own = |r: &Refs| moved(&r.before, &r.after).iter().any(|m| m == "HEAD" || *m == sp.branch);
         for e in self.undo.split_off(sp.undo_len.min(self.undo.len())) {
-            let UndoEntry { refs: r, files: f, ops: None, .. } = e else { rest.push(e); continue };
+            if e.ops.is_some() || e.refs.as_ref().is_some_and(|r| !own(r)) {
+                rest.push(e);
+                continue;
+            }
+            let UndoEntry { refs: r, files: f, .. } = e;
             files.extend(f);
             refs = match (refs, r) {
                 (Some(mut acc), Some(r)) => {
@@ -157,7 +162,7 @@ impl RepoTab {
         let refs = refs.filter(|r| r.before != r.after);
         if refs.is_some() || !files.is_empty() {
             let label = if abort { ABORT.to_owned() } else { format!("Split {}", &sp.id[..7.min(sp.id.len())]) };
-            self.undo.push(UndoEntry::new(label, refs, files, None));
+            rest.push(UndoEntry::new(label, refs, files, None));
         }
         self.undo.extend(rest);
     }
@@ -990,14 +995,14 @@ mod tests {
     }
 
     /// ⌘Z of a HEAD split's start (a mixed reset) never reads the commit's
-    /// big added file: it goes through, and the steps before stay.
+    /// big added file (sparse, past the diff limit): it goes through, and the steps before stay.
     #[test]
     fn p9_undo_of_a_split_start_with_a_big_added_file() {
         let dir = scratch("split-p9");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
         commit(&dir, "a", "1");
-        std::fs::OpenOptions::new().create(true).write(true).open(dir.join("big.bin")).unwrap().set_len(260 << 20).unwrap();
+        std::fs::OpenOptions::new().create(true).write(true).open(dir.join("big.bin")).unwrap().set_len(16 << 20).unwrap();
         std::fs::write(dir.join("a"), "2").unwrap();
         sh(&dir, &["add", "-A"]);
         sh(&dir, &["commit", "-q", "-m", "C"]);
@@ -1560,6 +1565,69 @@ mod tests {
             step(&ctx, &mut t, Action::Undo);
         }
         assert_eq!(git::state(&t.data.as_ref().unwrap().git_dir), git::State::Rebasing);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A branch or tag made mid-split is no part of it: each stays its own step, under the
+    /// folded one, so ⌘Z of the split keeps them.
+    #[test]
+    fn a_branch_made_mid_split_stays_its_own_step() {
+        let (dir, ctx) = new_repo("split-own-steps");
+        commit(&dir, "p", "p0\n");
+        std::fs::write(dir.join("q"), "q\n").unwrap();
+        std::fs::write(dir.join("p"), "p1\n").unwrap();
+        sh(&dir, &["add", "-A"]);
+        sh(&dir, &["commit", "-q", "-m", "two files"]);
+        let head = sh(&dir, &["rev-parse", "HEAD"]);
+        let mut t = open(&ctx, &dir);
+        step(&ctx, &mut t, Action::Git(Op::new("Create branch before", &["branch", "before"]).undo(Undo::Keep)));
+        step(&ctx, &mut t, Action::Split(head.trim().into()));
+        commit_part(&ctx, &mut t, "p");
+        step(&ctx, &mut t, Action::Git(Op::new("Create branch keepme", &["branch", "keepme"]).undo(Undo::Keep)));
+        step(&ctx, &mut t, Action::Git(Op::new("Create tag v1", &["tag", "v1"]).undo(Undo::Keep)));
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        let c = t.choice.take().expect("left over");
+        step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
+        assert_eq!(labels(&t), ["Create branch before", "Create branch keepme", "Create tag v1", &format!("Split {}", &head[..7])]);
+        step(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), head);
+        assert!(git::run(&dir, &["rev-parse", "--verify", "keepme"]).is_ok() && git::run(&dir, &["rev-parse", "--verify", "v1"]).is_ok());
+        assert_eq!(labels(&t), ["Create branch before", "Create branch keepme", "Create tag v1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A HEAD split's "Commit the rest" refused by a hook keeps the split going, and its ⌘Z
+    /// brings back the staged version the add replaced.
+    #[test]
+    fn a_refused_commit_the_rest_keeps_the_split_and_the_staged_version() {
+        let (dir, ctx) = new_repo("split-hook");
+        for f in ["a", "b"] {
+            std::fs::write(dir.join(f), "1").unwrap();
+        }
+        sh(&dir, &["add", "."]);
+        sh(&dir, &["commit", "-qm", "base"]);
+        for f in ["a", "b"] {
+            std::fs::write(dir.join(f), "2").unwrap();
+        }
+        sh(&dir, &["commit", "-qam", "C"]);
+        let mut t = open(&ctx, &dir);
+        step(&ctx, &mut t, Action::Split(sh(&dir, &["rev-parse", "HEAD"]).trim().into()));
+        commit_part(&ctx, &mut t, "a");
+        std::fs::write(dir.join("b"), "STAGED").unwrap();
+        step(&ctx, &mut t, Action::Git(Op::new("Stage", &["add", "b"]).light()));
+        std::fs::write(dir.join("b"), "WT").unwrap();
+        let hook = dir.join(".git/hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        let c = t.choice.take().expect("left over");
+        let m = step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
+        assert!(t.split.is_some(), "{m:?}");
+        let m = step(&ctx, &mut t, Action::Undo);
+        assert_eq!((sh(&dir, &["show", ":b"]).as_str(), std::fs::read_to_string(dir.join("b")).unwrap().as_str()), ("STAGED", "WT"), "{m:?}");
+        assert!(t.split.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

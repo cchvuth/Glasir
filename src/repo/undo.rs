@@ -146,6 +146,18 @@ pub(super) fn backup(dir: &Path, b: &Backup, label: &str) -> Res<Option<Snap>> {
     if scope.is_empty() { Ok(None) } else { git::snap(dir, &scope, &like, &format!("Glasir backup: {label}")).map_err(refuse) }
 }
 
+/// Why `op` can't run: with `submodule.recurse` on, one that forces the tree (a discard, a hard
+/// reset, an abort) resets submodules too, and no backup can hold a submodule's files.
+pub(super) fn recursed(dir: &Path, op: &Op) -> Option<String> {
+    let forced = op.backup.is_some() || op.cmds.iter().flatten().any(|a| matches!(a.as_str(), "--hard" | "--abort" | "-f" | "--force"));
+    if !forced || !git::run(dir, &["config", "--type=bool", "submodule.recurse"]).is_ok_and(|s| s.trim() == "true") {
+        return None;
+    }
+    // `S<c><m><u>`: m = changes to its tracked files.
+    let p = git::status(dir).ok()?.submodules.into_iter().filter(|(_, f)| f.as_bytes().get(2) == Some(&b'M')).map(|(p, _)| p).find(|p| super::tools::touches(op, p))?;
+    Some(format!("Nothing was changed: submodule {p} has uncommitted changes this would reset (submodule.recurse is on), and they can't be backed up. Commit or stash them in {p} first."))
+}
+
 /// The op's files once it ran (`before`: from [`backup`] of `b`, taken at HEAD `head`): None
 /// when it changed none of them (it failed, say), and their backups go. A tree backup of an op
 /// that left HEAD there (a squash merge) also covers the tracked files it changed: those were
@@ -380,7 +392,7 @@ impl RepoTab {
         let Some(e) = stack.pop() else { return };
         let msg = format!("Glasir: {} {}", if undo { "Undo" } else { "Redo" }, e.label);
         // Each side the files no longer hold: a half-done step may have overwritten either. One
-        // that couldn't be kept stays in refs/glasir/backups (pruned in 14 days).
+        // that couldn't be kept stays in refs/glasir/backups (pruned in 7 days).
         let (mut done, mut names) = (vec![], BTreeSet::new());
         for f in &e.files {
             let cur = git::current(&self.dir, &f.before.paths).ok();
@@ -816,9 +828,9 @@ mod tests {
     }
 
     /// 4: a session that ended (its pid runs no more) leaves its backups; a later open prunes them
-    /// after 14 days (not before). 5: pruning never touches stash entries, user refs or other Glasir refs.
+    /// after 7 days (not before). 5: pruning never touches stash entries, user refs or other Glasir refs.
     #[test]
-    fn backups_of_lost_steps_are_pruned_after_two_weeks() {
+    fn backups_of_lost_steps_are_pruned_after_a_week() {
         let dir = repo("undo-policy-prune");
         {
             let (ctx, mut t) = tab(&dir);
@@ -841,9 +853,9 @@ mod tests {
         let others = || sh(&dir, &["for-each-ref", "--format=%(refname)"]).lines().filter(|r| !r.starts_with("refs/glasir/backups/")).map(String::from).collect::<Vec<_>>();
         let (before, stashes) = (others(), sh(&dir, &["stash", "list"]));
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        git::prune(&dir, now + 13 * 86_400, 14);
+        git::prune(&dir, now + 6 * 86_400, 7);
         assert_eq!(backups(&dir), 2);
-        git::prune(&dir, now + 15 * 86_400, 14);
+        git::prune(&dir, now + 8 * 86_400, 7);
         assert_eq!(backups(&dir), 0);
         assert!(stashes.contains("Glasir: Undo x") && stashes.lines().count() == 2, "{stashes}");
         assert_eq!((others(), sh(&dir, &["stash", "list"])), (before, stashes));
@@ -1943,7 +1955,7 @@ mod tests {
     }
 
     /// Pruning skips the backups of a live session (another tab, a linked worktree, another
-    /// Glasir) however old, and names it can't read; an ended session's go after 14 days.
+    /// Glasir) however old, and names it can't read; an ended session's go after 7 days.
     #[test]
     fn prune_never_takes_a_live_steps_backup() {
         let dir = repo("undo-prune-live");
@@ -1953,8 +1965,8 @@ mod tests {
         for n in &names {
             sh(&dir, &["update-ref", &format!("refs/glasir/backups/{n}"), &c]);
         }
-        let later = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 15 * 86_400;
-        git::prune(&dir, later, 14);
+        let later = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 8 * 86_400;
+        git::prune(&dir, later, 7);
         assert_eq!(sh(&dir, &["for-each-ref", "--format=%(refname:lstrip=3)", "refs/glasir/backups/"]), format!("1-{me}-1\n1-x-1\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2206,5 +2218,151 @@ mod tests {
         step(&ctx, &mut t, Action::Undo);
         assert_eq!((read(&dir, "f.txt").as_deref(), sh(&dir, &["status", "--porcelain"])), (Some("HELLO\n"), String::new()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+
+    fn checkout(b: &str) -> Action {
+        Action::Git(Op::new(format!("Checkout {b}"), &["checkout", b, "--"]).undo(Undo::Keep))
+    }
+
+    /// `want` at `p` on disk, in the stash list or in a backup (files, index, untracked files).
+    fn kept(dir: &Path, p: &str, want: &str) -> bool {
+        let refs = sh(dir, &["for-each-ref", "--format=%(objectname)", "refs/glasir/backups/"]);
+        safe(dir, p, want) || refs.lines().any(|h| ["", "^2", "^3"].iter().any(|s| git::run(dir, &["show", &format!("{h}{s}:{p}")]).is_ok_and(|s| s == want)))
+    }
+
+    /// A ref move's undo never writes a path over a modified or staged tracked file at, under or
+    /// above it (a file that is a folder on the other side, or the other way round).
+    #[test]
+    fn ref_undo_keeps_tracked_changes_in_a_paths_way() {
+        // (a) a checkout made file d a folder; d/f edited.
+        let dir = repo("uf-move-a");
+        commit(&dir, "d", "B\n");
+        sh(&dir, &["branch", "b"]);
+        sh(&dir, &["rm", "-q", "d"]);
+        std::fs::create_dir(dir.join("d")).unwrap();
+        commit(&dir, "d/f", "A\n");
+        sh(&dir, &["checkout", "-q", "b"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, checkout("main"));
+        std::fs::write(dir.join("d/f"), "PRECIOUS\n").unwrap();
+        let m = step(&ctx, &mut t, Action::Undo);
+        assert!(kept(&dir, "d/f", "PRECIOUS\n"), "(a) {m:?} d={:?}", read(&dir, "d"));
+        let _ = std::fs::remove_dir_all(&dir);
+        // (b) a hard reset made file d a folder; d/f edited.
+        let dir = repo("uf-move-b");
+        std::fs::create_dir(dir.join("d")).unwrap();
+        commit(&dir, "d/f", "B\n");
+        let x = rev(&dir, "HEAD");
+        sh(&dir, &["rm", "-rq", "d"]);
+        commit(&dir, "d", "A\n");
+        let (ctx, mut t) = tab(&dir);
+        hard_reset(&ctx, &mut t, &x);
+        std::fs::write(dir.join("d/f"), "PRECIOUS\n").unwrap();
+        let m = step(&ctx, &mut t, Action::Undo);
+        assert!(kept(&dir, "d/f", "PRECIOUS\n"), "(b) {m:?} d={:?}", read(&dir, "d"));
+        let _ = std::fs::remove_dir_all(&dir);
+        // (c) a checkout made folder d a file; d edited.
+        let dir = repo("uf-move-c");
+        std::fs::create_dir(dir.join("d")).unwrap();
+        commit(&dir, "d/f", "B\n");
+        sh(&dir, &["branch", "b"]);
+        sh(&dir, &["rm", "-rq", "d"]);
+        commit(&dir, "d", "A\n");
+        sh(&dir, &["checkout", "-q", "b"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, checkout("main"));
+        std::fs::write(dir.join("d"), "PRECIOUS\n").unwrap();
+        let m = step(&ctx, &mut t, Action::Undo);
+        assert!(kept(&dir, "d", "PRECIOUS\n"), "(c) {m:?} d/f={:?}", read(&dir, "d/f"));
+        let _ = std::fs::remove_dir_all(&dir);
+        // (d) a checkout deleted file d; a new d/f staged, then edited: both versions stay.
+        let dir = repo("uf-move-d");
+        commit(&dir, "d", "A\n");
+        sh(&dir, &["branch", "a"]);
+        sh(&dir, &["rm", "-q", "d"]);
+        commit(&dir, "other", "o\n");
+        sh(&dir, &["checkout", "-q", "a"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, checkout("main"));
+        std::fs::create_dir(dir.join("d")).unwrap();
+        std::fs::write(dir.join("d/f"), "STAGED\n").unwrap();
+        sh(&dir, &["add", "d/f"]);
+        std::fs::write(dir.join("d/f"), "WORK\n").unwrap();
+        let m = step(&ctx, &mut t, Action::Undo);
+        assert!(read(&dir, "d/f").as_deref() == Some("WORK\n") && git::run(&dir, &["show", ":d/f"]).is_ok_and(|s| s == "STAGED\n"), "(d) {m:?} d={:?} index={:?}", read(&dir, "d"), git::run(&dir, &["show", ":d/f"]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A nested git repository (ignored or untracked) where the target tracks a file: a hard
+    /// reset or checkout would delete it, .git and all, and no backup can hold it: refused.
+    #[test]
+    fn an_op_that_would_delete_a_nested_repo_is_refused() {
+        for how in ["reset", "checkout", "untracked-reset", "discard-all"] {
+            let dir = repo(&format!("uf-nested-{how}"));
+            commit(&dir, "vendor", "v\n");
+            let a = rev(&dir, "HEAD");
+            sh(&dir, &["branch", "old"]);
+            if how != "discard-all" {
+                sh(&dir, &["rm", "-q", "vendor"]);
+                sh(&dir, &["commit", "-q", "-m", "rm vendor"]);
+            } else {
+                std::fs::remove_file(dir.join("vendor")).unwrap();
+            }
+            let n = dir.join("vendor/x");
+            std::fs::create_dir_all(&n).unwrap();
+            sh(&n, &["init", "-q"]);
+            identity(&n);
+            commit(&n, "p", "COMMITTED\n");
+            std::fs::write(n.join("w"), "WIP\n").unwrap();
+            if how != "untracked-reset" {
+                std::fs::write(dir.join(".git/info/exclude"), "vendor/\n").unwrap();
+            }
+            let (ctx, mut t) = tab(&dir);
+            let m = match how {
+                "checkout" => step(&ctx, &mut t, checkout("old")),
+                "discard-all" => step(&ctx, &mut t, discard_all()),
+                _ => hard_reset(&ctx, &mut t, &a),
+            };
+            let m = [m, step(&ctx, &mut t, Action::Undo)].concat();
+            assert!(n.join(".git").is_dir() && read(&n, "w").as_deref() == Some("WIP\n"), "{how}: {m:?}");
+            assert!(m.iter().any(|m| m.contains("vendor/x")), "{how}: {m:?}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// With submodule.recurse on, Discard all and a hard reset reset a submodule's work tree
+    /// too, which no backup can hold: refused while it has uncommitted changes.
+    #[test]
+    fn a_recursing_reset_over_submodule_edits_is_refused() {
+        for how in ["discard-all", "reset"] {
+            let root = scratch(&format!("uf-sub-{how}"));
+            let sub = root.join("subsrc");
+            std::fs::create_dir_all(&sub).unwrap();
+            sh(&sub, &["init", "-q", "-b", "main"]);
+            identity(&sub);
+            commit(&sub, "f", "sub0\n");
+            let dir = root.join("sup");
+            std::fs::create_dir_all(&dir).unwrap();
+            sh(&dir, &["init", "-q", "-b", "main"]);
+            identity(&dir);
+            commit(&dir, "keep", "k\n");
+            sh(&dir, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.to_str().unwrap(), "sub"]);
+            sh(&dir, &["commit", "-q", "-m", "add sub"]);
+            commit(&dir, "keep", "k2\n");
+            sh(&dir, &["config", "submodule.recurse", "true"]);
+            std::fs::write(dir.join("sub/f"), "SUB-WIP\n").unwrap();
+            std::fs::write(dir.join("keep"), "K-WIP\n").unwrap();
+            let (ctx, mut t) = tab(&dir);
+            let m = if how == "reset" { hard_reset(&ctx, &mut t, &rev(&dir, "HEAD~1")) } else { step(&ctx, &mut t, discard_all()) };
+            let m = [m, step(&ctx, &mut t, Action::Undo)].concat();
+            assert_eq!((read(&dir, "sub/f").as_deref(), read(&dir, "keep").as_deref()), (Some("SUB-WIP\n"), Some("K-WIP\n")), "{how}: {m:?}");
+            assert!(m.iter().any(|m| m.contains("submodule")), "{how}: {m:?}");
+            // Nothing to lose in the submodule: it runs.
+            std::fs::write(dir.join("sub/f"), "sub0\n").unwrap();
+            let m = if how == "reset" { hard_reset(&ctx, &mut t, &rev(&dir, "HEAD~1")) } else { step(&ctx, &mut t, discard_all()) };
+            assert_eq!(labels(&t).len(), 1, "{how}: {m:?}");
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

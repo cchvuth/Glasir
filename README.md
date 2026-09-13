@@ -115,7 +115,9 @@ The name fits a Git client:
   and a merge's hand resolutions before Abort or Restore conflict markers.
   Undo never refuses over your edits: files you
   changed since stay as they are, a backup that can't go back waits in the stash list
-  as "Glasir: …", and a failed undo offers Retry or Skip.
+  as "Glasir: …", and a failed undo offers Retry or Skip. Backups of steps from a closed
+  session are kept 7 days. What no backup can hold is refused up front: a nested repository
+  an op would delete, and (with `submodule.recurse`) a submodule's uncommitted changes.
 
 ### Branches, merges and rebases
 - **Drag a branch onto another** to merge, rebase or push.

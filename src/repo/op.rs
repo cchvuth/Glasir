@@ -678,6 +678,9 @@ impl RepoTab {
                 if op.backup.is_none() && op.cmds[0][0] == "pull" {
                     let _ = cancel.scope(|| git::run(&dir, &["fetch", "--progress"]));
                 }
+                if let Some(e) = super::undo::recursed(&dir, &op) {
+                    return Done::Op(op, Err(e), None, Ok(None));
+                }
                 let saved = match b.as_ref().map(|b| backup(&dir, b, &op.label)).transpose() {
                     Ok(s) => s.flatten(),
                     Err(e) => return Done::Op(op, Err(e), None, Ok(None)),
@@ -776,6 +779,8 @@ impl RepoTab {
                     // Stopped on a conflict in a later commit: the split ends with that rebase (below).
                     (super::split::FINISH, false) => match self.split.as_mut() {
                         Some(sp) if sp.rebase && self.data.as_ref().is_some_and(|d| git::state(&d.git_dir) == git::State::Rebasing) => sp.replaying = true,
+                        // A HEAD split's commit refused (a hook): HEAD is where it was, the split goes on.
+                        Some(sp) if !sp.rebase => {}
                         _ => self.split = None,
                     },
                     (super::split::ABORT, true) => self.split_aborted(),

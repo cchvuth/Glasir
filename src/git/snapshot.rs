@@ -276,7 +276,14 @@ fn snap_in(dir: &Path, scope: &[String], like: &[String], msg: &str, base: &str,
     let (index, unmerged) = blobs(on_index(dir, tmp, &["ls-files", "-s", "-z"], "")?);
     let mut all = leaves(dir, scope)?;
     let disk = hash(dir, &all.iter().chain(unmerged.iter().filter(|u| !all.contains(u))).cloned().collect::<Vec<_>>(), &index, true)?;
-    // A nested repo or submodule is never removed by a discard: nothing to keep.
+    let trees = like.iter().map(|c| tree(dir, c)).collect::<Res<Vec<_>>>()?;
+    // A nested repo or submodule survives a discard, unless a file goes at or above it (one the
+    // index or a target tracks): that deletes it, .git and all, and git can't store one.
+    let file = |p: &str| std::iter::once(&index).chain(&trees).any(|t| t.get(p).is_some_and(|e| e.0 != 0o160000));
+    let repo = all.iter().filter(|p| disk[*p].as_ref().is_some_and(|e| e.0 == DIR)).map(|p| p.trim_end_matches('/')).find(|p| file(p) || ancestors(p).any(file));
+    if let Some(p) = repo {
+        return Err(format!("{p} is a git repository of its own, which this would delete; move it out of the way first"));
+    }
     all.retain(|p| !disk[p].as_ref().is_some_and(|e| e.0 == DIR));
     if let Some(p) = all.iter().find(|p| disk[*p].as_ref().is_some_and(|e| e.1 == FOREIGN)) {
         return Err(format!("git can't store {p}"));
@@ -285,7 +292,6 @@ fn snap_in(dir: &Path, scope: &[String], like: &[String], msg: &str, base: &str,
     let fold = unmerged.iter().map(|u| (u.as_str(), None)).chain(unmerged.iter().filter_map(|u| Some((u.as_str(), Some(disk.get(u)?.as_ref()?)))));
     on_index(dir, tmp, &["update-index", "-z", "--index-info"], &info(fold, &zero))?;
     let i_tree = on_index(dir, tmp, &["write-tree"], "")?.trim().to_owned();
-    let trees = like.iter().map(|c| tree(dir, c)).collect::<Res<Vec<_>>>()?;
     // Compared as git would commit them too: a CRLF checkout (autocrlf) is no change.
     let differ: Vec<&String> = all.iter().filter(|p| disk[*p].as_ref().is_some_and(|d| d.0 != 0o120000 && trees.iter().any(|t| t.get(*p).is_some_and(|e| e != d)))).collect();
     let clean: HashMap<&String, String> = differ.iter().copied().zip(hash_paths(dir, &["hash-object"], &differ.iter().map(|p| p.as_str()).collect::<Vec<_>>())).collect();
@@ -406,9 +412,10 @@ pub fn write(dir: &Path, files: &[Entry], index: &[Entry], head: &str, raw: bool
 }
 
 /// A ref move's files, per path like `reset <mode>` from commit `from` to `tip`, but only where
-/// the path has no uncommitted change, and none at, under or above `skip` (paths undo writes
-/// itself): `--mixed` moves index entries, `--keep` files too, `--soft` nothing. Never refuses:
-/// returns the paths that kept local changes and so differ from `tip`.
+/// the path has no uncommitted change, none under or above it, and none at, under or above
+/// `skip` (paths undo writes itself): `--mixed` moves index entries, `--keep` files too,
+/// `--soft` nothing. Never refuses: returns the paths that kept local changes and so differ
+/// from `tip`.
 pub fn move_files(dir: &Path, from: &str, tip: &str, mode: &str, skip: &[Entry]) -> Res<Vec<String>> {
     let ic = icase(dir);
     let keys: Vec<String> = skip.iter().map(|e| key(&e.name, ic)).collect();
@@ -418,10 +425,17 @@ pub fn move_files(dir: &Path, from: &str, tip: &str, mode: &str, skip: &[Entry])
         return Ok(vec![]);
     }
     let (index, unmerged) = blobs(run(dir, &["ls-files", "-s", "-z"])?);
-    let staged: HashSet<String> = z(run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", from])?).into_iter().chain(unmerged).collect();
+    let mut staged: HashSet<String> = z(run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames", from])?).into_iter().chain(unmerged).collect();
     let mut dirty = HashSet::new();
     if mode == "--keep" {
         dirty.extend(z(run(dir, &["diff", "--name-only", "-z", "--no-renames"])?).into_iter().chain(flagged(dir)?));
+    }
+    // A path under or above a staged or changed one: writing it (its index entry too) would
+    // remove that one, so it's left as it is.
+    let held: HashSet<String> = staged.iter().chain(&dirty).map(|p| key(p, ic)).collect();
+    let near = related(&held);
+    staged.extend(d.iter().filter(|p| !held.contains(&key(p, ic)) && near(&key(p, ic))).cloned());
+    if mode == "--keep" {
         // Untracked or ignored files at a path, under it, or where a folder above it goes.
         let found: Vec<String> = leaves(dir, &d)?.into_iter().filter(|l| !index.contains_key(l) && lstat(dir, l).is_ok()).map(|l| key(l.trim_end_matches('/'), ic)).collect();
         let near = related(&found);

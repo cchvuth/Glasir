@@ -282,10 +282,10 @@ impl RepoTab {
         // Registering watches walks the whole tree (inotify): keep it off the UI thread.
         let (c, d) = (ctx.clone(), t.dir.clone());
         t.watcher_task = Some(Task::spawn(ctx, move || watch::watch(&c, &d)));
-        // Backups whose undo step went with an earlier session: kept 14 days, then pruned.
+        // Backups whose undo step went with an earlier session: kept 7 days, then pruned.
         let d = t.dir.clone();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |n| n.as_secs());
-        std::thread::spawn(move || git::prune(&d, now, 14));
+        std::thread::spawn(move || git::prune(&d, now, 7));
         t.reload(ctx, true);
         t
     }
