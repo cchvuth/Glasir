@@ -1,6 +1,7 @@
 //! Persisted `Settings` and the Settings dialog (theme flavour swatches, glass,
 //! auto-fetch, pull mode, commit email rules, AI provider / token / model).
 
+use crate::ui::format::keys;
 use super::app::App;
 use crate::ai;
 use crate::git;
@@ -185,8 +186,8 @@ impl App {
                         .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing'.");
                     ui.end_row();
                     ui.label("Built-in terminal");
-                    ui.checkbox(&mut s.terminal, "Embedded terminal panel (⌃`)")
-                        .on_hover_text("Your login shell in the repository folder, below the graph. Off: ⌃` opens the external terminal from Settings → Tools.");
+                    ui.checkbox(&mut s.terminal, keys("Embedded terminal panel (⌃`)"))
+                        .on_hover_text(keys("Your login shell in the repository folder, below the graph. Off: ⌃` opens the external terminal from Settings → Tools."));
                     ui.end_row();
                     ui.label("Auto-fetch");
                     ui.horizontal(|ui| {
@@ -396,7 +397,7 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
     egui::Grid::new("tools_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
         ui.label("Editor");
         ui.add(TextEdit::singleline(&mut t.editor).margin(crate::theme::INPUT_MARGIN).hint_text(editor).desired_width(330.0))
-            .on_hover_text("Opens files and the repository (toolbar, ⌘P, file menus). {path} is the file; without it the path is appended. Empty = detected.");
+            .on_hover_text(keys("Opens files and the repository (toolbar, ⌘P, file menus). {path} is the file; without it the path is appended. Empty = detected."));
         ui.end_row();
         ui.label("External terminal");
         ui.add(TextEdit::singleline(&mut t.terminal).margin(crate::theme::INPUT_MARGIN).hint_text(terminal).desired_width(330.0))
@@ -406,7 +407,7 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
     ui.add_space(8.0);
     ui.label(RichText::new("Custom commands").strong());
     ui.label(
-        RichText::new("git arguments (run without a shell) or a shell line, run in the repository. Placeholders (quoted for you; leave them outside quotes): {repo} {branch} {sha} {path}. With {path} a command shows in file menus, with {sha} in commit menus, the rest in ⌘P; output goes to a toast and the command log.")
+        RichText::new(keys("git arguments (run without a shell) or a shell line, run in the repository. Placeholders (quoted for you; leave them outside quotes): {repo} {branch} {sha} {path}. With {path} a command shows in file menus, with {sha} in commit menus, the rest in ⌘P; output goes to a toast and the command log."))
             .small()
             .color(theme::dim(ui)),
     );

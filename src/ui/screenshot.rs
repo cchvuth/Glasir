@@ -1,7 +1,8 @@
 //! Dev/CI harness: `GLASIR_SCREENSHOT=out.bmp` saves a screenshot once the repo
 //! is loaded, then exits. `GLASIR_SCREENSHOT_VIEW` opens a view first (settings,
 //! a flavour, dialogs, diffs, search...); extend the switch when a new view needs
-//! visual verification.
+//! visual verification. `GLASIR_KEYS=pc` shows the Linux / Windows shortcut labels on macOS
+//! ("Ctrl+Shift+Z" for "⇧⌘Z", see `format::keys`).
 
 use super::app::App;
 use crate::git;

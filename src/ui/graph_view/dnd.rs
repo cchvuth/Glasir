@@ -2,6 +2,7 @@
 //! to get the merge / rebase / push menu; drag a commit row onto another commit
 //! or a branch to move / squash / cherry-pick it.
 
+use crate::ui::format::keys;
 use crate::repo::Action;
 use crate::theme::{self, icon};
 use egui::{Id, RichText, Sense, Stroke, Ui, vec2};
@@ -45,7 +46,7 @@ pub fn preview(ctx: &egui::Context) {
         egui::Area::new(Id::new("dnd_preview")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 10.0)).interactable(false).show(ctx, |ui| {
             theme::group(ui, |ui| {
                 ui.label(RichText::new(format!("{} {}", icon::GIT_COMMIT, p.1)).strong());
-                ui.label(RichText::new("   ⌥ squash").small().weak());
+                ui.label(RichText::new(keys("   ⌥ squash")).small().weak());
             });
         });
     }

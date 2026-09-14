@@ -159,17 +159,22 @@ impl App {
 fn tips(ui: &mut Ui) -> bool {
     let mut keep = true;
     ui.horizontal(|ui| {
-        ui.add_space((ui.available_width() - 760.0).max(0.0) / 2.0);
+        // Centred on last frame's width: the Linux / Windows key labels are longer.
+        let id = ui.id().with("tips_w");
+        ui.add_space((ui.available_width() - ui.data(|d| d.get_temp(id)).unwrap_or(760.0)).max(0.0) / 2.0);
+        let x0 = ui.cursor().min.x;
         theme::group(ui, |ui| {
             ui.add_space(6.0);
             ui.label(RichText::new(icon::LIGHTBULB).color(theme::accent()).size(16.0));
             for (keys, what) in [("⌘P", "run any command"), ("Drop a folder", "here to open it"), ("⌘Z", "undoes commits, rebases and discards"), ("?", "shows every shortcut")] {
-                ui.label(RichText::new(keys).strong());
+                ui.label(RichText::new(super::format::keys(keys)).strong());
                 ui.label(RichText::new(what).color(theme::dim(ui)));
                 ui.add_space(8.0);
             }
             keep = !theme::pill(ui, icon::X).on_hover_text("Hide these tips").clicked();
         });
+        let w = ui.min_rect().right() - x0;
+        ui.data_mut(|d| d.insert_temp(id, w));
     });
     keep
 }

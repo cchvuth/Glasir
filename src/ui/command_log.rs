@@ -1,5 +1,6 @@
 //! Bottom panel listing every git command (and custom command) Glasir ran (⇧⌘L).
 
+use crate::ui::format::keys;
 use crate::git;
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, Ui};
@@ -10,7 +11,7 @@ pub(super) fn show(ui: &mut Ui, open: &mut bool) {
         ui.label(RichText::new(format!("{} Command log", icon::TERMINAL_WINDOW)).strong());
         ui.label(RichText::new(format!("{n} commands")).small().color(theme::dim(ui)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if theme::pill(ui, icon::X).on_hover_text("Close (⇧⌘L)").clicked() {
+            if theme::pill(ui, icon::X).on_hover_text(keys("Close (⇧⌘L)")).clicked() {
                 *open = false;
             }
             if theme::pill(ui, "Clear").clicked() {

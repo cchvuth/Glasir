@@ -1,6 +1,7 @@
 //! Inspector for the WIP row: operation-in-progress banner, conflicted /
 //! unstaged / staged file lists and the commit box.
 
+use crate::ui::format::keys;
 use super::{file_items, file_row, lfs_track_item, open_items, permalink_items, row_button};
 use crate::ai::Purpose;
 use crate::git::{Change, State};
@@ -34,7 +35,7 @@ fn open_tools(ui: &mut Ui, tools: &[crate::repo::tools::Open], acts: &mut Vec<Ac
             ui.spinner();
             ui.label(RichText::new(format!("Merge tool open on {}", tool.path)).small());
             let b = theme::small(ui, true, format!("{} Cancel", icon::STOP_CIRCLE));
-            if b.on_hover_text("Stop the merge tool. Changes it saved stay (⌘Z restores the file as before).").clicked() {
+            if b.on_hover_text(keys("Stop the merge tool. Changes it saved stay (⌘Z restores the file as before).")).clicked() {
                 acts.push(Action::CloseTool(tool.path.clone()));
             }
         });
@@ -313,7 +314,7 @@ impl RepoTab {
             } else {
                 format!("Commit{} changes to {n} file{}", if push { " and push" } else { "" }, if n == 1 { "" } else { "s" })
             };
-            let btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text("⌘↩ commits; ⇧⌘↩ stages everything first, then commits");
+            let btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text(keys("⌘↩ commits; ⇧⌘↩ stages everything first, then commits"));
             // Not while a dialog is open: ⌘↩ there confirms the dialog (e.g. an annotated tag).
             let (enter, shift) = match ui.ctx().memory(|m| m.top_modal_layer().is_none()) {
                 true => ui.input(|i| (i.modifiers.command && i.key_pressed(egui::Key::Enter), i.modifiers.shift)),
@@ -415,7 +416,7 @@ impl RepoTab {
                             }
                             let tool = crate::repo::tools::tool(d, false);
                             let b = ui.add_enabled(tool.is_ok() && has == [true, true], egui::Button::new(format!("{} Open in external merge tool", icon::ARROW_SQUARE_OUT)));
-                            let b = b.on_hover_text(format!("git mergetool ({}). Your current file is backed up first (⌘Z); other actions keep working while the tool is open.", tool.as_deref().unwrap_or_default()));
+                            let b = b.on_hover_text(keys(&format!("git mergetool ({}). Your current file is backed up first (⌘Z); other actions keep working while the tool is open.", tool.as_deref().unwrap_or_default())));
                             let why = tool.err().unwrap_or_else(|| "One side deleted this file; use the merge editor instead.".into());
                             if b.on_disabled_hover_text(why).clicked() {
                                 acts.push(Action::Git(crate::repo::tools::mergetool_op(&c.path)));
@@ -447,7 +448,7 @@ impl RepoTab {
                                 acts.extend(stage_files_op("Stage", &sel_un).map(Action::Git));
                                 clear = true;
                             }
-                            if theme::small(ui, true, format!("Discard {n}")).on_hover_text("Discard changes to the selected files (one confirmation, one ⌘Z)").clicked() {
+                            if theme::small(ui, true, format!("Discard {n}")).on_hover_text(keys("Discard changes to the selected files (one confirmation, one ⌘Z)")).clicked() {
                                 acts.extend(discard_files_op(&sel_un).map(Action::Git));
                                 clear = true;
                             }

@@ -2,6 +2,7 @@
 //! branch-stash-pop, conflict and fetch-failure chips, progress and cancel, and
 //! the embedded terminal toggle and the open-in editor / terminal / file manager menu.
 
+use crate::ui::format::keys;
 use crate::ai;
 use crate::git;
 use crate::repo::maintenance;
@@ -21,7 +22,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             if theme::pill(ui, icon::ARROWS_CLOCKWISE).on_hover_text("Refresh (F5)").clicked() {
                 acts.push(Action::Reload);
             }
-            if (s.terminal || !t.term.tabs.is_empty()) && theme::pill(ui, icon::TERMINAL).on_hover_text(format!("Terminal ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
+            if (s.terminal || !t.term.tabs.is_empty()) && theme::pill(ui, icon::TERMINAL).on_hover_text(keys("Terminal (⌃`)")).clicked() {
                 acts.push(Action::ToggleTerminal);
             }
             ui.menu_button(icon::ARROW_SQUARE_OUT, |ui| open_items(ui, acts)).response.on_hover_text("Open in editor, terminal or file manager");
@@ -36,6 +37,9 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             // long branch name is cut instead of pushing them over the right-hand group.
             let id = ui.id().with("controls");
             let room = ui.available_width() - ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(0.0);
+            // Too narrow for the labelled controls (as measured the last time they had
+            // labels): drop the labels and keep the icons, which have hover texts.
+            let compact = ui.available_width() - ui.data(|d| d.get_temp::<f32>(id.with("full"))).unwrap_or(0.0) < 130.0;
             ui.scope(|ui| {
                 ui.set_max_width(room.max(120.0));
                 theme::group(ui, |ui| {
@@ -63,17 +67,17 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             ui.add_enabled_ui(!busy && t.data.is_some(), |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // measured at full size, never cut
                 theme::group(ui, |ui| {
-                    let undo = ui.add_enabled(t.undo_label().is_some(), Button::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
-                    if undo.on_hover_text(t.undo_label().map_or("Nothing to undo".into(), |l| format!("Undo {l} (⌘Z)"))).clicked() {
+                    let undo = ui.add_enabled(t.undo_label().is_some(), Button::new(label(compact, icon::ARROW_COUNTER_CLOCKWISE, "Undo")).frame_when_inactive(false).corner_radius(255));
+                    if undo.on_hover_text(t.undo_label().map_or("Nothing to undo".into(), |l| keys(&format!("Undo {l} (⌘Z)")))).clicked() {
                         acts.push(Action::Undo);
                     }
-                    let redo = ui.add_enabled(t.redo_label().is_some(), Button::new(format!("{} Redo", icon::ARROW_CLOCKWISE)).frame_when_inactive(false).corner_radius(255));
-                    if redo.on_hover_text(t.redo_label().map_or("Nothing to redo".into(), |l| format!("Redo {l} (⇧⌘Z)"))).clicked() {
+                    let redo = ui.add_enabled(t.redo_label().is_some(), Button::new(label(compact, icon::ARROW_CLOCKWISE, "Redo")).frame_when_inactive(false).corner_radius(255));
+                    if redo.on_hover_text(t.redo_label().map_or("Nothing to redo".into(), |l| keys(&format!("Redo {l} (⇧⌘Z)")))).clicked() {
                         acts.push(Action::Redo);
                     }
                 });
-                theme::group(ui, |ui| toolbar_remote(ui, t, s, acts));
-                theme::group(ui, |ui| toolbar_local(ui, t.data.as_ref().and_then(|d| d.stashes.first()), acts));
+                theme::group(ui, |ui| toolbar_remote(ui, t, s, compact, acts));
+                theme::group(ui, |ui| toolbar_local(ui, t.data.as_ref().and_then(|d| d.stashes.first()), compact, acts));
             });
             if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
                 let chip = RichText::new(format!("{} {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
@@ -98,7 +102,12 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                 ui.spinner();
             }
             let w = ui.cursor().min.x - x0;
-            ui.data_mut(|d| d.insert_temp(id, w));
+            ui.data_mut(|d| {
+                d.insert_temp(id, w);
+                if !compact {
+                    d.insert_temp(id.with("full"), w);
+                }
+            });
         });
     });
 }
@@ -170,13 +179,13 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut 
     }
 }
 
-fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Action>) {
+fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, compact: bool, acts: &mut Vec<Action>) {
     {
         {
-            if theme::pill(ui, format!("{} Fetch", icon::CLOUD_ARROW_DOWN)).on_hover_text("Fetch all remotes and prune").clicked() {
+            if theme::pill(ui, label(compact, icon::CLOUD_ARROW_DOWN, "Fetch")).on_hover_text("Fetch all remotes and prune").clicked() {
                 acts.push(Action::Git(fetch_op()));
             }
-            if theme::pill(ui, format!("{} Pull", icon::ARROW_LINE_DOWN)).on_hover_text(format!("{:?} (with autostash)", s.pull)).clicked() {
+            if theme::pill(ui, label(compact, icon::ARROW_LINE_DOWN, "Pull")).on_hover_text(format!("{:?} (with autostash)", s.pull)).clicked() {
                 acts.push(Action::Git(pull_op(s.pull)));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
@@ -195,7 +204,7 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
             }).response.on_hover_text("More pull options");
             // No remote yet: Push starts publishing (add a remote) instead of doing nothing.
             let no_remote = t.data.as_ref().filter(|d| d.remotes.is_empty());
-            let push = theme::pill(ui, format!("{} Push", icon::ARROW_LINE_UP));
+            let push = theme::pill(ui, label(compact, icon::ARROW_LINE_UP, "Push"));
             let push = match no_remote {
                 Some(_) => push.on_hover_text("No remote yet: add one (e.g. a new empty repository on GitHub) to publish this branch"),
                 None => push.on_hover_text("Push the current branch (sets its upstream on first push)"),
@@ -216,10 +225,15 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Act
     }
 }
 
-fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, acts: &mut Vec<Action>) {
+/// A toolbar button's text: icon and word, or the icon alone in a narrow window.
+fn label(compact: bool, icon: &str, text: &str) -> String {
+    if compact { icon.into() } else { format!("{icon} {text}") }
+}
+
+fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, compact: bool, acts: &mut Vec<Action>) {
     {
         {
-            if theme::pill(ui, format!("{} Branch", icon::GIT_BRANCH)).on_hover_text("Create a branch from HEAD and check it out").clicked() {
+            if theme::pill(ui, label(compact, icon::GIT_BRANCH, "Branch")).on_hover_text("Create a branch from HEAD and check it out").clicked() {
                 acts.push(Action::Prompt(Prompt {
                     title: "New branch from HEAD".into(),
                     value: String::new(),
@@ -228,7 +242,7 @@ fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, acts: &mut Vec<Action
                 sign: None,
                 }));
             }
-            if theme::pill(ui, format!("{} Stash", icon::TRAY_ARROW_DOWN)).on_hover_text("Stash all changes, untracked files included (⌘Z pops it back)").clicked() {
+            if theme::pill(ui, label(compact, icon::TRAY_ARROW_DOWN, "Stash")).on_hover_text(keys("Stash all changes, untracked files included (⌘Z pops it back)")).clicked() {
                 acts.push(stash_prompt());
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
@@ -241,8 +255,8 @@ fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, acts: &mut Vec<Action
                     ui.close();
                 }
             }).response.on_hover_text("More stash options");
-            let pop = ui.add_enabled_ui(newest.is_some(), |ui| theme::pill(ui, format!("{} Pop", icon::TRAY_ARROW_UP))).inner;
-            if let Some(s) = newest.filter(|_| pop.on_hover_text("Apply the newest stash and drop it (⌘Z puts it back)").on_disabled_hover_text("No stashes").clicked()) {
+            let pop = ui.add_enabled_ui(newest.is_some(), |ui| theme::pill(ui, label(compact, icon::TRAY_ARROW_UP, "Pop"))).inner;
+            if let Some(s) = newest.filter(|_| pop.on_hover_text(keys("Apply the newest stash and drop it (⌘Z puts it back)")).on_disabled_hover_text("No stashes").clicked()) {
                 acts.push(Action::Git(pop_stash(s)));
             }
         }

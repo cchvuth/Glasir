@@ -2,6 +2,7 @@
 //! revert / cherry-pick from commits, whitespace / context options, change navigation (F7 / ⇧F7)
 //! and a change minimap. Only visible lines are painted.
 
+use crate::ui::format::keys;
 use super::format::{tops, visible, wrapped};
 use crate::git::{DiffOpts, FileDiff, Page, partial_patch, selects_all};
 use crate::repo::history::Mode;
@@ -273,10 +274,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         if let (true, Some(f)) = (partial && n > 0, file) {
             let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
             if !worktree {
-                if ui.button(format!("Revert {n} line(s)")).on_hover_text(REVERT_HINT).clicked() {
+                if ui.button(format!("Revert {n} line(s)")).on_hover_text(keys(REVERT_HINT)).clicked() {
                     acts.push(apply_op("Revert lines", partial_patch(f, pick, true), &["--reverse"], &src, ds_opts, f));
                 }
-                if ui.button(format!("Cherry-pick {n} line(s)")).on_hover_text(PICK_HINT).clicked() {
+                if ui.button(format!("Cherry-pick {n} line(s)")).on_hover_text(keys(PICK_HINT)).clicked() {
                     acts.push(apply_op("Cherry-pick lines", partial_patch(f, pick, false), &[], &src, ds_opts, f));
                 }
             } else if staged {
@@ -586,7 +587,7 @@ fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, wrap: &mut bool,
                     *nav = Some(true);
                 }
                 let prev = ui.add_enabled(step(starts, anchor, false).is_some(), egui::Button::new(icon::ARROW_UP).frame_when_inactive(false).corner_radius(255));
-                if prev.on_hover_text("Previous change (⇧F7)").clicked() {
+                if prev.on_hover_text(keys("Previous change (⇧F7)")).clicked() {
                     *nav = Some(false);
                 }
             });

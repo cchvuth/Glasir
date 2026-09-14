@@ -2,6 +2,7 @@
 //! colours, a cursor and mouse selection, keyboard / clipboard / wheel input.
 //! The shells themselves live in `repo::terminal`.
 
+use crate::ui::format::keys;
 use crate::repo::terminal::{Session, Terminals};
 use crate::theme::{self, icon};
 use alacritty_terminal::grid::Scroll;
@@ -25,7 +26,7 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path, new: bool) {
     let ctx = ui.ctx().clone();
     let mut close = None;
     theme::bar(ui, |ui| {
-        if theme::pill(ui, icon::CARET_DOWN).on_hover_text(format!("Hide ({})", if cfg!(target_os = "macos") { "⌃`" } else { "Ctrl+`" })).clicked() {
+        if theme::pill(ui, icon::CARET_DOWN).on_hover_text(keys("Hide (⌃`)")).clicked() {
             ts.open = false;
         }
         if new && theme::pill(ui, icon::PLUS).on_hover_text("New terminal").clicked() {

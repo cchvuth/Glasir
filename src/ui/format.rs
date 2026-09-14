@@ -39,6 +39,51 @@ pub fn change_summary(files: &[crate::git::Change]) -> String {
     parts.join(", ")
 }
 
+/// Shortcut glyphs in `s` the platform's way: macOS keeps "Undo (⇧⌘Z)"; Linux and Windows
+/// (or macOS with `GLASIR_KEYS=pc`, for screenshots) get "Undo (Ctrl+Shift+Z)".
+pub fn keys(s: &str) -> String {
+    static PC: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| !cfg!(target_os = "macos") || std::env::var("GLASIR_KEYS").is_ok_and(|v| v == "pc"));
+    if *PC { pc_keys(s) } else { s.to_owned() }
+}
+
+/// "⇧⌘↩" -> "Ctrl+Shift+Enter", "⌘-click" -> "Ctrl+click", "⇧ + wheel" -> "Shift + wheel".
+fn pc_keys(s: &str) -> String {
+    let modifier = |c: char| match c {
+        '⌘' | '⌃' => Some(0),
+        '⌥' => Some(1),
+        '⇧' => Some(2),
+        _ => None,
+    };
+    let mut out = String::with_capacity(s.len() + 16);
+    let mut cs = s.chars().peekable();
+    while let Some(c) = cs.next() {
+        let Some(first) = modifier(c) else {
+            match c {
+                '↩' => out.push_str("Enter"),
+                '⌫' => out.push_str("Backspace"),
+                '⌦' => out.push_str("Delete"),
+                '⎋' => out.push_str("Esc"),
+                _ => out.push(c),
+            }
+            continue;
+        };
+        let mut on = [false; 3];
+        on[first] = true;
+        while let Some(i) = cs.peek().and_then(|&c| modifier(c)) {
+            on[i] = true;
+            cs.next();
+        }
+        let names: Vec<&str> = ["Ctrl", "Alt", "Shift"].into_iter().zip(on).filter_map(|(n, on)| on.then_some(n)).collect();
+        out.push_str(&names.join("+"));
+        if cs.next_if_eq(&'-').is_some() && !cs.peek().is_some_and(|c| c.is_alphabetic()) {
+            out.push_str("+-"); // ⌘- (zoom out), not ⌘-click
+        } else if cs.peek().is_some_and(|c| !c.is_whitespace()) {
+            out.push('+');
+        }
+    }
+    out
+}
+
 /// 512 -> "512 B", 1572864 -> "1.5 MB".
 pub fn bytes(n: u64) -> String {
     let mut v = n as f64;
@@ -110,6 +155,21 @@ mod tests {
         let c = |code| crate::git::Change { path: "p".into(), old_path: None, code };
         assert_eq!(super::change_summary(&[c('M'), c('A'), c('M'), c('D'), c('D'), c('M'), c('?')]), "3 modified, 2 added, 2 deleted");
         assert_eq!(super::change_summary(&[]), "");
+    }
+
+    #[test]
+    fn pc_shortcuts() {
+        let k = super::pc_keys;
+        assert_eq!(k("Undo (⌘Z)"), "Undo (Ctrl+Z)");
+        assert_eq!(k("⇧⌘↩"), "Ctrl+Shift+Enter");
+        assert_eq!(k("⌘↩ commits; ⇧⌘↩ stages everything first"), "Ctrl+Enter commits; Ctrl+Shift+Enter stages everything first");
+        assert_eq!(k("⌥⇧⌘Z ⌃` ⌃Tab"), "Ctrl+Alt+Shift+Z Ctrl+` Ctrl+Tab");
+        assert_eq!(k("⌘+ / ⌘- / ⌘0"), "Ctrl++ / Ctrl+- / Ctrl+0");
+        assert_eq!(k("⌘-click / ⇧-click"), "Ctrl+click / Shift+click");
+        assert_eq!(k("(or ⇧ + wheel over it)"), "(or Shift + wheel over it)");
+        assert_eq!(k("Next (↩ / F3), ⇧F3, ⌥↑ / ⌥↓, ⌫ ⎋"), "Next (Enter / F3), Shift+F3, Alt+↑ / Alt+↓, Backspace Esc");
+        assert_eq!(k("↑ ↓ / J K, F5, Esc"), "↑ ↓ / J K, F5, Esc");
+        assert_eq!(k("ends with ⌘"), "ends with Ctrl");
     }
 
     #[test]

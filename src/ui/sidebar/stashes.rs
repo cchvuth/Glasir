@@ -1,6 +1,7 @@
 //! The STASHES section of the sidebar and the stash menu (also used by the
 //! stash markers in the graph).
 
+use crate::ui::format::keys;
 use super::{matches, section};
 use crate::repo::{Action, RepoData, Sel, apply_stash_op, drop_stashes, pop_stash, prompt, rename_stash, stash_branch};
 use egui::{Id, Ui};
@@ -70,7 +71,7 @@ pub fn stash_menu(ui: &mut Ui, d: &RepoData, s: &crate::git::Stash, acts: &mut V
     if ui.button("Apply stash").on_hover_text("Restores staged changes as staged when it can; the stash is kept").clicked() {
         acts.push(Action::Git(apply_stash_op(s)));
     }
-    if ui.button("Pop stash").on_hover_text("Apply, then delete the stash (⌘Z puts it back)").clicked() {
+    if ui.button("Pop stash").on_hover_text(keys("Apply, then delete the stash (⌘Z puts it back)")).clicked() {
         acts.push(Action::Git(pop_stash(s)));
     }
     if ui.button("Rename stash…").clicked() {

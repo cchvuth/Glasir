@@ -1,6 +1,7 @@
 //! Inspector for a commit, stash or compare range: message, author, AI
 //! explanation and the changed files.
 
+use crate::ui::format::keys;
 use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::{Change, CommitInfo};
@@ -77,13 +78,13 @@ fn avatar(ui: &mut Ui, avatars: &crate::repo::avatars::Avatars, name: &str, emai
 fn restore_items(ui: &mut Ui, d: &RepoData, id: &str, parent: Option<&str>, c: &Change, acts: &mut Vec<Action>) {
     let short = &id[..id.len().min(7)];
     if c.code != 'D'
-        && ui.button(format!("{} Restore this file from this commit", icon::ARROW_U_UP_LEFT)).on_hover_text("Overwrite the working-tree copy with this commit's version (⌘Z undoes it)").clicked()
+        && ui.button(format!("{} Restore this file from this commit", icon::ARROW_U_UP_LEFT)).on_hover_text(keys("Overwrite the working-tree copy with this commit's version (⌘Z undoes it)")).clicked()
     {
         acts.push(Action::Git(restore_file(d, format!("Restore {}", c.path), id, &c.path, &format!("the version from {short}"))));
     }
     // An added file didn't exist before; a renamed one had its old name.
     if let Some(p) = parent.filter(|_| c.code != 'A')
-        && ui.button(format!("{} Restore as it was before this commit", icon::ARROW_U_UP_LEFT)).on_hover_text("Overwrite the working-tree copy with the parent's version (⌘Z undoes it)").clicked()
+        && ui.button(format!("{} Restore as it was before this commit", icon::ARROW_U_UP_LEFT)).on_hover_text(keys("Overwrite the working-tree copy with the parent's version (⌘Z undoes it)")).clicked()
     {
         let path = c.old_path.as_deref().unwrap_or(&c.path);
         acts.push(Action::Git(restore_file(d, format!("Restore {path}"), p, path, &format!("the version before {short}"))));
@@ -303,7 +304,7 @@ fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Ve
     let can = !busy && !e.summary.trim().is_empty();
     let (mut save, mut cancel) = (false, false);
     ui.horizontal(|ui| {
-        save = theme::small(ui, can, "Save").on_hover_text("Save the message (⌘↩)").clicked();
+        save = theme::small(ui, can, "Save").on_hover_text(keys("Save the message (⌘↩)")).clicked();
         cancel = theme::small(ui, true, "Cancel").on_hover_text("Discard the edit (Esc)").clicked();
     });
     // Not while a dialog is open: Esc and ⌘↩ there belong to the dialog.

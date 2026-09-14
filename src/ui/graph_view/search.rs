@@ -1,6 +1,7 @@
 //! The ⌘F search bar above the graph. The query, the git search and its hits live in
 //! `crate::repo::Search`.
 
+use crate::ui::format::keys;
 use crate::repo::{Action, RepoData, Search, Sel};
 use crate::theme::{self, icon};
 use egui::{Button, Key, Ui};
@@ -18,13 +19,18 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
     let mut step = if f3 { if shift { -1 } else { 1 } } else { 0 };
     // Buttons and count first: a narrow graph pane shrinks the field, never the other way round.
     theme::bar(ui, |ui| {
+        // A narrow graph pane: tighter buttons, so the field keeps room for the query.
+        if ui.available_width() < 520.0 {
+            ui.spacing_mut().button_padding.x = 6.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
+        }
         if theme::pill(ui, icon::X).on_hover_text("Close (Esc)").clicked() {
             close = true;
         }
-        if theme::pill(ui, icon::CARET_DOWN).on_hover_text("Next (↩ / F3)").clicked() {
+        if theme::pill(ui, icon::CARET_DOWN).on_hover_text(keys("Next (↩ / F3)")).clicked() {
             step = 1;
         }
-        if theme::pill(ui, icon::CARET_UP).on_hover_text("Previous (⇧↩ / ⇧F3)").clicked() {
+        if theme::pill(ui, icon::CARET_UP).on_hover_text(keys("Previous (⇧↩ / ⇧F3)")).clicked() {
             step = -1;
         }
         let n = s.found.len();

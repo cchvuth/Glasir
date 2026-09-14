@@ -1,6 +1,7 @@
 //! Commit Composer dialog: Claude's commit plan, editable (messages, moving
 //! changes between commits, split / merge / reorder), then Create commits.
 
+use crate::ui::format::keys;
 use crate::repo::{Action, RepoTab};
 use crate::theme::{self, icon};
 use egui::{Button, Frame, Id, Key, RichText, TextEdit};
@@ -23,7 +24,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         };
         ui.heading(format!("{} {}", icon::SPARKLE, if p.replaces > 0 { "Recompose commits" } else { "Compose commits" }));
         ui.label(
-            RichText::new(format!("{}'s plan for {what}, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.", crate::ai::name()))
+            RichText::new(keys(&format!("{}'s plan for {what}, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.", crate::ai::name())))
                 .small()
                 .color(theme::dim(ui)),
         );

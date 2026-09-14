@@ -1,6 +1,7 @@
 //! Title bar: the repo tabs (drag to move the window, double-click to zoom)
 //! and the global buttons on the right (theme, palette, command log, settings).
 
+use crate::ui::format::keys;
 use super::app::App;
 use super::settings::toggle_flavor;
 use crate::theme::{self, icon};
@@ -17,13 +18,13 @@ impl App {
             ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!max));
         }
         theme::bar_h(ui, 30.0, |ui| {
-            if theme::pill(ui, icon::GEAR_SIX).on_hover_text("Settings (⌘,)").clicked() {
+            if theme::pill(ui, icon::GEAR_SIX).on_hover_text(keys("Settings (⌘,)")).clicked() {
                 self.open_settings();
             }
-            if theme::pill(ui, icon::TERMINAL_WINDOW).on_hover_text("Command log (⇧⌘L)").clicked() {
+            if theme::pill(ui, icon::TERMINAL_WINDOW).on_hover_text(keys("Command log (⇧⌘L)")).clicked() {
                 self.show_log = !self.show_log;
             }
-            if theme::pill(ui, format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS)).on_hover_text("Command palette: commands, branches and repositories (? lists the shortcuts)").clicked() {
+            if theme::pill(ui, keys(&format!("{}  Search commands  ⌘P", icon::MAGNIFYING_GLASS))).on_hover_text("Command palette: commands, branches and repositories (? lists the shortcuts)").clicked() {
                 self.palette = Some(Default::default());
             }
             let glyph = if self.s.flavor.dark() { icon::SUN } else { icon::MOON };
@@ -47,7 +48,7 @@ impl App {
                             ui.add(egui::Button::new(label.clone()).frame_when_inactive(false).corner_radius(255).sense(Sense::click_and_drag()))
                         });
                         let r = r.inner.on_hover_text(format!("{}\n{}", label.text, t.dir.display()));
-                        let x = theme::pill(ui, RichText::new(icon::X).small().color(dim)).on_hover_text("Close tab (⌘W)");
+                        let x = theme::pill(ui, RichText::new(icon::X).small().color(dim)).on_hover_text(keys("Close tab (⌘W)"));
                         (r, x.clicked())
                     };
                     let (r, closed) = if active { theme::group(ui, tab) } else { ui.horizontal(tab).inner };
@@ -101,7 +102,7 @@ impl App {
                 }
                 let on_welcome = self.active == self.tabs.len();
                 let tip = if on_welcome { "Open a repository (⌘O)" } else { "New tab (⌘T)" };
-                if theme::pill(ui, icon::PLUS).on_hover_text(tip).clicked() {
+                if theme::pill(ui, icon::PLUS).on_hover_text(keys(tip)).clicked() {
                     if on_welcome {
                         self.pick_and_open(ui.ctx()); // already on the new-tab page: go straight to the picker
                     } else {

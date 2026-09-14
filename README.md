@@ -363,6 +363,9 @@ token saved by an older version may ask once: choose **Always Allow**).
 
 ## Keyboard shortcuts
 
+Shown in macOS notation; on Linux and Windows the app labels them the PC way
+(⌘ and ⌃ are Ctrl, ⌥ is Alt, ⇧ is Shift, ↩ is Enter: ⇧⌘Z is Ctrl+Shift+Z).
+
 | Shortcut | Action |
 | --- | --- |
 | ⌘P / ⌘K | Command palette |

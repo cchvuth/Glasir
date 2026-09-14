@@ -9,7 +9,7 @@ use super::{command_log, graph_view, palette, repo_view};
 use crate::git;
 use crate::repo::{Action, Msg, RepoTab, Search, Sel, Task, fetch_op, unstage_all_op};
 use crate::theme::{self, icon};
-use egui::{Frame, Key, Margin, RichText, Ui};
+use egui::{Frame, Key, Margin, Modifiers, RichText, Ui};
 use std::path::{Path, PathBuf};
 
 pub struct App {
@@ -129,6 +129,8 @@ impl App {
         let typing = ctx.memory(|m| m.focused().is_some());
         let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
         let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
+        // Consumed: off macOS a text field would also take Ctrl+K / W / U as readline edits.
+        let eat = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
         if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.mac_cmd && i.key_pressed(Key::Backtick))
             && let Some(t) = self.tabs.get_mut(self.active)
         {
@@ -151,13 +153,13 @@ impl App {
             self.show_log = !self.show_log;
         }
         let fetch = cmd && !shift && pressed(Key::L);
-        if cmd && (pressed(Key::P) || pressed(Key::K)) {
+        if eat(Modifiers::COMMAND, Key::P) | eat(Modifiers::COMMAND, Key::K) {
             self.palette = Some(Default::default());
         }
         if cmd && pressed(Key::T) {
             self.active = self.tabs.len();
         }
-        if cmd && pressed(Key::W) && self.active < self.tabs.len() {
+        if self.active < self.tabs.len() && eat(Modifiers::COMMAND, Key::W) {
             self.close_tab(ctx, self.active);
         }
         const NUMS: [Key; 9] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
@@ -195,7 +197,7 @@ impl App {
             t.focus_summary = true;
             act = Some(Action::Select(Sel::Wip));
         }
-        if cmd && shift && pressed(Key::U) {
+        if eat(Modifiers::COMMAND | Modifiers::SHIFT, Key::U) {
             act = Some(Action::Git(unstage_all_op()));
         }
         // S / U: stage / unstage the files selected in the WIP lists (not while typing or in a dialog).

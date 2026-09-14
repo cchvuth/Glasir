@@ -1,6 +1,7 @@
 //! The interactive rebase editor window (drawing + keyboard). The todo model
 //! and git side live in `crate::repo::rebase`.
 
+use crate::ui::format::keys;
 use crate::repo::rebase::{Act, Editor};
 use crate::repo::Action;
 use crate::theme::{self, icon};
@@ -52,7 +53,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
         ui.label(RichText::new(format!("{n} commit{} onto {}", if n == 1 { "" } else { "s" }, ed.label)).color(theme::dim(ui)));
     });
     ui.label(
-        RichText::new("Newest at top. Keys: P pick · R reword · S squash · F fixup · D drop · ⌥↑/⌥↓ move")
+        RichText::new(keys(&format!("Newest at top. Keys: {}", super::shortcuts::REBASE)))
             .small()
             .color(theme::dim(ui)),
     );
@@ -71,12 +72,12 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
             let r = frame.show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.add_enabled_ui(i > 0, |ui| {
-                        if theme::pill(ui, icon::CARET_UP).on_hover_text("Move up (⌥↑)").clicked() {
+                        if theme::pill(ui, icon::CARET_UP).on_hover_text(keys("Move up (⌥↑)")).clicked() {
                             swap = Some((i, i - 1));
                         }
                     });
                     ui.add_enabled_ui(i + 1 < n, |ui| {
-                        if theme::pill(ui, icon::CARET_DOWN).on_hover_text("Move down (⌥↓)").clicked() {
+                        if theme::pill(ui, icon::CARET_DOWN).on_hover_text(keys("Move down (⌥↓)")).clicked() {
                             swap = Some((i, i + 1));
                         }
                     });

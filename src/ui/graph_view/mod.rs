@@ -9,6 +9,7 @@ pub mod menus;
 mod minimap;
 mod search;
 
+use crate::ui::format::keys;
 use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
 use crate::repo::{Action, RepoData, Search, Sel, View, branch_checkout};
@@ -477,7 +478,7 @@ pub fn show(
         let thumb_w = (track.width() * graph_w / lanes_w).max(24.0).min(track.width());
         let span = (track.width() - thumb_w).max(1.0);
         let thumb = Rect::from_min_size(pos2(track.left() + span * gx / max_gx, track.top()), vec2(thumb_w, track.height()));
-        let resp = ui.interact(track.expand2(vec2(0.0, 3.0)), gx_id.with("bar"), Sense::click_and_drag()).on_hover_text("Scroll the graph sideways (or ⇧ + wheel over it)");
+        let resp = ui.interact(track.expand2(vec2(0.0, 3.0)), gx_id.with("bar"), Sense::click_and_drag()).on_hover_text(keys("Scroll the graph sideways (or ⇧ + wheel over it)"));
         if resp.dragged() {
             gx = (gx + resp.drag_delta().x * max_gx / span).clamp(0.0, max_gx);
         } else if resp.clicked()

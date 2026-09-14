@@ -1,6 +1,7 @@
 //! Context menus of the graph rows (commit, WIP, multi-selection) and the
 //! merge / rebase entries (`integrate_items`) shared with the sidebar.
 
+use crate::ui::format::keys;
 use crate::git::{Commit, Ref, RefKind, State};
 use crate::repo::{Action, MultiOp, Op, Prompt, RepoData, Search, Sel, Undo, branch_checkout, prompt, stash_prompt};
 use crate::repo::merge_opts::{Merge, merge_op, pick_op};
@@ -49,7 +50,7 @@ fn recompose_items(ui: &mut Ui, d: &RepoData, label: &str, oldest: &str, picked:
     let dirty = !d.status.staged.is_empty() || !d.status.unstaged.is_empty();
     for wip in [false, true].into_iter().take(1 + dirty as usize) {
         let text = if wip { format!("{} {label} (with uncommitted changes)", icon::SPARKLE) } else { format!("{} {label}", icon::SPARKLE) };
-        let hover = format!("Let {} re-plan these unpushed commits' changes as new focused commits (you review the plan first; undo with ⌘Z)", crate::ai::name());
+        let hover = keys(&format!("Let {} re-plan these unpushed commits' changes as new focused commits (you review the plan first; undo with ⌘Z)", crate::ai::name()));
         if ui.button(text).on_hover_text(hover).clicked() {
             acts.push(Action::Recompose(crate::repo::compose::Recompose { oldest: oldest.into(), picked: picked.to_vec(), wip }));
             ui.close();
@@ -309,7 +310,7 @@ pub fn reset_items(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) 
         ("--keep", "update files, keep uncommitted changes"),
         ("--hard", "discard all changes (⌘Z restores them)"),
     ] {
-        let text = egui::RichText::new(format!("{} — {hint}", &mode[2..]));
+        let text = egui::RichText::new(keys(&format!("{} — {hint}", &mode[2..])));
         if ui.button(if mode == "--hard" { text.color(theme::DEL) } else { text }).clicked() {
             acts.push(Action::Git(crate::repo::reset_op(d, id, mode)));
         }

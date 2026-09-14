@@ -1,6 +1,7 @@
 //! ⌘P / ⌘K fuzzy command palette: git commands, checkout/merge/rebase any
 //! branch, open recent repositories, app commands.
 
+use crate::ui::format::keys;
 use crate::git::RefKind;
 use crate::repo::{Action, Op, Prompt, PullMode, RepoTab, Undo, branch_checkout, op, pop_stash, pull_op, stash_prompt};
 use crate::repo::merge_opts::{Merge, merge_op};
@@ -59,7 +60,7 @@ pub fn score(query: &str, text: &str) -> Option<i32> {
 }
 
 fn item(icon: &'static str, label: impl Into<String>, detail: impl Into<String>, cmd: Cmd) -> Item {
-    Item { icon, label: label.into(), detail: detail.into(), cmd }
+    Item { icon, label: label.into(), detail: keys(&detail.into()), cmd }
 }
 
 fn git(label: impl Into<String>, a: Action) -> Item {

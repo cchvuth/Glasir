@@ -2,6 +2,7 @@
 //! button), errors after 12 s.
 
 use super::app::App;
+use super::format::keys;
 use crate::theme::{self, icon};
 use egui::{Align2, Frame, Id, Margin, RichText, UiBuilder};
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ impl App {
     pub(super) fn toast_undo(&mut self, ctx: &egui::Context, text: String, error: bool, undo: Option<(PathBuf, u64)>) {
         let now = ctx.input(|i| i.time);
         let secs = if error { 12.0 } else if undo.is_some() { 8.0 } else { 4.0 };
-        self.toasts.push(Toast { text, error, until: now + secs, undo });
+        self.toasts.push(Toast { text: keys(&text), error, until: now + secs, undo });
     }
 
     pub(super) fn show_toasts(&mut self, ctx: &egui::Context) {
@@ -52,7 +53,7 @@ impl App {
                             ui.label(RichText::new(if t.error { icon::WARNING_CIRCLE } else { icon::CHECK_CIRCLE }).color(color).size(16.0));
                             ui.label(&t.text);
                             if let Some(tab) = live(&t.undo)
-                                && theme::pill(ui, RichText::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).strong()).on_hover_text("Undo this (⌘Z)").clicked()
+                                && theme::pill(ui, RichText::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).strong()).on_hover_text(keys("Undo this (⌘Z)")).clicked()
                             {
                                 undo = Some((i, tab));
                             }

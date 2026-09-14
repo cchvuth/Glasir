@@ -2,6 +2,7 @@
 //! branch cleanup, absorb preview, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
+use crate::ui::format::keys;
 use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, RepoTab, Undo};
@@ -18,7 +19,7 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         ui.heading(&p.title);
         let first = ui.add(TextEdit::singleline(&mut p.value).margin(crate::theme::INPUT_MARGIN).desired_width(f32::INFINITY));
         if let Some((hint, v2)) = &mut p.second {
-            ui.add(TextEdit::multiline(v2).margin(crate::theme::INPUT_MARGIN).hint_text(hint.as_str()).desired_rows(3).desired_width(f32::INFINITY));
+            ui.add(TextEdit::multiline(v2).margin(crate::theme::INPUT_MARGIN).hint_text(keys(hint)).desired_rows(3).desired_width(f32::INFINITY));
         } else {
             first.request_focus();
         }
@@ -64,7 +65,7 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         let (text, command) = text.split_once("\n$ ").map_or((text, None), |(t, c)| (t, Some(c)));
         ui.set_width(if command.is_some() { 640.0 } else { 380.0 });
         ui.heading(&c.label);
-        ui.label(text);
+        ui.label(keys(text));
         if let Some(command) = command {
             ui.add_space(4.0);
             // One flag per line (still paste-able), so long leases don't wrap mid-word.
@@ -220,7 +221,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 ui.label(RichText::new("Nothing to clean up: no merged, orphaned or stale local branches.").color(theme::dim(ui)));
             }
             Some(Ok(rows)) => {
-                ui.label(RichText::new("Local branches you probably don't need anymore. Deleting is undoable (⌘Z).").small().color(theme::dim(ui)));
+                ui.label(RichText::new(keys("Local branches you probably don't need anymore. Deleting is undoable (⌘Z).")).small().color(theme::dim(ui)));
                 egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
                     for g in [Why::Merged, Why::Squashed, Why::Gone, Why::Stale] {
                         let mut first = true;
@@ -301,7 +302,7 @@ pub(super) fn absorb_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         ui.set_width(640.0);
         ui.heading(format!("{} Absorb staged changes", icon::ARROWS_IN));
         ui.label(
-            RichText::new("Each hunk is folded into the unpushed commit that last changed its lines. Undo with ⌘Z.").small().color(theme::dim(ui)),
+            RichText::new(keys("Each hunk is folded into the unpushed commit that last changed its lines. Undo with ⌘Z.")).small().color(theme::dim(ui)),
         );
         ui.add_space(6.0);
         egui::ScrollArea::vertical().max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {

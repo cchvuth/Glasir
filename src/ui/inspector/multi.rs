@@ -1,5 +1,6 @@
 //! Inspector for several selected commits: bulk cherry-pick / squash / revert / drop.
 
+use crate::ui::format::keys;
 use crate::repo::{Action, MultiOp, RepoTab, Sel};
 use crate::theme::{self, icon};
 use egui::{RichText, ScrollArea, Ui};
@@ -10,7 +11,7 @@ impl RepoTab {
         let ids = self.multi.clone();
         ui.add_space(6.0);
         ui.label(RichText::new(format!("{} commits selected", ids.len())).heading().strong());
-        ui.label(RichText::new("⌘-click to add or remove, ⇧-click for a range.").small().color(theme::dim(ui)));
+        ui.label(RichText::new(keys("⌘-click to add or remove, ⇧-click for a range.")).small().color(theme::dim(ui)));
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend); // whole buttons move to the next row

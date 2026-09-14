@@ -1,6 +1,7 @@
 //! Right-click menus of refs (sidebar rows and graph pills): local branch,
 //! remote branch and tag menus plus graph hide/solo toggles.
 
+use crate::ui::format::keys;
 use crate::ai::Purpose;
 use crate::git::{Page, RefKind};
 use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, delete_branches, op, prompt};
@@ -125,7 +126,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         if members.iter().any(|m| crate::repo::stack::stale(d, m))
             && ui
                 .button(format!("{} Restack", icon::ARROWS_CLOCKWISE))
-                .on_hover_text("Rebase each branch of this stack whose parent moved on onto it, bottom first. All or nothing; undo with ⌘Z.")
+                .on_hover_text(keys("Rebase each branch of this stack whose parent moved on onto it, bottom first. All or nothing; undo with ⌘Z."))
                 .clicked()
         {
             acts.push(Action::Git(crate::repo::stack::restack_op(d, name)));

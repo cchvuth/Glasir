@@ -1,6 +1,7 @@
 //! File, folder and line-range history and blame views (blame with an age
 //! heatmap), with back / forward. The data and git queries live in `crate::repo::history`.
 
+use crate::ui::format::keys;
 use super::format::{ago, initials, relative_time, text_job, tops, visible, wrapped};
 use crate::repo::history::{Blame, Data, FileView, Mode};
 use crate::repo::{Action, DiffSrc};
@@ -27,10 +28,10 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
         if theme::pill(ui, icon::X).on_hover_text("Close (Esc)").clicked() {
             close = true;
         }
-        if !fv.back.is_empty() && theme::pill(ui, icon::ARROW_LEFT).on_hover_text("Back (⌘[)").clicked() {
+        if !fv.back.is_empty() && theme::pill(ui, icon::ARROW_LEFT).on_hover_text(keys("Back (⌘[)")).clicked() {
             nav = Some(false);
         }
-        if !fv.fwd.is_empty() && theme::pill(ui, icon::ARROW_RIGHT).on_hover_text("Forward (⌘])").clicked() {
+        if !fv.fwd.is_empty() && theme::pill(ui, icon::ARROW_RIGHT).on_hover_text(keys("Forward (⌘])")).clicked() {
             nav = Some(true);
         }
         let title = match &fv.mode {
