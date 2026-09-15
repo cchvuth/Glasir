@@ -246,7 +246,7 @@ fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, compact: bool, acts: 
                 acts.push(stash_prompt());
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
-                if ai::enabled() && ui.button(format!("{} Stash with AI message", icon::SPARKLE)).clicked() {
+                if ai::enabled() && ui.button(format!("{} Stash with message", icon::SPARKLE)).clicked() {
                     acts.push(Action::Ai(ai::Purpose::StashMessage));
                     ui.close();
                 }

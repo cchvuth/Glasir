@@ -45,7 +45,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             } else if thinking {
                 ui.label(RichText::new(format!("{} is resolving…", ai::name())).small().color(theme::dim(ui)));
                 ui.spinner();
-            } else if theme::pill(ui, format!("{} Resolve with AI", icon::SPARKLE)).on_hover_text(format!("Let {} write the output; review it, then save", ai::name())).clicked() {
+            } else if theme::pill(ui, format!("{} Resolve", icon::SPARKLE)).on_hover_text(format!("Let {} write the output; review it, then save", ai::name())).clicked() {
                 acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
             let n = conflicts(&ed.chunks).filter(|c| c.trivial()).count();

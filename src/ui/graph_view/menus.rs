@@ -25,7 +25,7 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, shown: &RepoData, multi: &[S
     if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::DEL)).clicked() {
         acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
     }
-    recompose_items(ui, d, &format!("Recompose {n} commits with AI…"), &multi[n - 1], multi, acts);
+    recompose_items(ui, d, &format!("Recompose {n} commits…"), &multi[n - 1], multi, acts);
     patch_items(ui, multi, acts);
     ui.separator();
     if ui.button("Compare oldest ↔ newest").clicked() {
@@ -219,7 +219,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
                 ui.close();
             }
             if on_branch {
-                recompose_items(ui, d, "Recompose from here with AI…", &c.id, &[], acts);
+                recompose_items(ui, d, "Recompose from here…", &c.id, &[], acts);
             }
             if ui.button("Squash into parent").clicked() {
                 acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Squash, message: None });

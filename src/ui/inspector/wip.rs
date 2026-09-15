@@ -242,7 +242,7 @@ impl RepoTab {
                     } else if generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
-                    } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{} AI message", icon::SPARKLE))
+                    } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{} Generate", icon::SPARKLE))
                         .on_hover_text(if self.amend {
                             format!("Write the amended commit's message (its changes plus the staged ones) with {}", crate::ai::name())
                         } else {
@@ -346,7 +346,7 @@ impl RepoTab {
                 if self.composing() {
                     ui.spinner();
                     ui.label(RichText::new("Planning commits…").small().color(theme::dim(ui)));
-                } else if theme::small(ui, any && s.conflicted.is_empty() && d.state == State::Clean && !busy, format!("{} Compose commits with AI", icon::SPARKLE))
+                } else if theme::small(ui, any && s.conflicted.is_empty() && d.state == State::Clean && !busy, format!("{} Compose commits", icon::SPARKLE))
                     .on_hover_text(format!("Let {} split all uncommitted changes into a series of focused commits (you review the plan first)", crate::ai::name()))
                     .on_disabled_hover_text("Needs uncommitted changes, and no merge or rebase in progress")
                     .clicked()
@@ -399,7 +399,7 @@ impl RepoTab {
                         });
                         ui.add_space(4.0);
                         resp.context_menu(|ui| {
-                            if ai_on && ui.button(format!("{} Resolve with AI…", icon::SPARKLE)).clicked() {
+                            if ai_on && ui.button(format!("{} Resolve…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
                             }
                             if ui.button("Mark resolved").clicked() {
