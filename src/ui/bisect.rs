@@ -48,7 +48,7 @@ pub fn banner(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Action>) {
                         ("bad", icon::THUMBS_DOWN, "The checked-out commit has the problem"),
                         ("good", icon::THUMBS_UP, "The checked-out commit works"),
                     ] {
-                        let label = RichText::new(format!("{ic} {}", if what == "skip" { "Skip" } else if what == "bad" { "Bad" } else { "Good" })).color(mark_color(what));
+                        let label = RichText::new(format!("{ic}  {}", if what == "skip" { "Skip" } else if what == "bad" { "Bad" } else { "Good" })).color(mark_color(what));
                         if theme::pill(ui, label).on_hover_text(format!("{hint} ({head})")).clicked() {
                             acts.push(op(format!("Bisect: {what} {head}"), &["bisect", what]));
                         }

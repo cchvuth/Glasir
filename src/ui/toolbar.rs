@@ -227,7 +227,7 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, compact: bool, act
 
 /// A toolbar button's text: icon and word, or the icon alone in a narrow window.
 fn label(compact: bool, icon: &str, text: &str) -> String {
-    if compact { icon.into() } else { format!("{icon} {text}") }
+    if compact { icon.into() } else { format!("{icon}  {text}") }
 }
 
 fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, compact: bool, acts: &mut Vec<Action>) {
