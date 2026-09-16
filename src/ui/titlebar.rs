@@ -124,7 +124,7 @@ fn tab_label(ui: &Ui, t: &crate::repo::RepoTab, alias: Option<&String>, active: 
     let (strong, dim) = (theme::text(ui), theme::dim(ui));
     let mut job = egui::text::LayoutJob::default();
     let mut add = |text: String, color, font: &egui::FontId| job.append(&text, 0.0, egui::TextFormat::simple(font.clone(), color));
-    add(format!("{} {}", icon::FOLDER_SIMPLE, alias.unwrap_or(&t.name)), if active { strong } else { dim }, &font);
+    add(format!("{}  {}", icon::FOLDER_SIMPLE, alias.unwrap_or(&t.name)), if active { strong } else { dim }, &font);
     if let Some(s) = t.data.as_ref().map(|d| &d.status) {
         add(format!("  {} {}", icon::GIT_BRANCH, s.branch.as_deref().unwrap_or("detached")), dim, &small);
         if s.is_dirty() {

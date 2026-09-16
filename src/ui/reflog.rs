@@ -22,12 +22,12 @@ fn action_color(action: &str) -> Color32 {
 /// Recovery actions for one entry: the header bar for the selection, and each row's menu.
 fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action>) {
     let short = &e.id[..e.id.len().min(7)];
-    if theme::pill(ui, format!("{} Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at this commit; your checkout stays as it is").clicked() {
+    if theme::pill(ui, format!("{}  Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at this commit; your checkout stays as it is").clicked() {
         acts.push(prompt(format!("New branch at {short}"), "", Op::new("Create branch", &["branch", "{}", &e.id]).undo(Undo::Keep)));
     }
     if let Some(head) = d.status.branch.as_deref().filter(|_| d.status.head.as_deref() != Some(&e.id)) {
         // The branch name goes in the hover text: a long one would push the other buttons off-screen.
-        let label = format!("{} Reset branch here", icon::ARROW_U_UP_LEFT);
+        let label = format!("{}  Reset branch here", icon::ARROW_U_UP_LEFT);
         let busy = crate::ui::graph_view::menus::reset_busy(d);
         ui.add_enabled_ui(busy.is_none(), |ui| ui.menu_button(label, |ui| crate::ui::graph_view::menus::reset_items(ui, d, &e.id, acts)))
             .inner
@@ -35,7 +35,7 @@ fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action
             .on_disabled_hover_text(busy.unwrap_or_default())
             .on_hover_text(format!("Reset {head} to {short}"));
     }
-    if theme::pill(ui, format!("{} Check out", icon::ARROW_BEND_UP_RIGHT)).on_hover_text("Check out this commit (detached HEAD)").clicked() {
+    if theme::pill(ui, format!("{}  Check out", icon::ARROW_BEND_UP_RIGHT)).on_hover_text("Check out this commit (detached HEAD)").clicked() {
         acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &e.id]).undo(Undo::Keep)));
     }
 }
@@ -53,7 +53,7 @@ pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) 
         if theme::pill(ui, icon::X).on_hover_text("Close (Esc)").clicked() {
             close = true;
         }
-        ui.label(RichText::new(format!("{} Reflog", icon::LIFEBUOY)).strong());
+        ui.label(RichText::new(format!("{}  Reflog", icon::LIFEBUOY)).strong());
         if let Some(v) = entries {
             let lost = v.iter().filter(|e| e.lost).map(|e| &e.id).collect::<std::collections::HashSet<_>>().len();
             let mut text = format!("where HEAD has been · {} entries", v.len());

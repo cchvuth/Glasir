@@ -37,7 +37,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
     let mut auto = false;
     let thinking = ai.is_some_and(|j| j.running() && j.purpose == ai::Purpose::Resolve(ed.path.clone()));
     theme::bar(ui, |ui| {
-        if ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+        if ui.add(egui::Button::selectable(*wrap, format!("{}  Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
             *wrap = !*wrap;
         }
         if ed.data.as_ref().is_some_and(|d| d.whole.is_none()) {
@@ -45,11 +45,11 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             } else if thinking {
                 ui.label(RichText::new(format!("{} is resolving…", ai::name())).small().color(theme::dim(ui)));
                 ui.spinner();
-            } else if theme::pill(ui, format!("{} Resolve", icon::SPARKLE)).on_hover_text(format!("Let {} write the output; review it, then save", ai::name())).clicked() {
+            } else if theme::pill(ui, format!("{}  Resolve", icon::SPARKLE)).on_hover_text(format!("Let {} write the output; review it, then save", ai::name())).clicked() {
                 acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
             let n = conflicts(&ed.chunks).filter(|c| c.trivial()).count();
-            let b = ui.add_enabled(n > 0, egui::Button::new(format!("{} Auto-resolve trivial ({n})", icon::MAGIC_WAND)).frame_when_inactive(false).corner_radius(255));
+            let b = ui.add_enabled(n > 0, egui::Button::new(format!("{}  Auto-resolve trivial ({n})", icon::MAGIC_WAND)).frame_when_inactive(false).corner_radius(255));
             if b.on_hover_text("Resolve conflicts whose sides are identical or differ only in whitespace (keeps current)").clicked() {
                 auto = true;
             }
@@ -58,7 +58,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             if theme::pill(ui, icon::X).on_hover_text("Close without saving (the conflict markers stay)").clicked() {
                 close = true;
             }
-            ui.label(RichText::new(format!("{} Resolve conflict", icon::GIT_MERGE)).strong());
+            ui.label(RichText::new(format!("{}  Resolve conflict", icon::GIT_MERGE)).strong());
             ui.label(RichText::new(&ed.path).monospace().color(theme::dim(ui)));
         });
     });
@@ -101,7 +101,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
         for (s, ui) in cols.iter_mut().enumerate() {
             let (title, color) = if s == 0 { ("Current", CUR) } else { ("Incoming", INC) };
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{} {title}", icon::CIRCLE)).strong().color(color));
+                ui.label(RichText::new(format!("{}  {title}", icon::CIRCLE)).strong().color(color));
                 ui.add(egui::Label::new(RichText::new(&d.labels[s]).small().color(theme::dim(ui))).truncate());
             });
             let rows = &d.sides[s];
@@ -131,7 +131,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
                             Row::Head(k) => {
                                 let i = ed.orig_of.iter().position(|o| *o == Some(*k));
                                 p.rect_filled(rect, 4.0, tint(color, sel_orig == Some(*k)));
-                                let what = if i.is_some() { format!("Conflict {}", k + 1) } else { format!("{} Conflict {} resolved", icon::CHECK, k + 1) };
+                                let what = if i.is_some() { format!("Conflict {}", k + 1) } else { format!("{}  Conflict {} resolved", icon::CHECK, k + 1) };
                                 p.text(pos2(rect.left() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, what, FontId::proportional(11.5), color);
                                 if let Some(i) = i {
                                     let take = if s == 0 { Take::Current } else { Take::Incoming };
@@ -167,7 +167,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
     ui.horizontal_wrapped(|ui| {
         theme::group(ui, |ui| {
             if m == 0 {
-                ui.label(RichText::new(format!("{} No conflicts left", icon::CHECK_CIRCLE)).color(theme::ADD));
+                ui.label(RichText::new(format!("{}  No conflicts left", icon::CHECK_CIRCLE)).color(theme::ADD));
                 return;
             }
             if theme::pill(ui, icon::CARET_UP).on_hover_text("Previous conflict").clicked() {
@@ -255,7 +255,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let saving = ed.saving.is_some();
-        let label = if saving { "Saving…".to_owned() } else { format!("{} Save & mark resolved", icon::CHECK) };
+        let label = if saving { "Saving…".to_owned() } else { format!("{}  Save & mark resolved", icon::CHECK) };
         let r = theme::primary(ui, m == 0 && !saving && !thinking, &label, 200.0);
         let r = r.on_disabled_hover_text(format!("Resolve the {m} remaining conflict(s) first, or close without saving"));
         if r.clicked() {

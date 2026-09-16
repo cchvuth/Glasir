@@ -14,7 +14,7 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, shown: &RepoData, multi: &[S
     let n = multi.len();
     for (kind, label) in [
         (MultiOp::CherryPick, format!("Cherry-pick {n} commits")),
-        (MultiOp::CherryPickEdit, format!("{} Cherry-pick interactively…", icon::CHERRIES)),
+        (MultiOp::CherryPickEdit, format!("{}  Cherry-pick interactively…", icon::CHERRIES)),
         (MultiOp::Squash, format!("Squash {n} commits into one")),
         (MultiOp::Revert, format!("Revert {n} commits")),
     ] {
@@ -49,7 +49,7 @@ fn recompose_items(ui: &mut Ui, d: &RepoData, label: &str, oldest: &str, picked:
     }
     let dirty = !d.status.staged.is_empty() || !d.status.unstaged.is_empty();
     for wip in [false, true].into_iter().take(1 + dirty as usize) {
-        let text = if wip { format!("{} {label} (with uncommitted changes)", icon::SPARKLE) } else { format!("{} {label}", icon::SPARKLE) };
+        let text = if wip { format!("{}  {label} (with uncommitted changes)", icon::SPARKLE) } else { format!("{}  {label}", icon::SPARKLE) };
         let hover = keys(&format!("Let {} re-plan these unpushed commits' changes as new focused commits (you review the plan first; undo with ⌘Z)", crate::ai::name()));
         if ui.button(text).on_hover_text(hover).clicked() {
             acts.push(Action::Recompose(crate::repo::compose::Recompose { oldest: oldest.into(), picked: picked.to_vec(), wip }));
@@ -60,10 +60,10 @@ fn recompose_items(ui: &mut Ui, d: &RepoData, label: &str, oldest: &str, picked:
 
 fn patch_items(ui: &mut Ui, ids: &[String], acts: &mut Vec<Action>) {
     ui.separator();
-    if ui.button(format!("{} Copy as patch", icon::COPY)).clicked() {
+    if ui.button(format!("{}  Copy as patch", icon::COPY)).clicked() {
         acts.push(Action::Patch { ids: ids.to_vec(), save: false });
     }
-    if ui.button(format!("{} Save as patch…", icon::FLOPPY_DISK)).clicked() {
+    if ui.button(format!("{}  Save as patch…", icon::FLOPPY_DISK)).clicked() {
         acts.push(Action::Patch { ids: ids.to_vec(), save: true });
     }
 }
@@ -75,7 +75,7 @@ fn move_tag_menu(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) {
         return;
     }
     tags.sort_by_key(|r| std::cmp::Reverse(r.date));
-    ui.menu_button(format!("{} Move tag here", icon::TAG), |ui| {
+    ui.menu_button(format!("{}  Move tag here", icon::TAG), |ui| {
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
             for r in tags {
                 let b = ui.button(&r.name);
@@ -198,7 +198,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
         acts.push(Action::Rebase { base: c.id.clone(), label: short.into() });
     }
     if d.status.branch.is_some() && c.parents.len() == 1 {
-        ui.menu_button(format!("{} Rewrite this commit", icon::PENCIL_SIMPLE), |ui| {
+        ui.menu_button(format!("{}  Rewrite this commit", icon::PENCIL_SIMPLE), |ui| {
             let staged = !d.status.staged.is_empty();
             if ui
                 .add_enabled(staged, egui::Button::new("Amend staged changes into this commit"))
@@ -214,7 +214,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
                 acts.push(prompt(format!("New message for {short}"), c.summary.clone(), op));
                 ui.close();
             }
-            if ui.button(format!("{} Split this commit…", icon::SCISSORS)).on_hover_text("Uncommit it, then commit its parts one by one").clicked() {
+            if ui.button(format!("{}  Split this commit…", icon::SCISSORS)).on_hover_text("Uncommit it, then commit its parts one by one").clicked() {
                 acts.push(Action::Split(c.id.clone()));
                 ui.close();
             }
@@ -280,7 +280,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
 /// "Reset <current branch> to <what>" (commit, branch and tag menus); `id` is the commit.
 pub fn reset_menu(ui: &mut Ui, d: &RepoData, id: &str, what: &str, acts: &mut Vec<Action>) {
     let Some(head) = d.status.branch.as_deref().filter(|_| d.status.head.as_deref().is_some_and(|h| h != id)) else { return };
-    let label = format!("{} Reset {head} to {what}", icon::ARROW_U_UP_LEFT);
+    let label = format!("{}  Reset {head} to {what}", icon::ARROW_U_UP_LEFT);
     if let Some(busy) = reset_busy(d) {
         ui.add_enabled(false, egui::Button::new(label)).on_disabled_hover_text(busy);
         return;

@@ -37,7 +37,7 @@ pub fn preview(ctx: &egui::Context) {
         && let Some(pos) = ctx.pointer_hover_pos()
     {
         egui::Area::new(Id::new("dnd_preview")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 10.0)).interactable(false).show(ctx, |ui| {
-            theme::group(ui, |ui| ui.label(RichText::new(format!("{} {}", icon::GIT_BRANCH, p.0)).strong()));
+            theme::group(ui, |ui| ui.label(RichText::new(format!("{}  {}", icon::GIT_BRANCH, p.0)).strong()));
         });
     }
     if let Some(p) = egui::DragAndDrop::payload::<CommitDrag>(ctx)
@@ -45,7 +45,7 @@ pub fn preview(ctx: &egui::Context) {
     {
         egui::Area::new(Id::new("dnd_preview")).order(egui::Order::Tooltip).fixed_pos(pos + vec2(14.0, 10.0)).interactable(false).show(ctx, |ui| {
             theme::group(ui, |ui| {
-                ui.label(RichText::new(format!("{} {}", icon::GIT_COMMIT, p.1)).strong());
+                ui.label(RichText::new(format!("{}  {}", icon::GIT_COMMIT, p.1)).strong());
                 ui.label(RichText::new(keys("   ⌥ squash")).small().weak());
             });
         });

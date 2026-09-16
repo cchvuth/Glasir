@@ -50,7 +50,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                         let branch = st.branch.clone().unwrap_or_else(|| {
                             format!("detached @ {}", st.head.as_deref().map_or("—", |h| &h[..h.len().min(7)]))
                         });
-                        let mut text = format!("{} {branch}", icon::GIT_BRANCH);
+                        let mut text = format!("{}  {branch}", icon::GIT_BRANCH);
                         if st.ahead > 0 {
                             text += &format!("  {}{}", icon::ARROW_UP, st.ahead);
                         }
@@ -80,13 +80,13 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                 theme::group(ui, |ui| toolbar_local(ui, t.data.as_ref().and_then(|d| d.stashes.first()), compact, acts));
             });
             if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
-                let chip = RichText::new(format!("{} {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
+                let chip = RichText::new(format!("{}  {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
                     .color(theme::MOD);
                 theme::group(ui, |ui| ui.label(chip))
                     .on_hover_text(format!("Merging {target} now would conflict in:\n{}", files.join("\n")));
             }
             if let Some(e) = &t.fetch_failed {
-                let chip = RichText::new(format!("{} {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::MOD);
+                let chip = RichText::new(format!("{}  {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::MOD);
                 let r = theme::group(ui, |ui| theme::pill(ui, chip)).on_hover_text(format!("Background fetch failed:\n{}\n\nClick to fetch now (asks for credentials if needed).", e.trim()));
                 if r.clicked() && !busy {
                     acts.push(Action::Git(fetch_op()));
@@ -95,7 +95,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             if let Some(label) = t.busy() {
                 ui.spinner();
                 theme::progress(ui, &format!("{label}…"), t.progress());
-                if t.cancellable() && theme::group(ui, |ui| theme::pill(ui, format!("{} Cancel", icon::STOP_CIRCLE))).clicked() {
+                if t.cancellable() && theme::group(ui, |ui| theme::pill(ui, format!("{}  Cancel", icon::STOP_CIRCLE))).clicked() {
                     acts.push(Action::Cancel);
                 }
             } else if t.loading() {
@@ -115,9 +115,9 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
 /// Hand the repository to the user's own tools (also in ⌘P).
 fn open_items(ui: &mut Ui, acts: &mut Vec<Action>) {
     for (label, a) in [
-        (format!("{} Open in editor", icon::CODE), Action::Editor(String::new())),
-        (format!("{} Open terminal here", icon::TERMINAL), Action::Terminal),
-        (format!("{} Show in file manager", icon::FOLDER_OPEN), Action::Reveal(String::new())),
+        (format!("{}  Open in editor", icon::CODE), Action::Editor(String::new())),
+        (format!("{}  Open terminal here", icon::TERMINAL), Action::Terminal),
+        (format!("{}  Show in file manager", icon::FOLDER_OPEN), Action::Reveal(String::new())),
     ] {
         if ui.button(label).clicked() {
             acts.push(a);
@@ -127,32 +127,32 @@ fn open_items(ui: &mut Ui, acts: &mut Vec<Action>) {
 }
 
 fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut Vec<Action>) {
-    if ui.button(format!("{} Reflog — recover lost commits", icon::LIFEBUOY)).clicked() {
+    if ui.button(format!("{}  Reflog — recover lost commits", icon::LIFEBUOY)).clicked() {
         acts.push(Action::Reflog);
     }
     if let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
-        && ui.button(format!("{} {label}", icon::GIT_FORK)).clicked()
+        && ui.button(format!("{}  {label}", icon::GIT_FORK)).clicked()
     {
         acts.push(a);
     }
-    if ui.button(format!("{} Apply patch…", icon::BANDAIDS)).clicked() {
+    if ui.button(format!("{}  Apply patch…", icon::BANDAIDS)).clicked() {
         acts.push(Action::ApplyPatch);
     }
     if let Some((remote, _)) = d.remotes.first()
-        && ui.button(format!("{} Push all tags to {remote}", icon::TAG)).clicked()
+        && ui.button(format!("{}  Push all tags to {remote}", icon::TAG)).clicked()
     {
         acts.push(Action::Git(crate::repo::tags::push_all(remote)));
     }
     // Never while something else is running or a merge / rebase is half done.
     let idle = !busy && d.state == git::State::Clean;
     let tip = "Wait for the running operation, or finish the merge / rebase in progress";
-    let maintain = ui.add_enabled(idle, Button::new(format!("{} Perform repo maintenance", icon::WRENCH)));
+    let maintain = ui.add_enabled(idle, Button::new(format!("{}  Perform repo maintenance", icon::WRENCH)));
     if maintain.on_hover_text("Pack loose objects and refresh the commit-graph (git maintenance)").on_disabled_hover_text(tip).clicked() {
         acts.push(Action::Git(maintenance::op()));
         ui.close();
     }
     let on = d.health.scheduled;
-    let sched = ui.add_enabled(idle, Button::new(format!("{} {} background maintenance", icon::CLOCK, if on { "Disable" } else { "Enable" })));
+    let sched = ui.add_enabled(idle, Button::new(format!("{}  {} background maintenance", icon::CLOCK, if on { "Disable" } else { "Enable" })));
     if sched.on_hover_text("Let git tidy this repository on a schedule (git maintenance start)").on_disabled_hover_text(tip).clicked() {
         acts.push(Action::Git(maintenance::schedule_op(!on)));
         ui.close();
@@ -160,10 +160,10 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut 
     if d.lfs.used {
         ui.separator();
         if !d.lfs.installed {
-            ui.label(RichText::new(format!("{} {}", icon::WARNING, crate::repo::LFS_MISSING)).small().color(theme::MOD));
+            ui.label(RichText::new(format!("{}  {}", icon::WARNING, crate::repo::LFS_MISSING)).small().color(theme::MOD));
             return;
         }
-        ui.menu_button(format!("{} Git LFS", icon::DATABASE), |ui| {
+        ui.menu_button(format!("{}  Git LFS", icon::DATABASE), |ui| {
             for (label, tip, args) in [
                 ("Pull LFS objects", "Download the LFS files of the current checkout", &["lfs", "pull"][..]),
                 ("Fetch LFS objects", "Download LFS files without updating the working tree", &["lfs", "fetch"]),
@@ -246,7 +246,7 @@ fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, compact: bool, acts: 
                 acts.push(stash_prompt());
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
-                if ai::enabled() && ui.button(format!("{} Stash with message", icon::SPARKLE)).clicked() {
+                if ai::enabled() && ui.button(format!("{}  Stash with message", icon::SPARKLE)).clicked() {
                     acts.push(Action::Ai(ai::Purpose::StashMessage));
                     ui.close();
                 }

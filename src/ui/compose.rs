@@ -22,14 +22,14 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
             (0, _) => "your uncommitted changes".to_owned(),
             (n, wip) => format!("the changes of your last {n} commits{}", if wip { " and your uncommitted ones" } else { "" }),
         };
-        ui.heading(format!("{} {}", icon::SPARKLE, if p.replaces > 0 { "Recompose commits" } else { "Compose commits" }));
+        ui.heading(format!("{}  {}", icon::SPARKLE, if p.replaces > 0 { "Recompose commits" } else { "Compose commits" }));
         ui.label(
             RichText::new(keys(&format!("{}'s plan for {what}, oldest commit first. Edit the messages, move changes between commits, then create them. Undo with ⌘Z.", crate::ai::name())))
                 .small()
                 .color(theme::dim(ui)),
         );
         if let Some(n) = &p.note {
-            ui.label(RichText::new(format!("{} {n}", icon::WARNING)).small().color(theme::MOD));
+            ui.label(RichText::new(format!("{}  {n}", icon::WARNING)).small().color(theme::MOD));
         }
         ui.add_space(6.0);
         let n = p.commits.len();
@@ -40,7 +40,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 Frame::new().fill(theme::faint(ui)).corner_radius(12).inner_margin(10).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{} Commit {}", icon::GIT_COMMIT, k + 1)).strong());
+                        ui.label(RichText::new(format!("{}  Commit {}", icon::GIT_COMMIT, k + 1)).strong());
                         let s = if c.units.len() == 1 { "" } else { "s" };
                         ui.label(RichText::new(format!("{} change{s}", c.units.len())).small().color(theme::dim(ui)));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -65,7 +65,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                                         edit = Some(Edit::Move(u, Some(j)));
                                     }
                                 }
-                                if c.units.len() > 1 && ui.button(format!("{} Split into a new commit", icon::ARROWS_SPLIT)).clicked() {
+                                if c.units.len() > 1 && ui.button(format!("{}  Split into a new commit", icon::ARROWS_SPLIT)).clicked() {
                                     edit = Some(Edit::Move(u, None));
                                 }
                             })

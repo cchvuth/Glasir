@@ -32,12 +32,12 @@ pub fn banner(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Action>) {
         // Controls first: a long "first bad commit" summary must not push Reset off-screen.
         theme::bar(ui, |ui| {
             theme::group(ui, |ui| {
-                if theme::pill(ui, format!("{} Reset", icon::ARROW_U_UP_LEFT)).on_hover_text("End the bisect and return to where you started (git bisect reset)").clicked() {
+                if theme::pill(ui, format!("{}  Reset", icon::ARROW_U_UP_LEFT)).on_hover_text("End the bisect and return to where you started (git bisect reset)").clicked() {
                     acts.push(op("Reset bisect", &["bisect", "reset"]));
                 }
             });
             if let Some(id) = &found {
-                if theme::group(ui, |ui| theme::pill(ui, format!("{} Show", icon::CROSSHAIR))).clicked() {
+                if theme::group(ui, |ui| theme::pill(ui, format!("{}  Show", icon::CROSSHAIR))).clicked() {
                     acts.push(Action::Jump(id.clone()));
                 }
             } else {
@@ -56,7 +56,7 @@ pub fn banner(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Action>) {
                 });
             }
             theme::rest(ui, |ui| {
-                ui.label(RichText::new(format!("{} Bisect", icon::BUG)).strong());
+                ui.label(RichText::new(format!("{}  Bisect", icon::BUG)).strong());
                 ui.label(RichText::new(text).color(if found.is_some() { theme::DEL } else { theme::text(ui) }));
             });
         });
@@ -69,7 +69,7 @@ pub fn commit_items(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action
     let is_head = d.status.head.as_deref() == Some(&c.id);
     match d.state {
         State::Clean => {
-            ui.menu_button(format!("{} Bisect", icon::BUG), |ui| {
+            ui.menu_button(format!("{}  Bisect", icon::BUG), |ui| {
                 if ui.button("Start bisect: this commit is bad").clicked() {
                     acts.push(op(format!("Start bisect at {short}"), &["bisect", "start", &c.id]));
                 }
@@ -79,7 +79,7 @@ pub fn commit_items(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action
             });
         }
         State::Bisecting => {
-            ui.menu_button(format!("{} Bisect", icon::BUG), |ui| {
+            ui.menu_button(format!("{}  Bisect", icon::BUG), |ui| {
                 for what in ["good", "bad", "skip"] {
                     if ui.button(RichText::new(format!("Mark {short} as {what}")).color(mark_color(what))).clicked() {
                         acts.push(Action::Git(Op::new(format!("Bisect: {what} {short}"), &["bisect", what, &c.id])));
@@ -93,7 +93,7 @@ pub fn commit_items(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action
 
 /// Two selected commits: the newer one is bad, the older one good.
 pub fn multi_item(ui: &mut Ui, d: &RepoData, multi: &[String], acts: &mut Vec<Action>) {
-    if d.state == State::Clean && multi.len() == 2 && ui.button(format!("{} Start bisect between these (newer is bad)", icon::BUG)).clicked() {
+    if d.state == State::Clean && multi.len() == 2 && ui.button(format!("{}  Start bisect between these (newer is bad)", icon::BUG)).clicked() {
         acts.push(op("Start bisect", &["bisect", "start", &multi[0], &multi[1]]));
     }
 }

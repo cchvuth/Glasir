@@ -15,10 +15,10 @@ pub(super) fn first_commit_guide(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Actio
         };
         step(ui, "1", "Add or create files in the repository folder");
         let mut buttons = |ui: &mut Ui| {
-            if ui.add(Button::new(format!("{} Show in file manager", icon::FOLDER_OPEN))).clicked() {
+            if ui.add(Button::new(format!("{}  Show in file manager", icon::FOLDER_OPEN))).clicked() {
                 acts.push(Action::Reveal(String::new()));
             }
-            if ui.add(Button::new(format!("{} Open in editor", icon::CODE))).clicked() {
+            if ui.add(Button::new(format!("{}  Open in editor", icon::CODE))).clicked() {
                 acts.push(Action::Editor(String::new()));
             }
         };
@@ -36,7 +36,7 @@ pub(super) fn first_commit_guide(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Actio
         step(ui, "3", &keys("Write a summary and press Commit (⌘↩)"));
         if d.remotes.is_empty() {
             ui.add_space(14.0);
-            ui.label(RichText::new(format!("{} Publish it", icon::CLOUD_ARROW_UP)).strong());
+            ui.label(RichText::new(format!("{}  Publish it", icon::CLOUD_ARROW_UP)).strong());
             ui.add(
                 egui::Label::new(
                     RichText::new("Create an empty repository on GitHub or GitHub Enterprise (no README), copy its URL, add it as a remote, then Push.")
@@ -46,7 +46,7 @@ pub(super) fn first_commit_guide(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Actio
                 .wrap(),
             );
             ui.add_space(4.0);
-            if ui.button(format!("{} Add remote…", icon::PLUS)).clicked() {
+            if ui.button(format!("{}  Add remote…", icon::PLUS)).clicked() {
                 acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d)));
             }
         }

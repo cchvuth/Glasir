@@ -17,11 +17,11 @@ pub fn items(ui: &mut Ui, d: &RepoData, pages: &[(&str, Page)], shas: &[&str], a
             let warn = format!("Not on {remote} yet (no remote-tracking branch contains it): the link would 404. Push first.");
             for (what, page) in pages {
                 let url = page.url(web);
-                let open = ui.add_enabled(!missing, egui::Button::new(format!("{} Open {what} on {at}", icon::GLOBE)));
+                let open = ui.add_enabled(!missing, egui::Button::new(format!("{}  Open {what} on {at}", icon::GLOBE)));
                 if open.on_hover_text(&url).on_disabled_hover_text(&warn).clicked() {
                     acts.push(Action::Url(url.clone()));
                 }
-                let copy = ui.button(format!("{} Copy link to {what}", icon::LINK));
+                let copy = ui.button(format!("{}  Copy link to {what}", icon::LINK));
                 if (if missing { copy.on_hover_text(&warn) } else { copy.on_hover_text(&url) }).clicked() {
                     acts.push(Action::Copy(url));
                 }
@@ -31,6 +31,6 @@ pub fn items(ui: &mut Ui, d: &RepoData, pages: &[(&str, Page)], shas: &[&str], a
     if webs.len() == 1 && pages.len() == 1 {
         draw(ui, acts);
     } else if !webs.is_empty() {
-        ui.menu_button(format!("{} On remote", icon::GLOBE), |ui| draw(ui, acts));
+        ui.menu_button(format!("{}  On remote", icon::GLOBE), |ui| draw(ui, acts));
     }
 }

@@ -113,7 +113,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
     egui::Modal::new(Id::new("ai_dialog")).show(ctx, |ui| {
         ui.set_width(720.0);
         ui.horizontal(|ui| {
-            ui.heading(format!("{} {}", icon::SPARKLE, job.purpose.title()));
+            ui.heading(format!("{}  {}", icon::SPARKLE, job.purpose.title()));
             if job.running() {
                 ui.spinner();
             }
@@ -134,7 +134,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 ai::Purpose::PullRequest { branch, base } => {
                     let (title, body) = job.text.trim().split_once('\n').unwrap_or((job.text.trim(), ""));
                     if let Some(web) = t.data.as_ref().and_then(|d| d.web())
-                        && ui.add_enabled(ready, Button::new(format!("{} Open pull request page", icon::GIT_PULL_REQUEST))).clicked()
+                        && ui.add_enabled(ready, Button::new(format!("{}  Open pull request page", icon::GIT_PULL_REQUEST))).clicked()
                     {
                         let strip = |b: &str| b.split_once('/').filter(|(r, _)| *r == "origin").map_or(b.to_owned(), |(_, n)| n.to_owned());
                         let mut url = format!(
@@ -151,12 +151,12 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                         }
                         acts.push(Action::Url(url));
                     }
-                    if ui.add_enabled(ready, Button::new(format!("{} Copy", icon::COPY))).clicked() {
+                    if ui.add_enabled(ready, Button::new(format!("{}  Copy", icon::COPY))).clicked() {
                         acts.push(Action::Copy(job.text.trim().to_owned()));
                     }
                 }
                 ai::Purpose::Resolve(path) => {
-                    if ui.add_enabled(ready, Button::new(format!("{} Apply & mark resolved", icon::CHECK))).clicked() {
+                    if ui.add_enabled(ready, Button::new(format!("{}  Apply & mark resolved", icon::CHECK))).clicked() {
                         match crate::repo::merge_editor::apply_ai(&t.dir, path, job.draft.as_bytes(), &job.text) {
                             Ok(op) => {
                                 acts.push(Action::Git(op));
@@ -168,7 +168,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 }
                 _ => {}
             }
-            if !job.running() && ui.button(format!("{} Regenerate", icon::ARROWS_CLOCKWISE)).clicked() {
+            if !job.running() && ui.button(format!("{}  Regenerate", icon::ARROWS_CLOCKWISE)).clicked() {
                 acts.push(Action::Ai(job.purpose.clone()));
             }
             if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -189,7 +189,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
     let mut close = false;
     egui::Modal::new(Id::new("cleanup")).show(ctx, |ui| {
         ui.set_width(560.0);
-        ui.heading(format!("{} Clean up branches", icon::BROOM));
+        ui.heading(format!("{}  Clean up branches", icon::BROOM));
         ui.horizontal(|ui| {
             ui.label("Target");
             let before = c.target.clone();
@@ -300,7 +300,7 @@ pub(super) fn absorb_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     let mut close = false;
     egui::Modal::new(Id::new("absorb")).show(ctx, |ui| {
         ui.set_width(640.0);
-        ui.heading(format!("{} Absorb staged changes", icon::ARROWS_IN));
+        ui.heading(format!("{}  Absorb staged changes", icon::ARROWS_IN));
         ui.label(
             RichText::new(keys("Each hunk is folded into the unpushed commit that last changed its lines. Undo with ⌘Z.")).small().color(theme::dim(ui)),
         );
@@ -347,7 +347,7 @@ pub(super) fn choice_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     let mut close = false;
     egui::Modal::new(Id::new("choice")).show(ctx, |ui| {
         ui.set_width(440.0);
-        ui.heading(format!("{} {}", icon::WARNING, c.title));
+        ui.heading(format!("{}  {}", icon::WARNING, c.title));
         ui.add_space(2.0);
         ui.label(&c.text);
         ui.add_space(8.0);
@@ -377,7 +377,7 @@ pub(super) fn commit_drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut 
         Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(260.0);
             ui.set_max_width(380.0);
-            ui.label(RichText::new(format!("{} {title}", icon::GIT_COMMIT)).strong());
+            ui.label(RichText::new(format!("{}  {title}", icon::GIT_COMMIT)).strong());
             ui.separator();
             for (label, a) in items {
                 match a {
@@ -437,7 +437,7 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                         merge = o;
                     }
                     let how = how.map_or(String::new(), |h| format!(" ({})", h.name()));
-                    pick(ui, format!("{} Merge {src} into {dst}{how}", icon::GIT_MERGE), Action::Git(merge));
+                    pick(ui, format!("{}  Merge {src} into {dst}{how}", icon::GIT_MERGE), Action::Git(merge));
                 }
             }
             if dr.kind == git::RefKind::Remote
@@ -445,16 +445,16 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 && let Some((remote, branch)) = d.split_remote(dst)
             {
                 let push = Op::new(format!("Push {src}"), &["push", remote, &format!("{}:refs/heads/{branch}", s.full)]);
-                pick(ui, format!("{} Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
+                pick(ui, format!("{}  Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
             }
             // `git rebase <dst> <remote ref>` (or `refs/heads/<src>`) would rebase a detached HEAD
             // and move no branch; a short `<branch>` argument is looked up as a branch first.
             if local(s) {
                 let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", dst_rev, src]).undo(Undo::Keep);
-                pick(ui, format!("{} Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
+                pick(ui, format!("{}  Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
             }
             if local(s) && s.head {
-                pick(ui, format!("{} Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst_rev.into(), label: dst.clone() });
+                pick(ui, format!("{}  Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst_rev.into(), label: dst.clone() });
             }
             if ui.button("Cancel").clicked() {
                 close = true;

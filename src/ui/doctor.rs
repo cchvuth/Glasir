@@ -10,7 +10,7 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     let mut close = false;
     egui::Modal::new(Id::new("doctor")).show(ctx, |ui| {
         ui.set_width(620.0);
-        ui.heading(format!("{} Connection to {}", icon::STETHOSCOPE, doc.remote));
+        ui.heading(format!("{}  Connection to {}", icon::STETHOSCOPE, doc.remote));
         let Some(r) = &doc.report else {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -24,10 +24,10 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         let host = crate::git::host(&r.url).unwrap_or_else(|| "<host>".into());
         match r.problem {
             None => {
-                ui.label(RichText::new(format!("{} Connected: git can fetch from {} without asking for anything.", icon::CHECK_CIRCLE, doc.remote)).color(theme::ADD).strong());
+                ui.label(RichText::new(format!("{}  Connected: git can fetch from {} without asking for anything.", icon::CHECK_CIRCLE, doc.remote)).color(theme::ADD).strong());
             }
             Some((what, hint)) => {
-                ui.label(RichText::new(format!("{} {what}", icon::WARNING)).color(theme::DEL).strong());
+                ui.label(RichText::new(format!("{}  {what}", icon::WARNING)).color(theme::DEL).strong());
                 ui.label(hint.replace("<host>", &host));
             }
         }
@@ -49,10 +49,10 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         });
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            if ui.button(format!("{} Check again", icon::ARROWS_CLOCKWISE)).clicked() {
+            if ui.button(format!("{}  Check again", icon::ARROWS_CLOCKWISE)).clicked() {
                 acts.push(Action::Doctor(doc.remote.clone()));
             }
-            if ui.button(format!("{} Copy report", icon::COPY)).clicked() {
+            if ui.button(format!("{}  Copy report", icon::COPY)).clicked() {
                 let mut s = format!("{}  {}\n{}\n\n{}\n", doc.remote, r.url, r.problem.map_or("Connected", |p| p.0), r.output);
                 for (k, v) in &r.settings {
                     s += &format!("{k} = {v}\n");

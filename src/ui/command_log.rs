@@ -8,7 +8,7 @@ use egui::{Align, Layout, RichText, Ui};
 pub(super) fn show(ui: &mut Ui, open: &mut bool) {
     let n = git::LOG.lock().unwrap().len();
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{} Command log", icon::TERMINAL_WINDOW)).strong());
+        ui.label(RichText::new(format!("{}  Command log", icon::TERMINAL_WINDOW)).strong());
         ui.label(RichText::new(format!("{n} commands")).small().color(theme::dim(ui)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if theme::pill(ui, icon::X).on_hover_text(keys("Close (⇧⌘L)")).clicked() {

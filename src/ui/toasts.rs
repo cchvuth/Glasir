@@ -53,7 +53,7 @@ impl App {
                             ui.label(RichText::new(if t.error { icon::WARNING_CIRCLE } else { icon::CHECK_CIRCLE }).color(color).size(16.0));
                             ui.label(&t.text);
                             if let Some(tab) = live(&t.undo)
-                                && theme::pill(ui, RichText::new(format!("{} Undo", icon::ARROW_COUNTER_CLOCKWISE)).strong()).on_hover_text(keys("Undo this (⌘Z)")).clicked()
+                                && theme::pill(ui, RichText::new(format!("{}  Undo", icon::ARROW_COUNTER_CLOCKWISE)).strong()).on_hover_text(keys("Undo this (⌘Z)")).clicked()
                             {
                                 undo = Some((i, tab));
                             }

@@ -35,15 +35,15 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
             nav = Some(true);
         }
         let title = match &fv.mode {
-            Mode::History if folder => format!("{} Folder history", icon::FOLDER_SIMPLE),
-            Mode::History => format!("{} History", icon::CLOCK_COUNTER_CLOCKWISE),
-            Mode::Blame(None) => format!("{} Blame", icon::USER_LIST),
-            Mode::Blame(Some(r)) => format!("{} Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
-            Mode::Lines { start, end, .. } if start == end => format!("{} History of line {start}", icon::CLOCK_COUNTER_CLOCKWISE),
-            Mode::Lines { start, end, .. } => format!("{} History of lines {start}–{end}", icon::CLOCK_COUNTER_CLOCKWISE),
+            Mode::History if folder => format!("{}  Folder history", icon::FOLDER_SIMPLE),
+            Mode::History => format!("{}  History", icon::CLOCK_COUNTER_CLOCKWISE),
+            Mode::Blame(None) => format!("{}  Blame", icon::USER_LIST),
+            Mode::Blame(Some(r)) => format!("{}  Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
+            Mode::Lines { start, end, .. } if start == end => format!("{}  History of line {start}", icon::CLOCK_COUNTER_CLOCKWISE),
+            Mode::Lines { start, end, .. } => format!("{}  History of lines {start}–{end}", icon::CLOCK_COUNTER_CLOCKWISE),
         };
         ui.label(RichText::new(title).strong());
-        if matches!(fv.mode, Mode::Blame(_)) && ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+        if matches!(fv.mode, Mode::Blame(_)) && ui.add(egui::Button::selectable(*wrap, format!("{}  Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
             *wrap = !*wrap;
         }
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -95,7 +95,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     let meta = format!("{}  ·  {}  ·  {}", &e.id[..e.id.len().min(7)], e.author, relative_time(e.time, &e.date));
                     p.text(pos2(rect.left() + 42.0, rect.top() + 33.0), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme::dim(ui));
                     if e.change.old_path.is_some() && !folder {
-                        p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{} renamed", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::REN);
+                        p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{}  renamed", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::REN);
                     }
                     if r.clicked() {
                         fv.sel = Some(i);
@@ -106,7 +106,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     }
                     if !folder && e.change.code != 'D' {
                         r.context_menu(|ui| {
-                            if ui.button(format!("{} Blame at this commit", icon::USER_LIST)).clicked() {
+                            if ui.button(format!("{}  Blame at this commit", icon::USER_LIST)).clicked() {
                                 acts.push(Action::FileView(e.change.path.clone(), Mode::Blame(Some(e.id.clone()))));
                             }
                         });
@@ -193,12 +193,12 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
                     acts.push(Action::Jump(c.id.clone()));
                 }
                 resp.context_menu(|ui| {
-                    let parent = ui.add_enabled(c.previous.is_some(), egui::Button::new(format!("{} Blame at parent revision", icon::ARROW_BEND_UP_RIGHT)));
+                    let parent = ui.add_enabled(c.previous.is_some(), egui::Button::new(format!("{}  Blame at parent revision", icon::ARROW_BEND_UP_RIGHT)));
                     let parent = parent.on_hover_text("Blame the file as it was before this commit, to see who wrote these lines earlier").on_disabled_hover_text("This commit added these lines");
                     if let (true, Some((id, path))) = (parent.clicked(), &c.previous) {
                         acts.push(Action::FileView(path.clone(), Mode::Blame(Some(id.clone()))));
                     }
-                    if !uncommitted && ui.button(format!("{} History of this block", icon::CLOCK_COUNTER_CLOCKWISE)).on_hover_text("Commits that changed these lines (git log -L)").clicked() {
+                    if !uncommitted && ui.button(format!("{}  History of this block", icon::CLOCK_COUNTER_CLOCKWISE)).on_hover_text("Commits that changed these lines (git log -L)").clicked() {
                         // The run of lines from this commit around `r`, in that commit's numbering.
                         let same = |i: &usize| b.lines[*i].0 == *ci;
                         let (lo, hi) = ((0..=r).rev().take_while(same).last().unwrap_or(r), (r..b.lines.len()).take_while(same).last().unwrap_or(r));

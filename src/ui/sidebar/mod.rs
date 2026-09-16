@@ -93,7 +93,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
         if theme::pill(ui, icon::BROOM).on_hover_text("Clean up merged & gone branches").clicked() {
             acts.push(Action::Cleanup);
         }
-        theme::rest(ui, |ui| ui.add(TextEdit::singleline(filter).margin(crate::theme::INPUT_MARGIN).hint_text(format!("{} Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width())));
+        theme::rest(ui, |ui| ui.add(TextEdit::singleline(filter).margin(crate::theme::INPUT_MARGIN).hint_text(format!("{}  Filter", icon::MAGNIFYING_GLASS)).desired_width(ui.available_width())));
     });
     ui.add_space(4.0);
     let f = filter.as_str();
@@ -185,7 +185,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     .wrap(),
                 );
             }
-            if theme::small(ui, true, format!("{} Add remote…", icon::PLUS)).on_hover_text("Add a remote (a fork, upstream or mirror) and fetch it; right-click a remote for more").clicked() {
+            if theme::small(ui, true, format!("{}  Add remote…", icon::PLUS)).on_hover_text("Add a remote (a fork, upstream or mirror) and fetch it; right-click a remote for more").clicked() {
                 acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d)));
             }
         });

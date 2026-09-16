@@ -66,10 +66,10 @@ pub fn show(ui: &mut Ui, img: &ImageDiff) {
     ui.horizontal(|ui| {
         if pair.is_some() {
             theme::group(ui, |ui| {
-                if ui.add(egui::Button::selectable(!swipe, format!("{} Side by side", icon::COLUMNS))).clicked() {
+                if ui.add(egui::Button::selectable(!swipe, format!("{}  Side by side", icon::COLUMNS))).clicked() {
                     swipe = false;
                 }
-                if ui.add(egui::Button::selectable(swipe, format!("{} Swipe", icon::ARROWS_OUT_LINE_HORIZONTAL))).clicked() {
+                if ui.add(egui::Button::selectable(swipe, format!("{}  Swipe", icon::ARROWS_OUT_LINE_HORIZONTAL))).clicked() {
                     swipe = true;
                 }
             });

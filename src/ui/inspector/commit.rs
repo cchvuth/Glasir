@@ -78,13 +78,13 @@ fn avatar(ui: &mut Ui, avatars: &crate::repo::avatars::Avatars, name: &str, emai
 fn restore_items(ui: &mut Ui, d: &RepoData, id: &str, parent: Option<&str>, c: &Change, acts: &mut Vec<Action>) {
     let short = &id[..id.len().min(7)];
     if c.code != 'D'
-        && ui.button(format!("{} Restore this file from this commit", icon::ARROW_U_UP_LEFT)).on_hover_text(keys("Overwrite the working-tree copy with this commit's version (⌘Z undoes it)")).clicked()
+        && ui.button(format!("{}  Restore this file from this commit", icon::ARROW_U_UP_LEFT)).on_hover_text(keys("Overwrite the working-tree copy with this commit's version (⌘Z undoes it)")).clicked()
     {
         acts.push(Action::Git(restore_file(d, format!("Restore {}", c.path), id, &c.path, &format!("the version from {short}"))));
     }
     // An added file didn't exist before; a renamed one had its old name.
     if let Some(p) = parent.filter(|_| c.code != 'A')
-        && ui.button(format!("{} Restore as it was before this commit", icon::ARROW_U_UP_LEFT)).on_hover_text(keys("Overwrite the working-tree copy with the parent's version (⌘Z undoes it)")).clicked()
+        && ui.button(format!("{}  Restore as it was before this commit", icon::ARROW_U_UP_LEFT)).on_hover_text(keys("Overwrite the working-tree copy with the parent's version (⌘Z undoes it)")).clicked()
     {
         let path = c.old_path.as_deref().unwrap_or(&c.path);
         acts.push(Action::Git(restore_file(d, format!("Restore {path}"), p, path, &format!("the version before {short}"))));
@@ -190,7 +190,7 @@ impl RepoTab {
                 Some(job) => {
                     egui::Frame::new().fill(theme::faint(ui)).inner_margin(8.0).corner_radius(6.0).show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{} {}", icon::SPARKLE, crate::ai::name())).small().strong());
+                            ui.label(RichText::new(format!("{}  {}", icon::SPARKLE, crate::ai::name())).small().strong());
                             if job.running() {
                                 ui.spinner();
                             }
@@ -202,7 +202,7 @@ impl RepoTab {
                 }
                 None if crate::ai::enabled() && !wt => {
                     let label = if compare.is_some() { "Explain these changes" } else { "Explain this commit" };
-                    if theme::small(ui, true, format!("{} {label}", icon::SPARKLE)).clicked() {
+                    if theme::small(ui, true, format!("{}  {label}", icon::SPARKLE)).clicked() {
                         acts.push(Action::Ai(explain));
                     }
                 }
@@ -264,7 +264,7 @@ impl RepoTab {
                 }
                 resp.context_menu(|ui| {
                     if let Some(d) = stash.filter(|_| c.code != 'D')
-                        && ui.button(format!("{} Apply this file", icon::ARROW_LINE_DOWN)).on_hover_text("Write this file from the stash into the working tree; the stash is kept").clicked()
+                        && ui.button(format!("{}  Apply this file", icon::ARROW_LINE_DOWN)).on_hover_text("Write this file from the stash into the working tree; the stash is kept").clicked()
                     {
                         acts.push(Action::Git(restore_file(d, format!("Apply {} from stash", c.path), id, &c.path, "the stash's version")));
                     }

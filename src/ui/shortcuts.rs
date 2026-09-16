@@ -41,7 +41,7 @@ pub(super) fn show(ctx: &egui::Context) -> bool {
     let r = egui::Modal::new(Id::new("shortcuts")).show(ctx, |ui| {
         ui.set_width(520.0);
         ui.horizontal(|ui| {
-            ui.heading(format!("{} Keyboard shortcuts", icon::KEYBOARD));
+            ui.heading(format!("{}  Keyboard shortcuts", icon::KEYBOARD));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if theme::pill(ui, icon::X).on_hover_text("Close (Esc)").clicked() {
                     open = false;

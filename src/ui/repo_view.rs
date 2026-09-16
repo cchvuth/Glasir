@@ -152,12 +152,12 @@ fn optimize_hint(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, busy: bool, s
         theme::bar(ui, |ui| {
             theme::group(ui, |ui| {
                 done |= theme::pill(ui, icon::X).on_hover_text("Don't suggest this again").clicked();
-                if theme::pill(ui, format!("{} Optimize", icon::WRENCH)).on_hover_text("Pack loose objects and refresh the commit-graph (git maintenance)").clicked() {
+                if theme::pill(ui, format!("{}  Optimize", icon::WRENCH)).on_hover_text("Pack loose objects and refresh the commit-graph (git maintenance)").clicked() {
                     acts.push(Action::Git(maintenance::op()));
                     done = true;
                 }
             });
-            theme::rest(ui, |ui| ui.label(format!("{} Optimize repository: {why}", icon::LIGHTBULB)));
+            theme::rest(ui, |ui| ui.label(format!("{}  Optimize repository: {why}", icon::LIGHTBULB)));
         });
         if done {
             s.optimize_seen.push(dir.to_path_buf());

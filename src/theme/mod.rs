@@ -17,7 +17,7 @@ use egui::epaint::Shadow;
 use egui::{Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Ui, Visuals, vec2};
 use std::sync::Arc;
 
-/// Phosphor icons, mixed into ordinary text (`format!("{} Push", icon::ARROW_LINE_UP)`).
+/// Phosphor icons, mixed into ordinary text (`format!("{}  Push", icon::ARROW_LINE_UP)`).
 pub use egui_phosphor::regular as icon;
 
 const LANES: [Color32; 10] = [

@@ -18,7 +18,7 @@ fn stash_files_item(ui: &mut Ui, cs: &[Change], staged: bool, acts: &mut Vec<Act
     // git can't stash a path that's gone from the index (it fails, perhaps after saving a stash).
     let gone = staged && cs.iter().any(|c| matches!(c.code, 'D' | 'R'));
     let clicked = ui
-        .add_enabled(!gone, egui::Button::new(format!("{} Stash {what}", icon::TRAY_ARROW_DOWN)))
+        .add_enabled(!gone, egui::Button::new(format!("{}  Stash {what}", icon::TRAY_ARROW_DOWN)))
         .on_disabled_hover_text("git can't stash a staged deletion or rename by path: stash all changes instead.")
         .clicked();
     if clicked {
@@ -34,7 +34,7 @@ fn open_tools(ui: &mut Ui, tools: &[crate::repo::tools::Open], acts: &mut Vec<Ac
         ui.horizontal(|ui| {
             ui.spinner();
             ui.label(RichText::new(format!("Merge tool open on {}", tool.path)).small());
-            let b = theme::small(ui, true, format!("{} Cancel", icon::STOP_CIRCLE));
+            let b = theme::small(ui, true, format!("{}  Cancel", icon::STOP_CIRCLE));
             if b.on_hover_text(keys("Stop the merge tool. Changes it saved stay (⌘Z restores the file as before).")).clicked() {
                 acts.push(Action::CloseTool(tool.path.clone()));
             }
@@ -93,7 +93,7 @@ fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) 
     let set = |what: &str, v: &str| prompt(format!("Commit {what} for this repository"), v, Op::new(format!("Set {}", key(what)), &["config", "--local", &key(what), "{}"]));
     let who = if email.is_empty() { format!("{name} (no email set)") } else { format!("{name} <{email}>") };
     let r = ui
-        .add(egui::Label::new(RichText::new(format!("{} {}", icon::USER_CIRCLE, who.trim())).small().color(theme::dim(ui))).truncate().sense(egui::Sense::click()))
+        .add(egui::Label::new(RichText::new(format!("{}  {}", icon::USER_CIRCLE, who.trim())).small().color(theme::dim(ui))).truncate().sense(egui::Sense::click()))
         .on_hover_text("Commits are made as this identity (git config user.* / author.*, or GIT_AUTHOR_* in the environment).\nClick to change the email for this repository; right-click for the name.");
     if r.clicked() {
         acts.push(set("email", email));
@@ -110,7 +110,7 @@ fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) 
     let Some((host, dom)) = identity::mismatch(email, hosts, &identity::rules(rules)) else { return };
     egui::Frame::new().fill(theme::MOD.gamma_multiply(0.18)).inner_margin(6.0).corner_radius(6.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(format!("{} {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::MOD));
+        ui.label(RichText::new(format!("{}  {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::MOD));
         ui.horizontal(|ui| {
             if theme::small(ui, true, "Set for this repo…").on_hover_text(format!("git config --local {}", key("email"))).clicked() {
                 acts.push(set("email", &identity::suggest(email, &dom)));
@@ -167,7 +167,7 @@ impl RepoTab {
         let busy = self.busy().is_some();
         egui::Frame::new().fill(theme::accent().gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(format!("{} Splitting {}", icon::SCISSORS, &sp.id[..7.min(sp.id.len())])).strong());
+            ui.label(RichText::new(format!("{}  Splitting {}", icon::SCISSORS, &sp.id[..7.min(sp.id.len())])).strong());
             ui.label("Stage a part and commit it, repeat, then Continue.");
             ui.horizontal(|ui| {
                 if ui.add_enabled(!busy, egui::Button::new("Continue")).on_hover_text("Replay the rest of the branch on top of the parts").clicked() {
@@ -231,7 +231,7 @@ impl RepoTab {
                 ui.label(RichText::new("Commit").small().strong());
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let absorb = !s.staged.is_empty() && d.state == State::Clean;
-                    if theme::small(ui, absorb, format!("{} Absorb", icon::ARROWS_IN))
+                    if theme::small(ui, absorb, format!("{}  Absorb", icon::ARROWS_IN))
                         .on_hover_text("Turn staged hunks into fixups of the unpushed commits they belong to (preview first)")
                         .on_disabled_hover_text("Stage changes first (not during a merge or rebase)")
                         .clicked()
@@ -242,7 +242,7 @@ impl RepoTab {
                     } else if generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
-                    } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{} Generate", icon::SPARKLE))
+                    } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{}  Generate", icon::SPARKLE))
                         .on_hover_text(if self.amend {
                             format!("Write the amended commit's message (its changes plus the staged ones) with {}", crate::ai::name())
                         } else {
@@ -258,8 +258,8 @@ impl RepoTab {
             // A rebase or bisect detaches HEAD on purpose; only a plain detached checkout loses commits.
             if s.branch.is_none() && s.head.is_some() && d.state == State::Clean {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("{} Detached HEAD: commits made here are easy to lose.", icon::WARNING)).small().color(theme::MOD));
-                    if theme::pill(ui, format!("{} Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at HEAD; your staged changes come along").clicked() {
+                    ui.label(RichText::new(format!("{}  Detached HEAD: commits made here are easy to lose.", icon::WARNING)).small().color(theme::MOD));
+                    if theme::pill(ui, format!("{}  Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at HEAD; your staged changes come along").clicked() {
                         acts.push(prompt("New branch at HEAD", "", Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep)));
                     }
                 });
@@ -346,7 +346,7 @@ impl RepoTab {
                 if self.composing() {
                     ui.spinner();
                     ui.label(RichText::new("Planning commits…").small().color(theme::dim(ui)));
-                } else if theme::small(ui, any && s.conflicted.is_empty() && d.state == State::Clean && !busy, format!("{} Compose commits", icon::SPARKLE))
+                } else if theme::small(ui, any && s.conflicted.is_empty() && d.state == State::Clean && !busy, format!("{}  Compose commits", icon::SPARKLE))
                     .on_hover_text(format!("Let {} split all uncommitted changes into a series of focused commits (you review the plan first)", crate::ai::name()))
                     .on_disabled_hover_text("Needs uncommitted changes, and no merge or rebase in progress")
                     .clicked()
@@ -354,7 +354,7 @@ impl RepoTab {
                     acts.push(Action::Ai(Purpose::Compose));
                 }
                 let explaining = self.ai_busy() == Some(&Purpose::ExplainWip);
-                if theme::small(ui, any && !explaining, format!("{} Explain changes", icon::SPARKLE)).on_hover_text(format!("What do these uncommitted changes do? Asks {}", crate::ai::name())).clicked() {
+                if theme::small(ui, any && !explaining, format!("{}  Explain changes", icon::SPARKLE)).on_hover_text(format!("What do these uncommitted changes do? Asks {}", crate::ai::name())).clicked() {
                     acts.push(Action::Ai(Purpose::ExplainWip));
                 }
             });
@@ -399,7 +399,7 @@ impl RepoTab {
                         });
                         ui.add_space(4.0);
                         resp.context_menu(|ui| {
-                            if ai_on && ui.button(format!("{} Resolve…", icon::SPARKLE)).clicked() {
+                            if ai_on && ui.button(format!("{}  Resolve…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
                             }
                             if ui.button("Mark resolved").clicked() {
@@ -415,7 +415,7 @@ impl RepoTab {
                                 }
                             }
                             let tool = crate::repo::tools::tool(d, false);
-                            let b = ui.add_enabled(tool.is_ok() && has == [true, true], egui::Button::new(format!("{} Open in external merge tool", icon::ARROW_SQUARE_OUT)));
+                            let b = ui.add_enabled(tool.is_ok() && has == [true, true], egui::Button::new(format!("{}  Open in external merge tool", icon::ARROW_SQUARE_OUT)));
                             let b = b.on_hover_text(keys(&format!("git mergetool ({}). Your current file is backed up first (⌘Z); other actions keep working while the tool is open.", tool.as_deref().unwrap_or_default())));
                             let why = tool.err().unwrap_or_else(|| "One side deleted this file; use the merge editor instead.".into());
                             if b.on_disabled_hover_text(why).clicked() {

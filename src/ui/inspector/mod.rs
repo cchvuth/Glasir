@@ -40,19 +40,19 @@ impl RepoTab {
 /// History/Blame entries shared by every file context menu; `rev` blames that
 /// revision (`None` = the working tree).
 pub fn file_items(ui: &mut Ui, path: &str, rev: Option<&str>, acts: &mut Vec<Action>) {
-    if ui.button(format!("{} File history", icon::CLOCK_COUNTER_CLOCKWISE)).clicked() {
+    if ui.button(format!("{}  File history", icon::CLOCK_COUNTER_CLOCKWISE)).clicked() {
         acts.push(Action::FileView(path.into(), Mode::History));
     }
     if let Some((dir, _)) = path.rsplit_once('/')
-        && ui.button(format!("{} Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {dir}/")).clicked()
+        && ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {dir}/")).clicked()
     {
         acts.push(Action::FileView(format!("{dir}/"), Mode::History));
     }
     // A working-tree compare's "revision" is the file on disk: plain blame.
     let rev = rev.filter(|r| *r != crate::git::WORKTREE);
     let blame = match rev {
-        Some(r) => format!("{} Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
-        None => format!("{} Blame", icon::USER_LIST),
+        Some(r) => format!("{}  Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
+        None => format!("{}  Blame", icon::USER_LIST),
     };
     if ui.button(blame).clicked() {
         acts.push(Action::FileView(path.into(), Mode::Blame(rev.map(Into::into))));
@@ -61,7 +61,7 @@ pub fn file_items(ui: &mut Ui, path: &str, rev: Option<&str>, acts: &mut Vec<Act
 
 /// "Open in editor" (unless the file is deleted there) and the custom commands that take a {path}.
 pub fn open_items(ui: &mut Ui, d: &RepoData, sha: &str, path: &str, deleted: bool, acts: &mut Vec<Action>) {
-    if !deleted && ui.button(format!("{} Open in editor", icon::CODE)).on_hover_text("The working-tree file, in the editor from Settings → Tools").clicked() {
+    if !deleted && ui.button(format!("{}  Open in editor", icon::CODE)).on_hover_text("The working-tree file, in the editor from Settings → Tools").clicked() {
         acts.push(Action::Editor(path.into()));
     }
     let vars = tools::Vars { branch: d.status.branch.clone().unwrap_or_default(), sha: sha.into(), path: path.into() };
@@ -71,7 +71,7 @@ pub fn open_items(ui: &mut Ui, d: &RepoData, sha: &str, path: &str, deleted: boo
 /// Custom commands (Settings → Tools) as menu entries, run with `vars`.
 pub fn custom_items(ui: &mut Ui, cmds: Vec<tools::Custom>, vars: &tools::Vars, acts: &mut Vec<Action>) {
     for c in cmds {
-        if ui.button(format!("{} {}", icon::TERMINAL, c.name)).on_hover_text(&c.command).clicked() {
+        if ui.button(format!("{}  {}", icon::TERMINAL, c.name)).on_hover_text(&c.command).clicked() {
             acts.push(Action::Custom(c, vars.clone()));
         }
     }
@@ -94,7 +94,7 @@ pub fn lfs_track_item(ui: &mut Ui, d: &RepoData, path: &str, acts: &mut Vec<Acti
         return;
     }
     let pat = format!("*.{ext}");
-    let b = ui.add_enabled(d.lfs.installed, egui::Button::new(format!("{} Track {pat} with LFS", icon::DATABASE)));
+    let b = ui.add_enabled(d.lfs.installed, egui::Button::new(format!("{}  Track {pat} with LFS", icon::DATABASE)));
     if b.on_hover_text("Adds the pattern to .gitattributes and stages it; matching files you add from now on are stored in LFS")
         .on_disabled_hover_text(crate::repo::LFS_MISSING)
         .clicked()

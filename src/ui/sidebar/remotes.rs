@@ -8,14 +8,14 @@ use crate::theme::{self, icon};
 use egui::{Id, Key, RichText, TextEdit};
 
 pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
-    if ui.button(format!("{} Fetch {name}", icon::CLOUD_ARROW_DOWN)).clicked() {
+    if ui.button(format!("{}  Fetch {name}", icon::CLOUD_ARROW_DOWN)).clicked() {
         acts.push(op(format!("Fetch {name}"), &["fetch", "--progress", name]));
     }
-    if ui.button(format!("{} Prune deleted branches", icon::BROOM)).on_hover_text(format!("Drop remote-tracking branches that no longer exist on {name}")).clicked() {
+    if ui.button(format!("{}  Prune deleted branches", icon::BROOM)).on_hover_text(format!("Drop remote-tracking branches that no longer exist on {name}")).clicked() {
         acts.push(op(format!("Prune {name}"), &["remote", "prune", name]));
     }
     ui.separator();
-    if ui.button(format!("{} Check out pull request #…", icon::GIT_PULL_REQUEST)).on_hover_text("Fetches refs/pull/<n>/head, resets pr/<n> to it and checks it out; refuses if pr/<n> has local commits (github.com and GitHub Enterprise)").clicked() {
+    if ui.button(format!("{}  Check out pull request #…", icon::GIT_PULL_REQUEST)).on_hover_text("Fetches refs/pull/<n>/head, resets pr/<n> to it and checks it out; refuses if pr/<n> has local commits (github.com and GitHub Enterprise)").clicked() {
         acts.push(prompt(format!("Pull request number on {name}"), "", remotes::pr_checkout(name)));
     }
     let mut on = remotes::pr_refs_on(d, name);
@@ -25,23 +25,23 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
         acts.push(Action::Git(remotes::pr_refs_op(d, name)));
     }
     ui.separator();
-    if ui.button(format!("{} Check connection…", icon::STETHOSCOPE)).on_hover_text("Test sign-in, SSO, SSH, proxy and certificates for this remote").clicked() {
+    if ui.button(format!("{}  Check connection…", icon::STETHOSCOPE)).on_hover_text("Test sign-in, SSO, SSH, proxy and certificates for this remote").clicked() {
         acts.push(Action::Doctor(name.into()));
     }
-    if ui.button(format!("{} Edit remote…", icon::PENCIL_SIMPLE)).on_hover_text("Rename it or change its fetch / push URL").clicked() {
+    if ui.button(format!("{}  Edit remote…", icon::PENCIL_SIMPLE)).on_hover_text("Rename it or change its fetch / push URL").clicked() {
         acts.push(Action::RemoteForm(Form::edit(d, name)));
     }
-    if ui.button(format!("{} Remove remote…", icon::TRASH)).clicked() {
+    if ui.button(format!("{}  Remove remote…", icon::TRASH)).clicked() {
         acts.push(Action::Git(remotes::remove(d, name)));
     }
     ui.separator();
     let url = d.remotes.iter().find(|r| r.0 == name).map_or("", |r| r.1.as_str());
     if let (Some(web), Some(host)) = (git::web_url(url), git::host(url))
-        && ui.button(format!("{} Open on {host}", icon::GLOBE)).clicked()
+        && ui.button(format!("{}  Open on {host}", icon::GLOBE)).clicked()
     {
         acts.push(Action::Url(web));
     }
-    if ui.button(format!("{} Copy URL", icon::COPY)).clicked() {
+    if ui.button(format!("{}  Copy URL", icon::COPY)).clicked() {
         acts.push(Action::Copy(url.into()));
     }
 }
@@ -75,7 +75,7 @@ pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mu
             ui.label(RichText::new("Publishing? Create an empty repository on GitHub or GitHub Enterprise first (no README), then paste its URL. Push sends your branch there.").small().color(theme::dim(ui)));
         }
         let problem = f.problem(d);
-        let note = problem.map(String::from).or_else(|| git::web_url(f.url.trim()).map(|w| format!("{} {w}", icon::GLOBE)));
+        let note = problem.map(String::from).or_else(|| git::web_url(f.url.trim()).map(|w| format!("{}  {w}", icon::GLOBE)));
         if let Some(n) = note {
             ui.label(RichText::new(n).small().color(theme::dim(ui)));
         }

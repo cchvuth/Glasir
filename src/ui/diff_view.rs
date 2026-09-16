@@ -169,7 +169,7 @@ fn line_range(src: &DiffSrc, f: &FileDiff, picked: &BTreeSet<(usize, usize)>, at
 
 fn line_menu(ui: &mut Ui, src: &DiffSrc, f: &FileDiff, picked: &BTreeSet<(usize, usize)>, at: (usize, usize), acts: &mut Vec<Action>) {
     let range = line_range(src, f, picked, at);
-    let text = format!("{} History of these lines", icon::CLOCK_COUNTER_CLOCKWISE);
+    let text = format!("{}  History of these lines", icon::CLOCK_COUNTER_CLOCKWISE);
     let b = ui.add_enabled(range.is_some(), egui::Button::new(text)).on_disabled_hover_text("Lines added here have no earlier history");
     if let (true, Some((path, mode))) = (b.on_hover_text("Commits that changed these lines (git log -L), following renames").clicked(), range) {
         acts.push(Action::FileView(path, mode));
@@ -251,21 +251,21 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             }
         }
         if worktree && change.code != '?' && ds.opts.ignore_ws {
-            ui.label(RichText::new(format!("{} Line staging off", icon::INFO)).small().color(theme::MOD))
+            ui.label(RichText::new(format!("{}  Line staging off", icon::INFO)).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
         } else if let (true, Some(f)) = (worktree, file.filter(|f| f.whole_only || f.lossy)) {
             let (note, why) = match f.whole_only {
                 true => ("git converts it on add", "git add converts this file (CRLF line endings, an LFS or other filter), so the lines shown aren't the ones staged: stage the whole file."),
                 false => ("not UTF-8", "This file isn't valid UTF-8, so its lines are shown approximately and can't be staged one by one: stage the whole file."),
             };
-            ui.label(RichText::new(format!("{} Line staging off: {note}", icon::INFO)).small().color(theme::MOD)).on_hover_text(why);
+            ui.label(RichText::new(format!("{}  Line staging off: {note}", icon::INFO)).small().color(theme::MOD)).on_hover_text(why);
         } else if !worktree && !wt_compare && ds.opts.ignore_ws {
-            ui.label(RichText::new(format!("{} Hunk actions off", icon::INFO)).small().color(theme::MOD))
+            ui.label(RichText::new(format!("{}  Hunk actions off", icon::INFO)).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be reverted or cherry-picked from a whitespace-ignoring diff: turn off Ignore whitespace.");
         }
         if let (false, Some(f), Some(&first)) = (worktree, file, ds.picked.first())
             && let Some((path, mode)) = line_range(&src, f, &ds.picked, first)
-            && ui.button(format!("{} History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len())).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
+            && ui.button(format!("{}  History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len())).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
         {
             acts.push(Action::FileView(path, mode));
         }
@@ -373,7 +373,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         return;
     }
     if let Some(m) = mode {
-        ui.label(RichText::new(format!("{} {m}", icon::INFO)).small().color(theme::MOD));
+        ui.label(RichText::new(format!("{}  {m}", icon::INFO)).small().color(theme::MOD));
     }
 
     let area = ui.available_rect_before_wrap();
@@ -556,14 +556,14 @@ fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, wrap: &mut bool,
     });
     ui.add_space(6.0);
     wrap_group(ui, "wrap", |ui| {
-        if ui.add(egui::Button::selectable(*wrap, format!("{} Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
+        if ui.add(egui::Button::selectable(*wrap, format!("{}  Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
             *wrap = !*wrap;
         }
     });
     ui.add_space(6.0);
     wrap_group(ui, "ws", |ui| {
         let hint = if stageable { "Ignore whitespace changes (git diff -w).\nLine and hunk staging are off while this is on." } else { "Ignore whitespace changes (git diff -w)" };
-        if ui.add(egui::Button::selectable(o.ignore_ws, format!("{} Ignore whitespace", icon::PARAGRAPH))).on_hover_text(hint).clicked() {
+        if ui.add(egui::Button::selectable(o.ignore_ws, format!("{}  Ignore whitespace", icon::PARAGRAPH))).on_hover_text(hint).clicked() {
             acts.push(Action::DiffOpts(DiffOpts { ignore_ws: !o.ignore_ws, ..o }));
         }
     });
@@ -652,7 +652,7 @@ fn submodule_note(ui: &mut Ui, path: &str, sm: &crate::git::SubmoduleDiff, acts:
     };
     note_frame(ui, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{} {title}", icon::PACKAGE)).strong());
+            ui.label(RichText::new(format!("{}  {title}", icon::PACKAGE)).strong());
             if !sm.note.is_empty() && !sm.note.contains("submodule") {
                 ui.label(RichText::new(format!("({})", sm.note)).color(theme::dim(ui)));
             }
@@ -673,10 +673,10 @@ fn submodule_note(ui: &mut Ui, path: &str, sm: &crate::git::SubmoduleDiff, acts:
             });
         }
         for d in &sm.dirty {
-            ui.label(RichText::new(format!("{} Working copy {d}", icon::PENCIL_SIMPLE)).color(theme::MOD));
+            ui.label(RichText::new(format!("{}  Working copy {d}", icon::PENCIL_SIMPLE)).color(theme::MOD));
         }
         ui.add_space(6.0);
-        if !zero(&sm.to) && ui.button(format!("{} Open submodule in new tab", icon::ARROW_SQUARE_OUT)).clicked() {
+        if !zero(&sm.to) && ui.button(format!("{}  Open submodule in new tab", icon::ARROW_SQUARE_OUT)).clicked() {
             acts.push(Action::OpenTab(path.to_owned()));
         }
     });
@@ -692,7 +692,7 @@ fn lfs_note(ui: &mut Ui, old: Option<&crate::git::LfsPointer>, new: Option<&crat
             (Some(o), None) => format!("size {} (removed)", bytes(o.size)),
             (None, None) => String::new(),
         };
-        ui.label(RichText::new(format!("{} Git LFS object, {size}", icon::DATABASE)).strong());
+        ui.label(RichText::new(format!("{}  Git LFS object, {size}", icon::DATABASE)).strong());
         ui.add_space(4.0);
         for (what, p) in [("old", old), ("new", new)] {
             if let Some(p) = p {
@@ -715,7 +715,7 @@ fn note_frame(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 /// A large diff is withheld until asked for: nothing is parsed or highlighted before.
 fn large_note(ui: &mut Ui, lines: usize, size: usize, o: DiffOpts, acts: &mut Vec<Action>) {
     note_frame(ui, |ui| {
-        ui.label(RichText::new(format!("{} Large diff — {lines} lines, {}", icon::WARNING, crate::ui::format::bytes(size as u64))).strong());
+        ui.label(RichText::new(format!("{}  Large diff — {lines} lines, {}", icon::WARNING, crate::ui::format::bytes(size as u64))).strong());
         ui.add_space(4.0);
         ui.label(RichText::new("Showing it can be slow.").small().color(theme::dim(ui)));
         ui.add_space(6.0);

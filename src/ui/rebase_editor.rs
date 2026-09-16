@@ -48,7 +48,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     }
 
     ui.horizontal(|ui| {
-        let title = if ed.cherry { format!("{} Interactive cherry-pick", icon::CHERRIES) } else { format!("{} Interactive rebase", icon::GIT_COMMIT) };
+        let title = if ed.cherry { format!("{}  Interactive cherry-pick", icon::CHERRIES) } else { format!("{}  Interactive rebase", icon::GIT_COMMIT) };
         ui.label(RichText::new(title).heading().strong());
         ui.label(RichText::new(format!("{n} commit{} onto {}", if n == 1 { "" } else { "s" }, ed.label)).color(theme::dim(ui)));
     });
@@ -127,7 +127,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     }
     ui.horizontal(|ui| {
         let start = if ed.cherry { "Start cherry-pick" } else { "Start rebase" };
-        if theme::primary(ui, problem.is_none(), &format!("{} {start}", icon::PLAY), 170.0).clicked() {
+        if theme::primary(ui, problem.is_none(), &format!("{}  {start}", icon::PLAY), 170.0).clicked() {
             match ed.op(git_dir) {
                 Ok(op) => {
                     acts.push(Action::Git(op));

@@ -28,20 +28,20 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
     // HEAD is always in the graph, so hiding the checked-out branch would do nothing.
     if d.view.solo.is_empty() && !r.head {
         let hidden = d.view.hidden.contains(&r.full);
-        let label = if hidden { format!("{} Show in graph", icon::EYE) } else { format!("{} Hide from graph", icon::EYE_SLASH) };
+        let label = if hidden { format!("{}  Show in graph", icon::EYE) } else { format!("{}  Hide from graph", icon::EYE_SLASH) };
         if ui.button(label).clicked() {
             acts.push(toggle(|v| &mut v.hidden));
         }
     }
     let solo = d.view.solo.contains(&r.full);
-    let label = if solo { format!("{} Unsolo", icon::CROSSHAIR) } else { format!("{} Solo (show only soloed refs)", icon::CROSSHAIR) };
+    let label = if solo { format!("{}  Unsolo", icon::CROSSHAIR) } else { format!("{}  Solo (show only soloed refs)", icon::CROSSHAIR) };
     if ui.button(label).clicked() {
         acts.push(toggle(|v| &mut v.solo));
     }
 }
 
 fn worktree_compare(ui: &mut Ui, name: &str, acts: &mut Vec<Action>) {
-    if ui.button(format!("{} Compare working tree with {name}", icon::GIT_DIFF)).on_hover_text("What your working tree changes relative to this ref").clicked() {
+    if ui.button(format!("{}  Compare working tree with {name}", icon::GIT_DIFF)).on_hover_text("What your working tree changes relative to this ref").clicked() {
         acts.push(Action::Select(Sel::Compare { from: name.into(), to: crate::git::WORKTREE.into(), three_dot: false }));
     }
 }
@@ -49,10 +49,10 @@ fn worktree_compare(ui: &mut Ui, name: &str, acts: &mut Vec<Action>) {
 fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, tip: &str, acts: &mut Vec<Action>) {
     worktree_compare(ui, name, acts);
     let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
-    if ui.button(format!("{} Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
+    if ui.button(format!("{}  Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
         acts.push(Action::Select(Sel::Compare { from: head.clone(), to: name.into(), three_dot: true }));
     }
-    if crate::ai::enabled() && ui.button(format!("{} Explain changes vs {head}", icon::SPARKLE)).clicked() {
+    if crate::ai::enabled() && ui.button(format!("{}  Explain changes vs {head}", icon::SPARKLE)).clicked() {
         acts.push(Action::Ai(Purpose::ExplainRange { from: head.clone(), to: name.into() }));
     }
     if let Some(base) = d.local(&head) {
@@ -70,7 +70,7 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
     };
     let (remote, branch) = dest.map_or(("origin".into(), r.name.clone()), |(a, b)| (a.to_owned(), b.to_owned()));
     ui.separator();
-    if crate::ai::enabled() && ui.button(format!("{} Write pull request…", icon::SPARKLE)).clicked() {
+    if crate::ai::enabled() && ui.button(format!("{}  Write pull request…", icon::SPARKLE)).clicked() {
         let def = d.default_branch();
         let base = if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def };
         acts.push(Action::Ai(Purpose::PullRequest { branch: r.name.clone(), base }));
@@ -109,7 +109,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         && let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
     {
         ui.separator();
-        if ui.button(format!("{} {label}", icon::GIT_FORK)).on_hover_text(format!("New branch at HEAD for them; {name} goes back to {}", r.upstream)).clicked() {
+        if ui.button(format!("{}  {label}", icon::GIT_FORK)).on_hover_text(format!("New branch at HEAD for them; {name} goes back to {}", r.upstream)).clicked() {
             acts.push(a);
         }
     }
@@ -125,7 +125,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     if members.len() > 1 {
         if members.iter().any(|m| crate::repo::stack::stale(d, m))
             && ui
-                .button(format!("{} Restack", icon::ARROWS_CLOCKWISE))
+                .button(format!("{}  Restack", icon::ARROWS_CLOCKWISE))
                 .on_hover_text(keys("Rebase each branch of this stack whose parent moved on onto it, bottom first. All or nothing; undo with ⌘Z."))
                 .clicked()
         {
@@ -133,7 +133,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         }
         if !d.remotes.is_empty()
             && ui
-                .button(format!("{} Push stack ({} branches)", icon::STACK, members.len()))
+                .button(format!("{}  Push stack ({} branches)", icon::STACK, members.len()))
                 .on_hover_text(format!("Push {}; a branch rewritten since its last push is force-pushed with a lease (asks first), one behind its remote is skipped", members.join(", ")))
                 .clicked()
         {
@@ -145,7 +145,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", name]).then_open("{}")));
     }
     if let Some(p) = &r.worktree
-        && ui.button(format!("{} Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
+        && ui.button(format!("{}  Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
     {
         acts.push(Action::OpenTab(p.clone()));
     }
@@ -228,7 +228,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
             ));
         }
     }
-    if r.annotated && ui.button(format!("{} Verify signature", icon::SEAL_CHECK)).on_hover_text("Check the tag's signature (git verify-tag)").clicked() {
+    if r.annotated && ui.button(format!("{}  Verify signature", icon::SEAL_CHECK)).on_hover_text("Check the tag's signature (git verify-tag)").clicked() {
         acts.push(Action::VerifyTag(r.full.clone()));
     }
     if ui.button("Delete tag").clicked() {
@@ -238,7 +238,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
         if ui.button(format!("Delete tag here and from {remote}")).clicked() {
             acts.push(Action::Git(crate::repo::tags::delete_everywhere(r, remote)));
         }
-        if ui.button(format!("{} Push all tags to {remote}", icon::TAG)).clicked() {
+        if ui.button(format!("{}  Push all tags to {remote}", icon::TAG)).clicked() {
             acts.push(Action::Git(crate::repo::tags::push_all(remote)));
         }
     }

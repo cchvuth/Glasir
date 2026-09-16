@@ -226,7 +226,7 @@ impl App {
                 ui.add_space(10.0);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{} AI", icon::SPARKLE)).strong());
+                    ui.label(RichText::new(format!("{}  AI", icon::SPARKLE)).strong());
                     ui.checkbox(&mut s.ai.enabled, "Enable AI features").on_hover_text("Off: every AI button and menu item is hidden");
                 });
                 let p = s.ai.provider;
@@ -297,8 +297,8 @@ impl App {
                     ui.label("");
                     ui.label(
                         RichText::new(match st.source {
-                            Some(src) => format!("{} Using the token from {src}", icon::CHECK_CIRCLE),
-                            None => format!("{} No token configured", icon::WARNING),
+                            Some(src) => format!("{}  Using the token from {src}", icon::CHECK_CIRCLE),
+                            None => format!("{}  No token configured", icon::WARNING),
                         })
                         .small()
                         .color(if st.source.is_some() { theme::ADD } else { theme::MOD }),
@@ -392,7 +392,7 @@ fn token_source(cfg: &mut ai::Config) -> Option<&'static str> {
 }
 
 fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str) {
-    ui.label(RichText::new(format!("{} Tools", icon::TERMINAL)).strong());
+    ui.label(RichText::new(format!("{}  Tools", icon::TERMINAL)).strong());
     ui.add_space(4.0);
     egui::Grid::new("tools_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
         ui.label("Editor");
@@ -425,7 +425,7 @@ fn tools_section(ui: &mut Ui, t: &mut tools::Tools, editor: &str, terminal: &str
     if let Some(i) = remove {
         t.commands.remove(i);
     }
-    if ui.button(format!("{} Add command", icon::PLUS)).clicked() {
+    if ui.button(format!("{}  Add command", icon::PLUS)).clicked() {
         t.commands.push(Default::default());
     }
 }

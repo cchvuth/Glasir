@@ -15,14 +15,14 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
         }
         ui.horizontal_wrapped(|ui| {
             if !d.submodules.is_empty() {
-                if theme::small(ui, true, format!("{} Update all", icon::ARROWS_CLOCKWISE)).on_hover_text("Initialize and check out the recorded commits, recursively").clicked() {
+                if theme::small(ui, true, format!("{}  Update all", icon::ARROWS_CLOCKWISE)).on_hover_text("Initialize and check out the recorded commits, recursively").clicked() {
                     acts.push(op("Update submodules", &["submodule", "update", "--init", "--recursive"]));
                 }
                 if theme::small(ui, true, "Sync URLs").on_hover_text("Copy URLs from .gitmodules into the config").clicked() {
                     acts.push(op("Sync submodule URLs", &["submodule", "sync", "--recursive"]));
                 }
             }
-            if theme::small(ui, true, format!("{} Add submodule…", icon::PLUS)).on_hover_text("Add a submodule (its folder is named after the URL)").clicked() {
+            if theme::small(ui, true, format!("{}  Add submodule…", icon::PLUS)).on_hover_text("Add a submodule (its folder is named after the URL)").clicked() {
                 acts.push(prompt("Add submodule: repository URL", "", Op::new("Add submodule", &["submodule", "add", "--", "{}"])));
             }
         });
@@ -34,7 +34,7 @@ fn row(ui: &mut Ui, d: &RepoData, s: &Submodule, acts: &mut Vec<Action>) {
     let st = d.status.submodules.get(&s.path).map_or("", String::as_str);
     let short = |id: &str| id[..id.len().min(7)].to_owned();
     let (init, moved) = (s.flag != '-', s.flag == '+' || st.contains('C'));
-    let mut label = format!("{} {}", icon::PACKAGE, s.path);
+    let mut label = format!("{}  {}", icon::PACKAGE, s.path);
     let mut tip = vec![format!("recorded {}", short(&s.recorded))];
     if !init {
         label += &format!("  {}", icon::CIRCLE_DASHED);
