@@ -332,6 +332,11 @@ fn native_glass(cc: &eframe::CreationContext) -> bool {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if self.shot.is_some() {
+            super::screenshot::shot_input(ctx, raw);
+        }
+    }
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if let Some((since, times)) = &mut self.perf {

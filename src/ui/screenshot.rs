@@ -11,6 +11,18 @@ use crate::repo::{Action, Op, PullMode, Search, Undo, pull_op};
 use crate::theme;
 use egui::Id;
 
+/// The `rclick:` view's pointer events, one per frame: move there, press, release.
+pub(super) fn shot_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    let id = Id::new("shot_rclick");
+    let Some((pos, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(id)) else { return };
+    raw.events.push(match step {
+        0 => egui::Event::PointerMoved(pos),
+        1 | 2 => egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed: step == 1, modifiers: Default::default() },
+        _ => return ctx.data_mut(|m| m.remove::<(egui::Pos2, u8)>(id)),
+    });
+    ctx.data_mut(|m| m.insert_temp(id, (pos, step + 1)));
+}
+
 impl App {
     pub(super) fn screenshot(&mut self, ctx: &egui::Context) {
         let ready = self.tabs.get(self.active).is_none_or(|t| t.data.is_some() && !t.loading());
@@ -142,6 +154,8 @@ impl App {
                         }
                     }
                     "wrap" => self.s.wrap = true,
+                    "tree" => self.s.file_tree = true,
+                    q if q.starts_with("zoom:") => ctx.set_zoom_factor(q[5..].parse().unwrap_or(1.0)),
                     // `compare-wt:<ref>[:<path>]`: compare the working tree with a ref, optionally opening a file's diff.
                     q if q.starts_with("compare-wt:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
@@ -373,6 +387,12 @@ impl App {
                     q if q.starts_with("row-hover:") => {
                         if let Some((x, y)) = q[10..].split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
                             ctx.data_mut(|m| m.insert_temp(Id::new("shot_pointer"), egui::pos2(x, y)));
+                        }
+                    }
+                    // `rclick:XxY`: a right click there (a context menu), see `shot_input`.
+                    q if q.starts_with("rclick:") => {
+                        if let Some((x, y)) = q[7..].split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
+                            ctx.data_mut(|m| m.insert_temp(Id::new("shot_rclick"), (egui::pos2(x, y), 0u8)));
                         }
                     }
                     "drop-hint" => self.drop_hint_shot = true,

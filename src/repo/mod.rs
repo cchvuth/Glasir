@@ -1,29 +1,5 @@
-//! Per-repository state (`RepoTab`): background loading, polling and the
-//! `apply` dispatch for the `Action`s the UI emits. No drawing lives here.
-//!
-//! - `task`: `Task<T>` background values
-//! - `data`: `RepoData`/`View` and `load_all`
-//! - `action`: `Action`, `Sel`, `DiffSrc`, `Prompt`, `Choice`, `Msg`
-//! - `op`: `Op` builder, running/finishing ops, shared op builders
-//!   (push/pull/fetch/stash/commit, `branch_checkout`)
-//! - `offer`: one-click fixes for failed ops
-//! - `undo`: undo/redo: ref steps, durable file backups (`git::Snap`), one transition for both
-//! - `diff` (+ `image_diff`), `ai_job`, `conflicts`, `cleanup`, `fetch`, `watch`, `files`: one concern each
-//! - `rebase`: interactive-rebase engine (todo `Editor`, quick/multi/amend_into)
-//! - `search`, `history`, `merge_editor`, `reflog`: state behind the graph search bar, the
-//!   file history/blame view, the merge editor and the reflog view (drawn by the same-named `ui` files)
-//! - `tags`, `restore`, `spinoff`, `patch`: history tools (move/delete/push tags,
-//!   restore a file from a commit, move unpushed commits to a new branch, patches)
-//! - `msgedit`: inline editing of a commit's message in the commit details
-//! - `absorb`, `split`: smart rewrites (staged hunks into their commits; guided commit split)
-//! - `stack`: stacked branches (detection, keeping them together, restack, push stack)
-//! - `compose`: Commit Composer (all uncommitted changes -> an AI-planned series of commits)
-//! - `remotes`, `doctor`, `identity`: remote management and pull-request checkout, the
-//!   per-remote connection doctor, the commit-email guard
-//! - `maintenance`: optimize hint heuristic, `git maintenance` run, background-schedule toggle
-//! - `tools`: open in editor / terminal, custom commands (Settings → Tools)
-//! - `terminal`: the embedded terminal's shell sessions (⌃`)
-//! - `avatars`: commit authors' GitHub / GitHub Enterprise profile pictures
+//! Per-repository state (`RepoTab`): background loading, polling and the `apply` dispatch for the `Action`s the UI emits.
+//! One concern per submodule (`op`, `undo`, `rebase`, `history`, ...); no drawing lives here.
 
 pub mod absorb;
 mod action;
@@ -37,6 +13,7 @@ mod diff;
 pub mod doctor;
 mod fetch;
 pub mod files;
+pub mod filetree;
 pub mod history;
 pub mod identity;
 pub mod image_diff;
@@ -78,6 +55,7 @@ use crate::ai;
 use crate::git::{self, CommitInfo, Res};
 use data::load_all;
 use op::Done;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use undo::UndoEntry;
@@ -97,6 +75,8 @@ pub struct RepoTab {
     queued: Option<bool>,
     pub sel: Option<Sel>,
     pub info: Option<Res<CommitInfo>>,
+    /// Bumped whenever `info` is replaced: keys the cached folder tree of its files.
+    pub info_gen: u64,
     info_task: Option<Task<Res<CommitInfo>>>,
     /// Line counts for `info`'s commit (its id), merged in when ready.
     stats_task: Option<Task<(String, git::Stats)>>,
@@ -151,6 +131,8 @@ pub struct RepoTab {
     pub multi: Vec<String>,
     /// Selected files of the WIP lists (⌘/⇧-click) as (staged, path): the target of S / U / Discard.
     pub file_sel: Vec<(bool, String)>,
+    /// Collapsed folders of each file list in tree view ("unstaged", "staged", "conflicts", "commit"), kept while the app runs.
+    pub tree_closed: HashMap<&'static str, std::collections::HashSet<String>>,
     pub rebase: Option<crate::repo::rebase::Editor>,
     pub merge: Option<merge_editor::Editor>,
     pub file_view: Option<history::FileView>,
@@ -212,6 +194,7 @@ impl RepoTab {
             queued: None,
             sel: None,
             info: None,
+            info_gen: 0,
             info_task: None,
             stats_task: None,
             diff: None,
@@ -250,6 +233,7 @@ impl RepoTab {
             jump_after: None,
             multi: vec![],
             file_sel: vec![],
+            tree_closed: HashMap::new(),
             rebase: None,
             merge: None,
             file_view: None,
@@ -438,6 +422,7 @@ impl RepoTab {
                 }));
             }
             self.info = Some(r);
+            self.info_gen += 1;
         }
         if let Some((id, s)) = Task::poll(&mut self.stats_task)
             && let Some(Ok(i)) = &mut self.info

@@ -2,6 +2,7 @@
 //! explanation and the changed files.
 
 use crate::ui::format::keys;
+use super::tree::{self, Item};
 use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::{Change, CommitInfo};
@@ -115,7 +116,7 @@ fn sig_badge(ui: &mut Ui, info: &CommitInfo) {
 }
 
 impl RepoTab {
-    pub(super) fn commit_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+    pub(super) fn commit_panel(&mut self, ui: &mut Ui, as_tree: &mut bool, acts: &mut Vec<Action>) {
         let compare = match &self.sel {
             Some(Sel::Compare { from, to, .. }) => Some((from.clone(), to.clone())),
             _ => None,
@@ -232,7 +233,10 @@ impl RepoTab {
             ui.add_space(8.0);
             ui.add_space(2.0);
             let n = info.files.len() + info.untracked.len();
-            ui.label(RichText::new(format!("{n} changed file{}", if n == 1 { "" } else { "s" })).small().strong());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{n} changed file{}", if n == 1 { "" } else { "s" })).small().strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| tree::toggle(ui, as_tree));
+            });
             let stash = self.data.as_ref().filter(|d| d.stashes.iter().any(|s| s.id == info.id));
             let mut summary = change_summary(&info.files.iter().chain(&info.untracked).cloned().collect::<Vec<_>>());
             let (add, del) = info.stats.values().flatten().fold((0, 0), |t, s| (t.0 + s.0, t.1 + s.1));
@@ -245,20 +249,13 @@ impl RepoTab {
             }
             // A stash's untracked files live in its third parent, a root commit.
             let untracked_id = format!("{}^3", info.id);
-            let files = info.files.iter().map(|c| (c, &info.id, info.parents.first().cloned())).chain(info.untracked.iter().map(|c| (c, &untracked_id, None)));
-            // Only the rows in view are built, so a 10k-file commit stays cheap.
-            let files: Vec<_> = files.collect();
-            let total = files.len();
-            let step = 24.0 + ui.spacing().item_spacing.y;
-            let (top, clip) = (ui.cursor().top(), ui.clip_rect());
-            let first = (((clip.top() - top) / step).floor().max(0.0) as usize).min(files.len());
-            let last = (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(files.len());
-            ui.add_space(first as f32 * step);
-            for (c, id, parent) in files[first..last].iter().cloned() {
+            let parent = info.parents.first().cloned();
+            let file = |ui: &mut Ui, c: &Change, depth: Option<usize>, acts: &mut Vec<Action>| {
+                let (id, parent) = if info.untracked.iter().any(|u| u.path == c.path) { (&untracked_id, None) } else { (&info.id, parent.clone()) };
                 // A deleted file is blamed as it was just before.
                 let blame_rev = if c.code == 'D' { parent.clone() } else { Some(id.clone()) };
                 let src = DiffSrc::Commit { id: id.clone(), parent, change: c.clone() };
-                let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)), info.stats.get(&c.path).copied());
+                let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)), info.stats.get(&c.path).copied(), depth);
                 if resp.clicked() {
                     acts.push(Action::Diff(src));
                 }
@@ -282,6 +279,38 @@ impl RepoTab {
                         acts.push(Action::Copy(c.path.clone()));
                     }
                 });
+            };
+            let all = info.files.iter().chain(&info.untracked);
+            if *as_tree {
+                let closed = self.tree_closed.entry("commit").or_default();
+                tree::show(ui, all, self.info_gen, ui.id().with(("filetree", "commit")), closed, false, |ui, item| {
+                    match item {
+                        Item::File { c, depth, .. } => file(ui, c, depth, acts),
+                        Item::Dir { path, resp, .. } => {
+                            resp.context_menu(|ui| {
+                                if ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {path}/")).clicked() {
+                                    acts.push(Action::FileView(format!("{path}/"), crate::repo::history::Mode::History));
+                                }
+                                if ui.button("Copy path").clicked() {
+                                    acts.push(Action::Copy(path.into()));
+                                }
+                            });
+                        }
+                    }
+                    false
+                });
+                return;
+            }
+            // Only the rows in view are built, so a 10k-file commit stays cheap.
+            let all: Vec<&Change> = all.collect();
+            let total = all.len();
+            let step = 24.0 + ui.spacing().item_spacing.y;
+            let (top, clip) = (ui.cursor().top(), ui.clip_rect());
+            let first = (((clip.top() - top) / step).floor().max(0.0) as usize).min(total);
+            let last = (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(total);
+            ui.add_space(first as f32 * step);
+            for c in &all[first..last] {
+                file(ui, c, None, acts);
             }
             ui.add_space((total - last) as f32 * step);
         });

@@ -2,6 +2,7 @@
 //! unstaged / staged file lists and the commit box.
 
 use crate::ui::format::keys;
+use super::tree::{self, Item};
 use super::{file_items, file_row, lfs_track_item, open_items, permalink_items, row_button};
 use crate::ai::Purpose;
 use crate::git::{Change, State};
@@ -26,6 +27,47 @@ fn stash_files_item(ui: &mut Ui, cs: &[Change], staged: bool, acts: &mut Vec<Act
         acts.push(Action::Git(crate::repo::stash_paths_op(&paths, cs.iter().any(|c| c.code == '?'))));
     }
     clicked
+}
+
+/// The rest of a WIP folder row's menu: stash, .gitignore (an untracked folder), file manager,
+/// history and path. True when the stash was picked (the selection goes with it).
+fn dir_items(ui: &mut Ui, dir: &std::path::Path, path: &str, files: &[Change], staged: bool, acts: &mut Vec<Action>) -> bool {
+    let stashed = stash_files_item(ui, files, staged, acts);
+    let untracked = files.iter().all(|c| c.code == '?');
+    if untracked && ui.button("Add to .gitignore").clicked() {
+        match crate::repo::files::append_gitignore(dir, path) {
+            Ok(()) => acts.push(Action::Reload),
+            Err(e) => acts.push(Action::Error(format!("Could not update .gitignore: {e}"))),
+        }
+    }
+    if ui.button("Show in file manager").clicked() {
+        acts.push(Action::Reveal(path.into()));
+    }
+    if !untracked && ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {path}/")).clicked() {
+        acts.push(Action::FileView(format!("{path}/"), crate::repo::history::Mode::History));
+    }
+    if ui.button("Copy path").clicked() {
+        acts.push(Action::Copy(path.into()));
+    }
+    stashed
+}
+
+/// Up to ten paths, one per line, and how many more.
+fn shown(v: &[&str]) -> String {
+    format!("{}{}", v[..v.len().min(10)].join("\n"), if v.len() > 10 { format!("\n…and {} more", v.len() - 10) } else { String::new() })
+}
+
+/// Mark the conflicted files `cs` resolved, only those without conflict markers (asking first
+/// when some are left alone). None when none of them can be.
+fn mark_resolved_op(label: &str, d: &RepoData, cs: &[Change]) -> Option<Op> {
+    let (ok, rest): (Vec<&str>, Vec<&str>) = cs.iter().map(|c| c.path.as_str()).partition(|p| d.resolvable.iter().any(|r| r == p));
+    if ok.is_empty() {
+        return None;
+    }
+    let mut a = vec!["--literal-pathspecs", "add", "--"];
+    a.extend(&ok);
+    let op = Op::new(label, &a).light();
+    Some(if rest.is_empty() { op } else { op.confirm(format!("Mark {} file(s) resolved? Not marked (conflict markers left, or a side to choose):\n{}", ok.len(), shown(&rest))) })
 }
 
 /// The external merge tools open on conflicted files, each with Cancel.
@@ -181,7 +223,7 @@ impl RepoTab {
         ui.add_space(6.0);
     }
 
-    pub(super) fn wip_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+    pub(super) fn wip_panel(&mut self, ui: &mut Ui, as_tree: &mut bool, acts: &mut Vec<Action>) {
         let Some(d) = &self.data else { return };
         let s = &d.status;
         let open = self.diff.as_ref().map(|d| d.src.clone());
@@ -366,8 +408,8 @@ impl RepoTab {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            tree::toggle(ui, as_tree);
                             let rest: Vec<&str> = s.conflicted.iter().map(|c| c.path.as_str()).filter(|p| !d.resolvable.iter().any(|r| r == p)).collect();
-                            let shown = |v: &[&str]| format!("{}{}", v[..v.len().min(10)].join("\n"), if v.len() > 10 { format!("\n…and {} more", v.len() - 10) } else { String::new() });
                             let b = theme::small(ui, !d.resolvable.is_empty() && !busy, "Mark all resolved");
                             let b = if rest.is_empty() {
                                 b.on_hover_text("Stage every conflicted file")
@@ -375,13 +417,7 @@ impl RepoTab {
                                 b.on_hover_text(format!("Only files without conflict markers are marked. Left alone:\n{}", shown(&rest)))
                             };
                             if b.on_disabled_hover_text("No conflicted file is free of conflict markers yet").clicked() {
-                                let mut a = vec!["--literal-pathspecs", "add", "--"];
-                                a.extend(d.resolvable.iter().map(String::as_str));
-                                let mut op = Op::new("Mark all resolved", &a).light();
-                                if !rest.is_empty() {
-                                    op = op.confirm(format!("Mark {} file(s) resolved? Not marked (conflict markers left, or a side to choose):\n{}", d.resolvable.len(), shown(&rest)));
-                                }
-                                acts.push(Action::Git(op));
+                                acts.extend(mark_resolved_op("Mark all resolved", d, &s.conflicted).map(Action::Git));
                             }
                         });
                     });
@@ -390,11 +426,30 @@ impl RepoTab {
                         open_tools(ui, &self.ext_tools, acts);
                     }
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0); // type label hugs its row
-                    for c in &s.conflicted {
-                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path), None);
+                    tree::list(ui, &s.conflicted, d.generation, *as_tree, "conflicts", &mut self.tree_closed, true, |ui, item| {
+                        let (c, depth) = match item {
+                            Item::File { c, depth, .. } => (c, depth),
+                            Item::Dir { path, files, resp } => {
+                                resp.context_menu(|ui| {
+                                    let op = mark_resolved_op("Mark resolved", d, files);
+                                    let b = ui.add_enabled(op.is_some() && !busy, egui::Button::new("Mark folder resolved"));
+                                    if b.on_hover_text("Stage its conflicted files that have no conflict markers left").clicked() {
+                                        acts.extend(op.map(Action::Git));
+                                    }
+                                    if ui.button("Show in file manager").clicked() {
+                                        acts.push(Action::Reveal(path.into()));
+                                    }
+                                    if ui.button("Copy path").clicked() {
+                                        acts.push(Action::Copy(path.into()));
+                                    }
+                                });
+                                return false;
+                            }
+                        };
+                        let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path), None, depth);
                         let (kind, has) = crate::git::conflict_kind(s.conflict_xy.get(&c.path).map_or("", String::as_str));
                         ui.horizontal(|ui| {
-                            ui.add_space(22.0);
+                            ui.add_space(22.0 + tree::indent(depth));
                             ui.label(RichText::new(kind).small().color(theme::dim(ui)));
                         });
                         ui.add_space(4.0);
@@ -432,7 +487,8 @@ impl RepoTab {
                         if resp.clicked() {
                             acts.push(Action::MergeEditor(c.path.clone()));
                         }
-                    }
+                        false
+                    });
                     ui.spacing_mut().item_spacing.y = gap;
                     ui.add_space(6.0);
                 }
@@ -442,6 +498,7 @@ impl RepoTab {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        tree::toggle(ui, as_tree);
                         if sel_un.len() > 1 {
                             let n = sel_un.len();
                             if theme::small(ui, true, format!("Stage {n}")).on_hover_text("Stage the selected files (S)").clicked() {
@@ -452,24 +509,48 @@ impl RepoTab {
                                 acts.extend(discard_files_op(&sel_un).map(Action::Git));
                                 clear = true;
                             }
-                        } else if let Some(o) = crate::repo::stage_all_op(s)
-                            && theme::small(ui, true, "Stage all").clicked()
-                        {
-                            acts.push(Action::Git(o));
+                        } else if !s.unstaged.is_empty() && theme::small(ui, true, "Stage all").clicked() {
+                            // Built on click only: its path list is the whole list.
+                            acts.extend(crate::repo::stage_all_op(s).map(Action::Git));
                         }
                     });
                 });
                 if s.unstaged.is_empty() {
                     ui.label(RichText::new("No unstaged changes").small().color(theme::dim(ui)));
                 }
-                for (i, c) in s.unstaged.iter().enumerate() {
+                tree::list(ui, &s.unstaged, d.generation, *as_tree, "unstaged", &mut self.tree_closed, false, |ui, item| {
+                    let (c, depth, order) = match item {
+                        Item::File { c, depth, order } => (c, depth, order),
+                        Item::Dir { path, files, resp } => {
+                            if !busy && row_button(ui, resp, icon::PLUS, "Stage") {
+                                acts.extend(stage_files_op("Stage", files).map(Action::Git));
+                                clear = true;
+                                return true;
+                            }
+                            resp.context_menu(|ui| {
+                                if ui.button("Stage folder").clicked() {
+                                    acts.extend(stage_files_op("Stage", files).map(Action::Git));
+                                    clear = true;
+                                }
+                                if ui.button("Discard changes in folder").clicked() {
+                                    acts.extend(discard_files_op(files).map(Action::Git));
+                                    clear = true;
+                                }
+                                clear |= dir_items(ui, &self.dir, path, files, false, acts);
+                            });
+                            return false;
+                        }
+                    };
                     let src = DiffSrc::Worktree { change: c.clone(), staged: false };
                     let in_sel = picked(&self.file_sel, false, &c.path);
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None);
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None, depth);
                     let stage_one = || stage_files_op("Stage", std::slice::from_ref(c)).map(Action::Git);
                     if !busy && row_button(ui, &resp, icon::PLUS, "Stage") {
                         acts.extend(stage_one());
-                    } else if resp.clicked() && pick_file(&mut self.file_sel, &s.unstaged, false, i, mods) {
+                    } else if resp.clicked() && {
+                        let (list, i) = order.place(c);
+                        pick_file(&mut self.file_sel, &list, false, i, mods)
+                    } {
                         acts.push(Action::Diff(src));
                     }
                     if resp.double_clicked() && !busy {
@@ -517,12 +598,14 @@ impl RepoTab {
                             acts.push(Action::Copy(c.path.clone()));
                         }
                     });
-                }
+                    false
+                });
                 ui.add_space(6.0);
                 let sel_st: Vec<Change> = s.staged.iter().filter(|c| picked(&self.file_sel, true, &c.path)).cloned().collect();
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Staged files  {}", s.staged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        tree::toggle(ui, as_tree);
                         if sel_st.len() > 1 {
                             if theme::small(ui, true, format!("Unstage {}", sel_st.len())).on_hover_text("Unstage the selected files (U)").clicked() {
                                 acts.extend(unstage_files_op(&sel_st).map(Action::Git));
@@ -536,13 +619,34 @@ impl RepoTab {
                 if s.staged.is_empty() {
                     ui.label(RichText::new("Nothing staged yet: double-click a file above, or Stage all").small().color(theme::dim(ui)));
                 }
-                for (i, c) in s.staged.iter().enumerate() {
+                tree::list(ui, &s.staged, d.generation, *as_tree, "staged", &mut self.tree_closed, false, |ui, item| {
+                    let (c, depth, order) = match item {
+                        Item::File { c, depth, order } => (c, depth, order),
+                        Item::Dir { path, files, resp } => {
+                            if !busy && row_button(ui, resp, icon::MINUS, "Unstage") {
+                                acts.extend(unstage_files_op(files).map(Action::Git));
+                                clear = true;
+                                return true;
+                            }
+                            resp.context_menu(|ui| {
+                                if ui.button("Unstage folder").clicked() {
+                                    acts.extend(unstage_files_op(files).map(Action::Git));
+                                    clear = true;
+                                }
+                                clear |= dir_items(ui, &self.dir, path, files, true, acts);
+                            });
+                            return false;
+                        }
+                    };
                     let src = DiffSrc::Worktree { change: c.clone(), staged: true };
                     let in_sel = picked(&self.file_sel, true, &c.path);
-                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None);
+                    let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None, depth);
                     if !busy && row_button(ui, &resp, icon::MINUS, "Unstage") {
                         acts.push(Action::Git(crate::repo::unstage_op(c)));
-                    } else if resp.clicked() && pick_file(&mut self.file_sel, &s.staged, true, i, mods) {
+                    } else if resp.clicked() && {
+                        let (list, i) = order.place(c);
+                        pick_file(&mut self.file_sel, &list, true, i, mods)
+                    } {
                         acts.push(Action::Diff(src));
                     }
                     if resp.double_clicked() && !busy {
@@ -573,7 +677,8 @@ impl RepoTab {
                             acts.push(Action::Copy(c.path.clone()));
                         }
                     });
-                }
+                    false
+                });
                 if clear {
                     self.file_sel.clear();
                 }

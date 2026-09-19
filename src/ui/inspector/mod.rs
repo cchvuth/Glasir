@@ -4,6 +4,7 @@
 
 mod commit;
 mod multi;
+pub mod tree;
 mod wip;
 
 use crate::git::{Change, Page};
@@ -13,14 +14,14 @@ use crate::theme::{self, icon};
 use egui::{Sense, Ui};
 
 impl RepoTab {
-    pub fn details(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
+    pub fn details(&mut self, ui: &mut Ui, tree: &mut bool, acts: &mut Vec<Action>) {
         self.split_banner(ui, acts);
         if self.multi.len() > 1 {
             return self.multi_panel(ui, acts);
         }
         match self.sel.clone() {
-            Some(Sel::Wip) => self.wip_panel(ui, acts),
-            Some(Sel::Commit(_) | Sel::Compare { .. }) => self.commit_panel(ui, acts),
+            Some(Sel::Wip) => self.wip_panel(ui, tree, acts),
+            Some(Sel::Commit(_) | Sel::Compare { .. }) => self.commit_panel(ui, tree, acts),
             // A clean working tree (e.g. right after committing everything): a calm note.
             None => {
                 let clean = self.data.as_ref().is_some_and(|d| !d.wip);
@@ -103,6 +104,8 @@ pub fn lfs_track_item(ui: &mut Ui, d: &RepoData, path: &str, acts: &mut Vec<Acti
     }
 }
 
+const ROW_H: f32 = 24.0;
+
 /// Pointer over `rect`; the screenshot harness can pin a pointer position (`row-hover:x,y`).
 fn hovering(ui: &Ui, rect: egui::Rect) -> bool {
     ui.rect_contains_pointer(rect) || ui.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new("shot_pointer"))).is_some_and(|p| rect.contains(p))
@@ -127,16 +130,18 @@ pub fn row_button(ui: &Ui, row: &egui::Response, glyph: &str, label: &str) -> bo
 
 /// A file row: colored status letter, file name (`old → new` for a rename), an LFS
 /// badge, dimmed directory and, when known, the +/- line counts (`Some(None)`: binary).
-pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option<Option<(u32, u32)>>) -> egui::Response {
+/// In the folder tree (`depth` is `Some`) it is indented and has no directory: the folder rows give it.
+pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option<Option<(u32, u32)>>, depth: Option<usize>) -> egui::Response {
     let (dir, file) = c.path.rsplit_once('/').map_or(("", c.path.as_str()), |(d, f)| (d, f));
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, 24.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, ROW_H), Sense::click());
     if selected {
         ui.painter().rect_filled(rect, 8.0, theme::selection(ui));
     } else if hovering(ui, rect) {
         ui.painter().rect_filled(rect, 8.0, theme::hover(ui));
     }
     let y = rect.center().y;
+    let x = rect.left() + tree::indent(depth);
     let mut right = rect.right() - 6.0;
     let counts = match stat {
         Some(Some((a, d))) => [(a, '+', theme::ADD), (d, '-', theme::DEL)].into_iter().filter(|c| c.0 > 0).map(|(n, s, col)| (format!("{s}{n}"), col)).collect(),
@@ -155,8 +160,8 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option
         None => file.to_owned(),
     };
     let code = if c.code == '?' { 'A' } else { c.code };
-    p.text(egui::pos2(rect.left() + 6.0, y), egui::Align2::LEFT_CENTER, code, egui::FontId::monospace(12.0), theme::change_color(c.code));
-    let mut r = p.text(egui::pos2(rect.left() + 22.0, y), egui::Align2::LEFT_CENTER, file, egui::FontId::proportional(13.0), theme::text(ui));
+    p.text(egui::pos2(x + 6.0, y), egui::Align2::LEFT_CENTER, code, egui::FontId::monospace(12.0), theme::change_color(c.code));
+    let mut r = p.text(egui::pos2(x + 22.0, y), egui::Align2::LEFT_CENTER, file, egui::FontId::proportional(13.0), theme::text(ui));
     if lfs {
         let g = p.layout_no_wrap("LFS".into(), egui::FontId::proportional(9.5), theme::accent());
         let badge = egui::Rect::from_min_size(egui::pos2(r.right() + 6.0, y - 7.0), g.size() + egui::vec2(8.0, 14.0 - g.size().y));
@@ -164,7 +169,7 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option
         p.galley(badge.center() - g.size() / 2.0, g, theme::accent());
         r = badge;
     }
-    if !dir.is_empty() {
+    if !dir.is_empty() && depth.is_none() {
         p.text(egui::pos2(r.right() + 6.0, y), egui::Align2::LEFT_CENTER, dir, egui::FontId::proportional(11.5), theme::dim(ui));
     }
     resp.on_hover_text(match &c.old_path {

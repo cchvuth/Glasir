@@ -40,7 +40,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .default_size(390.0)
             .size_range(300.0..=720.0)
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
-            .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut acts)));
+            .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut s.file_tree, &mut acts)));
         if t.term.open {
             egui::Panel::bottom("terminal")
                 .show_separator_line(false)

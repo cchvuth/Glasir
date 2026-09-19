@@ -78,6 +78,13 @@ The name fits a Git client:
   select them, and untracked files can be staged in part too (via intent-to-add; whole
   files only when `git add` would convert them: CRLF line endings, LFS or other filters;
   the diff says so).
+- **List or folder tree** for every changed-file list (unstaged, staged, conflicts,
+  commit, compare and stash details): a small switch next to the list headers, one
+  setting for all. Folders fold (single-folder chains read `src/repo`), show their file
+  count, and have their own hover Stage / Unstage button and menu (Stage, Unstage,
+  Discard: one confirmation, one git run per kind, backed up like any discard; Stash,
+  Mark resolved, Add to .gitignore, Folder history, Show in file manager); the tree is
+  cached and only the rows in view are drawn, so 10k-file trees stay smooth.
 - Unified or split diffs with **syntax highlighting** and **word-level** change marks.
 - Diff controls: **ignore whitespace** (`-w`; line staging pauses while it is on),
   **context** of 3 / 10 lines or the whole file, **previous / next change**

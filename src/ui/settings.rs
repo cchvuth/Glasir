@@ -29,6 +29,8 @@ pub struct Settings {
     pub split_diff: bool,
     /// Wrap long lines in the diff, blame and merge editor instead of scrolling sideways.
     pub wrap: bool,
+    /// Changed-file lists (WIP, commit details) as a folder tree instead of a flat list.
+    pub file_tree: bool,
     pub clone_dir: Option<PathBuf>,
     pub ai: ai::Config,
     /// macOS 26+: real Liquid Glass (NSGlassEffectView) behind the window.
@@ -80,6 +82,7 @@ impl Default for Settings {
             pull: PullMode::Merge,
             split_diff: false,
             wrap: false,
+            file_tree: false,
             clone_dir: None,
             ai: ai::Config::default(),
             native_glass: false,

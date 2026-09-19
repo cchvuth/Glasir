@@ -258,21 +258,40 @@ pub fn unstage_all_op() -> Op {
 }
 
 /// Discard several unstaged changes as one op: a single confirmation and one backup, so one ⌘Z
-/// brings them all back.
+/// brings them all back. One `rm` / `checkout` / `clean` per kind (and per ~16 KB of paths:
+/// Windows caps a command line at 32K chars), not one git run per file.
 pub fn discard_files_op(cs: &[git::Change]) -> Option<Op> {
-    let mut ops = cs.iter().map(discard_op);
-    let mut o = ops.next()?;
-    if cs.len() == 1 {
-        return Some(o);
+    if cs.len() <= 1 {
+        return cs.first().map(discard_op);
     }
-    for n in ops {
-        o.cmds.extend(n.cmds);
-        if let (Some(Backup::Paths(a)), Some(Backup::Paths(b))) = (&mut o.backup, n.backup) {
-            a.extend(b);
+    let (mut rm, mut checkout, mut clean) = (vec![], vec![], vec![]);
+    for c in cs {
+        match c.code {
+            '?' => clean.push(c.path.as_str()),
+            // Intent-to-add: removed, not emptied; a rename's old path is checked out again.
+            'A' | 'R' | 'C' => {
+                rm.push(c.path.as_str());
+                checkout.extend(c.old_path.as_deref().filter(|_| c.code == 'R'));
+            }
+            _ => checkout.push(c.path.as_str()),
         }
     }
-    o.label = format!("Discard {} files", cs.len());
-    Some(o.confirm(format!("Discard changes to {} files? (Undo with ⌘Z.)", cs.len())))
+    let mut o = Op::new(format!("Discard {} files", cs.len()), &[]);
+    o.cmds.clear();
+    for (sub, paths) in [(&["rm", "-fq"][..], rm), (&["checkout"], checkout), (&["clean", "-fq"], clean)] {
+        let mut rest = paths.as_slice();
+        while !rest.is_empty() {
+            let (mut n, mut len) = (0, 0);
+            while n < rest.len() && (n == 0 || len + rest[n].len() < 16_000) {
+                len += rest[n].len() + 1;
+                n += 1;
+            }
+            o.cmds.push(["--literal-pathspecs"].iter().chain(sub).chain(&["--"]).chain(&rest[..n]).map(|s| s.to_string()).collect());
+            rest = &rest[n..];
+        }
+    }
+    let paths = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).cloned().collect();
+    Some(o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {} files? (Undo with ⌘Z.)", cs.len())))
 }
 
 /// Discard one unstaged change (WIP list), backed up so ⌘Z brings the bytes back.
@@ -1078,6 +1097,24 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("weirdA.txt")).unwrap(), "base\n");
         assert!(!dir.join("untracked u.txt").exists());
         assert_eq!(std::fs::read_to_string(dir.join("we*ird[1].txt")).unwrap(), "edit\n");
+        assert_eq!(op.cmds.len(), 2, "one git run per kind, not per file: {:?}", op.cmds);
+
+        // Everything else (an edit, the unstaged rename and 50 untracked files) in three runs at most.
+        for i in 0..50 {
+            std::fs::write(dir.join(format!("u{i}.txt")), "u\n").unwrap();
+        }
+        let rest = git::status(&dir).unwrap().unstaged;
+        let op = super::discard_files_op(&rest).unwrap();
+        assert!(op.cmds.len() <= 3, "{:?}", op.cmds);
+        exec(&dir, &op).unwrap();
+        let s = git::status(&dir).unwrap();
+        assert!(s.unstaged.is_empty(), "{:?}", s.unstaged);
+        assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), "base\n");
+        // A long list is split into command lines of at most ~16 KB, every path once.
+        let many: Vec<git::Change> = (0..2000).map(|i| git::Change { path: format!("some/deep/folder/file{i:05}.txt"), old_path: None, code: 'M' }).collect();
+        let op = super::discard_files_op(&many).unwrap();
+        assert!(op.cmds.len() > 1 && op.cmds.iter().all(|c| c.iter().map(|a| a.len() + 1).sum::<usize>() < 16_100));
+        assert_eq!(op.cmds.iter().map(|c| c.len() - 3).sum::<usize>(), 2000);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
