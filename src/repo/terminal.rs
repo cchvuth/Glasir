@@ -282,15 +282,8 @@ impl Terminals {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
-    fn wait(what: &str, mut f: impl FnMut() -> bool) {
-        let t = Instant::now();
-        while !f() {
-            assert!(t.elapsed() < Duration::from_secs(30), "timed out waiting for {what}");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
+    use crate::repo::testutil::wait_for as wait;
 
     fn screen(s: &Session) -> String {
         let t = s.term.lock();
@@ -312,7 +305,7 @@ mod tests {
         let name = dir.file_name().unwrap().to_string_lossy().into_owned();
         assert!(screen(s).contains(&name), "{}", screen(s));
         wait("prompt", || !s.busy());
-        s.write(&b"sleep 5\r"[..]);
+        s.write(&b"sleep 60\r"[..]); // ^C ends it: long enough to be seen busy on a loaded machine
         wait("busy", || s.busy());
         s.write(&b"\x03"[..]);
         wait("idle", || !s.busy());

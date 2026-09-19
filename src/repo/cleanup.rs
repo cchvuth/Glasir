@@ -269,15 +269,11 @@ mod tests {
 
     fn scanned(ctx: &egui::Context, t: &mut RepoTab) {
         t.apply(ctx, Action::Cleanup);
-        for _ in 0..1000 {
+        super::super::testutil::wait_for("the scan", || {
             settle(ctx, t);
             let c = t.cleanup.as_ref().unwrap();
-            if c.rows.is_some() && (!c.prune || c.stale_refs.is_some()) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        panic!("scan didn't finish");
+            c.rows.is_some() && (!c.prune || c.stale_refs.is_some())
+        });
     }
 
     /// `(name, group, note, pre-selected)` of the rows shown with a 90-day stale period.

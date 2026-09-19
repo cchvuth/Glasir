@@ -27,17 +27,23 @@ pub(super) fn commit(dir: &Path, file: &str, text: &str) {
     sh(dir, &["commit", "-q", "-m", text]);
 }
 
+/// Polls `done` until it holds; generous, for git on a loaded CI runner (Windows above all).
+pub(crate) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !done() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(120), "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Polls until the running op and the reload after it are done; returns the toasts.
 pub(super) fn settle(ctx: &egui::Context, t: &mut super::RepoTab) -> Vec<super::Msg> {
     let mut msgs = vec![];
-    for _ in 0..1000 {
+    wait_for("the op", || {
         t.poll(ctx, &mut msgs);
-        if t.running.is_none() && !t.loading() && t.data.is_some() && t.drop_task.is_none() {
-            return msgs;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("op didn't finish");
+        t.running.is_none() && !t.loading() && t.data.is_some() && t.drop_task.is_none()
+    });
+    msgs
 }
 
 /// Tests: runs `op` with its backup, as the app does; the files it changed.

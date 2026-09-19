@@ -139,12 +139,11 @@ mod tests {
         t.coauthors = vec![("Ann".into(), "ann@x.io".into())];
         t.run(&ctx, t.commit_op());
         let msgs = settle(&ctx, &mut t);
-        if cfg!(unix) {
-            assert!(msgs.iter().any(|m| m.error), "hook must fail the commit");
-            assert_eq!(t.summary, "feat: two");
-            assert_eq!(sh(&a, &["rev-list", "--count", "HEAD"]).trim(), "1");
-            t.no_verify = true;
-        }
+        // Git for Windows runs a hook without an exec bit too.
+        assert!(msgs.iter().any(|m| m.error), "hook must fail the commit");
+        assert_eq!(t.summary, "feat: two");
+        assert_eq!(sh(&a, &["rev-list", "--count", "HEAD"]).trim(), "1");
+        t.no_verify = true;
         t.push_after = true;
         t.run(&ctx, t.commit_op());
         settle(&ctx, &mut t);

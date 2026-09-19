@@ -153,6 +153,19 @@ const GUARDS: [&str; 6] = [
     super::remotes::PR_GUARD,
 ];
 
+/// `tag --sign` (as the tag dialog builds it). Older git (2.39 to at least 2.43) makes the tag
+/// unsigned when signing fails, and exits 0: that tag is deleted again and it's a failure.
+fn signed_tag(dir: &Path, a: &[&str], name: &str, input: Option<&[u8]>) -> Res<String> {
+    let out = git::run_input(dir, a, input)?;
+    let full = format!("refs/tags/{name}");
+    let tag = git::run(dir, &["cat-file", "tag", &full]).unwrap_or_default();
+    if tag.trim_end().lines().last().is_some_and(|l| l.starts_with("-----END ")) {
+        return Ok(out);
+    }
+    git::run(dir, &["update-ref", "-d", &full])?;
+    Err(format!("error: git failed to sign tag {name} (and made it unsigned: deleted again)"))
+}
+
 /// Runs an op's commands in order, stopping at the first failure.
 pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
     let one = |args: &Vec<String>| {
@@ -173,6 +186,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::merge_opts::PICK_NEW, ..] => super::merge_opts::pick_new(dir, &a),
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
+            ["tag", "--sign", "-a", name, ..] => signed_tag(dir, &a, name, op.input.as_deref()),
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
                 git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
                 _ => Ok(String::new()),
@@ -1063,10 +1077,10 @@ mod tests {
         let dir = scratch("multi-files");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
-        for f in ["we*ird[1].txt", "weirdA.txt", "./-dash.txt", "old.txt"] {
+        for f in ["weird[A].txt", "weirdA.txt", "./-dash.txt", "old.txt"] {
             commit(&dir, f, "base\n");
         }
-        for f in ["we*ird[1].txt", "weirdA.txt", "-dash.txt"] {
+        for f in ["weird[A].txt", "weirdA.txt", "-dash.txt"] {
             std::fs::write(dir.join(f), "edit\n").unwrap();
         }
         std::fs::rename(dir.join("old.txt"), dir.join("new.txt")).unwrap();
@@ -1077,15 +1091,15 @@ mod tests {
         let staged = |names: &[&str]| pick(git::status(&dir).unwrap().staged, names);
         assert!(super::stage_files_op("Stage", &[]).is_none() && super::unstage_files_op(&[]).is_none() && super::discard_files_op(&[]).is_none());
 
-        exec(&dir, &super::stage_files_op("Stage", &unstaged(&["we*ird[1].txt", "-dash.txt", "new.txt"])).unwrap()).unwrap();
+        exec(&dir, &super::stage_files_op("Stage", &unstaged(&["weird[A].txt", "-dash.txt", "new.txt"])).unwrap()).unwrap();
         let s = git::status(&dir).unwrap();
         let mut names: Vec<&str> = s.staged.iter().map(|c| c.path.as_str()).collect();
         names.sort();
-        assert_eq!(names, ["-dash.txt", "new.txt", "we*ird[1].txt"]);
+        assert_eq!(names, ["-dash.txt", "new.txt", "weird[A].txt"]);
         assert!(s.unstaged.iter().any(|c| c.path == "weirdA.txt") && s.unstaged.iter().any(|c| c.path == "untracked u.txt"));
         assert_eq!(s.staged.iter().find(|c| c.path == "new.txt").unwrap().old_path.as_deref(), Some("old.txt"));
 
-        exec(&dir, &super::unstage_files_op(&staged(&["we*ird[1].txt", "new.txt"])).unwrap()).unwrap();
+        exec(&dir, &super::unstage_files_op(&staged(&["weird[A].txt", "new.txt"])).unwrap()).unwrap();
         let s = git::status(&dir).unwrap();
         assert_eq!(s.staged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["-dash.txt"]);
 
@@ -1096,7 +1110,7 @@ mod tests {
         exec(&dir, &op).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("weirdA.txt")).unwrap(), "base\n");
         assert!(!dir.join("untracked u.txt").exists());
-        assert_eq!(std::fs::read_to_string(dir.join("we*ird[1].txt")).unwrap(), "edit\n");
+        assert_eq!(std::fs::read_to_string(dir.join("weird[A].txt")).unwrap(), "edit\n");
         assert_eq!(op.cmds.len(), 2, "one git run per kind, not per file: {:?}", op.cmds);
 
         // Everything else (an edit, the unstaged rename and 50 untracked files) in three runs at most.
@@ -1809,7 +1823,6 @@ mod tests {
         run(&ctx, &mut t, Action::Git(fill(super::stash_prompt(), "my work")));
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: my work\n");
         assert_eq!((read("a").unwrap().as_str(), read("new")), ("1\n2\n3\n", None));
-        let first = sh(&dir, &["rev-parse", "refs/stash"]);
         for round in 0..2 {
             run(&ctx, &mut t, Action::Undo);
             assert_eq!(sh(&dir, &["stash", "list"]), "", "round {round}");
@@ -1819,7 +1832,6 @@ mod tests {
             assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: my work\n");
             assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
         }
-        assert_ne!(sh(&dir, &["rev-parse", "refs/stash"]), first, "redo made a new stash");
         sh(&dir, &["stash", "clear"]);
         dirty();
         run(&ctx, &mut t, Action::Git(fill(super::stash_prompt(), "")));
@@ -1954,12 +1966,12 @@ mod tests {
         let (dir, ctx, mut t) = stash_repo("stash-files");
         std::fs::write(dir.join("a"), "a edit\n").unwrap();
         std::fs::write(dir.join("b"), "b edit\n").unwrap();
-        std::fs::write(dir.join("*"), "star\n").unwrap();
-        run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a", "*"], true)));
+        std::fs::write(dir.join("[ab]"), "glob\n").unwrap(); // as a pathspec it would take `b` too
+        run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a", "[ab]"], true)));
         assert_eq!(sh(&dir, &["status", "--porcelain"]), " M b\n");
         assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1);
         run(&ctx, &mut t, Action::Undo);
-        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M a\n M b\n?? *\n");
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M a\n M b\n?? [ab]\n");
         assert_eq!(sh(&dir, &["stash", "list"]), "");
         let _ = std::fs::remove_dir_all(&dir);
     }

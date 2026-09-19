@@ -404,7 +404,7 @@ mod tests {
         let msgs = settle(&ctx, &mut t);
         assert!(msgs.iter().any(|m| m.text.contains("Restacked b, c")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
         assert_eq!(subjects(&dir, "c"), "c b a base m0");
-        assert_eq!(sh(&dir, &["show", "c:a"]), "a fixed\n");
+        assert_eq!(sh(&dir, &["show", "c:a", "--"]), "a fixed\n");
         assert_eq!(sh(&dir, &["symbolic-ref", "--short", "HEAD"]), "a\n");
         assert_eq!(std::fs::read_to_string(dir.join("wip")).unwrap(), "untracked\n");
         let d = t.data.as_ref().unwrap();
@@ -431,9 +431,10 @@ mod tests {
         assert_eq!(subjects(&dir, "c"), "c b a reworded base m0");
         assert_eq!(sh(&dir, &["rev-parse", "b~1"]), sh(&dir, &["rev-parse", "a"]));
         assert_eq!(subjects(&dir, "a"), "a reworded base m0");
-        // A rebase whose range takes in main's tip too must leave main itself alone.
+        // A rebase whose range takes in main's tip too must leave main itself alone (--signoff:
+        // new commits even within the same second).
         let a = sh(&dir, &["rev-parse", "a"]);
-        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "--force-rebase", "main~1"]).undo(Undo::Keep)));
+        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "--force-rebase", "--signoff", "main~1"]).undo(Undo::Keep)));
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "main"]), main);
         assert_ne!(sh(&dir, &["rev-parse", "a"]), a);

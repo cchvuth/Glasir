@@ -350,7 +350,8 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
     let whole = legs.iter().enumerate().filter(|(i, _)| !partial.iter().any(|(p, _)| p == i));
     let unresolve: Vec<&str> = whole.flat_map(|(_, l)| l.1.unmerged.iter().map(String::as_str)).filter(|p| written.contains(p)).collect();
     if !unresolve.is_empty() && git::git_dir(dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting)) {
-        let _ = git::run(dir, &[&["update-index", "--unresolve", "--"], &unresolve[..]].concat());
+        // No `--`: `--unresolve` takes every argument after it as a path (git < 2.43 `--` too).
+        let _ = git::run(dir, &[&["update-index", "--unresolve"], &unresolve[..]].concat());
     }
     let msg = format!("Glasir: {label}");
     let mut kept = BTreeSet::new();
@@ -793,14 +794,18 @@ mod tests {
         let probe = Op::new("Probe", &[super::super::tools::SHELL, "git for-each-ref refs/glasir/backups/ > ../probe-refs.txt; git checkout -- keep"]).light().backup(Backup::Paths(vec!["keep".into()]));
         step(&ctx, &mut t, Action::Git(probe));
         let out = dir.parent().unwrap().join("probe-refs.txt");
-        assert_eq!(std::fs::read_to_string(&out).unwrap().lines().count(), 1);
+        // Windows PowerShell writes UTF-16.
+        let refs: Vec<u8> = std::fs::read(&out).unwrap().into_iter().filter(|b| *b != 0).collect();
+        assert_eq!(String::from_utf8_lossy(&refs).matches("refs/glasir/backups/").count(), 1);
         let _ = std::fs::remove_file(out);
         assert_eq!(backups(&dir), 2);
         // Refused up front (a name git can't store): no ref at all; refused by its guard: none either.
-        std::fs::write(dir.join("git~1"), "x").unwrap();
-        let msgs = step(&ctx, &mut t, clean("git~1"));
-        assert!(msgs.iter().any(|m| m.contains("Nothing was changed")), "{msgs:?}");
-        std::fs::remove_file(dir.join("git~1")).unwrap();
+        if cfg!(not(windows)) {
+            std::fs::write(dir.join("git~1"), "x").unwrap();
+            let msgs = step(&ctx, &mut t, clean("git~1"));
+            assert!(msgs.iter().any(|m| m.contains("Nothing was changed")), "{msgs:?}");
+            std::fs::remove_file(dir.join("git~1")).unwrap();
+        }
         std::fs::write(dir.join("keep"), "edit 2\n").unwrap();
         let mut stale = reset_op(t.data.as_ref().unwrap(), &rev(&dir, "HEAD"), "--hard");
         stale.confirm = None;
@@ -1040,7 +1045,7 @@ mod tests {
         sh(&dir, &["commit", "-q", "-m", "init"]);
         write("v2\n");
         let f = run_backed(&dir, &Op::new("Discard all", &["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true })).unwrap().unwrap();
-        assert_eq!(sh(&dir, &["show", &format!("{}:{long}/f11999", f.before.commit)]), "v2\n");
+        assert_eq!(sh(&dir, &["show", &format!("{}:{long}/f11999", f.before.commit), "--"]), "v2\n");
         assert_eq!(read(&dir, &format!("{long}/f11999")).as_deref(), Some("v1\n"));
         undo_files(&dir, &f).unwrap();
         assert_eq!(read(&dir, &format!("{long}/f11999")).as_deref(), Some("v2\n"));
@@ -1383,6 +1388,7 @@ mod tests {
 
     /// An untracked file with a name git won't index (`git~1`) refuses its discard, so
     /// a restore that fails partway can't lose it.
+    #[cfg(not(windows))] // there `git~1` is .git's 8.3 short name: no such file can exist
     #[test]
     fn discard_refuses_a_name_git_cannot_store() {
         let dir = repo("undo-unstorable");

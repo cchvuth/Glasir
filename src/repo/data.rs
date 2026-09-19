@@ -354,14 +354,12 @@ impl RepoData {
     /// `on_remote` once git has answered.
     pub fn on_remote_now(&self, sha: &str, remote: &str) -> bool {
         let ctx = egui::Context::default();
-        for _ in 0..1000 {
-            let v = self.on_remote(&ctx, sha, remote);
-            if !self.asked.lock().unwrap().get(&(sha.into(), remote.into())).is_some_and(Result::is_err) {
-                return v;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        panic!("git never answered");
+        let mut v = false;
+        super::testutil::wait_for("git", || {
+            v = self.on_remote(&ctx, sha, remote);
+            !self.asked.lock().unwrap().get(&(sha.into(), remote.into())).is_some_and(Result::is_err)
+        });
+        v
     }
 }
 

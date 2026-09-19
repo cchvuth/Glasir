@@ -587,7 +587,7 @@ mod close_tests {
         let wait = |what: &str, f: &dyn Fn() -> bool| {
             let t = std::time::Instant::now();
             while !f() {
-                assert!(t.elapsed().as_secs() < 30, "timed out waiting for {what}");
+                assert!(t.elapsed().as_secs() < 120, "timed out waiting for {what}");
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
         };
@@ -627,7 +627,7 @@ mod close_tests {
         };
         let t = std::time::Instant::now();
         while app.tabs[0].data.is_none() || app.tabs[0].loading() {
-            assert!(t.elapsed().as_secs() < 30, "timed out loading the repo");
+            assert!(t.elapsed().as_secs() < 120, "timed out loading the repo");
             step(&mut app);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }

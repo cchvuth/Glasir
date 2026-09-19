@@ -909,6 +909,7 @@ mod tests {
     }
 
     /// A name git won't store (`git~1`) is never discarded: no backup could hold it.
+    #[cfg(not(windows))] // there `git~1` is .git's 8.3 short name: no such file can exist
     #[test]
     fn a_name_git_cannot_store_is_not_discarded() {
         let (dir, ctx, mut t, _) = split_repo("split-unstorable");
@@ -1098,7 +1099,11 @@ mod tests {
             step(&ctx, &mut t, Action::Split(sh(&dir, &["rev-parse", if older { "HEAD~1" } else { "HEAD" }]).trim().into()));
             std::fs::write(dir.join("Notes"), "PRECIOUS5").unwrap();
             step(&ctx, &mut t, Action::Reload);
-            if let Some(c) = t.data.as_ref().unwrap().status.unstaged.iter().find(|c| c.path.eq_ignore_ascii_case("notes")).cloned() {
+            // The change holding the edit: `notes` on a case-insensitive disk; on a case-sensitive
+            // one `notes` is a deletion and the edit is the untracked `Notes`.
+            let unstaged = &t.data.as_ref().unwrap().status.unstaged;
+            let edit = unstaged.iter().find(|c| c.path == "Notes").or_else(|| unstaged.iter().find(|c| c.path.eq_ignore_ascii_case("notes")));
+            if let Some(c) = edit.cloned() {
                 let mut o = crate::repo::discard_op(&c);
                 o.confirm = None;
                 step(&ctx, &mut t, Action::Git(o));

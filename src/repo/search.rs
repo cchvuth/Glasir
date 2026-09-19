@@ -385,13 +385,10 @@ mod tests {
         let mut s = Search::open(dir.to_path_buf());
         (s.query, s.filter) = (query.into(), filter);
         s.poll(&ctx, d);
-        for _ in 0..1000 {
-            if !s.running() && s.building.is_none() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+        crate::repo::testutil::wait_for("the search", || {
             s.poll(&ctx, d);
-        }
+            !s.running() && s.building.is_none()
+        });
         assert_eq!(s.error, None);
         s
     }
@@ -422,7 +419,7 @@ mod tests {
             sh(&dir, &["commit", "-q", "-m", msg]);
         };
         put("a.txt", "fn alpha() {}\n", "Add alpha");
-        put("*.txt", "star\n", "Add star");
+        put("[ab].txt", "glob\n", "Add glob");
         put("b.txt", "beta\n", "Add beta");
         put("a.txt", "fn alpha() {}\nfn gamma() {}\n", "Add gamma");
         sh(&dir, &["commit", "-q", "--allow-empty", "-m", "Tidy", "-m", "Mentions Needle in the body"]);
@@ -430,7 +427,7 @@ mod tests {
         let d = load_all(&dir, 2, View::default()).unwrap();
         assert!(d.truncated);
         assert_eq!(search(&dir, &d, "path:a.txt"), ["Add gamma", "Add alpha"]);
-        assert_eq!(search(&dir, &d, "path:*.txt"), ["Add star"], "pathspecs are literal");
+        assert_eq!(search(&dir, &d, "path:[ab].txt"), ["Add glob"], "pathspecs are literal");
         assert_eq!(search(&dir, &d, "code:gamma()"), ["Add gamma"]);
         assert_eq!(search(&dir, &d, "code:GAMMA"), ["Add gamma"], "case-insensitive by default");
         assert_eq!(search(&dir, &d, "path:a.txt alpha"), ["Add alpha"], "free text narrows operators");

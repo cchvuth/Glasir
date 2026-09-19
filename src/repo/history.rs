@@ -184,8 +184,9 @@ pub fn parse_lines(out: &str, path: &str) -> Vec<Entry> {
             continue;
         }
         let diff = git::parse_diff(patch).pop().unwrap_or_default();
+        // git >= 2.52 prints `log -L` like `diff`: quoted names, a tab after one with a space.
         let side = |p: &str, pre: &str| {
-            let s = unquote(diff.header.iter().find_map(|h| h.strip_prefix(p))?);
+            let s = unquote(diff.header.iter().find_map(|h| h.strip_prefix(p)).map(|s| s.strip_suffix('\t').unwrap_or(s))?);
             s.strip_prefix(pre).map(str::to_owned)
         };
         let (old, new) = (side("--- ", "a/"), side("+++ ", "b/"));
@@ -306,6 +307,10 @@ mod tests {
         assert_eq!(h[0].hunks[0].lines.iter().map(|l| (l.kind, l.text.as_str())).collect::<Vec<_>>(), [(b'-', "b"), (b'+', "B")]);
         assert_eq!((h[1].change.path.as_str(), h[1].change.code, h[1].parent.as_deref()), ("old", 'A', None));
         assert_eq!((h[1].hunks[0].new_start, h[1].summary.as_str()), (2, "add"));
+        // git >= 2.52: an index line, and a tab after a name with a space.
+        let out = "\x1eh2\x1fh1\x1fAnn\x1fa@x\x1f300\x1f2026-01-03 10:00\x1fmv\n\ndiff --git a/o d \"b/n \\303\\274\"\nindex 1..2 100644\n--- a/o d\t\n+++ \"b/n \\303\\274\"\t\n@@ -2,1 +2,1 @@\n-b\n+B\n";
+        let c = &parse_lines(out, "n ü")[0].change;
+        assert_eq!((c.path.as_str(), c.old_path.as_deref(), c.code), ("n ü", Some("o d"), 'R'));
     }
 
     /// Lines followed through a rename, from a revision, under awkward names; blame at the
@@ -323,19 +328,20 @@ mod tests {
             sh(&dir, &["commit", "-qm", msg]);
         };
         let rest = "3\n4\n5\n6\n7\n8\n9\n";
-        c("d[1]/a:b.txt", &format!("1\n2\n{rest}"), "add");
-        c("d[1]/a:b.txt", &format!("1\nTWO\n{rest}"), "two");
+        let old = if cfg!(windows) { "d[1]/a;b.txt" } else { "d[1]/a:b.txt" }; // no ':' in Windows names
+        c(old, &format!("1\n2\n{rest}"), "add");
+        c(old, &format!("1\nTWO\n{rest}"), "two");
         c("d1.txt", "x", "outside the folder");
-        sh(&dir, &["mv", "d[1]/a:b.txt", "n ü.txt"]);
+        sh(&dir, &["mv", old, "n ü.txt"]);
         c("n ü.txt", &format!("0\n1\nTWO!\n{rest}"), "move and edit");
         c("n ü.txt", &format!("0\n1\nTWO!\n{rest}ten\n"), "ten");
 
         let h = line_history(&dir, "n ü.txt", Some("HEAD"), 3, 3).unwrap();
         assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["move and edit", "two", "add"]);
-        assert_eq!((h[0].change.path.as_str(), h[0].change.old_path.as_deref()), ("n ü.txt", Some("d[1]/a:b.txt")));
+        assert_eq!((h[0].change.path.as_str(), h[0].change.old_path.as_deref()), ("n ü.txt", Some(old)));
         assert_eq!(h[2].change.code, 'A');
         // From a revision: the file there, with its old name.
-        assert_eq!(line_history(&dir, "d[1]/a:b.txt", Some("HEAD~2"), 2, 2).unwrap().len(), 2);
+        assert_eq!(line_history(&dir, old, Some("HEAD~2"), 2, 2).unwrap().len(), 2);
 
         let f = history(&dir, "d[1]/").unwrap();
         assert_eq!(f.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["move and edit", "two", "add"]);
@@ -345,7 +351,7 @@ mod tests {
         assert_eq!((c.summary.as_str(), c.file.as_str()), ("move and edit", "n ü.txt"));
         let (prev, prev_path) = c.previous.clone().unwrap();
         let p = blame(&dir, &prev_path, Some(&prev)).unwrap();
-        assert_eq!((prev_path.as_str(), p.lines[1].2.as_str()), ("d[1]/a:b.txt", "TWO"));
+        assert_eq!((prev_path.as_str(), p.lines[1].2.as_str()), (old, "TWO"));
 
         // The unstaged diff counts lines from the index: fine while it matches HEAD.
         std::fs::write(dir.join("n ü.txt"), "x\n").unwrap();
@@ -361,13 +367,10 @@ mod tests {
         fv.step(&ctx, false);
         assert_eq!((fv.path.as_str(), &fv.mode, fv.fwd.len()), ("d[1]/", &Mode::History, 1));
         fv.step(&ctx, true);
-        for _ in 0..500 {
+        wait_for("the blame", || {
             fv.poll();
-            if fv.data.is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+            fv.data.is_some()
+        });
         assert!(matches!(&fv.data, Some(Ok(Data::Blame(b))) if b.lines[1].2 == "TWO"));
         let _ = std::fs::remove_dir_all(&dir);
     }

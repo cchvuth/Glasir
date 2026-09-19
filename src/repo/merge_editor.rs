@@ -805,8 +805,11 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "edited\n");
-        // The conflict comes back too, not a staged deletion beside an untracked copy.
-        assert_eq!(sh(&dir, &["status", "--porcelain"]), "DU f\n");
+        // The conflict comes back too, not a staged deletion beside an untracked copy; git 2.39
+        // can't unresolve a path resolved by its removal (2.43 can): the file is back, untracked.
+        let v = sh(&dir, &["--version"]);
+        let old = v.split_whitespace().nth(2).and_then(|v| v.split('.').nth(1)?.parse::<u32>().ok()).is_some_and(|minor| minor < 43);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), if old { "?? f\n" } else { "DU f\n" });
         // Once the merge is committed, the file comes back untracked: no conflict without a merge.
         let [del, _] = whole_ops("f", &load(&dir, "f"));
         t.apply(&ctx, Action::Git(del));

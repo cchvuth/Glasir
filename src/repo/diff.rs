@@ -402,7 +402,9 @@ mod tests {
     fn large_diff_guard() {
         let dir = repo("large");
         let text = |x: &str| (0..6000).map(|i| format!("{x}{i}\n")).collect::<String>();
-        commit(&dir, "f", &text("a"));
+        std::fs::write(dir.join("f"), text("a")).unwrap();
+        sh(&dir, &["add", "f"]);
+        sh(&dir, &["commit", "-qm", "f"]); // not the text: Windows caps a command line at 32K
         std::fs::write(dir.join("f"), text("b")).unwrap();
         std::fs::write(dir.join("u"), text("c")).unwrap();
         let c = |p: &str, code| git::Change { path: p.into(), old_path: None, code };
@@ -446,13 +448,10 @@ mod tests {
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
         let wait = |t: &mut RepoTab| {
-            for _ in 0..1000 {
+            super::super::testutil::wait_for("the diff", || {
                 settle(&ctx, t);
-                if t.info_task.is_none() && !t.diff.as_ref().is_some_and(DiffState::loading) {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+                t.info_task.is_none() && !t.diff.as_ref().is_some_and(DiffState::loading)
+            });
         };
         t.apply(&ctx, Action::Select(super::super::Sel::Compare { from: "HEAD".into(), to: git::WORKTREE.into(), three_dot: false }));
         wait(&mut t);
