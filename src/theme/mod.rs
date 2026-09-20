@@ -175,6 +175,11 @@ pub fn selection(ui: &Ui) -> Color32 {
     let a = accent();
     Color32::from_rgba_unmultiplied(a.r(), a.g(), a.b(), if dark(ui) { 70 } else { 45 })
 }
+/// Text colour that reads on a solid fill of `c`: white, or dark ink on a light fill.
+pub fn on_color(c: Color32) -> Color32 {
+    let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+    if l > 135.0 { Color32::from_rgb(0x10, 0x14, 0x1c) } else { Color32::WHITE }
+}
 pub fn hover(ui: &Ui) -> Color32 {
     if dark(ui) { Color32::from_white_alpha(10) } else { Color32::from_black_alpha(9) }
 }

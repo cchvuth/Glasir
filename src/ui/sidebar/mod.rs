@@ -40,7 +40,7 @@ fn pinned_separator(ui: &mut Ui, d: &RepoData, i: usize, names: &[&str]) {
     }
 }
 
-/// A sidebar row. The current one (HEAD's branch, this worktree) gets a soft
+/// A sidebar row. The current one (the picked stash) gets a soft
 /// accent tint and keeps the normal text colour: egui's selected style uses
 /// white text, which frameless rows show on the light themes' pale background.
 pub(super) fn row(ui: &Ui, current: bool, text: RichText) -> egui::Button<'static> {
@@ -49,6 +49,16 @@ pub(super) fn row(ui: &Ui, current: bool, text: RichText) -> egui::Button<'stati
     } else {
         egui::Button::new(text).frame_when_inactive(false)
     }
+}
+
+/// HEAD's row (its branch, this worktree, a detached HEAD): a solid accent capsule like its pill in
+/// the graph. `styled`: text already coloured (a hidden or solo branch), kept on a soft tint instead.
+pub(super) fn head_row(ui: &Ui, text: RichText, styled: bool) -> egui::Button<'static> {
+    let a = theme::accent();
+    if styled {
+        return egui::Button::new(text).fill(theme::selection(ui));
+    }
+    egui::Button::new(text.color(theme::on_color(a))).fill(a).stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)))
 }
 
 /// Stacked branches right under their parent, with their depth (`repo::stack`).
@@ -104,9 +114,18 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
         let rows = if f.is_empty() { stacked(d, &locals) } else { locals.iter().map(|r| (*r, 0)).collect() };
         let names: Vec<&str> = rows.iter().map(|r| r.0.name.as_str()).collect();
         section(ui, "LOCAL", locals.len(), |ui| {
+            // Detached: no branch row is current, so HEAD gets its own. Mid-rebase (etc.) that is normal, not a warning.
+            if let (None, Some(h), true) = (&d.status.branch, &d.status.head, f.is_empty()) {
+                let (sha, clean) = (&h[..h.len().min(7)], d.state == crate::git::State::Clean);
+                let text = RichText::new(format!("{}  {} {sha}", icon::MAP_PIN, if clean { "detached" } else { "HEAD" })).strong();
+                let tip = if clean { format!("Detached HEAD at {sha}: commits made here are easy to lose") } else { format!("HEAD at {sha}, while an operation is in progress") };
+                if ui.add(head_row(ui, text, false)).on_hover_text(tip).clicked() {
+                    acts.push(Action::Jump(h.clone()));
+                }
+            }
             for (i, (r, depth)) in rows.iter().copied().enumerate() {
                 pinned_separator(ui, d, i, &names);
-                let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
+                let glyph = if r.head { icon::MAP_PIN } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
                 let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
                 let mut text = format!("{indent}{glyph} {}", r.name);
                 if depth == 0 && !stack::children(d, &r.name).is_empty() {
@@ -125,10 +144,15 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                 if r.head {
                     rt = rt.strong();
                 }
-                let resp = ui.add(row(ui, r.head, view_style(ui, d, r, rt)));
+                let styled = d.view.solo.contains(&r.full) || !d.view.shows(&r.full);
+                let rt = view_style(ui, d, r, rt);
+                let resp = ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) });
                 branch_dnd(ui, &resp, &r.name, &r.full, acts);
                 hover_ref(ui, &resp, &r.target);
                 let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
+                if r.head {
+                    tip += "\nCurrent branch (HEAD)";
+                }
                 if let Some(p) = stack::parent(d, &r.name) {
                     tip += &format!("\nStacked on {p}");
                     if stack::stale(d, &r.name) {

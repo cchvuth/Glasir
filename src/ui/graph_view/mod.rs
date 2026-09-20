@@ -51,12 +51,21 @@ fn corner(pts: &mut Vec<Pos2>, a: Pos2, c: Pos2, b: Pos2) {
 
 fn ref_label(r: &Ref) -> String {
     match r.kind {
-        RefKind::Local if r.head => format!("{}  {}", icon::CHECK, r.name),
+        RefKind::Local if r.head => format!("{}  {}", icon::MAP_PIN, r.name),
         RefKind::Local if r.worktree.is_some() => format!("{}  {}", icon::TREE_STRUCTURE, r.name),
         RefKind::Local => format!("{}  {}", icon::GIT_BRANCH, r.name),
         RefKind::Remote => format!("{}  {}", icon::CLOUD, r.name),
         RefKind::Tag => format!("{}  {}", icon::TAG, r.name),
     }
+}
+
+/// A small capsule of `fg` text on `bg` at `x`; returns where the next thing starts.
+fn chip(p: &egui::Painter, x: f32, y: f32, text: &str, fg: Color32, bg: Color32) -> f32 {
+    let g = p.layout_no_wrap(text.to_owned(), FontId::proportional(10.5), fg);
+    let tag = Rect::from_min_size(pos2(x, y - 9.0), vec2(g.size().x + 12.0, 18.0));
+    p.rect_filled(tag, 9.0, bg);
+    p.galley(tag.center() - g.size() / 2.0, g, fg);
+    tag.right() + 6.0
 }
 
 /// `all`: the loaded history; the graph shows the search hits instead while they filter it.
@@ -108,6 +117,11 @@ pub fn show(
     // Reachability, links and menus ask the full history: the filtered graph lacks the commits between hits.
     // A hit older than the loaded page isn't in `all`: a complete ancestry rules it out, else git is asked.
     let full_row = |r: usize| if filtered.is_none() { Some(r) } else { d.commit(r).and_then(|c| all.row_of.get(&c.id).copied()) };
+    // HEAD: its row gets an outline + bar (the selection is a fill), a glowing node and a branch pill
+    // marked HEAD; detached, a solid "detached HEAD" chip before the message instead of the pill.
+    let head_row = d.status.head.as_deref().and_then(|h| d.row_of.get(h)).copied();
+    let detached = d.status.branch.is_none();
+    let hc = theme::accent();
     let tip = hovered_ref(ui);
     let reach = tip.as_ref().and_then(|t| all.row_of.get(t).copied()).map(|r| all.reachable(r));
     let complete = filtered.is_some() && reach.as_ref().is_some_and(|v| !all.graph.has_unloaded_parent(v));
@@ -204,6 +218,7 @@ pub fn show(
     }
     gx = gx.clamp(0.0, max_gx);
     let mut visible = 0..0;
+    let mut row0 = 0.0; // screen y of row 0's top
     ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         egui::ScrollArea::vertical().id_salt(("graph", &d.git_dir)).auto_shrink(false).show_rows(ui, ROW, n, |ui, range| {
@@ -212,6 +227,7 @@ pub fn show(
             let x = |c: u16| x_graph + 8.0 + c as f32 * LANE + LANE / 2.0 - gx;
             let left = full.left();
             visible = range.clone();
+            row0 = top;
 
             if let Some(r) = scroll_to.take() {
                 let rect = Rect::from_min_size(pos2(left, top + r as f32 * ROW), vec2(1.0, ROW));
@@ -227,6 +243,12 @@ pub fn show(
                 let resp = ui.interact(rect, ui.id().with(("row", r)), if commit.is_some() { Sense::click_and_drag() } else { Sense::click() });
                 let pill = rect.shrink2(vec2(2.0, 1.5));
                 let in_multi = commit.is_some_and(|c| multi.contains(&c.id));
+                if Some(r) == head_row {
+                    // Outline + bar, no fill: the selection is the fill, so HEAD and selected never look alike.
+                    let hc = if dims(r) { hc.gamma_multiply(0.3) } else { hc };
+                    ui.painter().rect_stroke(pill, 9.0, Stroke::new(1.5, hc.gamma_multiply(0.85)), egui::StrokeKind::Inside);
+                    ui.painter().rect_filled(Rect::from_min_size(pill.min + vec2(0.0, 4.0), vec2(4.0, pill.height() - 8.0)), 2.0, hc);
+                }
                 if Some(r) == sel_row || in_multi {
                     ui.painter().rect_filled(pill, 9.0, theme::selection(ui));
                 } else if resp.hovered() {
@@ -318,55 +340,76 @@ pub fn show(
                 let faded = dims(r);
                 let col = if faded { theme::lane(node.color).gamma_multiply(0.3) } else { theme::lane(node.color) };
                 let commit = d.commit(r);
+                let is_head = Some(r) == head_row;
+                let hc = if faded { hc.gamma_multiply(0.3) } else { hc };
+                if is_head {
+                    gp.circle_filled(c, 16.0, hc.gamma_multiply(0.12));
+                    gp.circle_filled(c, 13.5, hc.gamma_multiply(0.2));
+                    gp.circle_stroke(c, 12.5, Stroke::new(2.5, hc));
+                }
                 match commit {
                     None => {
                         gp.circle(c, 7.0, theme::bg(ui), Stroke::new(2.0, col));
                     }
                     Some(cm) if cm.parents.len() > 1 => {
-                        gp.circle_filled(c, 5.0, col);
+                        gp.circle_filled(c, if is_head { 7.0 } else { 5.0 }, col);
                     }
                     Some(cm) => {
-                        if head_id == Some(cm.id.as_str()) {
-                            gp.circle_stroke(c, 11.5, Stroke::new(2.0, col));
-                        }
+                        let rad = if is_head { 10.5 } else { 9.0 };
                         let a = if faded { 0.3 } else { 1.0 };
-                        gp.circle_filled(c, 9.0, theme::avatar(&cm.email).gamma_multiply(a));
+                        gp.circle_filled(c, rad, theme::avatar(&cm.email).gamma_multiply(a));
                         match avatars.get(&cm.email) {
-                            Some(t) => theme::photo(&gp, c, 9.0, &t, a),
+                            Some(t) => theme::photo(&gp, c, rad, &t, a),
                             None => {
                                 gp.text(c, Align2::CENTER_CENTER, initials(&cm.author), FontId::proportional(9.0), Color32::WHITE.gamma_multiply(a));
                             }
                         }
-                        gp.circle_stroke(c, 9.0, Stroke::new(1.5, col));
+                        gp.circle_stroke(c, rad, Stroke::new(1.5, col));
                     }
                 }
 
                 let mut stash_x = left + 6.0;
                 let ids = commit.and_then(|cm| d.refs_at.get(&cm.id));
                 if let Some(ids) = ids.filter(|v| !v.is_empty()) {
-                    let rf = &d.refs[ids[0]];
+                    // The checked-out branch leads the pills.
+                    let rf = ids.iter().map(|&i| &d.refs[i]).find(|r| r.head && r.kind == RefKind::Local).unwrap_or(&d.refs[ids[0]]);
+                    let head_pill = rf.head && rf.kind == RefKind::Local;
                     let more = ids.len() - 1;
-                    let label = ref_label(rf);
-                    let font = FontId::proportional(12.0);
-                    let label_col = if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
-                    let g = painter.layout_no_wrap(label, font.clone(), label_col);
                     let extra = if more > 0 { 26.0 } else { 0.0 };
-                    let w = (g.size().x + 14.0).min(refs_w - 16.0 - extra).max(10.0);
+                    // HEAD's pill leads with a "HEAD" capsule (the name gets cut, not the capsule);
+                    // a column too narrow for it still gets the pin glyph instead of the branch one.
+                    let cap_w = if head_pill && refs_w - 16.0 - extra >= 80.0 { 40.0 } else { 0.0 };
+                    let label = if cap_w > 0.0 { rf.name.clone() } else { ref_label(rf) };
+                    let font = FontId::proportional(12.0);
+                    let label_col = if head_pill { theme::on_color(theme::accent()).gamma_multiply(if faded { 0.6 } else { 1.0 }) } else if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
+                    let g = painter.layout_no_wrap(label, font.clone(), label_col);
+                    let w = (g.size().x + 14.0 + cap_w).min(refs_w - 16.0 - extra).max(10.0);
                     let pill = Rect::from_min_size(pos2(left + 6.0, y(r) - 10.0), vec2(w, 20.0));
                     // Node may be scrolled out of view; in a narrow column the pill can even
                     // end past the column's edge, so min/max rather than clamp (which panics).
                     let from = pill.right() + extra; // after the +N badge, not through it
                     let to = (c.x - 9.0).min(x_msg - 2.0).max(from);
-                    painter.line_segment([pos2(from, y(r)), pos2(to, y(r))], Stroke::new(1.5, col.gamma_multiply(0.7)));
+                    let line = if head_pill { Stroke::new(2.5, hc) } else { Stroke::new(1.5, col.gamma_multiply(0.7)) };
+                    painter.line_segment([pos2(from, y(r)), pos2(to, y(r))], line);
                     let fill = match rf.kind {
+                        _ if head_pill => hc,
                         RefKind::Local => col.gamma_multiply(0.85),
                         RefKind::Remote => col.gamma_multiply(0.4),
                         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
                         RefKind::Tag => theme::tag(ui),
                     };
+                    if head_pill {
+                        // A crisp ring a gap away: sets it apart from a same-coloured lane pill.
+                        painter.rect_stroke(pill.expand(3.5), 13.5, Stroke::new(1.5, hc), egui::StrokeKind::Inside);
+                    }
                     painter.rect_filled(pill, 10.0, fill);
-                    painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
-                    painter.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0, y(r) - g.size().y / 2.0), g, label_col);
+                    painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(if head_pill { 110 } else { 45 })), egui::StrokeKind::Inside);
+                    if cap_w > 0.0 {
+                        let cap = Rect::from_min_size(pill.min + vec2(3.0, 3.0), vec2(cap_w - 6.0, 14.0));
+                        painter.rect_filled(cap, 7.0, label_col.gamma_multiply(0.22));
+                        painter.text(cap.center(), Align2::CENTER_CENTER, "HEAD", FontId::proportional(9.5), label_col);
+                    }
+                    painter.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0 + cap_w, y(r) - g.size().y / 2.0), g, label_col);
                     if more > 0 {
                         let b = Rect::from_min_size(pos2(pill.right() + 4.0, y(r) - 9.0), vec2(22.0, 18.0));
                         painter.rect_filled(b, 9.0, theme::faint(ui));
@@ -444,18 +487,19 @@ pub fn show(
                     }
                     Some(cm) => {
                         let text = if faded { text.gamma_multiply(0.35) } else { text };
-                        // Bisect: good / bad / skip marks, and the commit being tested.
+                        let mp = painter.with_clip_rect(msg_clip);
                         let mut x_text = x_msg + 8.0;
+                        // A detached HEAD has no branch pill to carry the HEAD mark: a chip before the message does.
+                        if Some(r) == head_row && detached {
+                            let t = if d.state == crate::git::State::Clean { "detached HEAD" } else { "HEAD" };
+                            x_text = chip(&mp, x_text, ty, t, theme::on_color(theme::accent()).gamma_multiply(if faded { 0.5 } else { 1.0 }), hc);
+                        }
+                        // Bisect: good / bad / skip marks, and the commit being tested.
                         if let Some(b) = &d.bisect
                             && let Some(m) = b.mark(&cm.id).or_else(|| (head_id == Some(cm.id.as_str()) && b.found().is_none()).then_some("testing"))
                         {
-                            let color = crate::ui::bisect::mark_color(m);
-                            let g = painter.layout_no_wrap(m.to_owned(), FontId::proportional(10.5), color);
-                            let tag = Rect::from_min_size(pos2(x_text, ty - 9.0), vec2(g.size().x + 12.0, 18.0));
-                            let mp = painter.with_clip_rect(msg_clip);
-                            mp.rect_filled(tag, 9.0, color.gamma_multiply(0.2));
-                            mp.galley(tag.center() - g.size() / 2.0, g, color);
-                            x_text = tag.right() + 6.0;
+                            let c = crate::ui::bisect::mark_color(m);
+                            x_text = chip(&mp, x_text, ty, m, c, c.gamma_multiply(0.2));
                         }
                         painter.with_clip_rect(msg_clip).text(pos2(x_text, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
                         let small = FontId::proportional(12.0);
@@ -501,6 +545,27 @@ pub fn show(
         let label = format!("{}  Load {} more commits", theme::icon::ARROW_DOWN, crate::repo::PAGE);
         if ui.put(btn, egui::Button::new(label).corner_radius(255).fill(theme::accent().gamma_multiply(0.85))).clicked() {
             acts.push(Action::LoadMore);
+        }
+    }
+    // HEAD scrolled out of view: a chip at the edge it lies beyond jumps back to it. It sits in
+    // the first / last whole row's date end, so it hides one row's date, not two messages.
+    if let Some(h) = head_row.filter(|h| !visible.is_empty() && !visible.contains(h)) {
+        let up = h < visible.start;
+        let name = d.status.branch.as_deref().map_or("HEAD (detached)".to_owned(), |b| format!("{b} (HEAD)"));
+        let text = format!("{}  {name}", if up { icon::ARROW_UP } else { icon::ARROW_DOWN });
+        let fg = theme::on_color(hc);
+        let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.5), fg);
+        let row = if up { ((body.top() - row0) / ROW).ceil() } else { ((body.bottom() - row0) / ROW).floor() - 1.0 };
+        let w = g.size().x + 28.0;
+        let chip = Rect::from_min_size(pos2(full.right() - 8.0 - w, row0 + row * ROW + (ROW - 22.0) / 2.0), vec2(w, 22.0));
+        let resp = ui.interact(chip, egui::Id::new(("head_chip", &d.git_dir)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Scroll to HEAD");
+        let p = ui.painter();
+        p.rect_filled(chip.translate(vec2(0.0, 2.0)).expand(1.0), 12.0, Color32::from_black_alpha(60));
+        p.rect_filled(chip, 11.0, if resp.hovered() { hc.lerp_to_gamma(Color32::WHITE, 0.2) } else { hc });
+        p.rect_stroke(chip, 11.0, Stroke::new(1.0, Color32::from_white_alpha(110)), egui::StrokeKind::Inside);
+        p.galley(chip.center() - g.size() / 2.0, g, fg);
+        if resp.clicked() {
+            *scroll_to = Some(h);
         }
     }
     let rail = Rect::from_x_y_ranges(full.right() + 2.0..=full.right() + 2.0 + RAIL_W, body.top() + 2.0..=body.bottom() - 2.0);

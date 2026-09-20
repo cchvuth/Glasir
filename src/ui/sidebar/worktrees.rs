@@ -33,7 +33,7 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
 
 fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bool, acts: &mut Vec<Action>) {
     let name = w.branch.clone().unwrap_or_else(|| format!("detached @ {}", &w.head[..w.head.len().min(7)]));
-    let mut label = format!("{} {name}", if current { icon::CHECK } else { icon::TREE_STRUCTURE });
+    let mut label = format!("{} {name}", if current { icon::MAP_PIN } else { icon::TREE_STRUCTURE });
     if w.changes > 0 {
         label += &format!("  {}{}", icon::PENCIL_SIMPLE, w.changes);
     }
@@ -50,7 +50,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         w.locked.as_ref().map_or(String::new(), |r| format!("\nLocked{}", if r.is_empty() { String::new() } else { format!(": {r}") })),
         if w.prunable { "\nMissing on disk (prune to clean up)" } else { "" }
     );
-    let resp = ui.add(super::row(ui, current, text)).on_hover_text(tip);
+    let resp = ui.add(if current { super::head_row(ui, text, false) } else { super::row(ui, false, text) }).on_hover_text(tip);
     if (resp.double_clicked() || resp.clicked()) && !current && !w.prunable {
         acts.push(Action::OpenTab(w.path.clone()));
     }

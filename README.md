@@ -63,6 +63,7 @@ The name fits a Git client:
 - **Hover a branch** to highlight its history and fade the rest.
 - **Hide / Solo** branches, **first-parent** view.
 - **Stashes** drawn next to the commit they were made on.
+- **Unmistakable HEAD**: the checked-out commit gets an accent outline and bar (never mistaken for the selection fill) with a glowing, larger node, its branch pill turns solid and ringed with a **HEAD** badge (a solid **detached HEAD** chip when detached), and the sidebar's current branch and worktree are matching solid capsules. Scrolled away, a chip ("↑ main (HEAD)") at the edge row jumps back to it.
 - **Minimap rail** with markers for HEAD, selection, WIP, search hits and branch tips.
 - **⌘F search across all history**, not just the loaded commits: free text matches message, author or SHA;
   operators `author:` `committer:` `message:` `path:` `code:` (added/removed) `regex:` (changed lines)
