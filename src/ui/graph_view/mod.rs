@@ -117,7 +117,7 @@ pub fn show(
     // Reachability, links and menus ask the full history: the filtered graph lacks the commits between hits.
     // A hit older than the loaded page isn't in `all`: a complete ancestry rules it out, else git is asked.
     let full_row = |r: usize| if filtered.is_none() { Some(r) } else { d.commit(r).and_then(|c| all.row_of.get(&c.id).copied()) };
-    // HEAD: a larger, bold, accent-coloured title, a ringed node and a branch pill marked HEAD;
+    // HEAD: a larger, bold, accent-coloured title and a branch pill marked HEAD;
     // detached, a solid "detached HEAD" chip before the message instead of the pill.
     let head_row = d.status.head.as_deref().and_then(|h| d.row_of.get(h)).copied();
     let detached = d.status.branch.is_none();
@@ -336,9 +336,6 @@ pub fn show(
                 let commit = d.commit(r);
                 let is_head = Some(r) == head_row;
                 let hc = if faded { hc.gamma_multiply(0.3) } else { hc };
-                if is_head {
-                    gp.circle_stroke(c, 12.0, Stroke::new(2.0, hc));
-                }
                 match commit {
                     None => {
                         gp.circle(c, 7.0, theme::bg(ui), Stroke::new(2.0, col));
@@ -391,7 +388,7 @@ pub fn show(
                         RefKind::Tag => theme::tag(ui),
                     };
                     painter.rect_filled(pill, 10.0, fill);
-                    painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(if head_pill { 110 } else { 45 })), egui::StrokeKind::Inside);
+                    painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
                     if cap_w > 0.0 {
                         let cap = Rect::from_min_size(pill.min + vec2(3.0, 3.0), vec2(cap_w - 6.0, 14.0));
                         painter.rect_filled(cap, 7.0, label_col.gamma_multiply(0.22));
