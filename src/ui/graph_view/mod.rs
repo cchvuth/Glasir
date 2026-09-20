@@ -117,8 +117,8 @@ pub fn show(
     // Reachability, links and menus ask the full history: the filtered graph lacks the commits between hits.
     // A hit older than the loaded page isn't in `all`: a complete ancestry rules it out, else git is asked.
     let full_row = |r: usize| if filtered.is_none() { Some(r) } else { d.commit(r).and_then(|c| all.row_of.get(&c.id).copied()) };
-    // HEAD: its row gets an outline + bar (the selection is a fill), a glowing node and a branch pill
-    // marked HEAD; detached, a solid "detached HEAD" chip before the message instead of the pill.
+    // HEAD: a larger, bold, accent-coloured title, a ringed node and a branch pill marked HEAD;
+    // detached, a solid "detached HEAD" chip before the message instead of the pill.
     let head_row = d.status.head.as_deref().and_then(|h| d.row_of.get(h)).copied();
     let detached = d.status.branch.is_none();
     let hc = theme::accent();
@@ -243,12 +243,6 @@ pub fn show(
                 let resp = ui.interact(rect, ui.id().with(("row", r)), if commit.is_some() { Sense::click_and_drag() } else { Sense::click() });
                 let pill = rect.shrink2(vec2(2.0, 1.5));
                 let in_multi = commit.is_some_and(|c| multi.contains(&c.id));
-                if Some(r) == head_row {
-                    // Outline + bar, no fill: the selection is the fill, so HEAD and selected never look alike.
-                    let hc = if dims(r) { hc.gamma_multiply(0.3) } else { hc };
-                    ui.painter().rect_stroke(pill, 9.0, Stroke::new(1.5, hc.gamma_multiply(0.85)), egui::StrokeKind::Inside);
-                    ui.painter().rect_filled(Rect::from_min_size(pill.min + vec2(0.0, 4.0), vec2(4.0, pill.height() - 8.0)), 2.0, hc);
-                }
                 if Some(r) == sel_row || in_multi {
                     ui.painter().rect_filled(pill, 9.0, theme::selection(ui));
                 } else if resp.hovered() {
@@ -343,9 +337,7 @@ pub fn show(
                 let is_head = Some(r) == head_row;
                 let hc = if faded { hc.gamma_multiply(0.3) } else { hc };
                 if is_head {
-                    gp.circle_filled(c, 16.0, hc.gamma_multiply(0.12));
-                    gp.circle_filled(c, 13.5, hc.gamma_multiply(0.2));
-                    gp.circle_stroke(c, 12.5, Stroke::new(2.5, hc));
+                    gp.circle_stroke(c, 12.0, Stroke::new(2.0, hc));
                 }
                 match commit {
                     None => {
@@ -398,10 +390,6 @@ pub fn show(
                         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
                         RefKind::Tag => theme::tag(ui),
                     };
-                    if head_pill {
-                        // A crisp ring a gap away: sets it apart from a same-coloured lane pill.
-                        painter.rect_stroke(pill.expand(3.5), 13.5, Stroke::new(1.5, hc), egui::StrokeKind::Inside);
-                    }
                     painter.rect_filled(pill, 10.0, fill);
                     painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(if head_pill { 110 } else { 45 })), egui::StrokeKind::Inside);
                     if cap_w > 0.0 {
@@ -501,7 +489,15 @@ pub fn show(
                             let c = crate::ui::bisect::mark_color(m);
                             x_text = chip(&mp, x_text, ty, m, c, c.gamma_multiply(0.2));
                         }
-                        painter.with_clip_rect(msg_clip).text(pos2(x_text, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
+                        if Some(r) == head_row {
+                            // HEAD's title: larger, in the accent colour, faux-bold (drawn twice, half a px apart).
+                            let (f, c) = (FontId::proportional(14.5), if faded { hc.gamma_multiply(0.35) } else { hc });
+                            for dx in [0.0, 0.6] {
+                                mp.text(pos2(x_text + dx, ty), Align2::LEFT_CENTER, &cm.summary, f.clone(), c);
+                            }
+                        } else {
+                            mp.text(pos2(x_text, ty), Align2::LEFT_CENTER, &cm.summary, body.clone(), text);
+                        }
                         let small = FontId::proportional(12.0);
                         painter.with_clip_rect(Rect::from_x_y_ranges(x_author..=(x_date - 8.0).max(x_author), msg_clip.y_range())).text(
                             pos2(x_author + 8.0, ty),
