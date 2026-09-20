@@ -350,8 +350,11 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
     let whole = legs.iter().enumerate().filter(|(i, _)| !partial.iter().any(|(p, _)| p == i));
     let unresolve: Vec<&str> = whole.flat_map(|(_, l)| l.1.unmerged.iter().map(String::as_str)).filter(|p| written.contains(p)).collect();
     if !unresolve.is_empty() && git::git_dir(dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting)) {
-        // No `--`: `--unresolve` takes every argument after it as a path (git < 2.43 `--` too).
-        let _ = git::run(dir, &[&["update-index", "--unresolve"], &unresolve[..]].concat());
+        // One path per run: before 2.43 one path git can't unresolve (resolved by deletion) made
+        // it write none. No `--`: `--unresolve` takes every argument after it as a path.
+        for p in unresolve {
+            let _ = git::run(dir, &["update-index", "--unresolve", p]);
+        }
     }
     let msg = format!("Glasir: {label}");
     let mut kept = BTreeSet::new();

@@ -1070,6 +1070,26 @@ mod tests {
     use super::{exec, Op};
     use crate::git;
 
+    /// A signing program that "succeeds" without a signature: old git (< 2.45) then makes the
+    /// tag unsigned and exits 0, newer git fails. Either way: an error and no tag left behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_tag_that_was_not_signed_is_not_kept() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("unsigned-tag");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n");
+        let fake = dir.join(".git/fake-gpg");
+        std::fs::write(&fake, "#!/bin/sh\ncat >/dev/null\nexit 0\n").unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sh(&dir, &["config", "gpg.program", &fake.to_string_lossy()]);
+        let r = super::signed_tag(&dir, &["tag", "-s", "-m", "m", "v1"], "v1", None);
+        assert!(r.is_err(), "{r:?}");
+        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/tags/v1"]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Multi-file stage / unstage / discard touch exactly the chosen files (glob characters, a
     /// leading dash, a rename), and the discard is one backup for all of them.
     #[test]

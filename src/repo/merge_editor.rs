@@ -808,7 +808,8 @@ mod tests {
         // The conflict comes back too, not a staged deletion beside an untracked copy; git 2.39
         // can't unresolve a path resolved by its removal (2.43 can): the file is back, untracked.
         let v = sh(&dir, &["--version"]);
-        let old = v.split_whitespace().nth(2).and_then(|v| v.split('.').nth(1)?.parse::<u32>().ok()).is_some_and(|minor| minor < 43);
+        let num = |i: usize| v.split_whitespace().nth(2).and_then(|v| v.split('.').nth(i)?.parse::<u32>().ok());
+        let old = matches!((num(0), num(1)), (Some(major), Some(minor)) if (major, minor) < (2, 43));
         assert_eq!(sh(&dir, &["status", "--porcelain"]), if old { "?? f\n" } else { "DU f\n" });
         // Once the merge is committed, the file comes back untracked: no conflict without a merge.
         let [del, _] = whole_ops("f", &load(&dir, "f"));
