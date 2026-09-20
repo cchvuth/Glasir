@@ -487,8 +487,10 @@ pub fn show(
                             x_text = chip(&mp, x_text, ty, m, c, c.gamma_multiply(0.2));
                         }
                         if Some(r) == head_row {
-                            // HEAD's title: larger, in the accent colour, faux-bold (drawn twice, half a px apart).
-                            let (f, c) = (FontId::proportional(14.5), if faded { hc.gamma_multiply(0.35) } else { hc });
+                            // HEAD's title: larger, in the accent colour (lifted toward white on dark themes, where the
+                            // plain accent reads poorly), faux-bold (drawn twice, half a px apart).
+                            let c = if ui.visuals().dark_mode { hc.lerp_to_gamma(Color32::WHITE, 0.4) } else { hc };
+                            let (f, c) = (FontId::proportional(14.5), if faded { c.gamma_multiply(0.35) } else { c });
                             for dx in [0.0, 0.6] {
                                 mp.text(pos2(x_text + dx, ty), Align2::LEFT_CENTER, &cm.summary, f.clone(), c);
                             }
