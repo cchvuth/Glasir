@@ -117,7 +117,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
             // Detached: no branch row is current, so HEAD gets its own. Mid-rebase (etc.) that is normal, not a warning.
             if let (None, Some(h), true) = (&d.status.branch, &d.status.head, f.is_empty()) {
                 let (sha, clean) = (&h[..h.len().min(7)], d.state == crate::git::State::Clean);
-                let text = RichText::new(format!("{}  {} {sha}", icon::MAP_PIN, if clean { "detached" } else { "HEAD" })).strong();
+                let text = RichText::new(format!("{}  {} {sha}", icon::CHECK, if clean { "detached" } else { "HEAD" })).strong();
                 let tip = if clean { format!("Detached HEAD at {sha}: commits made here are easy to lose") } else { format!("HEAD at {sha}, while an operation is in progress") };
                 if ui.add(head_row(ui, text, false)).on_hover_text(tip).clicked() {
                     acts.push(Action::Jump(h.clone()));
@@ -125,7 +125,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
             }
             for (i, (r, depth)) in rows.iter().copied().enumerate() {
                 pinned_separator(ui, d, i, &names);
-                let glyph = if r.head { icon::MAP_PIN } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
+                let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
                 let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
                 let mut text = format!("{indent}{glyph} {}", r.name);
                 if depth == 0 && !stack::children(d, &r.name).is_empty() {

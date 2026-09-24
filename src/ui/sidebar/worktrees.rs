@@ -33,7 +33,7 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
 
 fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bool, acts: &mut Vec<Action>) {
     let name = w.branch.clone().unwrap_or_else(|| format!("detached @ {}", &w.head[..w.head.len().min(7)]));
-    let mut label = format!("{} {name}", if current { icon::MAP_PIN } else { icon::TREE_STRUCTURE });
+    let mut label = format!("{}  {name}", if current { icon::CHECK } else { icon::TREE_STRUCTURE });
     if w.changes > 0 {
         label += &format!("  {}{}", icon::PENCIL_SIMPLE, w.changes);
     }
