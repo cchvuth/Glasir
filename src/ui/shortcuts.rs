@@ -28,6 +28,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F5 / ⌘R", "Refresh"),
     ("⌘+ / ⌘- / ⌘0", "Zoom in / out / reset"),
     ("Esc", "Close diff / editor"),
+    ("⌘S", "Save the file edited from its diff"),
     ("F7 / ⇧F7", "Next / previous change in a diff"),
     ("⌘[ / ⌘]", "Back / forward in blame and history"),
 ];

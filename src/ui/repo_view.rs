@@ -3,7 +3,7 @@
 //! Dialogs follow. Collected `Action`s are applied to the `RepoTab` at the end of the frame.
 
 use super::settings::Settings;
-use super::{diff_view, dialogs, graph_view, history, merge_editor, rebase_editor, reflog, sidebar, toolbar::toolbar};
+use super::{diff_view, dialogs, file_edit, graph_view, history, merge_editor, rebase_editor, reflog, sidebar, toolbar::toolbar};
 use crate::repo::history::Mode;
 use crate::repo::{Action, RepoData, RepoTab, maintenance};
 use crate::theme::{self, icon};
@@ -86,6 +86,10 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                         if rebase_editor::show(ui, ed, &git_dir, &mut acts) {
                             t.rebase = None;
                         }
+                        return;
+                    }
+                    if let Some(ed) = &mut t.edit {
+                        file_edit::show(ui, ed, &t.dir, &mut s.wrap, &mut acts);
                         return;
                     }
                     // A diff opened from the inspector covers the reflog; closing it goes back there.

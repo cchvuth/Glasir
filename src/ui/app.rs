@@ -186,11 +186,11 @@ impl App {
         if !typing && cmd && pressed(Key::Y) {
             act = Some(Action::Redo);
         }
-        if cmd && pressed(Key::F) {
+        if cmd && pressed(Key::F) && t.edit.is_none() {
             t.diff = None;
             t.search.get_or_insert_with(|| Search::open(t.dir.clone())).focus = true;
         }
-        if cmd && shift && pressed(Key::S) {
+        if cmd && shift && pressed(Key::S) && t.edit.is_none() {
             act = t.data.as_ref().and_then(|d| crate::repo::stage_all_op(&d.status)).map(Action::Git).or(act);
         }
         if cmd && shift && pressed(Key::M) && t.data.as_ref().is_some_and(|d| d.wip) {
@@ -215,6 +215,9 @@ impl App {
     /// Dropping a tab mid-op drops the op's result: its recovery (e.g. a failed Compose's
     /// unstage) and its undo step would never happen.
     pub(super) fn close_tab(&mut self, ctx: &egui::Context, i: usize) {
+        if let Some(p) = self.tabs.get(i).and_then(RepoTab::unsaved) {
+            return self.toast(ctx, format!("Save or discard your edits to {p} first."), true);
+        }
         if let Some(b) = self.tabs.get(i).and_then(RepoTab::busy).map(str::to_owned) {
             return self.toast(ctx, format!("Close this tab once '{b}' finishes (or cancel it)."), true);
         }
@@ -396,6 +399,13 @@ impl eframe::App for App {
         if hold_close(&ctx, busy.as_deref(), &mut self.quit_pending) {
             self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.as_deref().unwrap_or_default()), false);
         }
+        if ctx.input(|i| i.viewport().close_requested())
+            && let Some((i, p)) = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|p| (i, p.to_owned())))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            (self.active, self.quit_pending) = (i, false);
+            self.toast(&ctx, format!("Save or discard your edits to {p} before quitting."), true);
+        }
         // A shell's job (vim, ssh, a dev server) may never end: ask rather than hold the quit.
         if busy.is_none() && ctx.input(|i| i.viewport().close_requested()) {
             let n: usize = self.tabs.iter().map(|t| t.term.running()).sum();
@@ -450,7 +460,7 @@ impl eframe::App for App {
             self.shortcuts = super::shortcuts::show(&ctx);
         }
         #[cfg(target_os = "macos")]
-        mac_quit::BUSY.store(self.tabs.iter().any(|t| t.busy().is_some() || t.term.busy()), std::sync::atomic::Ordering::SeqCst);
+        mac_quit::BUSY.store(self.tabs.iter().any(|t| t.busy().is_some() || t.term.busy() || t.unsaved().is_some()), std::sync::atomic::Ordering::SeqCst);
         drop_hint(&ctx, self.drop_hint_shot);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);

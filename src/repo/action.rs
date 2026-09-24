@@ -63,6 +63,11 @@ pub enum Action {
     Select(Sel),
     Diff(DiffSrc),
     CloseDiff,
+    /// Edit this working-tree file in place (from its open diff).
+    EditFile(String),
+    EditSave,
+    /// Leave the file editor (discarding unsaved edits), then do what was waiting on it.
+    EditClose,
     DiffOpts(crate::git::DiffOpts),
     Git(Op),
     Prompt(Prompt),

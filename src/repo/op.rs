@@ -176,6 +176,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
+            [super::file_edit::FILE_SAVE, ..] => super::file_edit::save(dir, &a, op.input.as_deref().unwrap_or_default()),
             [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
             [super::diff::APPLY_HUNK, ..] => super::diff::apply_hunk(dir, &a, op.input.as_deref().unwrap_or_default()),
             [super::rebase::HEAD_IS, want] => match super::rebase::head_state(dir) == *want {
@@ -844,6 +845,20 @@ impl RepoTab {
                 }
                 if self.split.as_ref().is_some_and(|sp| sp.replaying) && self.data.as_ref().is_some_and(|d| git::state(&d.git_dir) != git::State::Rebasing) {
                     self.split_replayed(op.label == "Abort rebase");
+                }
+                // The editor closes once its save lands (and runs what waited on it); a refusal keeps the edits.
+                if op.label == super::file_edit::SAVE {
+                    match (&res, &mut self.edit) {
+                        (Ok(_), Some(_)) => {
+                            let then = self.edit.take().and_then(|e| e.then);
+                            self.refresh_diff(ctx);
+                            if let Some(a) = then {
+                                self.apply(ctx, a);
+                            }
+                        }
+                        (Err(_), Some(ed)) => (ed.saving, ed.then) = (false, None),
+                        _ => {}
+                    }
                 }
                 // Hunk buttons patch the shown diff: mark it stale now, not after the status reload,
                 // or a second click re-applies the old patch wherever its context still matches.

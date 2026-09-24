@@ -217,6 +217,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         if worktree && change.code != 'D' && theme::pill(ui, icon::CODE).on_hover_text("Open in editor").clicked() {
             acts.push(Action::Editor(change.path.clone()));
         }
+        if worktree && !matches!(change.code, 'D' | 'U') && theme::pill(ui, format!("{}  Edit", icon::PENCIL_SIMPLE)).on_hover_text(format!("Edit this file here ({} saves, ⌘Z undoes)", keys("⌘S"))).clicked() {
+            acts.push(Action::EditFile(change.path.clone()));
+        }
         if let Some(op) = crate::repo::tools::difftool_op(&src) {
             let tool = d.map_or(Err(String::new()), |d| crate::repo::tools::tool(d, true));
             let b = ui.add_enabled(tool.is_ok(), egui::Button::new(icon::GIT_DIFF).frame_when_inactive(false).corner_radius(255));

@@ -158,6 +158,21 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: mode == "diff-staged" }));
                         }
                     }
+                    // `edit:<path>`: the in-place editor on an unstaged file (`editask:` with unsaved edits and the dialog).
+                    q if q.starts_with("edit:") || q.starts_with("editask:") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            let (mode, path) = q.split_once(':').unwrap();
+                            let code = t.data.as_ref().and_then(|d| d.status.unstaged.iter().find(|c| c.path == path)).map_or('M', |c| c.code);
+                            let change = git::Change { path: path.into(), old_path: None, code };
+                            let ctx = ctx.clone();
+                            t.apply(&ctx, crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: false }));
+                            t.apply(&ctx, crate::repo::Action::EditFile(path.into()));
+                            if let (true, Some(ed)) = (mode == "editask", &mut t.edit) {
+                                ed.text.insert_str(0, "// edited\n");
+                                ed.ask = Some(None);
+                            }
+                        }
+                    }
                     "wrap" => self.s.wrap = true,
                     "tree" => self.s.file_tree = true,
                     q if q.starts_with("zoom:") => ctx.set_zoom_factor(q[5..].parse().unwrap_or(1.0)),

@@ -7,6 +7,7 @@ mod bisect;
 mod command_log;
 mod compose;
 mod diff_view;
+mod file_edit;
 mod dialogs;
 mod doctor;
 mod format;

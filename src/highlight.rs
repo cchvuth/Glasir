@@ -70,6 +70,27 @@ pub fn highlight(path: &str, f: &FileDiff, dark: bool) -> Vec<Vec<Spans>> {
         .collect()
 }
 
+/// Colored byte ranges covering all of `text` (the editor's raw text), or empty when the
+/// language is unknown. Callers bound the size: this runs on every edit.
+pub fn text(path: &str, text: &str, dark: bool) -> Spans {
+    let ss = SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines);
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let Some(syntax) = ss.find_syntax_by_extension(ext).or_else(|| ss.find_syntax_by_first_line(text.lines().next().unwrap_or(""))) else {
+        return vec![];
+    };
+    let ts = THEMES.get_or_init(ThemeSet::load_defaults);
+    let mut hl = HighlightLines::new(syntax, &ts.themes[if dark { "base16-ocean.dark" } else { "InspiredGitHub" }]);
+    let (mut out, mut pos) = (vec![], 0);
+    for line in syntect::util::LinesWithEndings::from(text) {
+        for (style, s) in hl.highlight_line(line, ss).unwrap_or_default() {
+            let c = style.foreground;
+            out.push((Color32::from_rgb(c.r, c.g, c.b), pos..pos + s.len()));
+            pos += s.len();
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +108,17 @@ mod tests {
         assert_eq!(spans.last().unwrap().1.end, text.len()); // covers the line, no trailing newline
         let colors: std::collections::HashSet<_> = spans.iter().map(|s| s.0).collect();
         assert!(colors.len() > 1);
+    }
+
+    #[test]
+    fn text_spans_cover_everything() {
+        let t = "fn a() {}\nlet x = \"s\";\n";
+        let spans = text("x.rs", t, true);
+        assert!(spans.len() > 3);
+        assert_eq!(spans.first().unwrap().1.start, 0);
+        assert_eq!(spans.last().unwrap().1.end, t.len());
+        assert!(spans.windows(2).all(|w| w[0].1.end == w[1].1.start));
+        assert!(text("x.unknownext", t, true).is_empty());
     }
 
     #[test]

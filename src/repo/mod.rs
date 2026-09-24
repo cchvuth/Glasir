@@ -12,6 +12,7 @@ mod data;
 mod diff;
 pub mod doctor;
 mod fetch;
+pub mod file_edit;
 pub mod files;
 pub mod filetree;
 pub mod history;
@@ -135,6 +136,8 @@ pub struct RepoTab {
     pub tree_closed: HashMap<&'static str, std::collections::HashSet<String>>,
     pub rebase: Option<crate::repo::rebase::Editor>,
     pub merge: Option<merge_editor::Editor>,
+    /// The open diff's working-tree file being edited in place (replaces the diff while open).
+    pub edit: Option<file_edit::FileEdit>,
     pub file_view: Option<history::FileView>,
     /// Pending drag-and-drop menu: (source branch, target branch, where).
     pub drop_menu: Option<(String, String, egui::Pos2)>,
@@ -236,6 +239,7 @@ impl RepoTab {
             tree_closed: HashMap::new(),
             rebase: None,
             merge: None,
+            edit: None,
             file_view: None,
             drop_menu: None,
             commit_drop: None,
@@ -496,8 +500,47 @@ impl RepoTab {
         self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
     }
 
+    pub fn unsaved(&self) -> Option<&str> {
+        self.edit.as_ref().filter(|e| e.dirty()).map(|e| e.path.as_str())
+    }
+
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
+        // Anything that replaces the center pane ends the file editor; unsaved edits ask first.
+        if let Some(ed) = &mut self.edit
+            && matches!(a, Action::Select(_) | Action::Diff(_) | Action::CloseDiff | Action::FileView(..) | Action::MergeEditor(_) | Action::Rebase { .. } | Action::Reflog | Action::Jump(_))
+        {
+            if ed.dirty() {
+                ed.ask = Some(Some(a));
+                return;
+            }
+            self.edit = None;
+        }
         match a {
+            Action::EditFile(path) => match file_edit::FileEdit::load(&self.dir, &path) {
+                Ok(ed) => self.edit = Some(ed),
+                Err(e) => self.notes.push(Msg { text: e, error: true }),
+            },
+            Action::EditSave => {
+                if self.busy().is_some() {
+                    if let Some(ed) = &mut self.edit {
+                        ed.then = None; // the save won't run: don't leave the navigation armed
+                    }
+                    return self.notes.push(Msg { text: "Wait for the running operation to finish, then save.".into(), error: true });
+                }
+                if let Some(ed) = &mut self.edit
+                    && let Some(op) = ed.save_op(&self.dir)
+                {
+                    ed.saving = true;
+                    self.run(ctx, op);
+                } else if let Some(ed) = &mut self.edit {
+                    ed.then = None; // disk conflict: the banner shows, nothing saves
+                }
+            }
+            Action::EditClose => {
+                if let Some(next) = self.edit.take().and_then(|e| e.ask.flatten()) {
+                    self.apply(ctx, next);
+                }
+            }
             Action::Select(s) => self.select(ctx, s),
             // Clicking the file that is already open closes it again.
             Action::Diff(src) if self.merge.is_none() && self.diff.as_ref().is_some_and(|d| d.src == src) => self.diff = None,

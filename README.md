@@ -73,6 +73,12 @@ The name fits a Git client:
   several commits, compare oldest ↔ newest, copy SHAs.
 
 ### Staging, diffs and commits
+- **Edit in place**: the **Edit** button in a working-tree file's diff opens an editor
+  (line numbers, syntax colors, Wrap). ⌘S saves with a backup, so ⌘Z restores the old
+  content; CRLF, the final newline and file mode are kept. Binary, non-UTF-8, LFS-pointer
+  and over-2 MB files are refused with a note. A file changed on disk meanwhile is never
+  overwritten silently (Reload / Overwrite / Keep editing), and unsaved edits are guarded
+  when you switch file, close the tab or quit.
 - Stage, unstage and discard by **file, hunk or individual line**: a **Stage / Unstage
   button** appears on each file row on hover, ⌘/⇧-click selects several files (S / U or
   the buttons act on all; a multi-file discard is one backup), drag across diff lines to
@@ -397,6 +403,7 @@ Shown in macOS notation; on Linux and Windows the app labels them the PC way
 | F5 / ⌘R | Refresh |
 | ⌘+ / ⌘- / ⌘0 | Zoom in / out / reset |
 | Esc | Close diff / editor |
+| ⌘S | Save the file edited from its diff |
 | F7 / ⇧F7 | Next / previous change in a diff |
 | ⌘[ / ⌘] | Back / forward in blame and history |
 
