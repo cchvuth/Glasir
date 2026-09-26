@@ -23,6 +23,8 @@ pub struct RepoData {
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
     pub origin_head: String,
+    /// `origin/HEAD`'s branch, else origin's main / master, else "main" (found once in `build`).
+    default_branch: String,
     /// History was cut at the commit limit (more can be loaded).
     pub truncated: bool,
     pub status: Status,
@@ -35,9 +37,13 @@ pub struct RepoData {
     pub bisect: Option<git::Bisect>,
     /// Row 0 is the uncommitted-changes pseudo commit.
     pub wip: bool,
-    pub graph: Graph,
+    pub graph: Arc<Graph>,
+    /// What `graph` was laid out for besides the log and refs: (WIP row, HEAD row).
+    pub layout_key: (bool, Option<usize>),
     /// Commit id -> display row.
     pub row_of: HashMap<String, usize>,
+    /// (row, index into `refs`) of every loaded branch tip, by row: the minimap's marks.
+    pub tips: Vec<(usize, usize)>,
     /// Commit id -> indices into `refs`, most important first.
     pub refs_at: HashMap<String, Vec<usize>>,
     /// Base commit id -> indices into `stashes`.
@@ -238,14 +244,8 @@ impl RepoData {
         split_remote(&self.remotes, name)
     }
 
-    pub fn default_branch(&self) -> String {
-        Some(self.origin_head.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                let has = |n: &str| self.refs.iter().any(|r| r.kind == RefKind::Remote && r.name == n);
-                ["origin/main", "origin/master"].into_iter().find(|n| has(n)).map(|n| n[7..].to_owned())
-            })
-            .unwrap_or_else(|| "main".into())
+    pub fn default_branch(&self) -> &str {
+        &self.default_branch
     }
 
     pub(super) fn load_conflicts(&mut self, dir: &Path) {
@@ -260,7 +260,14 @@ impl RepoData {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn build(
+    pub(super) fn build(log: Arc<Vec<Commit>>, refs: Arc<Vec<Ref>>, stashes: Arc<Vec<git::Stash>>, remotes: Arc<Vec<(String, String)>>, git_dir: PathBuf, origin_head: String, status: Status, view: View) -> Self {
+        Self::build_reusing(log, refs, stashes, remotes, git_dir, origin_head, status, view, None)
+    }
+
+    /// `build`, keeping `prev`'s lane layout (a status-only refresh over the same log, refs and
+    /// view) unless the WIP row or HEAD moved: laying out a huge log takes a long while.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_reusing(
         log: Arc<Vec<Commit>>,
         refs: Arc<Vec<Ref>>,
         stashes: Arc<Vec<git::Stash>>,
@@ -269,6 +276,7 @@ impl RepoData {
         origin_head: String,
         status: Status,
         view: View,
+        prev: Option<(Arc<Graph>, (bool, Option<usize>))>,
     ) -> Self {
         let state = git::state(&git_dir);
         // An operation stopped with a clean tree (conflicts resolved to HEAD, a rebase `edit`
@@ -299,6 +307,9 @@ impl RepoData {
         for v in refs_at.values_mut() {
             v.sort_by_key(|&i| (!refs[i].head, refs[i].kind as u8, refs[i].name.clone()));
         }
+        let mut tips: Vec<(usize, usize)> =
+            refs.iter().enumerate().filter(|(_, r)| r.kind != RefKind::Tag).filter_map(|(i, r)| row_of.get(&r.target).map(|&row| (row, i))).collect();
+        tips.sort_by_key(|t| t.0);
         let head_row = status.head.as_ref().and_then(|h| row_of.get(h)).copied();
         if let Some(r) = head_row {
             prio[r - off] = 0;
@@ -308,12 +319,25 @@ impl RepoData {
             prio.insert(0, 0);
             row_of.insert(String::new(), 0);
         }
-        let graph = Graph::layout(&parents, &prio);
+        let layout_key = (wip, head_row);
+        let graph = match prev {
+            Some((g, key)) if key == layout_key => g,
+            _ => Arc::new(Graph::layout(&parents, &prio)),
+        };
         let mut stash_at: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, s) in stashes.iter().enumerate() {
             stash_at.entry(s.base.clone()).or_default().push(i);
         }
+        let default_branch = Some(origin_head.clone())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let has = |n: &str| refs.iter().any(|r| r.kind == RefKind::Remote && r.name == n);
+                ["origin/main", "origin/master"].into_iter().find(|n| has(n)).map(|n| n[7..].to_owned())
+            })
+            .unwrap_or_else(|| "main".into());
         Self {
+            default_branch,
+            tips,
             log,
             refs,
             stashes,
@@ -334,6 +358,7 @@ impl RepoData {
             bisect: None,
             wip,
             graph,
+            layout_key,
             row_of,
             refs_at,
             stash_at,
@@ -377,7 +402,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
         let rf = s.spawn(|| git::refs(dir));
         let lg = s.spawn(|| {
             let r: Vec<&str> = revs.iter().map(String::as_str).collect();
-            git::log(dir, limit, &r)
+            git::log(dir, limit + 1, &r)
         });
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
         let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir), git::author(dir), super::maintenance::health(dir)));
@@ -388,8 +413,10 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
     let (stashes, worktrees) = stashes;
-    let log = log?;
-    let truncated = log.len() >= limit;
+    let mut log = log?;
+    // One extra commit tells "exactly a page" from "more to load".
+    let truncated = log.len() > limit;
+    log.truncate(limit);
     let mut d = RepoData::build(Arc::new(log), Arc::new(refs?), Arc::new(stashes), Arc::new(remotes), git_dir, origin_head, status?, view);
     d.truncated = truncated;
     d.worktrees = Arc::new(worktrees);

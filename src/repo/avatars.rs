@@ -71,27 +71,28 @@ impl Avatars {
         }
         self.seen = key;
         let Some((host, owner, repo)) = d.remotes.iter().find(|r| r.0 == "origin").and_then(|r| github_repo(&r.1)) else { return };
-        // email -> (commits, oldest commit): the oldest is the likeliest to be on the remote.
-        let mut by: HashMap<&str, (usize, &str)> = HashMap::new();
-        for c in d.log.iter().filter(|c| !c.email.is_empty()) {
-            let e = by.entry(&c.email).or_default();
-            *e = (e.0 + 1, &c.id);
-        }
-        let mut tex = self.tex.lock().unwrap();
-        let mut jobs: Vec<_> = by.into_iter().filter(|(e, _)| !tex.contains_key(*e)).collect();
-        jobs.sort_by_key(|(_, (n, _))| std::cmp::Reverse(*n));
-        jobs.truncate(MAX_AUTHORS);
-        let jobs: Vec<(String, String)> = jobs.into_iter().map(|(e, (_, id))| (e.to_owned(), id.to_owned())).collect();
-        if jobs.is_empty() {
-            return;
-        }
-        for (e, _) in &jobs {
-            tex.insert(e.clone(), None);
-        }
-        drop(tex);
-        let (tex, ctx) = (self.tex.clone(), ctx.clone());
+        let (tex, ctx, log) = (self.tex.clone(), ctx.clone(), d.log.clone());
         let c = Lookup::new(host, owner, repo, dir.to_path_buf(), eframe::storage_dir("Glasir").map(|d| d.join("avatars")));
         std::thread::spawn(move || {
+            // The scan over the whole log stays off the UI thread.
+            // email -> (commits, oldest commit): the oldest is the likeliest to be on the remote.
+            let mut by: HashMap<&str, (usize, &str)> = HashMap::new();
+            for c in log.iter().filter(|c| !c.email.is_empty()) {
+                let e = by.entry(&c.email).or_default();
+                *e = (e.0 + 1, &c.id);
+            }
+            let mut jobs: Vec<_> = {
+                let tex = tex.lock().unwrap();
+                by.into_iter().filter(|(e, _)| !tex.contains_key(*e)).collect()
+            };
+            jobs.sort_by_key(|(_, (n, _))| std::cmp::Reverse(*n));
+            jobs.truncate(MAX_AUTHORS);
+            let jobs: Vec<(String, String)> = jobs.into_iter().map(|(e, (_, id))| (e.to_owned(), id.to_owned())).collect();
+            let mut t = tex.lock().unwrap();
+            for (e, _) in &jobs {
+                t.insert(e.clone(), None);
+            }
+            drop(t);
             let queue = Mutex::new(jobs.into_iter());
             std::thread::scope(|s| {
                 for _ in 0..WORKERS {

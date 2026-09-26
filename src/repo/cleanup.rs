@@ -221,7 +221,7 @@ impl RepoTab {
     /// ticking "prune" checks the remotes (network) the first time.
     pub(super) fn open_cleanup(&mut self, ctx: &egui::Context) {
         let Some(d) = &self.data else { return };
-        let def = d.default_branch();
+        let def = d.default_branch().to_owned();
         let mut c = self.cleanup.take().unwrap_or_default();
         c.targets = d.refs.iter().filter(|r| matches!(r.kind, RefKind::Local | RefKind::Remote) && !r.name.ends_with("/HEAD")).map(|r| r.name.clone()).collect();
         if !c.targets.contains(&c.target) {

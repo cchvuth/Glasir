@@ -71,14 +71,14 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
     let (remote, branch) = dest.map_or(("origin".into(), r.name.clone()), |(a, b)| (a.to_owned(), b.to_owned()));
     ui.separator();
     if crate::ai::enabled() && ui.button(format!("{}  Write pull request…", icon::SPARKLE)).clicked() {
-        let def = d.default_branch();
+        let def = d.default_branch().to_owned();
         let base = if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def };
         acts.push(Action::Ai(Purpose::PullRequest { branch: r.name.clone(), base }));
     }
     let Some(web) = d.web_of(&remote) else { return };
     let enc = crate::git::url_path;
     // A stacked branch's pull request goes into its parent's.
-    let into = crate::repo::stack::parent(d, &r.name).filter(|_| r.kind == RefKind::Local).map_or_else(|| d.default_branch(), str::to_owned);
+    let into = crate::repo::stack::parent(d, &r.name).filter(|_| r.kind == RefKind::Local).map_or_else(|| d.default_branch().to_owned(), str::to_owned);
     if ui.button("Create pull request…").on_hover_text(format!("Opens the compare page into {into} on GitHub / GitHub Enterprise")).clicked() {
         acts.push(Action::Url(format!("{web}/compare/{}...{}?expand=1", enc(&into), enc(&branch))));
     }

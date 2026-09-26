@@ -79,6 +79,8 @@ pub struct RepoTab {
     /// Bumped whenever `info` is replaced: keys the cached folder tree of its files.
     pub info_gen: u64,
     info_task: Option<Task<Res<CommitInfo>>>,
+    /// The selection moved while `info_task` ran (holding ↓): load the current one when it ends.
+    info_next: bool,
     /// Line counts for `info`'s commit (its id), merged in when ready.
     stats_task: Option<Task<(String, git::Stats)>>,
     pub diff: Option<DiffState>,
@@ -199,6 +201,7 @@ impl RepoTab {
             info: None,
             info_gen: 0,
             info_task: None,
+            info_next: false,
             stats_task: None,
             diff: None,
             diff_opts: Default::default(),
@@ -308,11 +311,11 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, (wt, sm, lfs, cfg, au, tr, stk))) => {
-                let mut d = RepoData::build(log, refs, st, rm, gd, oh, git::status(&dir)?, view);
+            Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk))) => {
+                let mut d = RepoData::build_reusing(log, refs, st, rm, gd, oh, git::status(&dir)?, view, Some(prev));
                 (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated, d.stack) = (wt, sm, lfs, cfg, au, tr, stk);
                 d.load_bisect(&dir);
                 d.load_conflicts(&dir);
@@ -367,7 +370,10 @@ impl RepoTab {
                     if self.merge.as_ref().is_some_and(|m| !d.status.conflicted.iter().any(|c| c.path == m.path)) {
                         self.merge = None;
                     }
-                    self.data = Some(d);
+                    // Dropping a big log takes tens of ms: off the UI thread.
+                    if let Some(old) = self.data.replace(d) {
+                        std::thread::spawn(move || drop(old));
+                    }
                     if first {
                         self.prefill_template();
                     }
@@ -418,15 +424,19 @@ impl RepoTab {
         }
         msgs.extend(Task::poll(&mut self.verify_task));
         if let Some(r) = Task::poll(&mut self.info_task) {
-            if let Ok(i) = &r {
-                let (dir, id, base) = (self.dir.clone(), i.id.clone(), i.parents.first().cloned());
-                self.stats_task = Some(Task::spawn(ctx, move || {
-                    let s = git::numstat(&dir, base.as_deref(), &id).unwrap_or_default();
-                    (id, s)
-                }));
+            if let (true, Some(Sel::Commit(id))) = (std::mem::take(&mut self.info_next), self.sel.clone()) {
+                self.load_info(ctx, id); // the selection moved on: this result is stale
+            } else {
+                if let Ok(i) = &r {
+                    let (dir, id, base) = (self.dir.clone(), i.id.clone(), i.parents.first().cloned());
+                    self.stats_task = Some(Task::spawn(ctx, move || {
+                        let s = git::numstat(&dir, base.as_deref(), &id).unwrap_or_default();
+                        (id, s)
+                    }));
+                }
+                self.info = Some(r);
+                self.info_gen += 1;
             }
-            self.info = Some(r);
-            self.info_gen += 1;
         }
         if let Some((id, s)) = Task::poll(&mut self.stats_task)
             && let Some(Ok(i)) = &mut self.info
@@ -454,13 +464,15 @@ impl RepoTab {
         self.multi.clear();
         // A repeated Compare re-queries: its ref names may point elsewhere now.
         if self.sel.as_ref() != Some(&sel) || matches!(sel, Sel::Compare { .. }) {
-            let dir = self.dir.clone();
             match sel.clone() {
                 Sel::Commit(id) => {
                     self.info = None;
-                    let stash = self.data.as_ref().is_some_and(|d| d.stashes.iter().any(|s| s.id == id));
-                    self.info_task =
-                        Some(Task::spawn(ctx, move || if stash { git::stash_info(&dir, &id) } else { git::commit_info(&dir, &id) }));
+                    // One lookup at a time: a held key would otherwise start git for every row passed.
+                    if self.info_task.is_some() {
+                        self.info_next = true;
+                    } else {
+                        self.load_info(ctx, id);
+                    }
                 }
                 Sel::Compare { from, to, three_dot } => {
                     self.info = None;
@@ -471,6 +483,12 @@ impl RepoTab {
             }
         }
         self.sel = Some(sel);
+    }
+
+    fn load_info(&mut self, ctx: &egui::Context, id: String) {
+        let dir = self.dir.clone();
+        let stash = self.data.as_ref().is_some_and(|d| d.stashes.iter().any(|s| s.id == id));
+        self.info_task = Some(Task::spawn(ctx, move || if stash { git::stash_info(&dir, &id) } else { git::commit_info(&dir, &id) }));
     }
 
     /// The history the graph shows: the search results while "Filter graph to results" is on.
@@ -497,6 +515,7 @@ impl RepoTab {
 
     fn compare_query(&mut self, ctx: &egui::Context, from: String, to: String, three_dot: bool) {
         let (dir, label) = (self.dir.clone(), if to == git::WORKTREE { format!("Working tree compared with {from}") } else { format!("{to} compared with {from}") });
+        self.info_next = false;
         self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
     }
 
@@ -778,6 +797,29 @@ mod tests {
         let staged: Vec<&str> = s.staged.iter().map(|c| c.path.as_str()).collect();
         assert!(staged.contains(&"other") && staged.contains(&if cfg!(windows) { "new[1]" } else { "new*" }));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exactly_a_page_is_not_truncated_and_status_reload_keeps_the_layout() {
+        let dir = scratch("exact_page");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for i in 0..3 {
+            commit(&dir, "f", &format!("a\n{i}\n"));
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 3, View::default());
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        assert!((d.rows(), d.truncated) == (3, false));
+        let g = d.graph.clone();
+        t.reload(&ctx, false);
+        settle(&ctx, &mut t);
+        assert!(std::sync::Arc::ptr_eq(&g, &t.data.as_ref().unwrap().graph), "same HEAD and WIP: no new layout");
+        std::fs::write(dir.join("f"), "dirty\n").unwrap();
+        t.reload(&ctx, false);
+        settle(&ctx, &mut t);
+        assert!(!std::sync::Arc::ptr_eq(&g, &t.data.as_ref().unwrap().graph), "the WIP row appeared");
     }
 
     #[test]

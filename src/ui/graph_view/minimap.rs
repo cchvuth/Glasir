@@ -1,7 +1,6 @@
 //! Thin rail beside the graph table marking HEAD, the selection, WIP, branch tips
 //! and search hits across the loaded history.
 
-use crate::git::RefKind;
 use crate::repo::{Action, RepoData, Search, Sel};
 use crate::theme;
 use egui::{Color32, Rect, Sense, Ui, pos2, vec2};
@@ -23,12 +22,15 @@ pub(super) fn minimap(ui: &Ui, rail: Rect, d: &RepoData, sel_row: Option<usize>,
     p.rect_filled(Rect::from_x_y_ranges(rail.x_range(), v0..=v1.max(v0 + 6.0)), 5.0, theme::hover(ui).gamma_multiply(2.5));
 
     // (row, color, label, thickness): later entries draw on top.
-    let mut marks: Vec<(usize, Color32, &str, f32)> = d
-        .refs
-        .iter()
-        .filter(|r| r.kind != RefKind::Tag)
-        .filter_map(|r| d.row_of.get(&r.target).map(|&row| (row, theme::lane(d.graph.nodes[row].color), r.name.as_str(), 1.5)))
-        .collect();
+    // Tips are sorted by row; one mark per ~pixel keeps thousands of branches cheap to paint.
+    let mut marks: Vec<(usize, Color32, &str, f32)> = Vec::new();
+    let mut last = f32::NEG_INFINITY;
+    for &(row, i) in &d.tips {
+        if y(row) - last >= 1.5 {
+            last = y(row);
+            marks.push((row, theme::lane(d.graph.nodes[row].color), d.refs[i].name.as_str(), 1.5));
+        }
+    }
     if d.wip {
         marks.push((0, theme::MOD, "Uncommitted changes", 3.0));
     }

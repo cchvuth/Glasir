@@ -318,6 +318,14 @@ pub fn show(
                 let col = theme::lane(e.color);
                 let stroke = Stroke::new(2.0, if dims(e.from as usize) { col.gamma_multiply(0.3) } else { col });
                 if d.wip && e.from == 0 {
+                    // The edge can span the whole history: dash only what is on screen (y is monotone).
+                    // The top is snapped to the dash period so the pattern doesn't crawl when scrolling.
+                    let clip = ui.clip_rect();
+                    let y0 = pts[0].y;
+                    let top = y0 + ((clip.top() - ROW - y0) / 7.0).floor().max(0.0) * 7.0;
+                    for p in &mut pts {
+                        p.y = p.y.clamp(top, clip.bottom() + ROW);
+                    }
                     gp.extend(Shape::dashed_line(&pts, stroke, 4.0, 3.0));
                 } else {
                     gp.add(Shape::line(pts, stroke));
@@ -531,7 +539,8 @@ pub fn show(
     }
     ui.data_mut(|m| m.insert_temp(gx_id, gx));
     // No commits yet: the guide fills the space under the WIP row.
-    if d.log.is_empty() {
+    // (A filter that shows nothing, e.g. a soloed branch since deleted, is not an empty repo.)
+    if d.log.is_empty() && d.status.head.is_none() {
         let r = egui::Rect::from_min_max(pos2(body.left(), body.top() + ROW * (n as f32) + 40.0), body.max);
         ui.scope_builder(egui::UiBuilder::new().max_rect(r), |ui| empty::first_commit_guide(ui, d, acts));
     }
@@ -609,7 +618,8 @@ fn multi_select(d: &RepoData, sel_row: Option<usize>, multi: &[String], row: usi
 }
 
 fn keyboard_nav(ui: &Ui, d: &RepoData, sel_row: Option<usize>, scroll_to: &mut Option<usize>, acts: &mut Vec<Action>) {
-    if ui.ctx().memory(|m| m.focused().is_some()) {
+    // A text field or a modal dialog (a confirm has no focused widget) owns the keys.
+    if ui.ctx().memory(|m| m.focused().is_some() || m.top_modal_layer().is_some_and(|l| l != ui.layer_id())) {
         return;
     }
     let (up, down) = ui.input(|i| {
