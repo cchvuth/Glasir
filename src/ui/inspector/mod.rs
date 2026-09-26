@@ -104,7 +104,7 @@ pub fn lfs_track_item(ui: &mut Ui, d: &RepoData, path: &str, acts: &mut Vec<Acti
     }
 }
 
-const ROW_H: f32 = 24.0;
+pub const ROW_H: f32 = 24.0;
 
 /// Pointer over `rect`; the screenshot harness can pin a pointer position (`row-hover:x,y`).
 fn hovering(ui: &Ui, rect: egui::Rect) -> bool {

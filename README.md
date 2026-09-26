@@ -57,6 +57,11 @@ The name fits a Git client:
   10k-file commits stay smooth.
 - Branch, remote and tag **pills** joined to their commits (`+N` when several),
   with their own right-click menus; worktree branches get a tree icon.
+- **Grouped branch names**: local branches, each remote's branches and tags fold into
+  folders by their `/` prefixes (`feature ▸ payments ▸ v2`, single-folder chains read
+  `release/2.0`), with counts. The current branch's folders start open, a filter opens
+  every folder, and open folders are remembered for the session. Only the rows in view
+  are drawn, so thousands of branches stay smooth.
 - Loads the latest 1,000 commits for a fast start; **Load 1,000 more** at the
   bottom pages in older history. Smooth even with 85k+ commits loaded (only
   visible rows are drawn); resizable columns; the message column stays readable.

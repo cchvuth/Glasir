@@ -5,6 +5,7 @@
 pub mod ref_menus;
 pub mod remotes;
 pub mod stashes;
+mod folders;
 mod submodules;
 mod worktrees;
 
@@ -84,6 +85,77 @@ fn stacked<'a>(d: &'a RepoData, locals: &[&'a crate::git::Ref]) -> Vec<(&'a crat
     out
 }
 
+/// A local branch row: marker, stack / ahead / behind badges, menus, drag-and-drop. `name` is what
+/// it shows (the last segment inside a folder); `depth` its stack depth.
+fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: usize, acts: &mut Vec<Action>) {
+    let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
+    let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
+    let mut text = format!("{indent}{glyph}  {name}");
+    if depth == 0 && !stack::children(d, &r.name).is_empty() {
+        text += &format!("  {}", icon::STACK);
+    }
+    if stack::stale(d, &r.name) {
+        text += &format!("  {}", icon::ARROWS_CLOCKWISE);
+    }
+    if r.ahead > 0 {
+        text += &format!("  ↑{}", r.ahead);
+    }
+    if r.behind > 0 {
+        text += &format!("  ↓{}", r.behind);
+    }
+    let mut rt = RichText::new(text);
+    if r.head {
+        rt = rt.strong();
+    }
+    let styled = d.view.solo.contains(&r.full) || !d.view.shows(&r.full);
+    let rt = view_style(ui, d, r, rt);
+    let resp = ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) });
+    branch_dnd(ui, &resp, &r.name, &r.full, acts);
+    hover_ref(ui, &resp, &r.target);
+    let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
+    if r.head {
+        tip += "\nCurrent branch (HEAD)";
+    }
+    if let Some(p) = stack::parent(d, &r.name) {
+        tip += &format!("\nStacked on {p}");
+        if stack::stale(d, &r.name) {
+            tip += &format!("; {p} has moved on since: right-click → Restack to bring this branch along");
+        }
+    }
+    let resp = resp.on_hover_text(tip);
+    if resp.clicked() {
+        acts.push(Action::Jump(r.target.clone()));
+    }
+    if resp.double_clicked() {
+        acts.extend(branch_checkout(d, r));
+    }
+    resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+}
+
+fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
+    let text = view_style(ui, d, r, RichText::new(name));
+    let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
+    branch_dnd(ui, &resp, &r.name, &r.full, acts);
+    hover_ref(ui, &resp, &r.target);
+    if resp.clicked() {
+        acts.push(Action::Jump(r.target.clone()));
+    }
+    if resp.double_clicked() {
+        acts.extend(branch_checkout(d, r));
+    }
+    resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+}
+
+fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
+    let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(name))).frame_when_inactive(false));
+    hover_ref(ui, &resp, &r.target);
+    let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
+    if resp.clicked() {
+        acts.push(Action::Jump(r.target.clone()));
+    }
+    resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+}
+
 fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
     egui::CollapsingHeader::new(RichText::new(format!("{title}  {count}")).small().strong())
         .id_salt(title)
@@ -111,7 +183,8 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
         let mut locals: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Local && matches(f, &r.name)).collect();
         locals.sort_by_key(|r| d.branch_rank(&r.name)); // stable: A–Z within each group
         // While filtering, a stacked branch's parent may be filtered out: a flat list then.
-        let rows = if f.is_empty() { stacked(d, &locals) } else { locals.iter().map(|r| (*r, 0)).collect() };
+        let roots: Vec<_> = locals.iter().copied().filter(|r| !r.name.contains('/')).collect();
+        let rows = if f.is_empty() { stacked(d, &roots) } else { roots.iter().map(|r| (*r, 0)).collect() };
         let names: Vec<&str> = rows.iter().map(|r| r.0.name.as_str()).collect();
         section(ui, "LOCAL", locals.len(), |ui| {
             // Detached: no branch row is current, so HEAD gets its own. Mid-rebase (etc.) that is normal, not a warning.
@@ -125,49 +198,11 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
             }
             for (i, (r, depth)) in rows.iter().copied().enumerate() {
                 pinned_separator(ui, d, i, &names);
-                let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
-                let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
-                let mut text = format!("{indent}{glyph} {}", r.name);
-                if depth == 0 && !stack::children(d, &r.name).is_empty() {
-                    text += &format!("  {}", icon::STACK);
-                }
-                if stack::stale(d, &r.name) {
-                    text += &format!("  {}", icon::ARROWS_CLOCKWISE);
-                }
-                if r.ahead > 0 {
-                    text += &format!("  ↑{}", r.ahead);
-                }
-                if r.behind > 0 {
-                    text += &format!("  ↓{}", r.behind);
-                }
-                let mut rt = RichText::new(text);
-                if r.head {
-                    rt = rt.strong();
-                }
-                let styled = d.view.solo.contains(&r.full) || !d.view.shows(&r.full);
-                let rt = view_style(ui, d, r, rt);
-                let resp = ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) });
-                branch_dnd(ui, &resp, &r.name, &r.full, acts);
-                hover_ref(ui, &resp, &r.target);
-                let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
-                if r.head {
-                    tip += "\nCurrent branch (HEAD)";
-                }
-                if let Some(p) = stack::parent(d, &r.name) {
-                    tip += &format!("\nStacked on {p}");
-                    if stack::stale(d, &r.name) {
-                        tip += &format!("; {p} has moved on since: right-click → Restack to bring this branch along");
-                    }
-                }
-                let resp = resp.on_hover_text(tip);
-                if resp.clicked() {
-                    acts.push(Action::Jump(r.target.clone()));
-                }
-                if resp.double_clicked() {
-                    acts.extend(branch_checkout(d, r));
-                }
-                resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+                local_row(ui, d, r, &r.name, depth, acts);
             }
+            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name)).collect();
+            let seed = d.refs.iter().find(|r| r.head && r.kind == RefKind::Local).map(|r| r.name.as_str());
+            folders::show(ui, d, ui.id().with((dir, "local")), &nested, 0, f, seed, |ui, r, name| local_row(ui, d, r, name, 0, acts));
         });
         let mut remotes: Vec<&str> = d.remotes.iter().map(|r| r.0.as_str()).collect();
         remotes.sort();
@@ -181,21 +216,14 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     let mut list: Vec<_> = remote_refs.iter().copied().filter(|r| d.split_remote(&r.name).is_some_and(|s| s.0 == rem)).collect();
                     let n = rem.len() + 1;
                     list.sort_by_key(|r| d.branch_rank(&r.name[n..]));
+                    list.retain(|r| !r.name[n..].contains('/'));
                     let names: Vec<&str> = list.iter().map(|r| &r.name[n..]).collect();
                     for (i, r) in list.iter().copied().enumerate() {
                         pinned_separator(ui, d, i, &names);
-                        let text = view_style(ui, d, r, RichText::new(&r.name[n..]));
-                        let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
-                        branch_dnd(ui, &resp, &r.name, &r.full, acts);
-                        hover_ref(ui, &resp, &r.target);
-                        if resp.clicked() {
-                            acts.push(Action::Jump(r.target.clone()));
-                        }
-                        if resp.double_clicked() {
-                            acts.extend(branch_checkout(d, r));
-                        }
-                        resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+                        remote_row(ui, d, r, &r.name[n..], acts);
                     }
+                    let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Remote && d.split_remote(&d.refs[i].name).is_some_and(|s| s.0 == rem) && d.refs[i].name[n..].contains('/') && matches(f, &d.refs[i].name)).collect();
+                    folders::show(ui, d, ui.id().with((dir, "remote", rem)), &nested, n, f, None, |ui, r, name| remote_row(ui, d, r, name, acts));
                 });
                 resp.header_response.on_hover_text(format!("{rem}\n{url}")).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
             }
@@ -216,15 +244,12 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
         let mut tags: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Tag && matches(f, &r.name)).collect();
         tags.sort_by_key(|r| std::cmp::Reverse(r.date));
         section(ui, "TAGS", tags.len(), |ui| {
-            for r in tags {
-                let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(&r.name))).frame_when_inactive(false));
-                hover_ref(ui, &resp, &r.target);
-                let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
-                if resp.clicked() {
-                    acts.push(Action::Jump(r.target.clone()));
-                }
-                resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+            let (roots, nested): (Vec<_>, Vec<_>) = tags.iter().partition(|r| !r.name.contains('/'));
+            for r in roots {
+                tag_row(ui, d, r, &r.name, acts);
             }
+            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| nested.iter().any(|r| std::ptr::eq(*r, &d.refs[i]))).collect();
+            folders::show(ui, d, ui.id().with((dir, "tags")), &nested, 0, f, None, |ui, r, name| tag_row(ui, d, r, name, acts));
         });
         worktrees::list(ui, d, dir, f, acts);
         submodules::list(ui, d, f, acts);

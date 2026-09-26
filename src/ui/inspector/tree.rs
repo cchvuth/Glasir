@@ -64,7 +64,7 @@ pub fn toggle(ui: &mut Ui, tree: &mut bool) {
 }
 
 /// A folder row. Clicking it (unless `show` hands the click to a button) folds it.
-fn dir_row(ui: &mut Ui, depth: usize, name: &str, count: usize, closed: bool) -> Response {
+pub fn dir_row(ui: &mut Ui, depth: usize, name: &str, count: usize, closed: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), Sense::click());
     if hovering(ui, rect) {
         ui.painter().rect_filled(rect, 8.0, theme::hover(ui));

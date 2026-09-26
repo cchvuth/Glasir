@@ -14,42 +14,61 @@ pub enum Node {
     File { idx: usize, depth: usize },
 }
 
-#[derive(Default)]
-pub struct FileTree {
-    /// The changes in tree order, so a folder's files are one contiguous range.
-    pub files: Vec<Change>,
+/// `T` is what a leaf carries: a `Change` for the file lists, an index into the refs for
+/// the sidebar's branch / tag folders (`build_by`).
+pub struct FileTree<T = Change> {
+    /// The leaves in tree order, so a folder's are one contiguous range.
+    pub files: Vec<T>,
     /// Pre-order, folders and files interleaved as shown.
     pub nodes: Vec<Node>,
 }
 
-#[derive(Default)]
-struct Dir {
-    dirs: BTreeMap<String, Dir>,
-    files: Vec<Change>,
+impl<T> Default for FileTree<T> {
+    fn default() -> Self {
+        Self { files: vec![], nodes: vec![] }
+    }
 }
 
-fn name_of(c: &Change) -> &str {
-    c.path.rsplit('/').next().unwrap_or(&c.path)
+struct Dir<T> {
+    dirs: BTreeMap<String, Dir<T>>,
+    files: Vec<(String, T)>,
+}
+
+impl<T> Default for Dir<T> {
+    fn default() -> Self {
+        Self { dirs: BTreeMap::new(), files: vec![] }
+    }
+}
+
+fn name_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 impl FileTree {
     pub fn build<'a>(changes: impl IntoIterator<Item = &'a Change>) -> Self {
+        Self::build_by(changes.into_iter().map(|c| (c.path.clone(), c.clone())))
+    }
+}
+
+impl<T> FileTree<T> {
+    /// A tree of `(path, leaf)` pairs split at `/`.
+    pub fn build_by(items: impl IntoIterator<Item = (String, T)>) -> Self {
         let mut root = Dir::default();
-        for c in changes {
+        for (path, t) in items {
             let mut d = &mut root;
-            let mut parts = c.path.split('/');
+            let mut parts = path.split('/');
             parts.next_back();
             for p in parts {
                 d = d.dirs.entry(p.to_owned()).or_default();
             }
-            d.files.push(c.clone());
+            d.files.push((path, t));
         }
-        let mut t = FileTree::default();
+        let mut t = Self::default();
         t.flatten(root, "", 0);
         t
     }
 
-    fn flatten(&mut self, d: Dir, prefix: &str, depth: usize) {
+    fn flatten(&mut self, d: Dir<T>, prefix: &str, depth: usize) {
         let mut dirs: Vec<_> = d.dirs.into_iter().collect();
         dirs.sort_by_cached_key(|(n, _)| n.to_lowercase());
         for (mut name, mut sub) in dirs {
@@ -67,10 +86,10 @@ impl FileTree {
             }
         }
         let mut files = d.files;
-        files.sort_by_cached_key(|c| (name_of(c).to_lowercase(), c.path.clone()));
-        for c in files {
+        files.sort_by_cached_key(|(p, _)| (name_of(p).to_lowercase(), p.clone()));
+        for (_, t) in files {
             self.nodes.push(Node::File { idx: self.files.len(), depth });
-            self.files.push(c);
+            self.files.push(t);
         }
     }
 
@@ -86,7 +105,9 @@ impl FileTree {
         }
         v
     }
+}
 
+impl FileTree {
     /// The changes in the shown order (what ⇧-click ranges run over).
     pub fn visible_files(&self, closed: &HashSet<String>) -> Vec<Change> {
         self.visible(closed).into_iter().filter_map(|i| if let Node::File { idx, .. } = self.nodes[i] { Some(self.files[idx].clone()) } else { None }).collect()
@@ -161,6 +182,24 @@ mod tests {
         let t = FileTree::build(&[ch("new/dir/f.rs", 'R', Some("old/f.rs"))]);
         assert_eq!(shape(&t, &HashSet::new()), ["new/dir/ (1)", " new/dir/f.rs"]);
         assert_eq!(t.files[0].old_path.as_deref(), Some("old/f.rs"));
+    }
+
+    #[test]
+    fn groups_ref_names_by_prefix() {
+        let names = ["feature/payments/v2", "feature/payments/v1", "feature/login", "fix/a", "release/1/x"];
+        let t = FileTree::build_by(names.iter().enumerate().map(|(i, n)| (n.to_string(), i)));
+        let shape: Vec<_> = t
+            .visible(&HashSet::new())
+            .into_iter()
+            .map(|i| match &t.nodes[i] {
+                Node::Dir { name, depth, files, .. } => format!("{}{name}/ ({})", " ".repeat(*depth), files.len()),
+                Node::File { idx, depth } => format!("{}{}", " ".repeat(*depth), names[t.files[*idx]]),
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            ["feature/ (3)", " payments/ (2)", "  feature/payments/v1", "  feature/payments/v2", " feature/login", "fix/ (1)", " fix/a", "release/1/ (1)", " release/1/x"]
+        );
     }
 
     #[test]
