@@ -628,13 +628,13 @@ fn minimap(ui: &Ui, rail: Rect, kinds: &[u8], v0: f32, v1: f32) {
     let (v0, v1) = (y(v0), y(v1).min(rail.bottom()));
     p.rect_filled(Rect::from_x_y_ranges(rail.x_range(), v0..=v1.max(v0 + 6.0)), 4.0, theme::hover(ui).gamma_multiply(2.5));
     let h = per.max(2.0);
-    let mut last = (f32::NEG_INFINITY, 0u8);
+    let mut last = f32::NEG_INFINITY;
     for (r, &k) in kinds.iter().enumerate().filter(|(_, k)| **k != 0) {
         let top = y(r as f32);
-        if top - last.0 < 1.0 && k == last.1 {
+        if top - last < 1.0 {
             continue;
         }
-        last = (top, k);
+        last = top;
         let color = match k {
             b'+' => theme::ADD,
             b'-' => theme::DEL,

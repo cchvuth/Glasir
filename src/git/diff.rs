@@ -2,6 +2,7 @@
 //! line-level staging, and per-file worktree / commit / untracked diffs.
 
 use super::{Change, Res, run, run_raw};
+use std::io::Read;
 use std::path::Path;
 
 #[derive(Clone, Debug, Default)]
@@ -303,22 +304,47 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
     Ok(f)
 }
 
+/// `b/path` as a patch header names it: C-quoted when it holds a quote, backslash or control
+/// character (a TAB would otherwise end the name for `git apply`).
+fn b_path(path: &str) -> String {
+    if !path.chars().any(|c| c == '"' || c == '\\' || c.is_control()) {
+        return format!("b/{path}");
+    }
+    let esc: String = path.chars().flat_map(|c| match c {
+        '"' | '\\' => vec!['\\', c],
+        '\t' => vec!['\\', 't'],
+        '\n' => vec!['\\', 'n'],
+        c if c.is_control() => format!("\\{:03o}", c as u32).chars().collect(),
+        c => vec![c],
+    }).collect();
+    format!("\"b/{esc}\"")
+}
+
 fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
     // The ---/+++ pair lets `partial_patch` write a patch for part of it (after `add -N`).
-    let mut f = FileDiff { header: vec![format!("new file {path}"), "--- /dev/null".into(), format!("+++ b/{path}")], ..Default::default() };
+    let mut f = FileDiff { header: vec![format!("new file {path}"), "--- /dev/null".into(), format!("+++ {}", b_path(path))], ..Default::default() };
     let meta = std::fs::symlink_metadata(dir.join(path)).map_err(|e| e.to_string())?;
-    if !meta.is_file() || meta.len() > 8 << 20 {
+    // Past 8 MB only the start is read (text: the "too big" stand-in, unless asked for), so a huge file isn't loaded.
+    let big = meta.len() > 8 << 20 && !o.all;
+    let bytes = if !meta.is_file() {
+        vec![0]
+    } else if big {
+        let mut b = vec![];
+        std::fs::File::open(dir.join(path)).map_err(|e| e.to_string())?.take(8000).read_to_end(&mut b).map_err(|e| e.to_string())?;
+        b
+    } else {
+        std::fs::read(dir.join(path)).map_err(|e| e.to_string())?
+    };
+    if !meta.is_file() || bytes[..bytes.len().min(8000)].contains(&0) {
         f.binary = true;
         f.sizes = Some((None, Some(meta.len())));
         return Ok(f);
     }
-    let bytes = std::fs::read(dir.join(path)).map_err(|e| e.to_string())?;
+    if big {
+        let lines = bytes.iter().filter(|&&b| b == b'\n').count() * (meta.len() as usize / bytes.len().max(1));
+        return Ok(large(lines, meta.len() as usize, o).unwrap_or_default());
+    }
     f.lossy = std::str::from_utf8(&bytes).is_err();
-    if bytes[..bytes.len().min(8000)].contains(&0) {
-        f.binary = true;
-        f.sizes = Some((None, Some(meta.len())));
-        return Ok(f);
-    }
     if let Some(l) = large(bytes.iter().filter(|&&b| b == b'\n').count(), bytes.len(), o) {
         return Ok(l);
     }
@@ -341,6 +367,26 @@ fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Untracked files: a TAB in the name is quoted in the patch header, a big text file is the
+    /// "too big" stand-in (not binary), a binary is not flagged as lossy.
+    #[test]
+    fn untracked_diff_edge_cases() {
+        assert_eq!(b_path("a b.txt"), "b/a b.txt");
+        assert_eq!(b_path("tab\there"), "\"b/tab\\there\"");
+        let dir = std::env::temp_dir().join(format!("glasir-untracked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("big.txt"), "line\n".repeat(2_000_000)).unwrap();
+        std::fs::write(dir.join("bin"), [0xff, 0, 1]).unwrap();
+        let big = untracked_diff(&dir, "big.txt", DiffOpts::default()).unwrap();
+        assert!(!big.binary && big.large.is_some());
+        let all = untracked_diff(&dir, "big.txt", DiffOpts { all: true, ..Default::default() }).unwrap();
+        assert!(!all.binary && all.hunks.len() == 1);
+        let bin = untracked_diff(&dir, "bin", DiffOpts::default()).unwrap();
+        assert!(bin.binary && !bin.lossy);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn diff_and_partial_patch() {

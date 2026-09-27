@@ -166,6 +166,20 @@ fn signed_tag(dir: &Path, a: &[&str], name: &str, input: Option<&[u8]>) -> Res<S
     Err(format!("error: git failed to sign tag {name} (and made it unsigned: deleted again)"))
 }
 
+/// NUL-separated `paths` minus those gone from disk and not in the index (an untracked file
+/// that vanished since the last status): `add` fails on them and stages nothing. A tracked
+/// file that is gone is a deletion to stage, so it stays.
+fn without_vanished(dir: &Path, paths: &[u8]) -> Vec<u8> {
+    let gone: Vec<u8> = paths.split(|&b| b == 0).filter(|p| !p.is_empty()).filter(|p| std::fs::symlink_metadata(dir.join(String::from_utf8_lossy(p).as_ref())).is_err()).flat_map(|p| p.iter().copied().chain([0])).collect();
+    if gone.is_empty() {
+        return paths.to_vec();
+    }
+    let tracked = git::run_raw(dir, &["ls-files", "-z"], None).unwrap_or_default();
+    let tracked: Vec<&[u8]> = tracked.split(|&b| b == 0).collect();
+    let gone: Vec<&[u8]> = gone.split(|&b| b == 0).filter(|p| !tracked.contains(p)).collect();
+    paths.split(|&b| b == 0).filter(|p| !p.is_empty() && !gone.contains(p)).flat_map(|p| p.iter().copied().chain([0])).collect()
+}
+
 /// Runs an op's commands in order, stopping at the first failure.
 pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
     let one = |args: &Vec<String>| {
@@ -187,6 +201,12 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::merge_opts::PICK_NEW, ..] => super::merge_opts::pick_new(dir, &a),
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
+            [_, "add", "-A", "--pathspec-from-file=-", ..] => git::run_input(dir, &a, Some(&without_vanished(dir, op.input.as_deref().unwrap_or_default()))),
+            ["--literal-pathspecs", "checkout", "--", paths @ ..] => {
+                let out = git::run(dir, &a)?;
+                submodule_reset(dir, paths)?;
+                Ok(out)
+            }
             ["tag", "--sign", "-a", name, ..] => signed_tag(dir, &a, name, op.input.as_deref()),
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
                 git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
@@ -307,6 +327,21 @@ pub fn discard_files_op(cs: &[git::Change]) -> Option<Op> {
     }
     let paths = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).cloned().collect();
     Some(o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {} files? (Undo with ⌘Z.)", cs.len())))
+}
+
+/// `checkout` never moves a submodule: after a discard, check out the commit the index records in
+/// those of the paths that are submodules.
+fn submodule_reset(dir: &Path, paths: &[&str]) -> Res<String> {
+    let mut ls = vec!["--literal-pathspecs", "ls-files", "-s", "-z", "--"];
+    ls.extend(paths);
+    let out = git::run(dir, &ls)?;
+    let subs: Vec<&str> = out.split('\0').filter(|e| e.starts_with("160000 ")).filter_map(|e| e.split_once('\t').map(|(_, p)| p)).collect();
+    if subs.is_empty() {
+        return Ok(String::new());
+    }
+    let mut up = vec!["--literal-pathspecs", "submodule", "update", "--init", "--"];
+    up.extend(subs);
+    git::run(dir, &up)
 }
 
 /// Discard one unstaged change (WIP list), backed up so ⌘Z brings the bytes back.
@@ -1103,6 +1138,54 @@ mod tests {
         assert!(r.is_err(), "{r:?}");
         assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/tags/v1"]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A listed untracked file that vanished must not make the whole stage fail; a tracked
+    /// file that is gone is still a deletion to stage.
+    #[test]
+    fn stage_skips_vanished_untracked_files() {
+        let dir = scratch("stage-vanished");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        commit(&dir, "del", "d\n");
+        std::fs::write(dir.join("a"), "b\n").unwrap();
+        std::fs::write(dir.join("new.rs"), "n\n").unwrap();
+        std::fs::write(dir.join(".a.swp"), "s\n").unwrap();
+        std::fs::remove_file(dir.join("del")).unwrap();
+        let op = super::stage_all_op(&git::status(&dir).unwrap()).unwrap();
+        std::fs::remove_file(dir.join(".a.swp")).unwrap();
+        exec(&dir, &op).unwrap();
+        let s = git::status(&dir).unwrap();
+        let mut staged: Vec<_> = s.staged.iter().map(|c| c.path.as_str()).collect();
+        staged.sort();
+        assert_eq!(staged, ["a", "del", "new.rs"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `checkout --` never moves a submodule: discarding its pointer change must.
+    #[test]
+    fn discard_resets_a_changed_submodule() {
+        let (dir, sm) = (scratch("discard-sub"), scratch("discard-sub-src"));
+        for d in [&dir, &sm] {
+            sh(d, &["init", "-q", "-b", "main"]);
+            identity(d);
+        }
+        commit(&sm, "f", "1\n");
+        commit(&dir, "a", "a\n");
+        sh(&dir, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", sm.to_str().unwrap(), "sm"]);
+        sh(&dir, &["commit", "-q", "-m", "sub"]);
+        identity(&dir.join("sm"));
+        commit(&dir.join("sm"), "f", "2\n");
+        let c = git::status(&dir).unwrap().unstaged.into_iter().find(|c| c.path == "sm").unwrap();
+        exec(&dir, &super::discard_op(&c)).unwrap();
+        assert!(git::status(&dir).unwrap().unstaged.iter().all(|c| c.path != "sm"));
+        std::fs::write(dir.join("a"), "x\n").unwrap();
+        let c = git::status(&dir).unwrap().unstaged.into_iter().find(|c| c.path == "a").unwrap();
+        exec(&dir, &super::discard_op(&c)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "a\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sm);
     }
 
     /// Multi-file stage / unstage / discard touch exactly the chosen files (glob characters, a

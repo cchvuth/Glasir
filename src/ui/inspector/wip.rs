@@ -64,9 +64,8 @@ fn mark_resolved_op(label: &str, d: &RepoData, cs: &[Change]) -> Option<Op> {
     if ok.is_empty() {
         return None;
     }
-    let mut a = vec!["--literal-pathspecs", "add", "--"];
-    a.extend(&ok);
-    let op = Op::new(label, &a).light();
+    let paths: String = ok.iter().map(|p| format!("{p}\0")).collect();
+    let op = Op::new(label, &["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light();
     Some(if rest.is_empty() { op } else { op.confirm(format!("Mark {} file(s) resolved? Not marked (conflict markers left, or a side to choose):\n{}", ok.len(), shown(&rest))) })
 }
 
@@ -188,6 +187,15 @@ fn picked(sel: &[(bool, String)], staged: bool, path: &str) -> bool {
     sel.iter().any(|(s, p)| *s == staged && p == path)
 }
 
+/// The changes of `list` that are selected (`staged` picks the list), in one pass over both.
+fn selected(sel: &[(bool, String)], list: &[Change], staged: bool) -> Vec<Change> {
+    if sel.is_empty() {
+        return vec![];
+    }
+    let set: std::collections::HashSet<(bool, &str)> = sel.iter().map(|(s, p)| (*s, p.as_str())).collect();
+    list.iter().filter(|c| set.contains(&(staged, c.path.as_str()))).cloned().collect()
+}
+
 impl RepoTab {
     /// S / U with WIP files selected: stage the selected unstaged files / unstage the selected staged ones.
     pub fn file_key(&mut self, stage: bool) -> Option<Action> {
@@ -197,7 +205,7 @@ impl RepoTab {
             return None;
         }
         let list = if stage { &d.status.unstaged } else { &d.status.staged };
-        let cs: Vec<Change> = list.iter().filter(|c| picked(&self.file_sel, !stage, &c.path)).cloned().collect();
+        let cs: Vec<Change> = selected(&self.file_sel, list, !stage);
         let op = if stage { stage_files_op("Stage", &cs) } else { unstage_files_op(&cs) }?;
         self.file_sel.clear();
         Some(Action::Git(op))
@@ -494,7 +502,7 @@ impl RepoTab {
                 }
                 let mods = ui.input(|i| i.modifiers);
                 let mut clear = false;
-                let sel_un: Vec<Change> = s.unstaged.iter().filter(|c| picked(&self.file_sel, false, &c.path)).cloned().collect();
+                let sel_un: Vec<Change> = selected(&self.file_sel, &s.unstaged, false);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -601,7 +609,7 @@ impl RepoTab {
                     false
                 });
                 ui.add_space(6.0);
-                let sel_st: Vec<Change> = s.staged.iter().filter(|c| picked(&self.file_sel, true, &c.path)).cloned().collect();
+                let sel_st: Vec<Change> = selected(&self.file_sel, &s.staged, true);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Staged files  {}", s.staged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

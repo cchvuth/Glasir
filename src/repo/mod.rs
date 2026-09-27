@@ -338,7 +338,13 @@ impl RepoTab {
         }
         if let Some((_, rx)) = &self.watcher {
             let now = ctx.input(|i| i.time);
+            let ours = self.running.is_some() || self.load.is_some();
             for full in rx.try_iter() {
+                // Status-only events during an op or its reload are mostly our own index write: the op's
+                // reload already shows it, a second status would only repeat it.
+                if ours && !full {
+                    continue;
+                }
                 self.changed = Some((self.changed.is_some_and(|c| c.0) || full, now));
             }
             if let Some((full, at)) = self.changed

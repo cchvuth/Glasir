@@ -87,9 +87,19 @@ pub fn list(ui: &mut Ui, list: &[Change], key: u64, tree: bool, name: &'static s
     if tree {
         show(ui, list.iter(), key, ui.id().with(("filetree", name)), closed.entry(name).or_default(), all, row);
     } else {
-        for (i, c) in list.iter().enumerate() {
-            row(ui, Item::File { c, depth: None, order: Order::List(list, i) });
+        // Every row is `ROW_H` high (see `show`), so with `all` off only those in view are drawn.
+        let step = ROW_H + ui.spacing().item_spacing.y;
+        let (first, last) = if all {
+            (0, list.len())
+        } else {
+            let (top, clip) = (ui.cursor().top(), ui.clip_rect());
+            ((((clip.top() - top) / step).floor().max(0.0) as usize).min(list.len()), (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(list.len()))
+        };
+        ui.add_space(first as f32 * step);
+        for i in first..last {
+            row(ui, Item::File { c: &list[i], depth: None, order: Order::List(list, i) });
         }
+        ui.add_space((list.len() - last) as f32 * step);
     }
 }
 

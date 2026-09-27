@@ -215,19 +215,43 @@ pub(super) fn labels(dir: &Path) -> [String; 2] {
 /// decision to make), a text file git merges (`-merge` / `binary`, or a side git sees as
 /// binary content, keep our side without markers), and no conflict markers left.
 pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
-    st.conflicted
-        .iter()
-        .filter(|c| matches!(st.conflict_xy.get(&c.path).map(String::as_str), Some("UU" | "AA")))
-        .filter(|c| {
-            let p = dir.join(&c.path);
+    let cands: Vec<&str> = st.conflicted.iter().map(|c| c.path.as_str()).filter(|p| matches!(st.conflict_xy.get(*p).map(String::as_str), Some("UU" | "AA"))).collect();
+    let attrs = attrs_all(dir, &cands);
+    let ok: Vec<&str> = cands
+        .into_iter()
+        .filter(|path| {
+            let p = dir.join(path);
             let text = std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&p).ok()).and_then(|b| String::from_utf8(b).ok());
-            let (n, merged) = attrs(dir, &c.path);
-            // git's binary test: a NUL in the first 8000 bytes of any side.
-            let binary = || (1..=3).any(|i| git::run_raw(dir, &["cat-file", "blob", &format!(":{i}:{}", c.path)], None).is_ok_and(|b| b[..b.len().min(8000)].contains(&0)));
-            merged && text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n))) && !binary()
+            let (n, merged) = attrs.get(*path).copied().unwrap_or((7, true));
+            merged && text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n)))
         })
-        .map(|c| c.path.clone())
-        .collect()
+        .collect();
+    // git's binary test (a NUL in the first 8000 bytes of any side), only for the survivors.
+    let binary = binary_any(dir, &ok);
+    ok.into_iter().zip(binary).filter(|(_, b)| !b).map(|(p, _)| p.to_owned()).collect()
+}
+
+/// Per path: does any index stage (1..=3) look binary? One `cat-file --batch` for all. A path
+/// git can't be asked about (newline in it) or any failure counts as binary: not resolvable.
+fn binary_any(dir: &Path, paths: &[&str]) -> Vec<bool> {
+    let ask = |p: &str| !p.contains('\n');
+    let input: String = paths.iter().filter(|p| ask(p)).flat_map(|p| (1..=3).map(move |i| format!(":{i}:{p}\n"))).collect();
+    if input.is_empty() {
+        return vec![true; paths.len()];
+    }
+    let Ok(out) = git::run_raw(dir, &["cat-file", "--batch"], Some(input.as_bytes())) else { return vec![true; paths.len()] };
+    // `<oid> blob <size>\n<content>\n` or `<spec> missing\n`, in request order.
+    let mut at = 0;
+    let mut next = || -> Option<bool> {
+        let nl = at + out.get(at..)?.iter().position(|&b| b == b'\n')?;
+        let head = std::str::from_utf8(&out[at..nl]).ok()?;
+        at = nl + 1;
+        let Some(size) = head.rsplit(' ').next().filter(|_| !head.ends_with(" missing")).and_then(|n| n.parse::<usize>().ok()) else { return Some(false) };
+        let body = out.get(at..at + size)?;
+        at += size + 1;
+        Some(body[..body.len().min(8000)].contains(&0))
+    };
+    paths.iter().map(|p| !ask(p) || (0..3).try_fold(false, |acc, _| next().map(|b| acc || b)).unwrap_or(true)).collect()
 }
 
 fn load(dir: &Path, path: &str) -> Loaded {
@@ -338,11 +362,22 @@ fn marker_size(dir: &Path, path: &str) -> usize {
 
 /// The path's conflict-marker size, and whether git text-merges it (`merge` not unset / binary).
 fn attrs(dir: &Path, path: &str) -> (usize, bool) {
-    let out = git::run(dir, &["check-attr", "-z", "conflict-marker-size", "merge", "--", path]).unwrap_or_default();
+    attrs_all(dir, &[path]).get(path).copied().unwrap_or((7, true))
+}
+
+/// `attrs` for many paths in one `check-attr --stdin`.
+fn attrs_all<'a>(dir: &Path, paths: &[&'a str]) -> std::collections::HashMap<&'a str, (usize, bool)> {
+    let input: String = paths.iter().map(|p| format!("{p}\0")).collect();
+    let out = git::run_input(dir, &["--literal-pathspecs", "check-attr", "-z", "--stdin", "conflict-marker-size", "merge"], Some(input.as_bytes())).unwrap_or_default();
     // `path\0attr\0value\0` records.
     let f: Vec<&str> = out.split('\0').collect();
-    let val = |a: &str| f.chunks(3).find(|r| r.get(1) == Some(&a)).and_then(|r| r.get(2).copied());
-    (val("conflict-marker-size").and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7), !matches!(val("merge"), Some("unset" | "binary")))
+    paths
+        .iter()
+        .map(|&p| {
+            let val = |a: &str| f.chunks(3).find(|r| r.first() == Some(&p) && r.get(1) == Some(&a)).and_then(|r| r.get(2).copied());
+            (p, (val("conflict-marker-size").and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7), !matches!(val("merge"), Some("unset" | "binary"))))
+        })
+        .collect()
 }
 
 /// Whole-file choices for the current and incoming side. A side without a
