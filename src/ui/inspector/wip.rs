@@ -275,6 +275,7 @@ impl RepoTab {
 
         let generating = matches!(self.ai_busy(), Some(Purpose::CommitMessage { .. }));
         let ai_on = crate::ai::enabled();
+        let (sum_id, body_id) = (egui::Id::new("commit_summary"), egui::Id::new("commit_description"));
         let (mut commit, mut stage_commit) = (false, false);
         egui::Panel::bottom("commit_box").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -317,7 +318,7 @@ impl RepoTab {
             identity_row(ui, d, &self.email_rules, acts);
             ui.horizontal(|ui| {
                 let n = self.summary.chars().count();
-                let r = ui.add(TextEdit::singleline(&mut self.summary).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
+                let r = ui.add(TextEdit::singleline(&mut self.summary).id(sum_id).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
                 if std::mem::take(&mut self.focus_summary) {
                     r.request_focus();
                 }
@@ -325,7 +326,7 @@ impl RepoTab {
             });
             // Capped: a long message (amend, split, AI) must not push the Commit button off the card.
             ScrollArea::vertical().id_salt("commit_body").max_height(160.0).show(ui, |ui| {
-                ui.add(TextEdit::multiline(&mut self.body).margin(crate::theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
+                ui.add(TextEdit::multiline(&mut self.body).id(body_id).margin(crate::theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
             });
             let was = self.amend;
             ui.horizontal(|ui| {
@@ -342,11 +343,9 @@ impl RepoTab {
             // An untouched template counts as empty.
             let untouched = self.template.as_ref().is_some_and(|t| (&t.summary, &t.body) == (&self.summary, &self.body));
             if self.amend && !was && (self.summary.is_empty() || untouched) {
-                if let Ok(msg) = crate::git::run(&self.dir, &["log", "-1", "--format=%B"]) {
-                    let (s, b) = msg.trim().split_once('\n').unwrap_or((msg.trim(), ""));
-                    self.summary = s.into();
-                    self.body = b.trim().into();
-                }
+                acts.push(Action::AmendToggled(true));
+            } else if was && !self.amend {
+                acts.push(Action::AmendToggled(false));
             }
             ui.horizontal_wrapped(|ui| {
                 ui.checkbox(&mut self.no_verify, "Skip hooks").on_hover_text("git commit --no-verify: skips the pre-commit and commit-msg hooks");
@@ -356,7 +355,7 @@ impl RepoTab {
                 coauthors_menu(ui, d, &mut self.coauthors);
             });
             let n = s.staged.len();
-            let named = !self.summary.trim().is_empty() && !busy;
+            let named = !self.summary.trim().is_empty() && !untouched && !busy && !generating;
             let can = (n > 0 || self.amend) && named;
             let push = self.push_after && !self.amend && d.push_op(false).is_some();
             let label = if self.amend {
@@ -364,10 +363,18 @@ impl RepoTab {
             } else {
                 format!("Commit{} changes to {n} file{}", if push { " and push" } else { "" }, if n == 1 { "" } else { "s" })
             };
-            let btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text(keys("⌘↩ commits; ⇧⌘↩ stages everything first, then commits"));
+            let btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text(if untouched { "Edit the template's message first".to_owned() } else { keys("⌘↩ commits; ⇧⌘↩ stages everything first, then commits") });
             // Not while a dialog is open: ⌘↩ there confirms the dialog (e.g. an annotated tag).
-            let (enter, shift) = match ui.ctx().memory(|m| m.top_modal_layer().is_none()) {
-                true => ui.input(|i| (i.modifiers.command && i.key_pressed(egui::Key::Enter), i.modifiers.shift)),
+            // Nor from another field (graph search, terminal): only the commit box or no focus.
+            let ours = ui.memory(|m| m.top_modal_layer().is_none() && m.focused().is_none_or(|f| f == sum_id || f == body_id));
+            let (enter, shift) = match ours {
+                true => ui.input_mut(|i| {
+                    let hit = i.modifiers.command && i.key_pressed(egui::Key::Enter);
+                    if hit {
+                        i.consume_key(i.modifiers, egui::Key::Enter);
+                    }
+                    (hit, i.modifiers.shift)
+                }),
                 false => (false, false),
             };
             if can && (btn.clicked() || (enter && !shift)) {

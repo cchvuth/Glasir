@@ -221,7 +221,7 @@ impl RepoData {
     /// Sidebar order: 0 = the remote's default branch, 1 = other long-lived
     /// branches (main, master, develop, trunk), 2 = everything else.
     pub fn branch_rank(&self, name: &str) -> u8 {
-        if name == self.default_branch() {
+        if name == self.default_branch {
             0
         } else if is_trunk(name) {
             1

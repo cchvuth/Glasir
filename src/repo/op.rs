@@ -834,7 +834,8 @@ impl RepoTab {
                     }
                     self.sel = None;
                 }
-                if res.is_ok() && !op.custom && op.label.starts_with("Commit") {
+                // Not when text was typed into the box while the commit (a hook) ran.
+                if res.is_ok() && !op.custom && op.label.starts_with("Commit") && (op.input.is_none() || op.input == self.commit_op().input) {
                     self.reset_message();
                 }
                 let files = files.unwrap_or_else(|note| {
@@ -1019,11 +1020,8 @@ impl RepoTab {
 
     /// Op that commits the message in the editor (and pushes, if asked).
     pub fn commit_op(&self) -> Op {
-        let mut msg = if self.body.trim().is_empty() {
-            self.summary.trim().to_owned()
-        } else {
-            format!("{}\n\n{}", self.summary.trim(), self.body.trim())
-        };
+        let body = message::body(&self.body);
+        let mut msg = if body.trim().is_empty() { self.summary.trim().to_owned() } else { format!("{}\n\n{body}", self.summary.trim()) };
         if let (Some(t), false) = (&self.template, self.amend) {
             msg = message::strip_comments(&msg, t);
         }
@@ -1050,8 +1048,41 @@ impl RepoTab {
         self.summary.clear();
         self.body.clear();
         self.amend = false;
+        (self.amend_task, self.amend_prev) = (None, None);
         self.coauthors.clear();
+        // A message still streaming in belongs to the commit just made.
+        if matches!(self.ai.as_ref().map(|j| &j.purpose), Some(crate::ai::Purpose::CommitMessage { .. })) {
+            (self.ai, self.ai_draft) = (None, None);
+        }
         self.prefill_template();
+    }
+
+    /// Amend ticked on an empty box: fetch HEAD's message off the UI thread, remembering what was there.
+    pub(super) fn fill_amend(&mut self, ctx: &egui::Context) {
+        let dir = self.dir.clone();
+        self.amend_prev = Some(((self.summary.clone(), self.body.clone()), Default::default()));
+        self.amend_task = Some(super::Task::spawn(ctx, move || git::run(&dir, &["log", "-1", "--format=%B"]).ok()));
+    }
+
+    /// Amend unticked: the message it prefilled goes, unless it was edited.
+    pub(super) fn unfill_amend(&mut self) {
+        self.amend_task = None;
+        if let Some((prev, filled)) = self.amend_prev.take()
+            && (&self.summary, &self.body) == (&filled.0, &filled.1)
+        {
+            (self.summary, self.body) = prev;
+        }
+    }
+
+    pub(super) fn poll_amend(&mut self) {
+        if let Some(Some(msg)) = super::Task::poll(&mut self.amend_task)
+            && let Some((prev, filled)) = &mut self.amend_prev
+            && self.amend
+            && (&self.summary, &self.body) == (&prev.0, &prev.1)
+        {
+            *filled = message::split(&msg);
+            (self.summary, self.body) = filled.clone();
+        }
     }
 
     /// Fills an empty commit box from `commit.template`.

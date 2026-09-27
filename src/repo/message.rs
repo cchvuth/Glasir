@@ -31,6 +31,19 @@ pub fn template(d: &RepoData, dir: &Path) -> Option<Template> {
     Some(Template { prefix, summary, body })
 }
 
+/// A commit body without the blank lines around it; the indentation of its first line stays.
+pub fn body(b: &str) -> &str {
+    b.trim_end().trim_start_matches(['\n', '\r'])
+}
+
+/// Splits a commit message at its first blank line: the subject on one line (as git's `%s`)
+/// and the body.
+pub fn split(msg: &str) -> (String, String) {
+    let msg = msg.trim();
+    let (s, b) = msg.split_once("\n\n").unwrap_or((msg, ""));
+    (s.lines().map(str::trim).collect::<Vec<_>>().join(" "), body(b).to_owned())
+}
+
 /// Drops the template's comment lines like git's `--cleanup=strip`, and collapses blank runs.
 /// Only the template's own: the box may hold a split's or Claude's message with `## Why` lines.
 pub fn strip_comments(msg: &str, t: &Template) -> String {
@@ -106,6 +119,35 @@ mod tests {
         std::fs::write(dir.join("t.txt"), "feat: \n\nWhy:\n# hint\n").unwrap();
         let t = template(&load(), &dir).unwrap();
         assert_eq!((t.summary.as_str(), t.body.as_str()), ("feat:", "Why:\n# hint"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_keeps_a_wrapped_subject_and_indented_body() {
+        assert_eq!(split("a\nb\n\n    x\n  y\n"), ("a b".into(), "    x\n  y".into()));
+        assert_eq!(split("only\n"), ("only".into(), String::new()));
+    }
+
+    /// Typed while a slow hook ran stays; an indented first body line survives the commit.
+    #[test]
+    fn typing_during_a_commit_is_kept() {
+        use super::super::testutil::{commit, identity, scratch, settle, sh};
+        use super::super::{RepoTab, View};
+        let dir = scratch("commit-typing");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "one");
+        std::fs::write(dir.join("f"), "two").unwrap();
+        sh(&dir, &["add", "f"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        (t.summary, t.body) = ("Add example".into(), "    let x = 1;\n    let y = 2;".into());
+        t.run(&ctx, t.commit_op());
+        t.summary = "next".into();
+        settle(&ctx, &mut t);
+        assert_eq!(t.summary, "next");
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%B"]).trim_end(), "Add example\n\n    let x = 1;\n    let y = 2;");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -34,9 +34,7 @@ impl RepoTab {
         }
         let message = matches!(job.purpose, ai::Purpose::CommitMessage { .. });
         if message && !job.text.is_empty() {
-            let (s, b) = job.text.trim().split_once('\n').unwrap_or((job.text.trim(), ""));
-            self.summary = s.trim().to_owned();
-            self.body = b.trim().to_owned();
+            (self.summary, self.body) = super::message::split(&job.text);
         }
         // Resolve from the merge editor: the answer goes into its output pane.
         let in_editor = matches!(&job.purpose, ai::Purpose::Resolve(p) if self.merge.as_ref().is_some_and(|m| &m.path == p));

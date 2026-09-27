@@ -106,6 +106,8 @@ pub enum Action {
     AmendInto(String),
     /// Plan absorbing the staged hunks into the commits they belong to (preview first).
     Absorb,
+    /// The commit box's Amend box was ticked (true: prefill HEAD's message) or unticked.
+    AmendToggled(bool),
     /// Commit Composer on existing commits (see `compose::Recompose`).
     Recompose(super::compose::Recompose),
     /// Uncommit this commit and guide splitting it into several.

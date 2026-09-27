@@ -118,6 +118,9 @@ pub struct RepoTab {
     pub ai: Option<ai::Job>,
     /// The commit message being replaced by an AI suggestion, restored on failure.
     ai_draft: Option<(String, String)>,
+    /// Amend's prefill: HEAD's message being fetched, and (box before, box as prefilled).
+    amend_task: Option<Task<Option<String>>>,
+    amend_prev: Option<((String, String), (String, String))>,
     pub ai_cfg: ai::Config,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
@@ -228,6 +231,8 @@ impl RepoTab {
             view,
             ai: None,
             ai_draft: None,
+            amend_task: None,
+            amend_prev: None,
             ai_cfg: ai::Config::default(),
             notes: vec![],
             open_tab: None,
@@ -327,6 +332,7 @@ impl RepoTab {
 
     pub fn poll(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
         self.term.poll(ctx);
+        self.poll_amend();
         if let Some(w) = Task::poll(&mut self.watcher_task) {
             if w.is_none() {
                 msgs.push(Msg { text: "Live refresh is off for this repo (file watching unavailable); changes show on focus or F5.".into(), error: false });
@@ -657,6 +663,8 @@ impl RepoTab {
                 }
             }
             Action::Absorb => self.start_absorb(ctx),
+            Action::AmendToggled(true) => self.fill_amend(ctx),
+            Action::AmendToggled(false) => self.unfill_amend(),
             Action::Split(commit) => self.start_split(ctx, commit),
             Action::Recompose(r) => {
                 if self.ai_free() {
