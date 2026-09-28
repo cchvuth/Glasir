@@ -153,7 +153,7 @@ impl Plan {
         // Also listed by `diff HEAD` after `git rm --cached`: its deletion unit covers it.
         for path in untracked.split('\0').filter(|p| !p.is_empty() && !names.split('\0').any(|n| n == *p)) {
             let c = git::Change { path: path.into(), old_path: None, code: '?' };
-            let f = git::worktree_diff(dir, &c, false, Default::default()).unwrap_or_default();
+            let f = git::worktree_diff(dir, &c, false, git::DiffOpts { no_attrs: true, ..Default::default() }).unwrap_or_default();
             let body = if f.binary || f.lossy { &[][..] } else { &f.hunks[..] };
             add(&mut units, path, "new file, untracked".into(), None, body);
         }

@@ -110,7 +110,7 @@ fn shape(f: &FileDiff) -> String {
 pub(super) fn diff_is(dir: &std::path::Path, a: &[&str]) -> Res<String> {
     let [_, staged, context, code, path, old, want] = a else { return Err("bad diff guard".into()) };
     let c = git::Change { path: path.to_string(), old_path: (!old.is_empty()).then(|| old.to_string()), code: code.chars().next().unwrap_or('M') };
-    let o = DiffOpts { ignore_ws: false, context: context.parse().unwrap_or(3), all: true };
+    let o = DiffOpts { ignore_ws: false, context: context.parse().unwrap_or(3), all: true, no_attrs: false };
     // Untracked when shown: staged or tracked since means the patch (and its rollback) is not ours to apply.
     if c.code == '?' && !git::run(dir, &["--literal-pathspecs", "ls-files", "--cached", "--", path])?.trim().is_empty() {
         return Err("The file is no longer untracked, so nothing was applied. Check the updated diff and try again.".into());

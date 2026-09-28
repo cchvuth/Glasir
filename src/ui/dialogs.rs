@@ -49,10 +49,24 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
             let revert = op.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());
             for a in op.cmds.iter_mut().flatten().chain(op.then_open.as_mut()).chain(revert) {
-                *a = a.replace("{}", v).replace("{2}", &v2);
+                *a = fill(a, v, &v2);
             }
             acts.push(Action::Git(op));
         }
+    }
+}
+
+/// Substitutes `{}` and `{2}` in one pass: a value that contains "{2}" must not be substituted again.
+fn fill(arg: &str, v: &str, v2: &str) -> String {
+    arg.replace("{2}", "\0\x02").replace("{}", "\0\x01").replace("\0\x01", v).replace("\0\x02", v2)
+}
+
+#[cfg(test)]
+mod fill_tests {
+    #[test]
+    fn value_with_placeholder_is_kept() {
+        assert_eq!(super::fill("{}", "Support {2} in {}", "x"), "Support {2} in {}");
+        assert_eq!(super::fill("{}-{2}", "a", "b"), "a-b");
     }
 }
 

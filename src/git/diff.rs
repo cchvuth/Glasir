@@ -205,11 +205,13 @@ pub struct DiffOpts {
     pub context: u32,
     /// Load a diff over [`LARGE_LINES`] / [`LARGE_BYTES`] too.
     pub all: bool,
+    /// Skip the per-file `check-attr` for untracked files (`whole_only` stays false).
+    pub no_attrs: bool,
 }
 
 impl Default for DiffOpts {
     fn default() -> Self {
-        DiffOpts { ignore_ws: false, context: 3, all: false }
+        DiffOpts { ignore_ws: false, context: 3, all: false, no_attrs: false }
     }
 }
 
@@ -358,7 +360,7 @@ fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
     if !bytes.ends_with(b"\n") && !lines.is_empty() {
         lines.push(Line { kind: b'\\', text: " No newline at end of file".into(), old: 0, new: 0 });
     }
-    let attrs = || run(dir, &["check-attr", "-z", "filter", "working-tree-encoding", "ident", "--", path]).unwrap_or_default();
+    let attrs = || if o.no_attrs { String::new() } else { run(dir, &["check-attr", "-z", "filter", "working-tree-encoding", "ident", "--", path]).unwrap_or_default() };
     f.whole_only = bytes.contains(&b'\r') || attrs().split('\0').skip(2).step_by(3).any(|v| !matches!(v, "" | "unspecified" | "unset"));
     f.hunks.push(Hunk { header, old_start: 0, new_start: 1, lines });
     Ok(f)

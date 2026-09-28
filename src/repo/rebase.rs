@@ -72,6 +72,10 @@ impl Editor {
 
     /// The todo (oldest first) and the op that runs it.
     pub fn op(&self, git_dir: &Path) -> Res<Op> {
+        // A stopped rebase's pending todo reads the message files written below.
+        if !matches!(git::state(git_dir), git::State::Clean | git::State::Bisecting) {
+            return Err("Finish or abort the operation in progress first.".into());
+        }
         if !self.head.is_empty() && head_state(&self.dir) != self.head {
             return Err("The branch changed since this list was loaded; reopen the rebase editor.".into());
         }
@@ -114,6 +118,9 @@ impl Editor {
         let mut args = vec!["-c", &editor, "-c", "core.editor=true", "rebase", "-i"];
         if self.cherry {
             args.push("--autostash");
+        } else {
+            // A pick already applied upstream is dropped, as plain `rebase -i` does.
+            args.push("--empty=drop");
         }
         args.push(&self.base);
         // Its picks put files where ignored ones may sit: what they hold counts as named.
@@ -194,22 +201,11 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
         Act::Drop => format!("Drop {short}"),
         _ => op.label,
     };
-    Ok(op)
+    Ok(confirm_pushed(dir, commit, op))
 }
 
-/// Replace the message of `commit` (HEAD: amend, message only; older: a rebase that rewords it).
-/// Asks first when the rewrite reaches commits that are already on the upstream.
-pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: String) -> Res<Op> {
-    let mut op = if is_head {
-        Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
-    } else {
-        let mut op = quick(dir, git_dir, commit, Act::Reword, Some(message))?;
-        // A reword changes no tree, so uncommitted work can ride along (git refuses a dirty rebase otherwise).
-        if let Some(rebase) = op.cmds.last_mut() {
-            rebase.insert(rebase.len() - 1, "--autostash".into());
-        }
-        op
-    };
+/// Asks first when rewriting `commit` up to HEAD reaches commits already on the upstream.
+fn confirm_pushed(dir: &Path, commit: &str, op: Op) -> Op {
     // The commits the rewrite replaces (`commit` up to HEAD), and those of them the upstream lacks.
     let mut range = vec!["rev-list".to_owned(), "--count".into(), "HEAD".into()];
     if git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).is_ok() {
@@ -223,13 +219,29 @@ pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: 
         && total > unpushed
     {
         let n = total - unpushed;
-        op = op.confirm(format!(
+        return op.confirm(format!(
             "This rewrites {n} commit{} already pushed to {}. They get new hashes, so the branch will need a force push, and anyone who has them will have to reconcile.",
             if n == 1 { "" } else { "s" },
             up.trim()
         ));
     }
-    Ok(op)
+    op
+}
+
+/// Replace the message of `commit` (HEAD: amend, message only; older: a rebase that rewords it).
+/// Asks first when the rewrite reaches commits that are already on the upstream.
+pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: String) -> Res<Op> {
+    let op = if is_head {
+        Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
+    } else {
+        let mut op = quick(dir, git_dir, commit, Act::Reword, Some(message))?;
+        // A reword changes no tree, so uncommitted work can ride along (git refuses a dirty rebase otherwise).
+        if let Some(rebase) = op.cmds.last_mut() {
+            rebase.insert(rebase.len() - 1, "--autostash".into());
+        }
+        op
+    };
+    if is_head { Ok(confirm_pushed(dir, commit, op)) } else { Ok(op) } // quick() already asked
 }
 
 /// Squash or drop several commits of the current branch in one rebase.
@@ -262,7 +274,7 @@ pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {
     }
     let mut op = e.op(git_dir)?;
     op.label = format!("{} {} commits", if act == Act::Squash { "Squash" } else { "Drop" }, ids.len());
-    Ok(op)
+    Ok(confirm_pushed(dir, oldest, op))
 }
 
 /// The todo for dragging `src` onto `dst` in the graph: both unpushed, on the
@@ -317,10 +329,11 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     // Soft: undo puts the folded-in changes back in the index (`--keep` would drop them).
     // Backed up: the replayed commits may put files where ignored ones sit.
     let base = format!("{commit}^");
-    Ok(Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
+    let op = Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &base])
         .undo(Undo::Soft)
-        .backup(super::Backup::Tree { revs: vec![base], untracked: false }))
+        .backup(super::Backup::Tree { revs: vec![base], untracked: false });
+    Ok(confirm_pushed(dir, commit, op))
 }
 
 /// Uncommit `commit` so it can be split: HEAD is just reset; an older commit
@@ -589,6 +602,52 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), lines(19, "nineteen"), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
         assert_eq!(g(&["diff", "--cached", "--name-only"]), "");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refuses_mid_rebase_and_drops_applied_upstream() {
+        let (dir, g) = repo("applied");
+        let gd = git::git_dir(&dir).unwrap();
+        // feat = c3 + A + B; main gets A cherry-picked on top of a new commit.
+        g(&["checkout", "-q", "-b", "feat"]);
+        for f in ["fa", "fb"] {
+            std::fs::write(dir.join(f), f).unwrap();
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", &f[1..].to_uppercase()]);
+        }
+        let a = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        g(&["checkout", "-q", "main"]);
+        std::fs::write(dir.join("fm"), "M").unwrap();
+        g(&["add", "fm"]);
+        g(&["commit", "-q", "-m", "M"]);
+        g(&["cherry-pick", &a]);
+        g(&["checkout", "-q", "feat"]);
+        let ed = Editor::load(&dir, "main", "main").unwrap();
+        // A stopped rebase blocks a second editor before it writes any file.
+        std::fs::create_dir_all(gd.join("rebase-merge")).unwrap();
+        assert!(ed.op(&gd).is_err());
+        assert!(!gd.join("glasir-rebase-todo").exists());
+        std::fs::remove_dir_all(gd.join("rebase-merge")).unwrap();
+        run_op(&dir, &ed.op(&gd).unwrap());
+        assert_eq!(g(&["log", "--format=%s", "-3"]).lines().collect::<Vec<_>>(), ["B", "A", "M"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rewrites_of_pushed_commits_ask_first() {
+        let (dir, g) = repo("pushed");
+        let gd = git::git_dir(&dir).unwrap();
+        let bare = dir.with_extension("bare");
+        let _ = std::fs::remove_dir_all(&bare);
+        git::run(&dir, &["init", "-q", "--bare", bare.to_str().unwrap()]).unwrap();
+        g(&["remote", "add", "origin", bare.to_str().unwrap()]);
+        g(&["push", "-q", "-u", "origin", "main"]);
+        let c2 = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        assert!(quick(&dir, &gd, &c2, Act::Drop, None).unwrap().confirm.is_some());
+        let ids: Vec<String> = g(&["rev-list", "HEAD"]).lines().map(String::from).collect();
+        assert!(multi(&dir, &gd, &ids[..2], Act::Drop).unwrap().confirm.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare);
     }
 
     #[test]

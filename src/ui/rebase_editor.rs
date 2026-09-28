@@ -62,7 +62,18 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     let footer = 56.0;
     egui::ScrollArea::vertical().max_height((ui.available_height() - footer).max(80.0)).auto_shrink([false, true]).show(ui, |ui| {
         let mut swap = None;
+        // Rows off screen are skipped as blank space of the height of a plain row (reword rows are taller).
+        let row_id = egui::Id::new("rebase_row_h");
+        let row_h: Option<f32> = ui.data(|d| d.get_temp(row_id));
         for i in 0..n {
+            if let Some(h) = row_h.filter(|_| ed.items[i].act != Act::Reword) {
+                let top = ui.cursor().min.y;
+                let clip = ui.clip_rect();
+                if top + h < clip.min.y || top > clip.max.y {
+                    ui.add_space(h + 4.0);
+                    continue;
+                }
+            }
             let selected = i == ed.sel;
             let it = &mut ed.items[i];
             let frame = egui::Frame::new()
@@ -109,6 +120,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                     ui.add(TextEdit::multiline(&mut it.message).margin(crate::theme::INPUT_MARGIN).desired_rows(3).desired_width(f32::INFINITY));
                 }
             });
+            if ed.items[i].act != Act::Reword {
+                ui.data_mut(|d| d.insert_temp(row_id, r.response.rect.height()));
+            }
             if r.response.interact(egui::Sense::click()).clicked() {
                 ed.sel = i;
             }
