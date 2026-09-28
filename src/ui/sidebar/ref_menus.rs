@@ -46,14 +46,15 @@ fn worktree_compare(ui: &mut Ui, name: &str, acts: &mut Vec<Action>) {
     }
 }
 
-fn compare_items(ui: &mut Ui, d: &RepoData, name: &str, tip: &str, acts: &mut Vec<Action>) {
+fn compare_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
+    let (name, rev, tip) = (r.name.as_str(), d.rev(r), r.target.as_str());
     worktree_compare(ui, name, acts);
     let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
     if ui.button(format!("{}  Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
-        acts.push(Action::Select(Sel::Compare { from: head.clone(), to: name.into(), three_dot: true }));
+        acts.push(Action::Select(Sel::Compare { from: head.clone(), to: rev.into(), three_dot: true }));
     }
     if crate::ai::enabled() && ui.button(format!("{}  Explain changes vs {head}", icon::SPARKLE)).clicked() {
-        acts.push(Action::Ai(Purpose::ExplainRange { from: head.clone(), to: name.into() }));
+        acts.push(Action::Ai(Purpose::ExplainRange { from: head.clone(), to: rev.into() }));
     }
     if let Some(base) = d.local(&head) {
         // By commit id: a local branch name need not exist on the remote.
@@ -103,7 +104,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         }
         integrate_items(ui, d, name, d.rev(r), acts);
         reset_menu(ui, d, &r.target, name, acts);
-        compare_items(ui, d, name, &r.target, acts);
+        compare_items(ui, d, r, acts);
     }
     if r.head
         && let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
@@ -142,7 +143,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
     if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {
         let path = d.worktree_path(name);
-        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", name]).then_open("{}")));
+        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", d.rev(r)]).then_open("{}")));
     }
     if let Some(p) = &r.worktree
         && ui.button(format!("{}  Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
@@ -150,7 +151,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         acts.push(Action::OpenTab(p.clone()));
     }
     if ui.button("Create branch from here…").clicked() {
-        acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", name]).undo(Undo::Keep)));
+        acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", d.rev(r)]).undo(Undo::Keep)));
     }
     if ui.button("Rename…").clicked() {
         acts.push(prompt(format!("Rename {name}"), name, Op::new("Rename branch", &["branch", "-m", name, "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "{}", name]))));
@@ -189,7 +190,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Ac
     }
     integrate_items(ui, d, &r.name, d.rev(r), acts);
     reset_menu(ui, d, &r.target, &r.name, acts);
-    compare_items(ui, d, &r.name, &r.target, acts);
+    compare_items(ui, d, r, acts);
     let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
     if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
         acts.push(prompt(

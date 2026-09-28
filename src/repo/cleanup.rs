@@ -137,14 +137,13 @@ impl Cleanup {
 
 /// Classifies `rows` (name, tip, date and remote candidate filled in; with "upstream gone")
 /// against `target`.
-fn scan(dir: &Path, target: &str, rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
+fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
     let merged = git::run(dir, &["for-each-ref", &format!("--merged={target}"), "--format=%(objectname)", "refs/heads"])?;
     let merged: HashSet<&str> = merged.lines().collect();
     let tree = git::run(dir, &["rev-parse", "--verify", "-q", &format!("{target}^{{tree}}")])?;
     let s = |n: u32| if n == 1 { "" } else { "s" };
-    let mut out: Vec<Cand> = rows
-        .into_iter()
-        .map(|(mut c, gone)| {
+    let classify = |(c, gone): &mut (Cand, bool)| {
+            let gone = *gone;
             let lr = git::run(dir, &["rev-list", "--left-right", "--count", &format!("{target}...{}", c.oid)]).unwrap_or_default();
             let mut n = lr.split_whitespace().filter_map(|n| n.parse().ok());
             (c.behind, c.ahead) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
@@ -174,9 +173,15 @@ fn scan(dir: &Path, target: &str, rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
                 };
             }
             c.remote = c.remote.take().filter(|(_, _, o)| git::run(dir, &["merge-base", "--is-ancestor", o, &c.oid]).is_ok());
-            c
-        })
-        .collect();
+    };
+    // Each branch costs a handful of git processes: spread them over a few threads.
+    let per = rows.len().div_ceil(std::thread::available_parallelism().map_or(4, |n| n.get().min(8))).max(1);
+    std::thread::scope(|sc| {
+        for chunk in rows.chunks_mut(per) {
+            sc.spawn(|| chunk.iter_mut().for_each(classify));
+        }
+    });
+    let mut out: Vec<Cand> = rows.into_iter().map(|r| r.0).collect();
     out.sort_by_key(|c| c.why.map_or(4, |w| w as u8));
     Ok(out)
 }

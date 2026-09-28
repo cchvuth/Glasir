@@ -34,6 +34,9 @@ pub struct Palette {
     pub sel: usize,
     /// Built once per opening: with thousands of refs, building is too slow for every frame.
     pub items: Vec<Item>,
+    /// Indices of the best matches for the query they were ranked for (and the item count then):
+    /// scoring thousands of items is only redone when the query changes.
+    pub ranked: (String, usize, Vec<usize>),
 }
 
 /// Subsequence match, case-insensitive. Higher is better; rewards consecutive
@@ -219,25 +222,30 @@ fn elide(s: &str, max: usize) -> String {
 
 /// Draws the palette; returns the chosen command, or `Some(None)` to close.
 pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
-    let mut ranked: Vec<(i32, &Item)> = p
-        .items
-        .iter()
-        .filter_map(|it| {
-            if p.query.trim().is_empty() {
-                return Some((0, it));
-            }
-            // Prefer commands and branches over the (often hundreds of) tags.
-            let boost = match it.detail.as_str() {
-                "tag" => 0,
-                "remote branch" => 3,
-                "local branch" => 5,
-                _ => 6,
-            };
-            Some((score(&p.query, &it.label)? + boost, it))
-        })
-        .collect();
-    ranked.sort_by_key(|(s, _)| -s);
-    ranked.truncate(60);
+    if p.ranked.0 != p.query || p.ranked.1 != p.items.len() {
+        let mut r: Vec<(i32, usize)> = p
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, it)| {
+                if p.query.trim().is_empty() {
+                    return Some((0, i));
+                }
+                // Prefer commands and branches over the (often hundreds of) tags.
+                let boost = match it.detail.as_str() {
+                    "tag" => 0,
+                    "remote branch" => 3,
+                    "local branch" => 5,
+                    _ => 6,
+                };
+                Some((score(&p.query, &it.label)? + boost, i))
+            })
+            .collect();
+        r.sort_by_key(|(s, _)| -s);
+        r.truncate(60);
+        p.ranked = (p.query.clone(), p.items.len(), r.into_iter().map(|x| x.1).collect());
+    }
+    let ranked: Vec<&Item> = p.ranked.2.iter().map(|&i| &p.items[i]).collect();
     let n = ranked.len();
     let (up, down, enter, esc) = ctx.input(|i| {
         (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.key_pressed(Key::Enter), i.key_pressed(Key::Escape))
@@ -254,7 +262,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
         out = Some(None);
     }
     if enter && n > 0 {
-        out = Some(Some(ranked[p.sel].1.cmd.clone()));
+        out = Some(Some(ranked[p.sel].cmd.clone()));
     }
     let screen = ctx.content_rect();
     let width = 640.0f32.min(screen.width() - 40.0);
@@ -275,7 +283,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
         }
         ui.add_space(6.0);
         egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
-            for (i, (_, it)) in ranked.iter().enumerate() {
+            for (i, it) in ranked.iter().copied().enumerate() {
                 let selected = i == p.sel;
                 let r = ui.add(
                     egui::Button::selectable(

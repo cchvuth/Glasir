@@ -412,13 +412,20 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
-    let (stashes, worktrees) = stashes;
+    let (stashes, mut worktrees) = stashes;
     let mut log = log?;
     // One extra commit tells "exactly a page" from "more to load".
     let truncated = log.len() > limit;
     log.truncate(limit);
     let mut d = RepoData::build(Arc::new(log), Arc::new(refs?), Arc::new(stashes), Arc::new(remotes), git_dir, origin_head, status?, view);
     d.truncated = truncated;
+    let me = dir.canonicalize().ok();
+    if let Some(w) = worktrees.iter_mut().find(|w| Path::new(&w.path).canonicalize().ok() == me) {
+        let mut paths: Vec<&str> = d.status.staged.iter().chain(&d.status.unstaged).chain(&d.status.conflicted).map(|c| c.path.as_str()).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        w.changes = paths.len();
+    }
     d.worktrees = Arc::new(worktrees);
     d.submodules = Arc::new(submodules);
     d.lfs = Arc::new(lfs);

@@ -14,6 +14,8 @@ pub fn move_tag(dir: &Path, r: &Ref, target: &str) -> Result<Op, String> {
         let obj = git::run_raw(dir, &["cat-file", "tag", &r.full], None).map_err(|e| format!("Can't read tag {}: {e}", r.name))?;
         msg = Some(tag_message(&obj));
         args.extend(["-a", "--cleanup=verbatim", "-F", "-"]);
+    } else {
+        args.push("--no-sign"); // tag.gpgSign=true would otherwise demand a message
     }
     args.extend([r.name.as_str(), target]);
     let mut op = Op::new(format!("Move tag {}", r.name), &args).undo(Undo::Keep);
@@ -59,6 +61,20 @@ mod tests {
     use crate::git;
     use crate::repo::op::exec;
     use crate::repo::testutil::{commit, identity, scratch, sh};
+
+    #[test]
+    fn moving_a_lightweight_tag_with_gpgsign_on() {
+        let dir = scratch("tag-gpgsign");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        sh(&dir, &["tag", "lw"]);
+        commit(&dir, "a.txt", "two\n");
+        sh(&dir, &["config", "tag.gpgSign", "true"]);
+        let r = git::refs(&dir).unwrap().into_iter().find(|r| r.name == "lw").unwrap();
+        exec(&dir, &move_tag(&dir, &r, "HEAD").unwrap()).unwrap();
+        assert_eq!(sh(&dir, &["cat-file", "-t", "lw"]), "commit\n");
+    }
 
     #[test]
     fn move_delete_and_push_tags() {

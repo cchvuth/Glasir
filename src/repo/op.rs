@@ -700,6 +700,9 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
         RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
             let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1);
+            if let Some(p) = d.local(local).and_then(|l| l.worktree.clone().filter(|_| !l.head)) {
+                return Some(Action::OpenTab(p));
+            }
             Some(Action::Git(if d.local(local).is_some() {
                 Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep)
             } else {
@@ -1150,6 +1153,27 @@ mod tests {
     use super::super::{Action, RepoTab, View};
     use super::{exec, Op};
     use crate::git;
+
+    #[test]
+    fn remote_checkout_opens_its_twins_worktree_and_counts_changes() {
+        let dir = scratch("remote-twin");
+        let wt = scratch("remote-twin-wt");
+        std::fs::remove_dir_all(&wt).unwrap();
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n");
+        sh(&dir, &["branch", "feat"]);
+        sh(&dir, &["remote", "add", "origin", "."]);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        sh(&dir, &["worktree", "add", "-q", &wt.to_string_lossy(), "feat"]);
+        std::fs::write(wt.join("new"), "x").unwrap();
+        std::fs::write(dir.join("a"), "2\n").unwrap();
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
+        assert!(matches!(super::branch_checkout(&d, r), Some(Action::OpenTab(_))));
+        let n = |p: &std::path::Path| d.worktrees.iter().find(|w| std::path::Path::new(&w.path).canonicalize().unwrap() == p.canonicalize().unwrap()).unwrap().changes;
+        assert_eq!((n(&dir), n(&wt)), (1, 1));
+    }
 
     /// A signing program that "succeeds" without a signature: old git (< 2.45) then makes the
     /// tag unsigned and exits 0, newer git fails. Either way: an error and no tag left behind.

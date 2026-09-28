@@ -164,7 +164,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
         ));
     }
     if ui.button("Create tag here…").clicked() {
-        acts.push(prompt(format!("New tag at {short}"), "", Op::new("Create tag", &["tag", "{}", &c.id]).undo(Undo::Keep)));
+        acts.push(prompt(format!("New tag at {short}"), "", Op::new("Create tag", &["tag", "--no-sign", "{}", &c.id]).undo(Undo::Keep)));
     }
     if ui.button("Create annotated tag here…").clicked() {
         acts.push(Action::Prompt(Prompt {

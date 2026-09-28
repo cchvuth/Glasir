@@ -380,14 +380,20 @@ pub fn parse_worktrees(out: &str) -> Vec<Worktree> {
         .collect()
 }
 
-/// All worktrees of the repository, with their change counts.
+/// All worktrees of the repository, with their change counts (scanned in parallel). `dir`'s own
+/// worktree is left at 0: the caller already has its status.
 pub fn worktrees(dir: &Path) -> Res<Vec<Worktree>> {
     let mut list = parse_worktrees(&run(dir, &["worktree", "list", "--porcelain", "-z"])?);
     if list.len() > 1 {
-        for w in list.iter_mut().filter(|w| !w.prunable && !w.bare) {
-            let st = run(Path::new(&w.path), &["status", "--porcelain=v2", "-z", "--untracked-files=normal"]).unwrap_or_default();
-            w.changes = st.split('\0').filter(|r| matches!(r.get(..2), Some("1 " | "2 " | "u " | "? "))).count();
-        }
+        let me = dir.canonicalize().ok();
+        std::thread::scope(|s| {
+            for w in list.iter_mut().filter(|w| !w.prunable && !w.bare && Path::new(&w.path).canonicalize().ok() != me) {
+                s.spawn(move || {
+                    let st = run(Path::new(&w.path), &["status", "--porcelain=v2", "-z", "--untracked-files=normal"]).unwrap_or_default();
+                    w.changes = st.split('\0').filter(|r| matches!(r.get(..2), Some("1 " | "2 " | "u " | "? "))).count();
+                });
+            }
+        });
     }
     Ok(list)
 }
