@@ -235,7 +235,7 @@ impl RepoData {
     /// which must not get its commits: then a branch of its own name.
     pub fn push_dest<'a>(&self, branch: &'a str, upstream: &'a str) -> Option<(&'a str, &'a str)> {
         let (remote, rb) = self.split_remote(upstream)?;
-        Some(if rb != branch && self.branch_rank(rb) < 2 { (remote, branch) } else { (remote, rb) })
+        Some(if rb != branch && self.branch_rank(rb) < 2 && self.branch_rank(branch) == 2 { (remote, branch) } else { (remote, rb) })
     }
 
     /// `origin/feature/x` -> `("origin", "feature/x")`. A remote's name may contain `/`
@@ -246,6 +246,22 @@ impl RepoData {
 
     pub fn default_branch(&self) -> &str {
         &self.default_branch
+    }
+
+    /// The remote a push goes to without further hints: pushDefault, else origin, else the first.
+    pub fn default_remote(&self) -> Option<&str> {
+        self.cfg("remote.pushdefault").or_else(|| self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first()).map(|r| r.0.as_str()))
+    }
+
+    /// Where `branch` (tracking `upstream`) is pushed to: `push_dest`, unless a pushRemote /
+    /// pushDefault fork differs from the upstream's remote (triangular: same name on the fork).
+    pub fn push_target<'a>(&'a self, branch: &'a str, upstream: &'a str) -> Option<(&'a str, &'a str)> {
+        let fork = self.cfg(&format!("branch.{branch}.pushremote")).or(self.cfg("remote.pushdefault"));
+        match self.push_dest(branch, upstream) {
+            Some((rem, _)) if fork.is_some_and(|f| f != rem) => Some((fork?, branch)),
+            Some(dest) => Some(dest),
+            None => Some((fork.or(self.default_remote())?, branch)),
+        }
     }
 
     pub(super) fn load_conflicts(&mut self, dir: &Path) {

@@ -740,6 +740,10 @@ impl RepoTab {
             self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
             return;
         }
+        if self.bg_fetch.is_some() && matches!(op.cmds[0][0].as_str(), "fetch" | "pull" | "push") {
+            self.after_bg_fetch = Some(op);
+            return;
+        }
         if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
             return self.open_tool(ctx, op, kind);
         }
@@ -1112,7 +1116,7 @@ impl RepoData {
         let branch = self.status.branch.as_deref()?;
         let fork = self.cfg(&format!("branch.{branch}.pushremote")).or(self.cfg("remote.pushdefault"));
         let Some((up_remote, up_rb)) = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up)) else {
-            let remote = fork.or(self.remotes.iter().find(|r| r.0 == "origin").or(self.remotes.first()).map(|r| r.0.as_str()))?;
+            let remote = fork.or(self.default_remote())?;
             return Some(Op::new("Push", &["push", "--progress", "-u", remote, branch]));
         };
         // Triangular: push.default simple/current push to the same name on the fork.

@@ -115,11 +115,13 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         }
     }
     ui.separator();
-    if let Some(first) = d.remotes.first().map(|r| r.0.as_str()) {
-        let (remote, rb) = d.push_dest(name, &r.upstream).unwrap_or((first, name));
+    if let Some((remote, rb)) = d.push_target(name, &r.upstream) {
         let to = if rb == name { remote.to_owned() } else { format!("{remote}/{rb}") };
         if ui.button(format!("Push {name} to {to}")).clicked() {
-            acts.push(op(format!("Push {name}"), &["push", "-u", remote, &format!("{name}:refs/heads/{rb}")]));
+            // `-u` only toward the upstream's own remote: it must not retarget a triangular setup.
+            let spec = format!("{name}:refs/heads/{rb}");
+            let keep = d.split_remote(&r.upstream).is_some_and(|u| u.0 != remote);
+            acts.push(op(format!("Push {name}"), &if keep { vec!["push", remote, &spec] } else { vec!["push", "-u", remote, &spec] }));
         }
     }
     let members = crate::repo::stack::members(d, name);
@@ -157,7 +159,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         acts.push(prompt(format!("Rename {name}"), name, Op::new("Rename branch", &["branch", "-m", name, "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "{}", name]))));
     }
     let default_up = if r.upstream.is_empty() {
-        format!("{}/{name}", d.remotes.first().map_or("origin", |r| r.0.as_str()))
+        format!("{}/{name}", d.default_remote().unwrap_or("origin"))
     } else {
         r.upstream.clone()
     };
@@ -218,7 +220,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
     }
     reset_menu(ui, d, &r.target, &r.name, acts);
     worktree_compare(ui, &r.name, acts);
-    if let Some((remote, _)) = d.remotes.first() {
+    if let Some(remote) = d.default_remote() {
         if ui.button(format!("Push tag to {remote}")).clicked() {
             acts.push(op(format!("Push tag {}", r.name), &["push", remote, &r.full]));
         }
@@ -235,7 +237,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
     if ui.button("Delete tag").clicked() {
         acts.push(Action::Git(Op::new(format!("Delete tag {}", r.name), &["tag", "-d", &r.name]).undo(Undo::Keep)));
     }
-    if let Some((remote, _)) = d.remotes.first() {
+    if let Some(remote) = d.default_remote() {
         if ui.button(format!("Delete tag here and from {remote}")).clicked() {
             acts.push(Action::Git(crate::repo::tags::delete_everywhere(r, remote)));
         }

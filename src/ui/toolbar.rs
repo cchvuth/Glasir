@@ -138,7 +138,7 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut 
     if ui.button(format!("{}  Apply patch…", icon::BANDAIDS)).clicked() {
         acts.push(Action::ApplyPatch);
     }
-    if let Some((remote, _)) = d.remotes.first()
+    if let Some(remote) = d.default_remote()
         && ui.button(format!("{}  Push all tags to {remote}", icon::TAG)).clicked()
     {
         acts.push(Action::Git(crate::repo::tags::push_all(remote)));

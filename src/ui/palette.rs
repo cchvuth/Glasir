@@ -163,7 +163,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             v.push(item(icon::CLOCK, format!("{} background maintenance", if on { "Disable" } else { "Enable" }), "git maintenance start", Cmd::Tab(Action::Git(crate::repo::maintenance::schedule_op(!on)))));
         }
         v.push(item(icon::BANDAIDS, "Apply patch…", "git am / git apply", Cmd::Tab(Action::ApplyPatch)));
-        if let Some((remote, _)) = d.remotes.first() {
+        if let Some(remote) = d.default_remote() {
             v.push(item(icon::TAG, format!("Push all tags to {remote}"), "", Cmd::Tab(Action::Git(crate::repo::tags::push_all(remote)))));
         }
         v.push(item(icon::PLUS, "Add remote…", "name and URL, then fetch", Cmd::Tab(Action::RemoteForm(crate::repo::remotes::Form::add(d)))));

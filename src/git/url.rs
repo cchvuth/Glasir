@@ -6,18 +6,23 @@
 pub fn web_url(remote: &str) -> Option<String> {
     let r = remote.trim().trim_end_matches('/').trim_end_matches(".git");
     let (scheme, rest) = match r.split_once("://") {
+        Some(("file", _)) => return None,
         Some(("http", rest)) => ("http", rest),
         Some((_, rest)) => ("https", rest),
         None => {
             // scp-like: [user@]host:path
             let (host, path) = r.split_once(':')?;
             let host = host.rsplit('@').next()?;
+            // Not a drive letter (`C:/x`) or a path (`./a:b`).
+            if host.len() < 2 || host.contains(['/', '\\']) {
+                return None;
+            }
             let host = if host == "ssh.github.com" { "github.com" } else { host };
             return Some(format!("https://{host}/{}", path.trim_start_matches('/')));
         }
     };
     let (host, path) = rest.split_once('/')?;
-    let host = host.rsplit('@').next()?;
+    let host = host.rsplit('@').next().filter(|h| !h.is_empty())?;
     let host = if scheme == "https" && remote.starts_with("ssh") { host.split(':').next()? } else { host };
     let host = if host == "ssh.github.com" { "github.com" } else { host };
     Some(format!("{scheme}://{host}/{path}"))
@@ -74,6 +79,7 @@ pub fn is_web_link(url: &str, hosts: &[String]) -> bool {
     let auth = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host = auth.split(':').next().unwrap_or_default().to_lowercase();
     matches!(scheme, "http" | "https")
+        && !host.is_empty()
         && !url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\')
         && !auth.contains('@')
         && hosts.contains(&host)
@@ -162,6 +168,14 @@ mod tests {
         ] {
             assert_eq!(web_url(i).as_deref(), Some(o), "{i}");
         }
+    }
+
+    #[test]
+    fn local_remotes_have_no_web_page() {
+        for i in ["file:///srv/x.git", "C:/repos/x.git", "C:\\repos\\x.git", "/srv/x.git", "./a:b"] {
+            assert_eq!(web_url(i), None, "{i}");
+        }
+        assert!(!is_web_link("https:///srv/x/commit/a", &[String::new()]));
     }
 
     #[test]

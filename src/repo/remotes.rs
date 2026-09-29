@@ -393,6 +393,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&up);
     }
 
+    /// Fork workflow: a pushDefault wins over origin for pushes, a trunk tracking a renamed
+    /// remote trunk keeps pushing there, and with no origin/HEAD the default branch is found.
+    #[test]
+    fn push_targets() {
+        let up = scratch("targets-up");
+        sh(&up, &["init", "-q", "-b", "master"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        let dir = scratch("targets");
+        sh(&dir, &["clone", "-q", "-o", "origin", &up.to_string_lossy(), "."]);
+        sh(&dir, &["remote", "add", "fork", &up.to_string_lossy()]);
+        sh(&dir, &["fetch", "-q", "fork"]);
+        sh(&dir, &["remote", "set-head", "-d", "origin"]);
+        sh(&dir, &["checkout", "-q", "-b", "main", "--track", "origin/master"]);
+        sh(&dir, &["checkout", "-q", "-b", "feat", "--track", "origin/master"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(d.default_branch(), "master");
+        assert_eq!(d.push_dest("main", "origin/master"), Some(("origin", "master")));
+        assert_eq!(d.push_dest("feat", "origin/master"), Some(("origin", "feat")));
+        assert_eq!(d.default_remote(), Some("origin"));
+        assert_eq!(d.push_target("feat", "origin/master"), Some(("origin", "feat")));
+        sh(&dir, &["config", "remote.pushdefault", "fork"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(d.push_target("feat", "origin/master"), Some(("fork", "feat")));
+        assert_eq!(d.push_target("new", ""), Some(("fork", "new")));
+        for p in [dir, up] {
+            let _ = std::fs::remove_dir_all(p);
+        }
+    }
+
     /// A remote's name may contain `/`: "Delete x from a/b" deletes x on remote a/b,
     /// never branch b/x on a remote named a.
     #[test]

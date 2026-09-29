@@ -160,7 +160,10 @@ pub struct RepoTab {
     verify_task: Option<Task<Msg>>,
     /// A failed op offering fixes (autostash, diverged pull, rejected push).
     pub choice: Option<Choice>,
-    bg_fetch: Option<Task<Res<String>>>,
+    /// Background fetch; Ok(true) when it moved a remote-tracking ref.
+    bg_fetch: Option<Task<Res<bool>>>,
+    /// A fetch / pull / push asked for during the background fetch (two fetches race on ref locks): runs after it.
+    after_bg_fetch: Option<Op>,
     /// `ctx` time of the last background fetch.
     last_fetch: f64,
     /// Why the last background fetch failed.
@@ -258,6 +261,7 @@ impl RepoTab {
             verify_task: None,
             choice: None,
             bg_fetch: None,
+            after_bg_fetch: None,
             last_fetch: f64::NEG_INFINITY,
             fetch_failed: None,
             reflog: None,
