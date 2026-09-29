@@ -187,6 +187,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
         match a.as_slice() {
             [super::tools::SHELL, line] => git::run_shell(dir, line),
             [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP | STASH_APPLY | STASH_RENAME | STASH_UNPOP, ..] => stash_cmd(dir, &a),
+            [super::restore::APPLY_STASH_FILE, stash, path] => super::restore::apply_stash(dir, stash, path),
             [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),

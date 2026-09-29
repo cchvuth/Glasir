@@ -2,6 +2,23 @@
 //! (restore from history, apply a file from a stash), backed up first so ⌘Z undoes it.
 
 use super::{Backup, Op, RepoData};
+use crate::git::{self, Res};
+use std::path::Path;
+
+pub const APPLY_STASH_FILE: &str = "!apply-stash-file";
+
+/// Apply only the stash's own change to a tracked `path` (its diff against the stash's base), so
+/// commits made since stay; like `git stash apply` for one file, but working tree only.
+pub fn apply_stash_file(d: &RepoData, label: String, stash: &str, path: &str) -> Op {
+    let mut o = restore_file(d, label, stash, path, "");
+    o.cmds = vec![vec![APPLY_STASH_FILE.into(), stash.into(), path.into()]];
+    o
+}
+
+pub(super) fn apply_stash(dir: &Path, stash: &str, path: &str) -> Res<String> {
+    let patch = git::run(dir, &["--literal-pathspecs", "diff", "--binary", "-U0", &format!("{stash}^1"), stash, "--", path])?;
+    git::run_input(dir, &["apply", "--unidiff-zero", "--whitespace=nowarn"], Some(patch.as_bytes()))
+}
 
 /// Overwrite `path` in the working tree with its version in `source`; `what`
 /// names that version for the confirmation (e.g. "the stash's version").
@@ -23,6 +40,22 @@ mod tests {
     use crate::repo::testutil::{run_backed, undo_files};
     use crate::repo::testutil::{commit, identity, scratch, sh};
     use crate::repo::{View, data::load_all};
+
+    #[test]
+    fn applying_a_stash_file_keeps_later_commits() {
+        let dir = scratch("stashfile");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n2\n3\n");
+        std::fs::write(dir.join("a"), "1 stash\n2\n3\n").unwrap();
+        sh(&dir, &["stash", "push"]);
+        commit(&dir, "a", "1\n2\n3 later\n");
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        exec(&dir, &super::apply_stash_file(&d, "Apply".into(), &id, "a")).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1 stash\n2\n3 later\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn restores_a_file_from_a_commit_and_its_parent() {

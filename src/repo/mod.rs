@@ -375,6 +375,13 @@ impl RepoTab {
                     if self.sel == Some(Sel::Wip) && !d.wip {
                         self.sel = None;
                     }
+                    // A popped or dropped stash would otherwise linger as a bogus merge commit.
+                    if let (Some(Sel::Commit(id)), Some(old)) = (&self.sel, &self.data)
+                        && old.stashes.iter().any(|s| s.id == *id)
+                        && !d.stashes.iter().any(|s| s.id == *id)
+                    {
+                        self.sel = None;
+                    }
                     let first = self.data.is_none();
                     if first && d.lfs.used && !d.lfs.installed {
                         msgs.push(Msg { text: LFS_MISSING.into(), error: true });

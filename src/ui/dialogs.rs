@@ -67,6 +67,7 @@ mod fill_tests {
     fn value_with_placeholder_is_kept() {
         assert_eq!(super::fill("{}", "Support {2} in {}", "x"), "Support {2} in {}");
         assert_eq!(super::fill("{}-{2}", "a", "b"), "a-b");
+        assert_eq!(super::fill("a{}b{2}{x", "1", "2"), "a1b2{x");
     }
 }
 

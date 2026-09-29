@@ -6,7 +6,7 @@ use super::tree::{self, Item};
 use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
 use crate::git::{Change, CommitInfo};
-use crate::repo::restore::restore_file;
+use crate::repo::restore::{apply_stash_file, restore_file};
 use crate::repo::{Action, DiffSrc, MsgEdit, RepoData, RepoTab, Sel};
 use crate::theme::{self, icon};
 use crate::ui::format::{ago, change_summary, initials};
@@ -263,7 +263,8 @@ impl RepoTab {
                     if let Some(d) = stash.filter(|_| c.code != 'D')
                         && ui.button(format!("{}  Apply this file", icon::ARROW_LINE_DOWN)).on_hover_text("Write this file from the stash into the working tree; the stash is kept").clicked()
                     {
-                        acts.push(Action::Git(restore_file(d, format!("Apply {} from stash", c.path), id, &c.path, "the stash's version")));
+                        let label = format!("Apply {} from stash", c.path);
+                        acts.push(Action::Git(if *id == untracked_id { restore_file(d, label, id, &c.path, "the stash's version") } else { apply_stash_file(d, label, id, &c.path) }));
                     }
                     if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
