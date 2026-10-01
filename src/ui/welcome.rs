@@ -116,7 +116,7 @@ impl App {
                 }
             });
             let name = c.url.trim().trim_end_matches(['/', '\\']).trim_end_matches(".git").rsplit(['/', '\\', ':']).next().unwrap_or("").to_owned();
-            let dest = Path::new(c.dir.trim()).join(&name);
+            let dest = clone_dir(&c.dir).join(&name);
             if !name.is_empty() {
                 ui.label(RichText::new(format!("→ {}", dest.display())).small().color(theme::dim(ui)));
             }
@@ -132,8 +132,8 @@ impl App {
                         c.cancel.cancel();
                     }
                 } else {
-                    if ui.add_enabled(!name.is_empty(), Button::new("Clone")).clicked() {
-                        let (url, parent, d2) = (c.url.trim().to_owned(), PathBuf::from(c.dir.trim()), dest.clone());
+                    if ui.add_enabled(!name.is_empty() && !c.dir.trim().is_empty(), Button::new("Clone")).clicked() {
+                        let (url, parent, d2) = (c.url.trim().to_owned(), clone_dir(&c.dir), dest.clone());
                         c.error = None;
                         c.cancel = git::Cancel::default();
                         let cancel = c.cancel.clone();
@@ -181,4 +181,25 @@ fn tips(ui: &mut Ui) -> bool {
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from)
+}
+
+/// The typed clone folder as an absolute path: a leading `~` is the home folder, a relative one is under the cwd.
+fn clone_dir(dir: &str) -> PathBuf {
+    let dir = dir.trim();
+    let p = match dir.strip_prefix('~').filter(|r| r.is_empty() || r.starts_with(['/', '\\'])).zip(home()) {
+        Some((rest, h)) => h.join(rest.trim_start_matches(['/', '\\'])),
+        None => PathBuf::from(dir),
+    };
+    std::path::absolute(&p).unwrap_or(p)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn clone_dir_is_absolute() {
+        let h = super::home().unwrap();
+        assert_eq!(super::clone_dir(" ~/code "), h.join("code"));
+        assert_eq!(super::clone_dir("~"), h);
+        assert!(super::clone_dir("code").is_absolute());
+    }
 }

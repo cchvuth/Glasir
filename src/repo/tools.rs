@@ -305,7 +305,7 @@ impl RepoTab {
                 Ok(Some(f)) => {
                     self.undo.push(UndoEntry::new(op.label.clone(), None, vec![f], None));
                     self.clear_redo();
-                    msgs.push(Msg { text: format!("{} ✔ ⌘Z restores the file as it was before", op.label), error: false });
+                    msgs.push(Msg { text: format!("{} ✔ Undo restores the file as it was before", op.label), error: false });
                 }
                 Ok(None) => {}
                 Err(note) => msgs.push(Msg { text: note, error: true }),

@@ -63,7 +63,7 @@ pub fn score(query: &str, text: &str) -> Option<i32> {
 }
 
 fn item(icon: &'static str, label: impl Into<String>, detail: impl Into<String>, cmd: Cmd) -> Item {
-    Item { icon, label: label.into(), detail: keys(&detail.into()), cmd }
+    Item { icon, label: label.into(), detail: detail.into(), cmd }
 }
 
 fn git(label: impl Into<String>, a: Action) -> Item {
@@ -123,15 +123,15 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             }
         }
         if let Some(l) = t.undo_label() {
-            v.push(item(icon::ARROW_COUNTER_CLOCKWISE, format!("Undo {l}"), "⌘Z", Cmd::Tab(Action::Undo)));
+            v.push(item(icon::ARROW_COUNTER_CLOCKWISE, format!("Undo {l}"), keys("⌘Z"), Cmd::Tab(Action::Undo)));
         }
         if let Some(l) = t.redo_label() {
-            v.push(item(icon::ARROW_CLOCKWISE, format!("Redo {l}"), "⇧⌘Z", Cmd::Tab(Action::Redo)));
+            v.push(item(icon::ARROW_CLOCKWISE, format!("Redo {l}"), keys("⇧⌘Z"), Cmd::Tab(Action::Redo)));
         }
         v.push(item(icon::ARROWS_CLOCKWISE, "Refresh", "F5", Cmd::Tab(Action::Reload)));
         v.push(item(icon::CODE, "Open in editor", "the repository folder", Cmd::Tab(Action::Editor(String::new()))));
         if terminal {
-            v.push(item(icon::TERMINAL, "Toggle terminal panel", "⌃`", Cmd::Tab(Action::ToggleTerminal)));
+            v.push(item(icon::TERMINAL, "Toggle terminal panel", keys("⌃`"), Cmd::Tab(Action::ToggleTerminal)));
         }
         v.push(item(icon::TERMINAL, "Open terminal here", "external terminal app", Cmd::Tab(Action::Terminal)));
         v.push(item(icon::FOLDER_OPEN, "Show in file manager", "", Cmd::Tab(Action::Reveal(String::new()))));
@@ -201,11 +201,11 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             }
         }
     }
-    v.push(item(icon::FOLDER_OPEN, "Open repository…", "⌘O", Cmd::PickOpen));
+    v.push(item(icon::FOLDER_OPEN, "Open repository…", keys("⌘O"), Cmd::PickOpen));
     v.push(item(icon::DOWNLOAD_SIMPLE, "Clone repository…", "", Cmd::Clone));
-    v.push(item(icon::GEAR_SIX, "Settings", "⌘,", Cmd::Settings));
+    v.push(item(icon::GEAR_SIX, "Settings", keys("⌘,"), Cmd::Settings));
     v.push(item(icon::MOON, "Toggle light / dark theme", "", Cmd::Theme));
-    v.push(item(icon::TERMINAL_WINDOW, "Show command log", "⇧⌘L", Cmd::CommandLog));
+    v.push(item(icon::TERMINAL_WINDOW, "Show command log", keys("⇧⌘L"), Cmd::CommandLog));
     v.push(item(icon::KEYBOARD, "Keyboard shortcuts", "?", Cmd::Shortcuts));
     for p in recent {
         let name = p.file_name().map_or_else(|| p.display().to_string(), |n| n.to_string_lossy().into_owned());

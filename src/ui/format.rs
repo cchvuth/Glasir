@@ -137,6 +137,11 @@ pub fn wrap_job(job: &mut egui::text::LayoutJob, cols: usize, cw: f32) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn pc_keys_leaves_plain_text() {
+        assert_eq!(super::pc_keys("⇧⌘↩"), "Ctrl+Shift+Enter");
+        assert_eq!(super::pc_keys("plain"), "plain");
+    }
+    #[test]
     fn wrapped_rows() {
         let w = |n: usize, cols| super::wrapped(|| n, cols);
         assert_eq!((w(0, 10), w(10, 10), w(11, 10), super::wrapped(|| unreachable!(), usize::MAX)), (1, 1, 2, 1));

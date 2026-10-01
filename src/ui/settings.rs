@@ -361,13 +361,14 @@ impl App {
             }
         });
         if reload {
+            self.commits_stale = true;
             for t in &mut self.tabs {
                 t.max_commits = self.s.max_commits;
             }
         }
         if close {
             self.settings = None;
-            if reload {
+            if std::mem::take(&mut self.commits_stale) {
                 for t in &mut self.tabs {
                     t.reload(ctx, true);
                 }

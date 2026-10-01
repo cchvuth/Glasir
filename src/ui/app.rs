@@ -19,6 +19,8 @@ pub struct App {
     perf: Option<(std::time::Instant, Vec<f32>)>,
     /// Protected branches changed: tabs reload once the Settings dialog closes, not per keystroke.
     stacks_stale: bool,
+    /// Commits to load changed: tabs reload once the Settings dialog closes.
+    pub(super) commits_stale: bool,
     /// Screenshot view `scroll-bench`: scroll the graph a page per frame.
     pub(super) bench: Option<usize>,
     pub(super) tabs: Vec<RepoTab>,
@@ -72,6 +74,7 @@ impl App {
             App {
             shot,
             stacks_stale: false,
+            commits_stale: false,
             perf: std::env::var_os("GLASIR_PERF").map(|_| (std::time::Instant::now(), vec![])),
             bench: None,
             tabs: vec![],
@@ -93,12 +96,17 @@ impl App {
             s,
         };
         let active = app.s.active;
+        let want = app.s.open.get(active).cloned();
         for p in app.s.open.clone() {
-            if p.exists() {
+            // Saved paths are top-levels: no `rev-parse` on the UI thread before the first frame.
+            if p.join(".git").exists() {
+                app.add_tab(&cc.egui_ctx, p);
+            } else if p.exists() {
                 app.open(&cc.egui_ctx, &p);
             }
         }
-        app.active = active.min(app.tabs.len());
+        // Saved repos that are gone shift the indices: find the active one by path.
+        app.active = want.and_then(|w| app.tabs.iter().position(|t| t.dir == w)).unwrap_or(active.min(app.tabs.len()));
         if let Some(p) = open {
             app.open(&cc.egui_ctx, &p);
         }
@@ -108,21 +116,23 @@ impl App {
     pub(super) fn open(&mut self, ctx: &egui::Context, path: &Path) {
         let path = if path.is_file() { path.parent().unwrap_or(path) } else { path };
         match git::run(path, &["rev-parse", "--show-toplevel"]) {
-            Ok(top) => {
-                let top = PathBuf::from(top.trim());
-                self.active = match self.tabs.iter().position(|t| t.dir == top) {
-                    Some(i) => i,
-                    None => {
-                        self.tabs.push(RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default()));
-                        self.tabs.len() - 1
-                    }
-                };
-                self.s.recent.retain(|p| *p != top);
-                self.s.recent.insert(0, top);
-                self.s.recent.truncate(15);
-            }
+            Ok(top) => self.add_tab(ctx, PathBuf::from(top.trim())),
             Err(e) => self.toast(ctx, format!("Not a git repository: {}\n{e}", path.display()), true),
         }
+    }
+
+    /// Selects the tab of the repository at `top` (its top-level), opening it if needed.
+    fn add_tab(&mut self, ctx: &egui::Context, top: PathBuf) {
+        self.active = match self.tabs.iter().position(|t| t.dir == top) {
+            Some(i) => i,
+            None => {
+                self.tabs.push(RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default()));
+                self.tabs.len() - 1
+            }
+        };
+        self.s.recent.retain(|p| *p != top);
+        self.s.recent.insert(0, top);
+        self.s.recent.truncate(15);
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -385,7 +395,8 @@ impl eframe::App for App {
         if focused && !self.focused
             && let Some(t) = self.tabs.get_mut(self.active)
         {
-            t.reload(&ctx, true);
+            // The watcher reports outside changes while it runs; without it, focus is the cue.
+            t.reload(&ctx, !t.watching());
         }
         let every = if self.shot.is_some() { 0 } else { self.s.auto_fetch };
         for (i, t) in self.tabs.iter_mut().enumerate() {

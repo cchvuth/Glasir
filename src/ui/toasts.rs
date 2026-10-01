@@ -23,7 +23,7 @@ impl App {
     pub(super) fn toast_undo(&mut self, ctx: &egui::Context, text: String, error: bool, undo: Option<(PathBuf, u64)>) {
         let now = ctx.input(|i| i.time);
         let secs = if error { 12.0 } else if undo.is_some() { 8.0 } else { 4.0 };
-        self.toasts.push(Toast { text: keys(&text), error, until: now + secs, undo });
+        self.toasts.push(Toast { text: text, error, until: now + secs, undo });
     }
 
     pub(super) fn show_toasts(&mut self, ctx: &egui::Context) {

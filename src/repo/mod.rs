@@ -307,6 +307,11 @@ impl RepoTab {
         self.load.is_some()
     }
 
+    /// A file watcher is running (or starting): outside changes arrive without polling.
+    pub fn watching(&self) -> bool {
+        self.watcher.is_some() || self.watcher_task.is_some()
+    }
+
     /// `full`: log + refs + status; otherwise status only.
     pub fn reload(&mut self, ctx: &egui::Context, full: bool) {
         // The compared refs (or, for a working-tree compare, the files) may have changed:
