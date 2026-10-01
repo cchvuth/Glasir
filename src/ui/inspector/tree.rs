@@ -87,20 +87,24 @@ pub fn list(ui: &mut Ui, list: &[Change], key: u64, tree: bool, name: &'static s
     if tree {
         show(ui, list.iter(), key, ui.id().with(("filetree", name)), closed.entry(name).or_default(), all, row);
     } else {
-        // Every row is `ROW_H` high (see `show`), so with `all` off only those in view are drawn.
+        // Flat rows are `ROW_H` high too: with `all` off only those in view are drawn.
         let step = ROW_H + ui.spacing().item_spacing.y;
-        let (first, last) = if all {
-            (0, list.len())
-        } else {
-            let (top, clip) = (ui.cursor().top(), ui.clip_rect());
-            ((((clip.top() - top) / step).floor().max(0.0) as usize).min(list.len()), (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(list.len()))
-        };
-        ui.add_space(first as f32 * step);
-        for i in first..last {
-            row(ui, Item::File { c: &list[i], depth: None, order: Order::List(list, i) });
+        let (first, last) = if all { (0, list.len()) } else { visible(ui, step, list.len()) };
+        if first > 0 {
+            ui.add_space(first as f32 * step);
         }
-        ui.add_space((list.len() - last) as f32 * step);
+        for (i, c) in list.iter().enumerate().take(last).skip(first) {
+            row(ui, Item::File { c, depth: None, order: Order::List(list, i) });
+        }
+        if last < list.len() {
+            ui.add_space((list.len() - last) as f32 * step);
+        }
     }
+}
+
+fn visible(ui: &Ui, step: f32, n: usize) -> (usize, usize) {
+    let (top, clip) = (ui.cursor().top(), ui.clip_rect());
+    ((((clip.top() - top) / step).floor().max(0.0) as usize).min(n), (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(n))
 }
 
 type Cached = Arc<(u64, Arc<FileTree>, HashSet<String>, Vec<usize>)>;
@@ -125,8 +129,7 @@ pub fn show<'a>(ui: &mut Ui, changes: impl Iterator<Item = &'a Change>, key: u64
     let (first, last) = if all {
         (0, vis.len())
     } else {
-        let (top, clip) = (ui.cursor().top(), ui.clip_rect());
-        ((((clip.top() - top) / step).floor().max(0.0) as usize).min(vis.len()), (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(vis.len()))
+        visible(ui, step, vis.len())
     };
     if first > 0 {
         ui.add_space(first as f32 * step);

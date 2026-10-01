@@ -18,9 +18,9 @@ fn tint(c: Color32, strong: bool) -> Color32 {
 }
 
 /// Returns true when the editor should close.
-pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
+pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     if let Some(d) = Task::poll(&mut ed.task) {
-        ed.output = String::from_utf8_lossy(&d.original).into_owned();
+        ed.output = crate::repo::merge_editor::decode(&d.original);
         ed.data = Some(d);
         ed.reparse();
     }
@@ -48,7 +48,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             } else if theme::pill(ui, format!("{}  Resolve", icon::SPARKLE)).on_hover_text(format!("Let {} write the output; review it, then save", ai::name())).clicked() {
                 acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
-            let n = conflicts(&ed.chunks).filter(|c| c.trivial()).count();
+            let n = ed.trivial;
             let b = ui.add_enabled(n > 0, egui::Button::new(format!("{}  Auto-resolve trivial ({n})", icon::MAGIC_WAND)).frame_when_inactive(false).corner_radius(255));
             if b.on_hover_text("Resolve conflicts whose sides are identical or differ only in whitespace (keeps current)").clicked() {
                 auto = true;
@@ -209,8 +209,13 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
     let text_col = theme::text(ui);
     let dim = theme::dim(ui);
     let size = d.size;
+    let mut cache = ed.galley.take();
     let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_w: f32| {
-        // Re-parses per layout; fine for source files, cache by hash if huge files matter.
+        // Parsing and laying out a big file is slow: only when the text or the style changed.
+        let key = (text_col, dim, if wrap { wrap_w.to_bits() } else { 0 }, ui.ctx().pixels_per_point().to_bits());
+        if let Some((_, _, g)) = cache.as_ref().filter(|(t, k, _)| *k == key && t == buf.as_str()) {
+            return g.clone();
+        }
         let mut job = LayoutJob::default();
         let fmt = |color: Color32, background: Color32| TextFormat { font_id: mono.clone(), color, background, ..Default::default() };
         for c in parse(buf.as_str(), size) {
@@ -230,7 +235,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
             }
         }
         job.wrap.max_width = if wrap { wrap_w } else { f32::INFINITY };
-        ui.fonts_mut(|f| f.layout_job(job))
+        let g = ui.fonts_mut(|f| f.layout_job(job));
+        cache = Some((buf.as_str().to_owned(), key, g.clone()));
+        g
     };
     let changed = egui::Frame::new()
         .fill(theme::faint(ui))
@@ -252,12 +259,13 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, wrap: &mut bool,
         })
         .inner;
 
+    ed.galley = cache;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let saving = ed.saving.is_some();
         let label = if saving { "Saving…".to_owned() } else { format!("{}  Save & mark resolved", icon::CHECK) };
-        let r = theme::primary(ui, m == 0 && !saving && !thinking, &label, 200.0);
-        let r = r.on_disabled_hover_text(format!("Resolve the {m} remaining conflict(s) first, or close without saving"));
+        let r = theme::primary(ui, m == 0 && !saving && !thinking && !tool_open, &label, 200.0);
+        let r = r.on_disabled_hover_text(if tool_open { "The external merge tool is open on this file and would overwrite the save. Close it first.".to_owned() } else { format!("Resolve the {m} remaining conflict(s) first, or close without saving") });
         if r.clicked() {
             let (dir, path, original, out) = (ed.dir.clone(), ed.path.clone(), d.original.clone(), ed.output.clone());
             ed.error = None;

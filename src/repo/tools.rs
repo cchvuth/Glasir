@@ -268,6 +268,11 @@ impl RepoTab {
         self.ext_tools.iter().filter(|t| t.path == path).for_each(|t| t.cancel.cancel());
     }
 
+    /// Whether a merge tool is open on `path`: it would overwrite what the merge editor saves.
+    pub fn merge_tool_open(&self, path: &str) -> bool {
+        self.ext_tools.iter().any(|t| t.kind == "merge" && t.path == path)
+    }
+
     /// The path of an open merge tool that `touched` says an op would change: a note says why it waits.
     pub(super) fn tool_blocks(&mut self, label: &str, touched: impl Fn(&str) -> bool) -> bool {
         let Some(t) = self.ext_tools.iter().find(|t| t.kind == "merge" && touched(&t.path)) else { return false };
@@ -557,6 +562,7 @@ mod tests {
         };
         t.apply(&ctx, Action::Git(mergetool_op("a.txt")));
         assert!(t.busy().is_none() && t.ext_tools.len() == 1);
+        assert!(t.merge_tool_open("a.txt") && !t.merge_tool_open("z"));
         std::fs::write(dir.join("z"), "z\n").unwrap();
         t.apply(&ctx, Action::Git(crate::repo::Op::new("Stage z", &["--literal-pathspecs", "add", "--", "z"]).light()));
         let msgs = settle(&ctx, &mut t);
@@ -569,6 +575,7 @@ mod tests {
         let notes = texts(&std::mem::take(&mut t.notes));
         assert!(notes.len() == 2 && notes.iter().all(|n| n.contains("skipped") && n.contains("merge tool is open on a.txt")), "{notes:?}");
         let msgs = closed(&mut t);
+        assert!(!t.merge_tool_open("a.txt"));
         assert!(msgs.iter().all(|m| !m.error), "{:?}", texts(&msgs));
         let read = || std::fs::read_to_string(dir.join("a.txt")).unwrap();
         assert_eq!(read(), "feature\n");

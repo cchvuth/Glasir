@@ -214,44 +214,62 @@ pub(super) fn labels(dir: &Path) -> [String; 2] {
 /// Conflicted files "Mark all resolved" may stage: both sides present (a deleted side is a
 /// decision to make), a text file git merges (`-merge` / `binary`, or a side git sees as
 /// binary content, keep our side without markers), and no conflict markers left.
+/// A fixed number of git runs however many files conflict.
 pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
-    let cands: Vec<&str> = st.conflicted.iter().map(|c| c.path.as_str()).filter(|p| matches!(st.conflict_xy.get(*p).map(String::as_str), Some("UU" | "AA"))).collect();
-    let attrs = attrs_all(dir, &cands);
-    let ok: Vec<&str> = cands
+    let both: Vec<&str> = st.conflicted.iter().map(|c| c.path.as_str()).filter(|p| matches!(st.conflict_xy.get(*p).map(String::as_str), Some("UU" | "AA"))).collect();
+    let attrs = attrs_many(dir, &both);
+    let free: Vec<&str> = both
         .into_iter()
-        .filter(|path| {
-            let p = dir.join(path);
-            let text = std::fs::symlink_metadata(&p).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&p).ok()).and_then(|b| String::from_utf8(b).ok());
-            let (n, merged) = attrs.get(*path).copied().unwrap_or((7, true));
-            merged && text.is_some_and(|t| !t.contains('\0') && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n)))
+        .filter(|&p| {
+            let (n, merged) = attrs.get(p).copied().unwrap_or((7, true));
+            let path = dir.join(p);
+            let bytes = std::fs::symlink_metadata(&path).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&path).ok());
+            merged && bytes.is_some_and(|b| {
+                let t = decode(&b);
+                !b[..b.len().min(8000)].contains(&0) && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n))
+            })
         })
         .collect();
-    // git's binary test (a NUL in the first 8000 bytes of any side), only for the survivors.
-    let binary = binary_any(dir, &ok);
-    ok.into_iter().zip(binary).filter(|(_, b)| !b).map(|(p, _)| p.to_owned()).collect()
+    let binary = binary_stages(dir, &free);
+    free.into_iter().filter(|p| !binary.contains(p)).map(String::from).collect()
 }
 
-/// Per path: does any index stage (1..=3) look binary? One `cat-file --batch` for all. A path
-/// git can't be asked about (newline in it) or any failure counts as binary: not resolvable.
-fn binary_any(dir: &Path, paths: &[&str]) -> Vec<bool> {
-    let ask = |p: &str| !p.contains('\n');
-    let input: String = paths.iter().filter(|p| ask(p)).flat_map(|p| (1..=3).map(move |i| format!(":{i}:{p}\n"))).collect();
-    if input.is_empty() {
-        return vec![true; paths.len()];
+/// Which of `paths` have a stage whose blob git sees as binary (a NUL in its first 8000 bytes).
+fn binary_stages<'a>(dir: &Path, paths: &[&'a str]) -> std::collections::HashSet<&'a str> {
+    if paths.is_empty() {
+        return Default::default();
     }
-    let Ok(out) = git::run_raw(dir, &["cat-file", "--batch"], Some(input.as_bytes())) else { return vec![true; paths.len()] };
-    // `<oid> blob <size>\n<content>\n` or `<spec> missing\n`, in request order.
-    let mut at = 0;
-    let mut next = || -> Option<bool> {
-        let nl = at + out.get(at..)?.iter().position(|&b| b == b'\n')?;
-        let head = std::str::from_utf8(&out[at..nl]).ok()?;
-        at = nl + 1;
-        let Some(size) = head.rsplit(' ').next().filter(|_| !head.ends_with(" missing")).and_then(|n| n.parse::<usize>().ok()) else { return Some(false) };
-        let body = out.get(at..at + size)?;
-        at += size + 1;
-        Some(body[..body.len().min(8000)].contains(&0))
-    };
-    paths.iter().map(|p| !ask(p) || (0..3).try_fold(false, |acc, _| next().map(|b| acc || b)).unwrap_or(true)).collect()
+    let known: std::collections::HashMap<&str, &'a str> = paths.iter().map(|&p| (p, p)).collect();
+    let ls = git::run(dir, &["--literal-pathspecs", "ls-files", "-u", "-z"]).unwrap_or_default();
+    // `mode oid stage\tpath` -> (path, oid)
+    let entries: Vec<(&'a str, &str)> = ls.split('\0').filter_map(|e| {
+        let (meta, p) = e.split_once('\t')?;
+        Some((*known.get(p)?, meta.split(' ').nth(1)?))
+    }).collect();
+    let mut oids: Vec<&str> = entries.iter().map(|e| e.1).collect();
+    oids.sort_unstable();
+    oids.dedup();
+    let input: String = oids.iter().map(|o| format!("{o}\n")).collect();
+    // ponytail: whole blobs come back through the pipe; `cat-file --batch` has no byte limit.
+    let out = git::run_raw(dir, &["cat-file", "--batch"], Some(input.as_bytes())).unwrap_or_default();
+    let (mut nul, mut at) = (std::collections::HashSet::new(), 0);
+    for oid in &oids {
+        // `<oid> <type> <size>\n<content>\n`
+        let Some(nl) = out[at..].iter().position(|&b| b == b'\n') else { break };
+        let size: usize = std::str::from_utf8(&out[at..at + nl]).ok().and_then(|h| h.rsplit(' ').next()?.parse().ok()).unwrap_or(0);
+        let body = at + nl + 1;
+        if out[body..(body + size.min(8000)).min(out.len())].contains(&0) {
+            nul.insert(*oid);
+        }
+        at = body + size + 1;
+    }
+    entries.into_iter().filter(|e| nul.contains(e.1)).map(|e| e.0).collect()
+}
+
+/// The text of `bytes`: UTF-8, else each byte as the char of that code (Latin-1, lossless
+/// to write back with [`save`]).
+pub(crate) fn decode(bytes: &[u8]) -> String {
+    std::str::from_utf8(bytes).map_or_else(|_| bytes.iter().map(|&b| b as char).collect(), str::to_owned)
 }
 
 fn load(dir: &Path, path: &str) -> Loaded {
@@ -261,13 +279,14 @@ fn load(dir: &Path, path: &str) -> Loaded {
         Ok(m) if m.is_file() => std::fs::read(&p).unwrap_or_default(),
         _ => vec![],
     };
-    let text = std::str::from_utf8(&original).ok().filter(|t| !t.contains('\0'));
+    // git's own binary test; other encodings are text (see `decode`).
+    let text = Some(decode(&original)).filter(|_| !original[..original.len().min(8000)].contains(&0));
     // Unmerged index entries: stage 2 = current, 3 = incoming. Not unmerged (or no repo): assume both.
     let unmerged = git::run(dir, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", path]).unwrap_or_default();
     let has = |n: &str| unmerged.is_empty() || unmerged.split('\0').any(|e| e.split_once('\t').is_some_and(|(m, _)| m.ends_with(n)));
     let stages = [has(" 2"), has(" 3")];
     let size = marker_size(dir, path);
-    let mut whole = match (&meta, text) {
+    let mut whole = match (&meta, &text) {
         // git leaves the modified version in the tree: it has no markers to edit.
         _ if stages.contains(&false) => Some("The file was deleted on one side."),
         (Err(_), _) => Some("The file is missing from the working tree."),
@@ -276,7 +295,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
         _ => None,
     };
     let (mut orig, mut sides, mut width) = (vec![], [vec![], vec![]], [0, 0]);
-    for c in parse(text.unwrap_or(""), size) {
+    for c in parse(text.as_deref().unwrap_or(""), size) {
         let k = orig.len();
         let texts = match &c {
             Chunk::Text(t) => [(t, None), (t, None)],
@@ -313,7 +332,9 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
     if std::fs::read(&p).map_err(|e| format!("{path}: {e}"))? != original {
         return Err(format!("{path} changed on disk since it was read here. Open it again and resolve it from there."));
     }
-    std::fs::write(&p, output).map_err(|e| format!("Could not write {path}: {e}"))
+    // A file that isn't UTF-8 is written back byte for byte (see `decode`).
+    let bytes = if std::str::from_utf8(original).is_ok() { output.as_bytes().to_vec() } else { output.chars().map(|c| u8::try_from(c as u32).map_err(|_| format!("{path} is not UTF-8 and the output has {c:?}, which it can't hold."))).collect::<Res<_>>()? };
+    std::fs::write(&p, bytes).map_err(|e| format!("Could not write {path}: {e}"))
 }
 
 /// Claude's resolution of `path` from the dialog (outside the editor): written
@@ -323,7 +344,7 @@ pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> 
     let out = like(original, reply)?;
     let n = marker_size(dir, path);
     // Every marker line the reply keeps must be one the file already had outside its conflicts.
-    let mut had = stray(&String::from_utf8_lossy(original), n);
+    let mut had = stray(&decode(original), n);
     let new = stray(&out, n).into_iter().any(|l| had.iter().position(|h| *h == l).map(|i| had.swap_remove(i)).is_none());
     if conflicts(&parse(&out, n)).next().is_some() || new {
         return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
@@ -362,22 +383,25 @@ fn marker_size(dir: &Path, path: &str) -> usize {
 
 /// The path's conflict-marker size, and whether git text-merges it (`merge` not unset / binary).
 fn attrs(dir: &Path, path: &str) -> (usize, bool) {
-    attrs_all(dir, &[path]).get(path).copied().unwrap_or((7, true))
+    attrs_many(dir, &[path]).get(path).copied().unwrap_or((7, true))
 }
 
-/// `attrs` for many paths in one `check-attr --stdin`.
-fn attrs_all<'a>(dir: &Path, paths: &[&'a str]) -> std::collections::HashMap<&'a str, (usize, bool)> {
+/// [`attrs`] of every path, in one git run.
+fn attrs_many<'a>(dir: &Path, paths: &[&'a str]) -> std::collections::HashMap<&'a str, (usize, bool)> {
     let input: String = paths.iter().map(|p| format!("{p}\0")).collect();
-    let out = git::run_input(dir, &["--literal-pathspecs", "check-attr", "-z", "--stdin", "conflict-marker-size", "merge"], Some(input.as_bytes())).unwrap_or_default();
+    let out = git::run_input(dir, &["check-attr", "-z", "--stdin", "conflict-marker-size", "merge"], Some(input.as_bytes())).unwrap_or_default();
     // `path\0attr\0value\0` records.
     let f: Vec<&str> = out.split('\0').collect();
-    paths
-        .iter()
-        .map(|&p| {
-            let val = |a: &str| f.chunks(3).find(|r| r.first() == Some(&p) && r.get(1) == Some(&a)).and_then(|r| r.get(2).copied());
-            (p, (val("conflict-marker-size").and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(7), !matches!(val("merge"), Some("unset" | "binary"))))
-        })
-        .collect()
+    let mut by: std::collections::HashMap<&'a str, (usize, bool)> = paths.iter().map(|&p| (p, (7, true))).collect();
+    for r in f.chunks_exact(3) {
+        let Some(e) = by.get_mut(r[0]) else { continue };
+        match r[1] {
+            "conflict-marker-size" => e.0 = r[2].parse().ok().filter(|&n| n > 0).unwrap_or(7),
+            "merge" => e.1 = !matches!(r[2], "unset" | "binary"),
+            _ => {}
+        }
+    }
+    by
 }
 
 /// Whole-file choices for the current and incoming side. A side without a
@@ -412,8 +436,15 @@ fn overwrites(op: Op, path: &str, file: bool) -> Op {
     }
 }
 
+/// Stages resolved files in one op; paths go over stdin (a command line has a length limit).
+pub fn stage_many(label: &str, paths: &[&str]) -> Op {
+    let input: String = paths.iter().map(|p| format!("{p}\0")).collect();
+    Op::new(label, &["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(input).light().backup(Backup::Staged(paths.iter().map(|p| p.to_string()).collect()))
+}
+
+/// Stages a resolved file; ⌘Z brings the conflict back (the file keeps its resolution).
 pub fn stage(path: &str) -> Op {
-    Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", path]).light()
+    Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", path]).light().backup(Backup::Staged(vec![path.into()]))
 }
 
 
@@ -431,7 +462,14 @@ pub struct Editor {
     pub(crate) scroll: bool,
     pub(crate) saving: Option<Task<Res<()>>>,
     pub(crate) error: Option<String>,
+    /// Conflicts in `chunks` whose sides are [`Conflict::trivial`].
+    pub(crate) trivial: usize,
+    /// The output pane's last layout, reused while the text and style stay the same.
+    pub(crate) galley: Option<OutLayout>,
 }
+
+/// (text, (text color, dim color, wrap width, pixels per point), galley)
+pub(crate) type OutLayout = (String, (egui::Color32, egui::Color32, u32, u32), std::sync::Arc<egui::Galley>);
 
 impl Editor {
     pub fn open(ctx: &egui::Context, dir: &Path, path: &str) -> Self {
@@ -449,6 +487,8 @@ impl Editor {
             scroll: true,
             saving: None,
             error: None,
+            trivial: 0,
+            galley: None,
         }
     }
 
@@ -467,15 +507,14 @@ impl Editor {
     pub(crate) fn reparse(&mut self) {
         self.chunks = parse(&self.output, self.data.as_ref().map_or(7, |d| d.size));
         let orig = self.data.as_ref().map_or(&[][..], |d| &d.orig[..]);
-        let mut used = vec![false; orig.len()];
-        // Matched by content, so the side panes follow even after hand edits.
-        self.orig_of = conflicts(&self.chunks)
-            .map(|c| {
-                let k = (0..orig.len()).find(|&k| !used[k] && orig[k].ours == c.ours && orig[k].theirs == c.theirs)?;
-                used[k] = true;
-                Some(k)
-            })
-            .collect();
+        // Matched by content (the first unused original with the same sides), so the side panes
+        // follow even after hand edits.
+        let mut by: std::collections::HashMap<(&str, &str), Vec<usize>> = Default::default();
+        for (k, o) in orig.iter().enumerate().rev() {
+            by.entry((&o.ours, &o.theirs)).or_default().push(k);
+        }
+        self.orig_of = conflicts(&self.chunks).map(|c| by.get_mut(&(c.ours.as_str(), c.theirs.as_str()))?.pop()).collect();
+        self.trivial = conflicts(&self.chunks).filter(|c| c.trivial()).count();
         self.sel = self.sel.min(self.orig_of.len().saturating_sub(1));
         self.scroll = true;
     }
@@ -567,6 +606,74 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "both\n").unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("yarn.lock")).unwrap(), "main\n");
         assert_eq!(resolvable(&dir, &git::status(&dir).unwrap()), ["a.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Latin-1 text file conflicts like any other: editable, bulk-resolvable, written back byte for byte.
+    #[test]
+    fn non_utf8_text_is_not_binary() {
+        use crate::repo::testutil::{identity, scratch, sh};
+        let dir = scratch("merge-latin1");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let commit = |text: &[u8]| {
+            std::fs::write(dir.join("l.txt"), text).unwrap();
+            sh(&dir, &["commit", "-qam", "c"]);
+        };
+        std::fs::write(dir.join("l.txt"), b"caf\xe9 base\nline\n").unwrap();
+        sh(&dir, &["add", "."]);
+        sh(&dir, &["commit", "-qm", "base"]);
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(b"caf\xe9 x\nline\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(b"caf\xe9 main\nline\n");
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        let d = load(&dir, "l.txt");
+        assert_eq!((d.whole, d.orig.len()), (None, 1));
+        assert_eq!(d.orig[0].ours, "caf\u{e9} main\n");
+        assert!(resolvable(&dir, &git::status(&dir).unwrap()).is_empty());
+        let out = decode(&d.original).replace("<<<<<<< HEAD\n", "").replace("=======\ncaf\u{e9} x\n>>>>>>> x\n", "");
+        save(&dir, "l.txt", &d.original, &out).unwrap();
+        assert_eq!(std::fs::read(dir.join("l.txt")).unwrap(), b"caf\xe9 main\nline\n");
+        assert_eq!(resolvable(&dir, &git::status(&dir).unwrap()), ["l.txt"]);
+        std::fs::write(dir.join("l.txt"), b"caf\xe9 base\nline\n").unwrap();
+        assert!(save(&dir, "l.txt", b"caf\xe9 base\nline\n", "\u{65e5}").unwrap_err().contains("can't hold"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Marking resolved (one file or many, paths sent on stdin) is undone by ⌘Z: the conflict is back.
+    #[test]
+    fn mark_resolved_is_undoable() {
+        use crate::repo::testutil::{commit, identity, scratch, settle};
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("merge-mark-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        commit(&dir, "g", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "f", "x\n");
+        commit(&dir, "g", "x\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        commit(&dir, "g", "main\n");
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let status = || sh(&dir, &["status", "--porcelain"]);
+        for (ops, paths) in [(stage("f"), vec!["f"]), (stage_many("Mark resolved", &["f", "g"]), vec!["f", "g"])] {
+            for p in &paths {
+                std::fs::write(dir.join(p), "mine\n").unwrap();
+            }
+            t.apply(&ctx, Action::Git(ops));
+            settle(&ctx, &mut t);
+            assert!(paths.iter().all(|p| status().contains(&format!("M  {p}"))), "{}", status());
+            t.apply(&ctx, Action::Undo);
+            settle(&ctx, &mut t);
+            assert!(paths.iter().all(|p| status().contains(&format!("UU {p}"))), "{}", status());
+            assert_eq!(std::fs::read_to_string(dir.join(paths[0])).unwrap(), "mine\n");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -687,6 +794,8 @@ mod tests {
             scroll: false,
             saving: None,
             error: None,
+            trivial: 0,
+            galley: None,
         };
         ed.reparse();
         assert_eq!(ed.orig_of, [Some(0), Some(1)]);

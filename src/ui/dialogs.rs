@@ -171,7 +171,9 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                     }
                 }
                 ai::Purpose::Resolve(path) => {
-                    if ui.add_enabled(ready, Button::new(format!("{}  Apply & mark resolved", icon::CHECK))).clicked() {
+                    let tool = t.merge_tool_open(path);
+                    let b = ui.add_enabled(ready && !tool, Button::new(format!("{}  Apply & mark resolved", icon::CHECK)));
+                    if (if tool { b.on_disabled_hover_text("The external merge tool is open on this file and would overwrite the save. Close it first.") } else { b }).clicked() {
                         match crate::repo::merge_editor::apply_ai(&t.dir, path, job.draft.as_bytes(), &job.text) {
                             Ok(op) => {
                                 acts.push(Action::Git(op));

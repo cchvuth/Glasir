@@ -54,8 +54,9 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             .frame(Frame::NONE.inner_margin(Margin { left: 3, right: 3, top: 2, bottom: 12 }))
             .show(ui, |ui| {
                 theme::card(ui, 205, |ui| {
+                    let tool_open = t.merge.as_ref().is_some_and(|e| t.merge_tool_open(&e.path));
                     if let Some(ed) = &mut t.merge {
-                        if merge_editor::show(ui, ed, t.ai.as_ref(), &mut s.wrap, &mut acts) {
+                        if merge_editor::show(ui, ed, t.ai.as_ref(), tool_open, &mut s.wrap, &mut acts) {
                             t.merge = None;
                         }
                         return;

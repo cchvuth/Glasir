@@ -60,12 +60,12 @@ fn shown(v: &[&str]) -> String {
 /// Mark the conflicted files `cs` resolved, only those without conflict markers (asking first
 /// when some are left alone). None when none of them can be.
 fn mark_resolved_op(label: &str, d: &RepoData, cs: &[Change]) -> Option<Op> {
-    let (ok, rest): (Vec<&str>, Vec<&str>) = cs.iter().map(|c| c.path.as_str()).partition(|p| d.resolvable.iter().any(|r| r == p));
+    let res: std::collections::HashSet<&str> = d.resolvable.iter().map(String::as_str).collect();
+    let (ok, rest): (Vec<&str>, Vec<&str>) = cs.iter().map(|c| c.path.as_str()).partition(|p| res.contains(p));
     if ok.is_empty() {
         return None;
     }
-    let paths: String = ok.iter().map(|p| format!("{p}\0")).collect();
-    let op = Op::new(label, &["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light();
+    let op = crate::repo::merge_editor::stage_many(label, &ok);
     Some(if rest.is_empty() { op } else { op.confirm(format!("Mark {} file(s) resolved? Not marked (conflict markers left, or a side to choose):\n{}", ok.len(), shown(&rest))) })
 }
 
@@ -424,13 +424,12 @@ impl RepoTab {
                         ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             tree::toggle(ui, as_tree);
-                            let rest: Vec<&str> = s.conflicted.iter().map(|c| c.path.as_str()).filter(|p| !d.resolvable.iter().any(|r| r == p)).collect();
                             let b = theme::small(ui, !d.resolvable.is_empty() && !busy, "Mark all resolved");
-                            let b = if rest.is_empty() {
-                                b.on_hover_text("Stage every conflicted file")
-                            } else {
-                                b.on_hover_text(format!("Only files without conflict markers are marked. Left alone:\n{}", shown(&rest)))
-                            };
+                            // Built only while hovered: it compares every conflicted path with every resolvable one.
+                            let b = b.on_hover_ui(|ui| {
+                                let rest: Vec<&str> = s.conflicted.iter().map(|c| c.path.as_str()).filter(|p| !d.resolvable.iter().any(|r| r == p)).collect();
+                                ui.label(if rest.is_empty() { "Stage every conflicted file".to_owned() } else { format!("Only files without conflict markers are marked. Left alone:\n{}", shown(&rest)) });
+                            });
                             if b.on_disabled_hover_text("No conflicted file is free of conflict markers yet").clicked() {
                                 acts.extend(mark_resolved_op("Mark all resolved", d, &s.conflicted).map(Action::Git));
                             }
@@ -440,8 +439,9 @@ impl RepoTab {
                     if matches!(d.state, State::Clean | State::Bisecting) {
                         open_tools(ui, &self.ext_tools, acts);
                     }
-                    let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0); // type label hugs its row
-                    tree::list(ui, &s.conflicted, d.generation, *as_tree, "conflicts", &mut self.tree_closed, true, |ui, item| {
+                    // The type label is painted under its row, in the gap: rows keep one height, so the list is culled.
+                    let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 16.0);
+                    tree::list(ui, &s.conflicted, d.generation, *as_tree, "conflicts", &mut self.tree_closed, false, |ui, item| {
                         let (c, depth) = match item {
                             Item::File { c, depth, .. } => (c, depth),
                             Item::Dir { path, files, resp } => {
@@ -463,17 +463,14 @@ impl RepoTab {
                         };
                         let resp = file_row(ui, c, self.merge.as_ref().is_some_and(|m| m.path == c.path), d.lfs.files.contains(&c.path), None, depth);
                         let (kind, has) = crate::git::conflict_kind(s.conflict_xy.get(&c.path).map_or("", String::as_str));
-                        ui.horizontal(|ui| {
-                            ui.add_space(22.0 + tree::indent(depth));
-                            ui.label(RichText::new(kind).small().color(theme::dim(ui)));
-                        });
-                        ui.add_space(4.0);
+                        let font = egui::TextStyle::Small.resolve(ui.style());
+                        ui.painter().text(egui::pos2(ui.max_rect().left() + 22.0 + tree::indent(depth), resp.rect.bottom() + 1.0), egui::Align2::LEFT_TOP, kind, font, theme::dim(ui));
                         resp.context_menu(|ui| {
                             if ai_on && ui.button(format!("{}  Resolve…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
                             }
                             if ui.button("Mark resolved").clicked() {
-                                acts.push(Action::Git(Op::new("Mark resolved", &["--literal-pathspecs", "add", "--", &c.path]).light()));
+                                acts.push(Action::Git(crate::repo::merge_editor::stage(&c.path)));
                             }
                             for (i, (side, word)) in [("--ours", "current"), ("--theirs", "incoming")].into_iter().enumerate() {
                                 let label = &d.conflict_sides[i];

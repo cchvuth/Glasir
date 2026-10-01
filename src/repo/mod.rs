@@ -156,6 +156,8 @@ pub struct RepoTab {
     /// Predicted conflicts with the target branch: (target, files).
     pub conflicts: Option<(String, Vec<String>)>,
     conflict_task: Option<Task<Option<(String, Vec<String>)>>>,
+    /// (HEAD, target) commits `conflicts` was predicted for.
+    conflict_key: Option<(String, String)>,
     /// `git verify-tag` running for the tag menu, its result toasted.
     verify_task: Option<Task<Msg>>,
     /// A failed op offering fixes (autostash, diverged pull, rejected push).
@@ -258,6 +260,7 @@ impl RepoTab {
             cleanup: None,
             conflicts: None,
             conflict_task: None,
+            conflict_key: None,
             verify_task: None,
             choice: None,
             bg_fetch: None,
