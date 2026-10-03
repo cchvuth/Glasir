@@ -86,6 +86,8 @@ pub enum Action {
     Jump(String),
     /// Ask Claude (streams into `RepoTab::ai`).
     Ai(ai::Purpose),
+    /// Stop the running AI job (restoring a commit-message draft).
+    AiCancel,
     /// Open the interactive rebase editor for commits after `base`.
     Rebase { base: String, label: String },
     /// Open the 3-way merge editor for a conflicted file.

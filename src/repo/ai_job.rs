@@ -7,6 +7,11 @@ use crate::ai;
 
 impl RepoTab {
     pub(super) fn start_ai(&mut self, ctx: &egui::Context, p: ai::Purpose) {
+        // The inline Explain panel only shows the selected commit's job: a new Explain replaces a running one.
+        let explain = |p: &ai::Purpose| matches!(p, ai::Purpose::Explain(_) | ai::Purpose::ExplainRange { .. });
+        if explain(&p) && self.ai_busy().is_some_and(explain) {
+            self.ai = None;
+        }
         if !self.ai_free() {
             return;
         }
@@ -22,6 +27,11 @@ impl RepoTab {
                 Some(m) => m.output.clone(),
                 None => std::fs::read_to_string(self.dir.join(path)).unwrap_or_default(),
             },
+            // What the stash will hold: if the tree changes while Claude writes, the message would be wrong.
+            ai::Purpose::StashMessage => {
+                self.ai_draft = Some((self.stash_state(), String::new()));
+                String::new()
+            }
             _ => String::new(),
         };
         self.ai = Some(ai::start(ctx, self.ai_cfg.clone(), self.dir.clone(), p, draft));
@@ -63,6 +73,13 @@ impl RepoTab {
             (Some(Ok(())), ai::Purpose::StashMessage) => {
                 let msg = job.text.trim().trim_matches('"').to_owned();
                 self.ai = None;
+                if !self.ai_cfg.enabled {
+                    return;
+                }
+                if self.ai_draft.take().is_some_and(|(s, _)| s != self.stash_state()) {
+                    msgs.push(Msg { text: "The files changed while the message was written; stash again.".into(), error: true });
+                    return;
+                }
                 self.run(ctx, Op::new("Stash", &["stash", "push", "--include-untracked", "-m", &msg]));
             }
             (Some(Ok(())), ai::Purpose::CommitMessage { .. }) => self.ai = None,
@@ -76,6 +93,22 @@ impl RepoTab {
                 self.ai = None;
             }
             _ => {}
+        }
+    }
+
+    /// `git status` plus line counts: changes when files are edited, added or removed.
+    // ponytail: a same-size edit within a line isn't seen; hash `git diff HEAD` if that matters.
+    fn stash_state(&self) -> String {
+        let run = |a: &[&str]| crate::git::run(&self.dir, a).unwrap_or_default();
+        run(&["status", "--porcelain=v2", "-z", "--untracked-files=all"]) + &run(&["diff", "HEAD", "--numstat", "-z"])
+    }
+
+    pub(super) fn cancel_ai(&mut self) {
+        if let Some(j) = self.ai.take()
+            && matches!(j.purpose, ai::Purpose::CommitMessage { .. })
+            && let Some((s, b)) = self.ai_draft.take()
+        {
+            (self.summary, self.body) = (s, b);
         }
     }
 

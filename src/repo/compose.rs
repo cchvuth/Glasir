@@ -127,10 +127,10 @@ impl Plan {
         let to: &[&str] = if wip { &[] } else { &["HEAD"] };
         let names = git::run(dir, &[&["diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=dirty", &base][..], to, &["--"]].concat())?;
         let mut units = vec![];
-        let mut add = |units: &mut Vec<Unit>, path: &str, what: String, hunk, body: &[git::Hunk]| {
-            listing += &format!("[{}] {path} ({what})\n", units.len() + 1);
+        let add = |units: &mut Vec<Unit>, listing: &mut String, path: &str, what: String, hunk, body: &[git::Hunk]| {
+            *listing += &format!("[{}] {path} ({what})\n", units.len() + 1);
             for h in body {
-                render(&mut listing, h);
+                render(listing, h);
             }
             units.push(Unit { path: path.into(), what, hunk });
         };
@@ -142,20 +142,25 @@ impl Plan {
             let lossy = f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text.contains('\u{FFFD}'));
             if typechange || f.hunks.is_empty() || f.binary || lossy || f.header.iter().any(|h| h.contains(" 160000")) {
                 let kind = if f.binary { "binary, whole file" } else { "whole file" };
-                add(&mut units, path, format!("{status}, {kind}"), None, if lossy { &[] } else { &f.hunks });
+                add(&mut units, &mut listing, path, format!("{status}, {kind}"), None, if lossy { &[] } else { &f.hunks });
                 continue;
             }
             let n = f.hunks.len();
             for (hi, h) in f.hunks.iter().enumerate() {
-                add(&mut units, path, format!("{status}, hunk {}/{n}", hi + 1), Some((fi, hi)), std::slice::from_ref(h));
+                add(&mut units, &mut listing, path, format!("{status}, hunk {}/{n}", hi + 1), Some((fi, hi)), std::slice::from_ref(h));
             }
         }
         // Also listed by `diff HEAD` after `git rm --cached`: its deletion unit covers it.
-        for path in untracked.split('\0').filter(|p| !p.is_empty() && !names.split('\0').any(|n| n == *p)) {
+        let named: std::collections::HashSet<&str> = names.split('\0').collect();
+        for path in untracked.split('\0').filter(|p| !p.is_empty() && !named.contains(p)) {
+            // Too big to send: don't read thousands more files to find out.
+            if listing.len() > ai::MAX_CONTEXT {
+                return Err(ai::too_large(listing.len()));
+            }
             let c = git::Change { path: path.into(), old_path: None, code: '?' };
             let f = git::worktree_diff(dir, &c, false, git::DiffOpts { no_attrs: true, ..Default::default() }).unwrap_or_default();
             let body = if f.binary || f.lossy { &[][..] } else { &f.hunks[..] };
-            add(&mut units, path, "new file, untracked".into(), None, body);
+            add(&mut units, &mut listing, path, "new file, untracked".into(), None, body);
         }
         if units.is_empty() {
             return Err(if wip { "There are no uncommitted changes." } else { "These commits change nothing together." }.into());
@@ -349,6 +354,25 @@ impl RepoTab {
 mod tests {
     use super::*;
     use crate::repo::testutil::{commit, identity, scratch, sh};
+
+    #[test]
+    fn huge_untracked_tree_is_refused_early() {
+        let dir = scratch("compose-huge");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        let big = "x".repeat(100).repeat(10) + "\n";
+        for i in 0..8 {
+            std::fs::write(dir.join(format!("n{i}")), big.repeat(200)).unwrap();
+        }
+        let big = big.repeat(1500);
+        for i in 8..12 {
+            std::fs::write(dir.join(format!("n{i}")), &big).unwrap();
+        }
+        let e = Plan::load(&dir, None).err().expect("too large");
+        assert!(e.contains("too large"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn ids(c: &[Commit]) -> Vec<Vec<usize>> {
         c.iter().map(|c| c.units.clone()).collect()

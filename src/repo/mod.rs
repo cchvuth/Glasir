@@ -660,6 +660,7 @@ impl RepoTab {
                 self.select(ctx, Sel::Commit(id));
             }
             Action::Ai(p) => self.start_ai(ctx, p),
+            Action::AiCancel => self.cancel_ai(),
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
             Action::Cleanup => self.open_cleanup(ctx),
             Action::Multi(ids) => {

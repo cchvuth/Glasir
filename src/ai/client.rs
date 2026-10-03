@@ -173,13 +173,13 @@ mod keychain {
     }
 
     pub fn set(service: &str, account: &str, token: &str) -> Result<(), String> {
-        if !token.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
-            return Err("the token contains unexpected characters".into());
+        if token.chars().any(char::is_control) {
+            return Err("the token contains control characters".into());
         }
         delete(service, account)?; // a fresh item, owned by `security`
         // The secret goes over stdin (`security -i`), never on a command line.
         let mut c = Command::new(SECURITY).arg("-i").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
-        let cmd = format!("add-generic-password -s {service} -a {account} -w \"{token}\"\n");
+        let cmd = format!("add-generic-password -s {service} -a {account} -w \"{}\"\n", token.replace('\\', "\\\\").replace('"', "\\\""));
         c.stdin.take().ok_or("no stdin")?.write_all(cmd.as_bytes()).map_err(|e| e.to_string())?;
         let o = c.wait_with_output().map_err(|e| e.to_string())?;
         // `security -i` exits 0 even when a command fails: read the item back.
@@ -319,7 +319,8 @@ pub(super) fn post(url: &str, headers: &[(&str, String)], payload: &str, api: &s
         let res = req.send(payload);
         let retry = match &res {
             Ok(r) => matches!(r.status().as_u16(), 408 | 429 | 500..=599),
-            Err(_) => true,
+            // A timeout means the request may be running (and billed): only connection errors are retried.
+            Err(e) => !matches!(e, ureq::Error::Timeout(_)),
         };
         if retry && attempt < 2 {
             attempt += 1;

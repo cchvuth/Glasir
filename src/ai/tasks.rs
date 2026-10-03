@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
 /// Diffs above this many bytes are refused with a message rather than truncated.
-const MAX_CONTEXT: usize = 1_500_000;
+pub const MAX_CONTEXT: usize = 1_500_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Purpose {
@@ -109,6 +109,18 @@ fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
 fn parent_or_empty(dir: &Path, rev: &str) -> Res<String> {
     match git::run(dir, &["rev-parse", "-q", "--verify", &format!("{rev}^")]) {
         Ok(p) => Ok(p.trim().to_owned()),
+        Err(_) => Ok(git::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?.trim().to_owned()),
+    }
+}
+
+pub fn too_large(len: usize) -> String {
+    format!("These changes are too large to send to {} ({} KB, limit {} KB).", super::name(), len / 1024, MAX_CONTEXT / 1024)
+}
+
+/// "HEAD", or the empty tree in a repo without commits.
+fn head_or_empty(dir: &Path) -> Res<String> {
+    match git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]) {
+        Ok(_) => Ok("HEAD".into()),
         Err(_) => Ok(git::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?.trim().to_owned()),
     }
 }
@@ -252,7 +264,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             )
         }
         Purpose::ExplainWip => {
-            let diff = diff_with_stat(dir, &["HEAD"])?;
+            let diff = diff_with_stat(dir, &[&head_or_empty(dir)?])?;
             let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
             (
                 format!(
@@ -266,7 +278,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
         }
         Purpose::Compose => {
             if draft.len() > MAX_CONTEXT {
-                return Err(format!("These changes are too large to send to {} ({} KB, limit {} KB).", super::name(), draft.len() / 1024, MAX_CONTEXT / 1024));
+                return Err(too_large(draft.len()));
             }
             let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
             (
@@ -282,7 +294,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             )
         }
         Purpose::StashMessage => {
-            let diff = diff_with_stat(dir, &["HEAD"])?;
+            let diff = diff_with_stat(dir, &[&head_or_empty(dir)?])?;
             let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
             (
                 format!(
@@ -355,6 +367,21 @@ pub fn test(cfg: &Config) -> Res<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explain_wip_works_before_the_first_commit() {
+        let dir = std::env::temp_dir().join(format!("glasir-unborn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git::run(&dir, &["init", "-q"]).unwrap();
+        std::fs::write(dir.join("a"), "hello\n").unwrap();
+        git::run(&dir, &["add", "a"]).unwrap();
+        for p in [Purpose::ExplainWip, Purpose::StashMessage] {
+            let (prompt, ..) = build(&dir, &p, "").unwrap();
+            assert!(prompt.contains("hello"), "{p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn system_prompt_appends_global_then_repo_instructions() {

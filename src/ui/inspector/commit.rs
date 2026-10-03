@@ -194,6 +194,9 @@ impl RepoTab {
                             ui.label(RichText::new(format!("{}  {}", icon::SPARKLE, crate::ai::name())).small().strong());
                             if job.running() {
                                 ui.spinner();
+                                if theme::small(ui, true, "Cancel").clicked() {
+                                    acts.push(Action::AiCancel);
+                                }
                             }
                         });
                         if !job.text.is_empty() {

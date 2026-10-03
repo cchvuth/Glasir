@@ -293,6 +293,9 @@ impl RepoTab {
                     } else if generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
+                        if theme::small(ui, true, "Cancel").clicked() {
+                            acts.push(Action::AiCancel);
+                        }
                     } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{}  Generate", icon::SPARKLE))
                         .on_hover_text(if self.amend {
                             format!("Write the amended commit's message (its changes plus the staged ones) with {}", crate::ai::name())
