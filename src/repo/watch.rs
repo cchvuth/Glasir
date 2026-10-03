@@ -15,6 +15,10 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
     let git = |what| crate::git::run(dir, &["rev-parse", "--path-format=absolute", what]).ok().map(|p| std::path::PathBuf::from(p.trim()));
     let (own, common) = (git("--git-dir")?, git("--git-common-dir")?);
     let gits = [own, common.clone()];
+    // Top-level entries known to be gitignored (a build dir's churn must not trigger status
+    // reloads). Reset when a .gitignore changes. ponytail: whole-dir verdict, so tracked files
+    // under an ignored dir are missed; per-path check-ignore if that matters.
+    let mut ignored: std::collections::HashMap<std::ffi::OsString, bool> = Default::default();
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(e) = res else { return };
         if matches!(e.kind, notify::EventKind::Access(_)) {
@@ -29,7 +33,24 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
                     Some("index") if i == 0 => Some(false),
                     _ => None, // objects, logs, locks, other worktrees: noise
                 },
-                None => p.strip_prefix(&root).ok().and_then(|rel| rel.components().next()).filter(|c| c.as_os_str() != ".git").map(|_| false),
+                None => p.strip_prefix(&root).ok().and_then(|rel| {
+                    let first = rel.components().next()?.as_os_str().to_owned();
+                    if first == ".git" {
+                        return None;
+                    }
+                    if rel.file_name().is_some_and(|n| n == ".gitignore") {
+                        ignored.clear();
+                    }
+                    let is_dir = rel.components().count() > 1;
+                    let skip = *ignored.entry(first.clone()).or_insert_with(|| {
+                        let mut arg = first.to_string_lossy().into_owned();
+                        if is_dir {
+                            arg.push('/');
+                        }
+                        crate::git::run(&root, &["check-ignore", "-q", "--", &arg]).is_ok()
+                    });
+                    (!skip).then_some(false)
+                }),
             };
             if let Some(full) = kind {
                 let _ = tx.send(full);
@@ -67,6 +88,29 @@ mod tests {
         let full = (0..40).any(|_| rx.recv_timeout(std::time::Duration::from_millis(250)).unwrap_or(false));
         assert!(full, "no full reload for a stash made in the main worktree");
         let _ = std::fs::remove_dir_all(&wt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Writes under a gitignored dir are not worktree changes.
+    #[test]
+    fn ignored_dirs_send_no_events() {
+        let canon = |p: std::path::PathBuf| if cfg!(windows) { p } else { std::fs::canonicalize(p).unwrap() };
+        let dir = canon(scratch("watch-ign"));
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+        std::fs::create_dir(dir.join("target")).unwrap();
+        let ctx = egui::Context::default();
+        let (_w, rx) = super::watch(&ctx, &dir).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        while rx.try_recv().is_ok() {}
+        for i in 0..5 {
+            std::fs::write(dir.join("target/out.o"), i.to_string()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(rx.try_recv().is_err(), "event for an ignored path");
+        std::fs::write(dir.join("src.rs"), "x").unwrap();
+        assert!(rx.recv_timeout(std::time::Duration::from_secs(3)).is_ok(), "no event for a normal file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
