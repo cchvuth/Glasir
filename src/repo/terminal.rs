@@ -9,21 +9,31 @@ use alacritty_terminal::term::{Config, Term, test::TermSize};
 use alacritty_terminal::tty;
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 /// Hands the PTY thread's events to the UI thread and wakes it up.
 #[derive(Clone)]
 pub struct Listener {
     ctx: egui::Context,
     tx: mpsc::Sender<Event>,
+    /// The egui pass in which the grid was last drawn.
+    drawn: Arc<AtomicU64>,
 }
 
 impl EventListener for Listener {
     fn send_event(&self, e: Event) {
+        let wakeup = matches!(e, Event::Wakeup);
         if !matches!(e, Event::Wakeup | Event::MouseCursorDirty | Event::CursorBlinkingChange) {
             let _ = self.tx.send(e);
         }
-        self.ctx.request_repaint();
+        // Output nobody sees (hidden panel, background tab) only wakes the app once a second.
+        if !wakeup || self.ctx.cumulative_pass_nr() <= self.drawn.load(Ordering::Relaxed) + 1 {
+            self.ctx.request_repaint();
+        } else {
+            self.ctx.request_repaint_after(Duration::from_secs(1));
+        }
     }
 }
 
@@ -34,6 +44,10 @@ pub struct Session {
     /// Set by the shell (OSC 0/2), else empty.
     pub title: String,
     size: WindowSize,
+    /// See `Listener::drawn`; set by the grid.
+    pub drawn: Arc<AtomicU64>,
+    /// Since when `keep_busy` has seen the shell idle.
+    idle_since: Option<Instant>,
     /// The shell's pid and a duplicate of the PTY master, to ask which process group
     /// owns the terminal (a command is running when it isn't the shell's).
     #[cfg(unix)]
@@ -68,7 +82,8 @@ impl Session {
         #[cfg(windows)]
         let shell = (pty.child_watcher().pid().map_or(0, |p| p.get()), created(pty.child_watcher().raw_handle()));
         let (tx, events) = mpsc::channel();
-        let l = Listener { ctx: ctx.clone(), tx };
+        let drawn = Arc::new(AtomicU64::new(ctx.cumulative_pass_nr()));
+        let l = Listener { ctx: ctx.clone(), tx, drawn: drawn.clone() };
         let term = Arc::new(FairMutex::new(Term::new(Config::default(), &TermSize::new(80, 24), l.clone())));
         let lp = EventLoop::new(term.clone(), l, pty, false, false)?;
         let tx = lp.channel();
@@ -79,6 +94,8 @@ impl Session {
             events,
             title: String::new(),
             size,
+            drawn,
+            idle_since: None,
             #[cfg(any(unix, windows))]
             shell,
             #[cfg(windows)]
@@ -262,7 +279,14 @@ impl Terminals {
     /// (shown or hidden) until it finishes or is stopped.
     pub fn keep_busy(&mut self) {
         let n = self.tabs.len();
-        self.tabs.retain(Session::busy);
+        // Between the jobs of `a; b` the shell briefly owns the terminal: idle must last.
+        self.tabs.retain_mut(|s| {
+            if s.busy() {
+                s.idle_since = None;
+                return true;
+            }
+            s.idle_since.get_or_insert_with(Instant::now).elapsed() < Duration::from_secs(1)
+        });
         if self.tabs.len() < n {
             self.fix_after_removal();
         }
@@ -353,14 +377,41 @@ mod tests {
         ts.tabs[1].write(&b"echo sta''rted; sleep 30\r"[..]);
         wait("busy", || screen(&ts.tabs[1]).contains("started") && ts.tabs[1].busy());
         ts.keep_busy();
-        assert!(ts.open && ts.tabs.len() == 1 && ts.active == 0 && ts.tabs[0].busy());
+        wait("idle shell dropped", || {
+            ts.keep_busy();
+            ts.tabs.len() == 1
+        });
+        assert!(ts.open && ts.active == 0 && ts.tabs[0].busy());
         ts.open = false; // Hide: the command keeps running out of sight
         ts.keep_busy();
         assert!(!ts.open && ts.tabs.len() == 1);
         ts.tabs[0].write(&b"\x03"[..]);
         wait("idle", || !ts.busy());
-        ts.keep_busy();
-        assert!(!ts.open && ts.tabs.is_empty());
+        wait("dropped", || {
+            ts.keep_busy();
+            ts.tabs.is_empty()
+        });
+        assert!(!ts.open);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn keep_busy_spares_a_multi_command_line() {
+        let dir = crate::repo::testutil::scratch("terminal-gap");
+        let ctx = egui::Context::default();
+        let mut ts = Terminals::default();
+        ts.toggle(&ctx, &dir);
+        let s = &ts.tabs[0];
+        s.write(&b"echo re''ady\r"[..]);
+        wait("prompt", || screen(s).contains("ready") && !s.busy());
+        s.write(&b"for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do sleep 0.1; done; echo fin''ished\r"[..]);
+        let end = Instant::now() + Duration::from_millis(2300);
+        while Instant::now() < end && !screen(&ts.tabs[0]).contains("finished") {
+            ts.keep_busy();
+            assert_eq!(ts.tabs.len(), 1, "killed mid-line");
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        assert!(screen(&ts.tabs[0]).contains("finished"));
     }
 
     #[cfg(windows)]

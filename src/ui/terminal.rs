@@ -76,6 +76,7 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path, new: bool) {
 
 /// The terminal's cells; sizes the PTY to the space left.
 fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
+    s.drawn.store(ui.ctx().cumulative_pass_nr(), std::sync::atomic::Ordering::Relaxed);
     let font = FontId::monospace(12.5);
     let (cw, ch) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
     let rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
@@ -282,7 +283,7 @@ fn paste(t: &str, bracketed: bool) -> String {
     if bracketed {
         format!("\x1b[200~{}\x1b[201~", t.replace('\x1b', ""))
     } else {
-        t.replace('\n', "\r")
+        t.replace("\r\n", "\r").replace('\n', "\r")
     }
 }
 
@@ -403,6 +404,7 @@ mod tests {
         assert_eq!(k(Key::A, Modifiers::NONE, false), None); // typed as text instead
         assert_eq!(k(Key::C, Modifiers::MAC_CMD, false), None); // ⌘C is the app's
         assert_eq!(paste("a\nb", false), "a\rb");
+        assert_eq!(paste("a\r\nb", false), "a\rb");
         let key = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
         let mut ev = vec![key(Key::B, Modifiers::ALT), Event::Text("b".into()), key(Key::B, Modifiers::NONE), Event::Text("b".into())];
         ev.extend([key(Key::Q, Modifiers::CTRL | Modifiers::ALT), Event::Text("@".into()), key(Key::ArrowLeft, Modifiers::ALT), Event::Text("x".into())]);

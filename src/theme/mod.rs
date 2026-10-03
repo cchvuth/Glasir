@@ -210,6 +210,18 @@ fn system_fonts() -> Vec<(&'static str, &'static [&'static str], FontFamily)> {
             FontFamily::Proportional,
         ),
         (
+            "cjk",
+            &[
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                "C:\\Windows\\Fonts\\msyh.ttc",
+                "C:\\Windows\\Fonts\\YuGothM.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            ],
+            FontFamily::Proportional,
+        ),
+        (
             "mono",
             &[
                 "/System/Library/Fonts/SFNSMono.ttf",
@@ -228,7 +240,14 @@ pub fn install_fonts(ctx: &egui::Context) {
     for (name, paths, family) in system_fonts() {
         if let Some(bytes) = paths.iter().find_map(|p| std::fs::read(p).ok()) {
             fonts.font_data.insert(name.into(), Arc::new(FontData::from_owned(bytes)));
-            fonts.families.entry(family).or_default().insert(0, name.into());
+            if name == "cjk" {
+                // A fallback only: after every other font, in both families.
+                for f in [FontFamily::Proportional, FontFamily::Monospace] {
+                    fonts.families.entry(f).or_default().push(name.into());
+                }
+            } else {
+                fonts.families.entry(family).or_default().insert(0, name.into());
+            }
         }
     }
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
