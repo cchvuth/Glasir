@@ -126,8 +126,8 @@ pub struct RepoTab {
     pub notes: Vec<Msg>,
     /// A repository the app should open in a new tab.
     pub open_tab: Option<PathBuf>,
-    watcher: Option<(notify::RecommendedWatcher, Receiver<bool>)>,
-    watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<bool>)>>>,
+    watcher: Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>,
+    watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>>>,
     pub search: Option<Search>,
     /// Finding a jumped-to commit outside the loaded history: (id, its position in the log).
     locate: Option<Task<Option<(String, usize)>>>,
@@ -357,13 +357,13 @@ impl RepoTab {
         if let Some((_, rx)) = &self.watcher {
             let now = ctx.input(|i| i.time);
             let ours = self.running.is_some() || self.load.is_some();
-            for full in rx.try_iter() {
-                // Status-only events during an op or its reload are mostly our own index write: the op's
-                // reload already shows it, a second status would only repeat it.
-                if ours && !full {
+            for c in rx.try_iter() {
+                // An index write during an op or its reload is our own: the op's reload already shows it.
+                // A worktree edit may land after that reload's `git status`: kept for after it.
+                if ours && c == watch::Change::Index {
                     continue;
                 }
-                self.changed = Some((self.changed.is_some_and(|c| c.0) || full, now));
+                self.changed = Some((self.changed.is_some_and(|c| c.0) || c == watch::Change::Refs, now));
             }
             if let Some((full, at)) = self.changed
                 && now - at > 0.4
@@ -884,6 +884,29 @@ mod tests {
         std::fs::write(dir.join("f"), "a\nbar\n").unwrap();
         t.reload(&ctx, false);
         wait(&ctx, &mut t, |t| has(t, "bar"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A save landing while a reload runs (maybe after its `git status`) gets a reload of its own.
+    #[test]
+    fn worktree_events_during_a_reload_are_kept() {
+        let dir = scratch("watch-during-load");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.watcher = Some((notify::recommended_watcher(|_| {}).unwrap(), rx));
+        t.watcher_task = None;
+        t.reload(&ctx, false);
+        tx.send(watch::Change::Index).unwrap();
+        t.poll(&ctx, &mut vec![]);
+        assert!(t.changed.is_none(), "our own index write");
+        settle(&ctx, &mut t);
+        t.reload(&ctx, false);
+        tx.send(watch::Change::Tree).unwrap();
+        t.poll(&ctx, &mut vec![]);
+        assert!(t.changed.is_some_and(|c| !c.0), "an outside save was dropped");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

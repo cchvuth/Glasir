@@ -340,6 +340,8 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
     let (p, sent) = (purpose.clone(), draft.clone());
     std::thread::spawn(move || {
         let schema = (p == Purpose::Compose).then(compose_schema);
+        // What the stash will hold: if the tree changes while Claude writes, the message would be wrong.
+        let before = (p == Purpose::StashMessage).then(|| stash_state(&dir));
         let res = build(&dir, &p, &draft).and_then(|(prompt, effort)| {
             let system = system_with(&cfg.instructions, &repo_instructions(&dir));
             complete(&cfg, need_token(cfg.provider)?, &system, &prompt, effort, schema.as_ref(), &mut |t| {
@@ -347,10 +349,21 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
                 tx.send(Ev::Text(t)).is_ok()
             })
         });
+        let res = res.and_then(|()| match before {
+            Some(b) if b != stash_state(&dir) => Err("The files changed while the message was written; stash again.".into()),
+            _ => Ok(()),
+        });
         let _ = tx.send(Ev::Done(res));
         ctx.request_repaint();
     });
     Job { purpose, text: String::new(), done: None, draft: sent, rx }
+}
+
+/// `git status` plus line counts: changes when files are edited, added or removed.
+// ponytail: a same-size edit within a line isn't seen; hash `git diff HEAD` if that matters.
+fn stash_state(dir: &Path) -> String {
+    let run = |a: &[&str]| git::run(dir, a).unwrap_or_default();
+    run(&["status", "--porcelain=v2", "-z", "--untracked-files=all"]) + &run(&["diff", "HEAD", "--numstat", "-z"])
 }
 
 /// Quick round-trip used by Settings → Test.

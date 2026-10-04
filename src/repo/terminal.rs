@@ -405,13 +405,12 @@ mod tests {
         s.write(&b"echo re''ady\r"[..]);
         wait("prompt", || screen(s).contains("ready") && !s.busy());
         s.write(&b"for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do sleep 0.1; done; echo fin''ished\r"[..]);
-        let end = Instant::now() + Duration::from_millis(2300);
-        while Instant::now() < end && !screen(&ts.tabs[0]).contains("finished") {
+        // No deadline of its own: on a loaded machine the 20 sleeps take as long as they take.
+        wait("finished", || {
             ts.keep_busy();
             assert_eq!(ts.tabs.len(), 1, "killed mid-line");
-            std::thread::sleep(Duration::from_millis(16));
-        }
-        assert!(screen(&ts.tabs[0]).contains("finished"));
+            screen(&ts.tabs[0]).contains("finished")
+        });
     }
 
     #[cfg(windows)]

@@ -12,7 +12,7 @@ use alacritty_terminal::term::TermMode;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
-use egui::{Align2, Color32, Event, EventFilter, FontId, ImeEvent, Key, Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Event, EventFilter, FontId, ImeEvent, Key, Modifiers, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2};
 use std::borrow::Cow;
 use std::path::Path;
 
@@ -99,7 +99,31 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
         ui.memory_mut(|m| m.set_focus_lock_filter(id(), EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
         input(ui, s);
     }
-    let mut term = s.term.lock();
+    let acc_id = id().with("scroll");
+    let mut n = 0;
+    if r.hovered() {
+        let acc = ui.data(|d| d.get_temp::<f32>(acc_id)).unwrap_or(0.0) + ui.input(|i| i.smooth_scroll_delta.y);
+        n = (acc / ch).trunc() as i32;
+        ui.data_mut(|d| d.insert_temp(acc_id, acc - n as f32 * ch));
+    }
+    // A command flooding output holds the lock for most of the time: rather than wait for it every
+    // frame, paint the last frame's shapes again (for up to 0.1 s) unless the mouse acts on the grid.
+    let snap_id = id().with(std::sync::Arc::as_ptr(&s.term) as usize);
+    let now = ui.input(|i| i.time);
+    let snap = ui.data(|d| d.get_temp::<Snapshot>(snap_id));
+    let urgent = n != 0 || r.interact_pointer_pos().is_some();
+    let mut term = match s.term.try_lock_unfair() {
+        Some(t) => t,
+        None if !urgent && let Some(snap) = snap.filter(|p| now - p.at < 0.1) => {
+            ui.painter_at(rect).extend(snap.shapes.iter().cloned());
+            if focused && let Some(ime) = snap.ime {
+                ui.output_mut(|o| o.ime = Some(ime));
+            }
+            ui.ctx().request_repaint();
+            return;
+        }
+        None => s.term.lock(),
+    };
     let off = term.grid().display_offset();
     let cell_at = |p: Pos2| {
         let (x, y) = ((p.x - rect.left()) / cw, (p.y - rect.top()) / ch);
@@ -121,25 +145,21 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
             term.selection = None;
         }
     }
-    if r.hovered() {
-        let acc_id = id().with("scroll");
-        let acc = ui.data(|d| d.get_temp::<f32>(acc_id)).unwrap_or(0.0) + ui.input(|i| i.smooth_scroll_delta.y);
-        let n = (acc / ch).trunc() as i32;
-        ui.data_mut(|d| d.insert_temp(acc_id, acc - n as f32 * ch));
-        if n != 0 {
-            let alt = term.mode().contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL);
-            if alt {
-                // Pagers and editors on the alternate screen scroll with arrow keys.
-                s.write((if n > 0 { "\x1b[A" } else { "\x1b[B" }).repeat(n.unsigned_abs() as usize).into_bytes());
-            } else {
-                term.scroll_display(Scroll::Delta(n));
-            }
+    if n != 0 {
+        let alt = term.mode().contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL);
+        if alt {
+            // Pagers and editors on the alternate screen scroll with arrow keys.
+            s.write((if n > 0 { "\x1b[A" } else { "\x1b[B" }).repeat(n.unsigned_abs() as usize).into_bytes());
+        } else {
+            term.scroll_display(Scroll::Delta(n));
         }
     }
 
     let dark = ui.visuals().dark_mode;
     let fg0 = theme::text(ui);
     let painter = ui.painter_at(rect);
+    let mut shapes: Vec<Shape> = vec![];
+    let mut ime = None;
     let at = |row: usize, col: usize| pos2(rect.left() + col as f32 * cw, rect.top() + row as f32 * ch);
     let content = term.renderable_content();
     let (colors, sel) = (content.colors, content.selection);
@@ -166,13 +186,13 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
         let w = if flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
         let cell = Rect::from_min_size(at(row, col), vec2(cw * w as f32, ch));
         if let Some(bg) = bg {
-            painter.rect_filled(cell, 0.0, bg);
+            shapes.push(Shape::rect_filled(cell, 0.0, bg));
         }
         if flags.intersects(Flags::ALL_UNDERLINES) {
-            painter.hline(cell.x_range(), cell.bottom() - 1.5, Stroke::new(1.0, fg));
+            shapes.push(Shape::hline(cell.x_range(), cell.bottom() - 1.5, Stroke::new(1.0, fg)));
         }
         if flags.contains(Flags::STRIKEOUT) {
-            painter.hline(cell.x_range(), cell.center().y, Stroke::new(1.0, fg));
+            shapes.push(Shape::hline(cell.x_range(), cell.center().y, Stroke::new(1.0, fg)));
         }
         let blank = c.c == ' ' || flags.contains(Flags::HIDDEN);
         match &mut run {
@@ -201,26 +221,37 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
         if focused {
             // Turns on the OS input method (CJK...) while the shell has focus; commits arrive as `Event::Ime`.
             let to_global = ui.ctx().layer_transform_to_global(ui.layer_id()).unwrap_or_default();
-            ui.output_mut(|o| {
-                o.ime = Some(egui::output::IMEOutput {
-                    purpose: egui::IMEPurpose::Normal,
-                    rect: to_global * rect,
-                    cursor_rect: to_global * cell,
-                    should_interrupt_composition: false,
-                })
-            });
+            let i = egui::output::IMEOutput {
+                purpose: egui::IMEPurpose::Normal,
+                rect: to_global * rect,
+                cursor_rect: to_global * cell,
+                should_interrupt_composition: false,
+            };
+            ui.output_mut(|o| o.ime = Some(i.clone()));
+            ime = Some(i);
         }
         let color = theme::accent();
-        match cur.shape {
-            _ if !focused => painter.rect_stroke(cell.shrink(0.5), 1.0, Stroke::new(1.0, color), egui::StrokeKind::Inside),
-            CursorShape::Beam => painter.rect_filled(cell.with_max_x(cell.left() + 2.0), 0.0, color),
-            CursorShape::Underline => painter.rect_filled(cell.with_min_y(cell.bottom() - 2.0), 0.0, color),
-            _ => painter.rect_filled(cell, 1.0, color.gamma_multiply(0.6)),
-        };
+        shapes.push(match cur.shape {
+            _ if !focused => Shape::rect_stroke(cell.shrink(0.5), 1.0, Stroke::new(1.0, color), egui::StrokeKind::Inside),
+            CursorShape::Beam => Shape::rect_filled(cell.with_max_x(cell.left() + 2.0), 0.0, color),
+            CursorShape::Underline => Shape::rect_filled(cell.with_min_y(cell.bottom() - 2.0), 0.0, color),
+            _ => Shape::rect_filled(cell, 1.0, color.gamma_multiply(0.6)),
+        });
     }
+    drop(term);
     for (p, t, color) in texts {
-        painter.text(p, Align2::LEFT_TOP, t, font.clone(), color);
+        shapes.push(Shape::galley(p, painter.layout_no_wrap(t, font.clone(), color), color));
     }
+    painter.extend(shapes.iter().cloned());
+    ui.data_mut(|d| d.insert_temp(snap_id, Snapshot { shapes: shapes.into(), ime, at: now }));
+}
+
+/// The grid as last painted, for frames when the shell holds the terminal lock.
+#[derive(Clone)]
+struct Snapshot {
+    shapes: std::sync::Arc<[Shape]>,
+    ime: Option<egui::output::IMEOutput>,
+    at: f64,
 }
 
 /// Sends the frame's keyboard and clipboard events to the shell, and takes them out
@@ -236,6 +267,9 @@ fn input(ui: &Ui, s: &Session) {
         i.events = rest;
         mine
     });
+    if events.is_empty() {
+        return; // no lock to wait for
+    }
     if !mac {
         alt_as_meta(&mut events);
     }

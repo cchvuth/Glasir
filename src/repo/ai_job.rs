@@ -27,11 +27,6 @@ impl RepoTab {
                 Some(m) => m.output.clone(),
                 None => std::fs::read_to_string(self.dir.join(path)).unwrap_or_default(),
             },
-            // What the stash will hold: if the tree changes while Claude writes, the message would be wrong.
-            ai::Purpose::StashMessage => {
-                self.ai_draft = Some((self.stash_state(), String::new()));
-                String::new()
-            }
             _ => String::new(),
         };
         self.ai = Some(ai::start(ctx, self.ai_cfg.clone(), self.dir.clone(), p, draft));
@@ -76,10 +71,6 @@ impl RepoTab {
                 if !self.ai_cfg.enabled {
                     return;
                 }
-                if self.ai_draft.take().is_some_and(|(s, _)| s != self.stash_state()) {
-                    msgs.push(Msg { text: "The files changed while the message was written; stash again.".into(), error: true });
-                    return;
-                }
                 self.run(ctx, Op::new("Stash", &["stash", "push", "--include-untracked", "-m", &msg]));
             }
             (Some(Ok(())), ai::Purpose::CommitMessage { .. }) => self.ai = None,
@@ -96,17 +87,10 @@ impl RepoTab {
         }
     }
 
-    /// `git status` plus line counts: changes when files are edited, added or removed.
-    // ponytail: a same-size edit within a line isn't seen; hash `git diff HEAD` if that matters.
-    fn stash_state(&self) -> String {
-        let run = |a: &[&str]| crate::git::run(&self.dir, a).unwrap_or_default();
-        run(&["status", "--porcelain=v2", "-z", "--untracked-files=all"]) + &run(&["diff", "HEAD", "--numstat", "-z"])
-    }
-
     pub(super) fn cancel_ai(&mut self) {
         if let Some(j) = self.ai.take()
-            && matches!(j.purpose, ai::Purpose::CommitMessage { .. })
             && let Some((s, b)) = self.ai_draft.take()
+            && matches!(j.purpose, ai::Purpose::CommitMessage { .. })
         {
             (self.summary, self.body) = (s, b);
         }
