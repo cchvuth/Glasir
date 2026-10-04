@@ -183,8 +183,35 @@ fn pick_file(sel: &mut Vec<(bool, String)>, list: &[Change], staged: bool, i: us
     false
 }
 
-fn picked(sel: &[(bool, String)], staged: bool, path: &str) -> bool {
-    sel.iter().any(|(s, p)| *s == staged && p == path)
+/// The WIP selection resolved against the status, rebuilt only when either changes (a 10k-file
+/// select-all must not hash the whole selection every frame).
+struct SelCache {
+    key: (u64, usize, Option<(bool, String)>, Option<(bool, String)>),
+    paths: [std::collections::HashSet<String>; 2],
+    un: Vec<Change>,
+    st: Vec<Change>,
+}
+
+impl SelCache {
+    fn get(ui: &Ui, id: egui::Id, d: &RepoData, sel: &[(bool, String)]) -> Arc<Self> {
+        let key = (d.generation, sel.len(), sel.first().cloned(), sel.last().cloned());
+        if let Some(c) = ui.data(|x| x.get_temp::<Arc<Self>>(id)).filter(|c| c.key == key) {
+            return c;
+        }
+        let mut paths: [std::collections::HashSet<String>; 2] = Default::default();
+        for (s, p) in sel {
+            paths[*s as usize].insert(p.clone());
+        }
+        let pick = |list: &[Change], staged: bool| list.iter().filter(|c| paths[staged as usize].contains(&c.path)).cloned().collect();
+        let (un, st) = (pick(&d.status.unstaged, false), pick(&d.status.staged, true));
+        let c = Arc::new(Self { key, paths, un, st });
+        ui.data_mut(|x| x.insert_temp(id, c.clone()));
+        c
+    }
+
+    fn has(&self, staged: bool, path: &str) -> bool {
+        self.paths[staged as usize].contains(path)
+    }
 }
 
 /// The changes of `list` that are selected (`staged` picks the list), in one pass over both.
@@ -237,6 +264,7 @@ impl RepoTab {
         let open = self.diff.as_ref().map(|d| d.src.clone());
         let busy = self.busy().is_some();
         let head = s.head.as_deref().unwrap_or_default();
+        let sc = SelCache::get(ui, ui.id().with((&self.dir, "wipsel")), d, &self.file_sel);
 
         // A bisect has its own banner above the graph.
         // A guided split has its own banner (`split_banner`), shown for any selection.
@@ -509,7 +537,7 @@ impl RepoTab {
                 }
                 let mods = ui.input(|i| i.modifiers);
                 let mut clear = false;
-                let sel_un: Vec<Change> = selected(&self.file_sel, &s.unstaged, false);
+                let sel_un = &sc.un;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Unstaged files  {}", s.unstaged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -557,7 +585,7 @@ impl RepoTab {
                         }
                     };
                     let src = DiffSrc::Worktree { change: c.clone(), staged: false };
-                    let in_sel = picked(&self.file_sel, false, &c.path);
+                    let in_sel = sc.has(false, &c.path);
                     let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None, depth);
                     let stage_one = || stage_files_op("Stage", std::slice::from_ref(c)).map(Action::Git);
                     if !busy && row_button(ui, &resp, icon::PLUS, "Stage") {
@@ -616,7 +644,7 @@ impl RepoTab {
                     false
                 });
                 ui.add_space(6.0);
-                let sel_st: Vec<Change> = selected(&self.file_sel, &s.staged, true);
+                let sel_st = &sc.st;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Staged files  {}", s.staged.len())).small().strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -654,7 +682,7 @@ impl RepoTab {
                         }
                     };
                     let src = DiffSrc::Worktree { change: c.clone(), staged: true };
-                    let in_sel = picked(&self.file_sel, true, &c.path);
+                    let in_sel = sc.has(true, &c.path);
                     let resp = file_row(ui, c, open.as_ref() == Some(&src) || in_sel, d.lfs.files.contains(&c.path), None, depth);
                     if !busy && row_button(ui, &resp, icon::MINUS, "Unstage") {
                         acts.push(Action::Git(crate::repo::unstage_op(c)));

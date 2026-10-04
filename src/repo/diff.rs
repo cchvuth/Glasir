@@ -23,6 +23,13 @@ pub struct DiffState {
     task: Option<Task<Res<Loaded>>>,
     /// Picked change lines `(hunk, line)` for partial staging.
     pub picked: BTreeSet<(usize, usize)>,
+    /// Changes whenever `file` is replaced: keys the view's cached row layout.
+    pub stamp: u64,
+}
+
+fn stamp() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl DiffState {
@@ -71,7 +78,7 @@ impl RepoTab {
             Some(d) => (d.file, d.hl, d.image, d.opts, d.picked),
             None => (None, vec![], None, o, BTreeSet::new()),
         };
-        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked });
+        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked, stamp: stamp() });
     }
 
     pub(super) fn poll_diff(&mut self) {
@@ -86,12 +93,14 @@ impl RepoTab {
                         d.picked.clear();
                     }
                     d.file = Some(Ok(f));
+                    d.stamp = stamp();
                     d.hl = hl;
                     d.image = image;
                 }
                 Err(e) => {
                     d.picked.clear();
                     d.file = Some(Err(e));
+                    d.stamp = stamp();
                 }
             }
         }

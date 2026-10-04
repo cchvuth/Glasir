@@ -241,14 +241,14 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                 acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d)));
             }
         });
-        let mut tags: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Tag && matches(f, &r.name)).collect();
-        tags.sort_by_key(|r| std::cmp::Reverse(r.date));
+        let mut tags: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Tag && matches(f, &d.refs[i].name)).collect();
+        tags.sort_by_key(|&i| std::cmp::Reverse(d.refs[i].date));
         section(ui, "TAGS", tags.len(), |ui| {
-            let (roots, nested): (Vec<_>, Vec<_>) = tags.iter().partition(|r| !r.name.contains('/'));
-            for r in roots {
-                tag_row(ui, d, r, &r.name, acts);
+            let (roots, mut nested): (Vec<usize>, Vec<usize>) = tags.iter().partition(|&&i| !d.refs[i].name.contains('/'));
+            for i in roots {
+                tag_row(ui, d, &d.refs[i], &d.refs[i].name, acts);
             }
-            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| nested.iter().any(|r| std::ptr::eq(*r, &d.refs[i]))).collect();
+            nested.sort_unstable();
             folders::show(ui, d, ui.id().with((dir, "tags")), &nested, 0, f, None, |ui, r, name| tag_row(ui, d, r, name, acts));
         });
         worktrees::list(ui, d, dir, f, acts);

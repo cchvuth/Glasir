@@ -66,6 +66,9 @@ pub const LFS_MISSING: &str = "This repository uses Git LFS, but git-lfs is not 
 
 pub const PAGE: usize = 1000;
 
+/// A commit selected within this long of the previous one (key repeat) waits for the selection to rest before its details load.
+const PICK_REST: std::time::Duration = std::time::Duration::from_millis(120);
+
 pub struct RepoTab {
     pub dir: PathBuf,
     pub name: String,
@@ -81,6 +84,10 @@ pub struct RepoTab {
     info_task: Option<Task<Res<CommitInfo>>>,
     /// The selection moved while `info_task` ran (holding ↓): load the current one when it ends.
     info_next: bool,
+    /// When the last commit was selected, and when a deferred lookup for the current one is due:
+    /// a held ↓ would otherwise start git for every row it passes.
+    last_pick: Option<std::time::Instant>,
+    info_due: Option<std::time::Instant>,
     /// Line counts for `info`'s commit (its id), merged in when ready.
     stats_task: Option<Task<(String, git::Stats)>>,
     pub diff: Option<DiffState>,
@@ -210,6 +217,8 @@ impl RepoTab {
             info_gen: 0,
             info_task: None,
             info_next: false,
+            last_pick: None,
+            info_due: None,
             stats_task: None,
             diff: None,
             diff_opts: Default::default(),
@@ -454,9 +463,16 @@ impl RepoTab {
             self.conflicts = c;
         }
         msgs.extend(Task::poll(&mut self.verify_task));
+        if self.info_due.is_some_and(|t| t <= std::time::Instant::now()) && self.info_task.is_none() {
+            self.info_due = None;
+            if let Some(Sel::Commit(id)) = self.sel.clone() {
+                self.load_info(ctx, id);
+            }
+        }
         if let Some(r) = Task::poll(&mut self.info_task) {
             if let (true, Some(Sel::Commit(id))) = (std::mem::take(&mut self.info_next), self.sel.clone()) {
-                self.load_info(ctx, id); // the selection moved on: this result is stale
+                let fast = self.picked_lately();
+                self.load_info_soon(ctx, id, fast); // the selection moved on: this result is stale
             } else {
                 if let Ok(i) = &r {
                     let (dir, id, base) = (self.dir.clone(), i.id.clone(), i.parents.first().cloned());
@@ -498,22 +514,40 @@ impl RepoTab {
             match sel.clone() {
                 Sel::Commit(id) => {
                     self.info = None;
-                    // One lookup at a time: a held key would otherwise start git for every row passed.
+                    // One lookup at a time, and none while keys repeat (see `load_info_soon`).
                     if self.info_task.is_some() {
                         self.info_next = true;
                     } else {
-                        self.load_info(ctx, id);
+                        let fast = self.picked_lately();
+                        self.load_info_soon(ctx, id, fast);
                     }
+                    self.last_pick = Some(std::time::Instant::now());
                 }
                 Sel::Compare { from, to, three_dot } => {
                     self.info = None;
                     self.diff = None;
                     self.compare_query(ctx, from, to, three_dot);
                 }
-                Sel::Wip => {}
+                Sel::Wip => self.info_due = None,
             }
         }
         self.sel = Some(sel);
+    }
+
+    /// Loads `id`'s details now, or (`fast`: the selection moved again just before, key repeat)
+    /// once it has rested for `PICK_REST`: only the row the arrow stops on gets a lookup.
+    fn load_info_soon(&mut self, ctx: &egui::Context, id: String, fast: bool) {
+        if fast {
+            self.info_due = Some(std::time::Instant::now() + PICK_REST);
+            ctx.request_repaint_after(PICK_REST);
+        } else {
+            self.info_due = None;
+            self.load_info(ctx, id);
+        }
+    }
+
+    fn picked_lately(&self) -> bool {
+        self.last_pick.is_some_and(|t| t.elapsed() < PICK_REST)
     }
 
     fn load_info(&mut self, ctx: &egui::Context, id: String) {
@@ -547,6 +581,7 @@ impl RepoTab {
     fn compare_query(&mut self, ctx: &egui::Context, from: String, to: String, three_dot: bool) {
         let (dir, label) = (self.dir.clone(), if to == git::WORKTREE { format!("Working tree compared with {from}") } else { format!("{to} compared with {from}") });
         self.info_next = false;
+        self.info_due = None;
         self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
     }
 
@@ -993,6 +1028,32 @@ mod tests {
         commit(&dir, "c", "c\n");
         t.apply(&ctx, Action::Select(sel));
         wait(&ctx, &mut t, |t| files(t) == Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Holding ↓ passes many commits: only the one the selection rests on gets its details loaded.
+    #[test]
+    fn key_repeat_selection_loads_only_the_last_commit() {
+        let dir = scratch("keynav");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for i in 0..12 {
+            commit(&dir, "f", &format!("v{i}\n"));
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let ids: Vec<String> = t.data.as_ref().unwrap().log.iter().map(|c| c.id.clone()).collect();
+        let shows = || git::LOG.lock().unwrap().iter().filter(|l| l.cwd == dir && l.args.iter().any(|a| a == "show")).count();
+        let before = shows();
+        for id in &ids[1..] {
+            t.select(&ctx, Sel::Commit(id.clone()));
+            t.poll(&ctx, &mut vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let last = ids[ids.len() - 1].clone();
+        wait(&ctx, &mut t, |t| t.info.as_ref().is_some_and(|i| i.as_ref().is_ok_and(|i| i.id == last)));
+        assert!(shows() - before <= 3, "{} lookups for {} rows", shows() - before, ids.len() - 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

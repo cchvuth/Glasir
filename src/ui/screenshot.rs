@@ -146,8 +146,8 @@ impl App {
                             t.apply(&ctx.clone(), crate::repo::Action::Multi(ids));
                         }
                     }
-                    // `diff:<path>` (unstaged or untracked), `diff-staged:<path>`, `diff-ws:<path>` with whitespace ignored and whole-file context.
-                    q if q.starts_with("diff:") || q.starts_with("diff-ws:") || q.starts_with("diff-staged:") => {
+                    // `diff:<path>` (unstaged or untracked), `diff-staged:<path>`, `diff-ws:<path>` with whitespace ignored and whole-file context, `diff-all:<path>` a large diff loaded anyway.
+                    q if q.starts_with("diff:") || q.starts_with("diff-ws:") || q.starts_with("diff-all:") || q.starts_with("diff-staged:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let (mode, path) = q.split_once(':').unwrap();
                             if mode == "diff-ws" {
@@ -156,6 +156,9 @@ impl App {
                             let code = t.data.as_ref().and_then(|d| d.status.unstaged.iter().find(|c| c.path == path)).map_or('M', |c| c.code);
                             let change = git::Change { path: path.into(), old_path: None, code };
                             t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: mode == "diff-staged" }));
+                            if mode == "diff-all" {
+                                t.apply(&ctx.clone(), crate::repo::Action::DiffOpts(git::DiffOpts { all: true, ..t.diff_opts }));
+                            }
                         }
                     }
                     // `edit:<path>`: the in-place editor on an unstaged file (`editask:` with unsaved edits and the dialog).
@@ -441,6 +444,12 @@ impl App {
                             self.s.aliases.insert(t.dir.clone(), "Work".into());
                         }
                         self.active = a;
+                    }
+                    // Every unstaged file selected (the select-all cost of a huge WIP list).
+                    "select-all" => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.file_sel = t.data.as_ref().map(|d| d.status.unstaged.iter().map(|c| (false, c.path.clone())).collect()).unwrap_or_default();
+                        }
                     }
                     "deselect" => {
                         if let Some(t) = self.tabs.get_mut(self.active) {

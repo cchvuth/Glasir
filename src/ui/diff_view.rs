@@ -60,6 +60,34 @@ fn rows(f: &FileDiff, split: bool) -> Vec<Row> {
     rows
 }
 
+/// What a diff's rows need every frame, built once per loaded file and layout.
+struct Layout {
+    key: (u64, bool),
+    rows: Vec<Row>,
+    kinds: Vec<u8>,
+    starts: Vec<usize>,
+    pairs: Vec<Vec<Option<usize>>>,
+    max_chars: usize,
+}
+
+impl Layout {
+    /// Cached in egui memory under `stamp` (changes whenever the file is reloaded) and `split`.
+    fn get(ui: &Ui, stamp: u64, f: Option<&FileDiff>, split: bool) -> std::sync::Arc<Self> {
+        let (id, key) = (ui.id().with("diff_layout"), (stamp, split));
+        if let Some(c) = ui.data(|m| m.get_temp::<std::sync::Arc<Self>>(id)).filter(|c| c.key == key) {
+            return c;
+        }
+        let rows = f.map_or(vec![], |f| rows(f, split));
+        let kinds: Vec<u8> = f.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
+        let starts = change_starts(&kinds);
+        let pairs = f.map_or(vec![], |f| f.hunks.iter().map(partners).collect());
+        let max_chars = f.map_or(0, |f| f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.text.len()).max().unwrap_or(0));
+        let c = std::sync::Arc::new(Self { key, rows, kinds, starts, pairs, max_chars });
+        ui.data_mut(|m| m.insert_temp(id, c.clone()));
+        c
+    }
+}
+
 /// A row's change: `+`, `-`, `~` (split row with both) or 0.
 fn row_kind(f: &FileDiff, r: &Row) -> u8 {
     let k = |hi: usize, li: Option<usize>| li.map_or(b' ', |li| f.hunks[hi].lines[li].kind);
@@ -201,9 +229,8 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let wt_compare = matches!(&ds.src, DiffSrc::Commit { id, .. } if id == crate::git::WORKTREE);
     let partial = !lossy && !ds.loading() && if worktree { untracked || !ds.opts.ignore_ws } else { !ds.opts.ignore_ws && !wt_compare };
     let file = ds.file.as_ref().and_then(|f| f.as_ref().ok());
-    let rows = file.map_or(vec![], |f| rows(f, *split));
-    let kinds: Vec<u8> = file.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
-    let starts = change_starts(&kinds);
+    let lay = Layout::get(ui, ds.stamp, file, *split);
+    let Layout { rows, kinds, starts, pairs, max_chars, .. } = &*lay;
     // Scroll offset and viewport height of the last frame.
     let mem = ui.id().with("diff_pos");
     let (first, view_h) = ui.data(|m| m.get_temp::<(usize, f32)>(mem)).unwrap_or_default();
@@ -322,7 +349,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.y = 30.0; // the glass groups draw beyond their row height
-            view_controls(ui, ds, split, wrap, worktree && change.code != '?', &starts, anchor, &mut nav, acts)
+            view_controls(ui, ds, split, wrap, worktree && change.code != '?', starts, anchor, &mut nav, acts)
         });
     }
     ui.add_space(6.0);
@@ -387,14 +414,27 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let cols = |text_w: f32| if *wrap { ((text_w / cw) as usize).max(1) } else { usize::MAX };
     let (cols_u, cols_s) = (cols(body.width() - 14.0 - NUM_W * 2.0 - 16.0), cols(body.width() / 2.0 - 7.0 - NUM_W - 16.0));
     let n_lines = |hi: usize, li: usize, cols| wrapped(|| crate::highlight::display_len(&f.hunks[hi].lines[li].text), cols);
-    let tops = tops(
-        LINE_H,
-        rows.iter().map(|r| match *r {
-            Row::Hunk(_) => 1,
-            Row::Line(hi, li) => n_lines(hi, li, cols_u),
-            Row::Pair(hi, a, b) => [a, b].into_iter().flatten().map(|li| n_lines(hi, li, cols_s)).max().unwrap_or(1),
-        }),
-    );
+    let tops_id = ui.id().with("diff_tops");
+    let tops_key = (ds.stamp, *split, cols_u, cols_s);
+    let tops = match ui.data(|m| m.get_temp::<std::sync::Arc<((u64, bool, usize, usize), Vec<f32>)>>(tops_id)).filter(|t| t.0 == tops_key) {
+        Some(t) => t,
+        None => {
+            let t = std::sync::Arc::new((
+                tops_key,
+                tops(
+                    LINE_H,
+                    rows.iter().map(|r| match *r {
+                        Row::Hunk(_) => 1,
+                        Row::Line(hi, li) => n_lines(hi, li, cols_u),
+                        Row::Pair(hi, a, b) => [a, b].into_iter().flatten().map(|li| n_lines(hi, li, cols_s)).max().unwrap_or(1),
+                    }),
+                ),
+            ));
+            ui.data_mut(|m| m.insert_temp(tops_id, t.clone()));
+            t
+        }
+    };
+    let tops = &tops.1;
     let last = rows.len() - 1;
     // Fractional row at a scroll offset, for the minimap.
     let row_f = |y: f32| {
@@ -405,15 +445,13 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let row_at = |y: f32| (((y - rail.top()) / per) as usize).min(last);
     let rail_resp = ui.interact(rail, mem.with("rail"), Sense::click_and_drag()).on_hover_text("Changes in this file: click to jump");
     let mut target = rail_resp.interact_pointer_pos().filter(|_| rail_resp.clicked() || rail_resp.dragged()).map(|p| tops[row_at(p.y)] - view_h / 2.0);
-    if let Some(s) = nav.and_then(|fwd| step(&starts, anchor, fwd)) {
+    if let Some(s) = nav.and_then(|fwd| step(starts, anchor, fwd)) {
         target = Some(tops[s.saturating_sub(LEAD)]);
     }
-    let pairs: Vec<Vec<Option<usize>>> = f.hunks.iter().map(partners).collect();
     let span = |hi: usize, li: usize| {
         let other = pairs[hi][li]?;
         changed_span(&expand(&f.hunks[hi].lines[li].text), &expand(&f.hunks[hi].lines[other].text))
     };
-    let max_chars = f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.text.len()).max().unwrap_or(0);
     let mono = FontId::monospace(12.5);
     let out = ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
@@ -422,8 +460,8 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             area = area.vertical_scroll_offset(t.max(0.0));
         }
         area.show_viewport(ui, |ui, view| {
-            let range = visible(&tops, view.min.y, view.max.y);
-            let content_w = if *split || *wrap { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + max_chars as f32 * CHAR_W).max(ui.available_width()) };
+            let range = visible(tops, view.min.y, view.max.y);
+            let content_w = if *split || *wrap { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + *max_chars as f32 * CHAR_W).max(ui.available_width()) };
             ui.set_min_size(vec2(content_w, tops[last + 1]));
             let left = ui.max_rect().left();
             let top = ui.max_rect().top();
@@ -474,7 +512,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                         let resp = ui.interact(rect, ui.id().with(("dl", r)), if pick { Sense::click_and_drag() } else { Sense::click() });
                         // Commit diffs pick any line, for "History of these lines".
                         if pick {
-                            pick_lines(ui, mem, &mut ds.picked, &rows, &tops, f, &resp, r, None, (hi, li));
+                            pick_lines(ui, mem, &mut ds.picked, rows, tops, f, &resp, r, None, (hi, li));
                         }
                         resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
@@ -494,7 +532,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                             let pick = l.kind != b'\\' && ((partial && l.kind != b' ') || !worktree);
                             let resp = ui.interact(side, ui.id().with(("sl", r, old)), if pick { Sense::click_and_drag() } else { Sense::click() });
                             if pick {
-                                pick_lines(ui, mem, &mut ds.picked, &rows, &tops, f, &resp, r, Some(old), (hi, li));
+                                pick_lines(ui, mem, &mut ds.picked, rows, tops, f, &resp, r, Some(old), (hi, li));
                             }
                             resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                             let no = if old { l.old } else { l.new };
@@ -509,7 +547,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     });
     let (off, view_h) = (out.inner.state.offset.y, out.inner.inner_rect.height());
     ui.data_mut(|m| m.insert_temp(mem, (row_f(off) as usize, view_h)));
-    minimap(ui, rail, &kinds, row_f(off), row_f(off + view_h));
+    minimap(ui, rail, kinds, row_f(off), row_f(off + view_h));
 }
 
 /// Change lines of a row; a split row gives only the `old` (left) or new side.
