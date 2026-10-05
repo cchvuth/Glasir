@@ -36,7 +36,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
         let n = s.found.len();
         let more = if s.running() { "…" } else if n >= crate::repo::MAX_HITS { "+" } else { "" };
         let label = match &s.error {
-            _ if s.query.trim().is_empty() => String::new(),
+            _ if !s.active => String::new(),
             Some(_) => "Invalid search".into(),
             None if n == 0 && s.running() => "Searching…".into(),
             None if n == 0 => "No matches".into(),

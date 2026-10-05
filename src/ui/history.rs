@@ -79,9 +79,19 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
     };
     match data {
         Data::History(entries) => {
-            egui::ScrollArea::vertical().id_salt("file_history").auto_shrink(false).show(ui, |ui| {
-                for (i, e) in entries.iter().enumerate() {
-                    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+            const ROW: f32 = 46.0;
+            // Rows as tall as their entry (a line-range entry carries its diff).
+            let tops = tops(1.0, entries.iter().map(|e| hunk_height(&e.hunks) as usize + ROW as usize));
+            let more = matches!(fv.mode, Mode::History) && entries.len() >= fv.limit;
+            let mut load_more = false;
+            egui::ScrollArea::vertical().id_salt("file_history").auto_shrink(false).show_viewport(ui, |ui, view| {
+                ui.set_min_height(tops[entries.len()] + if more { 40.0 } else { 0.0 });
+                let (left, top, width) = (ui.max_rect().left(), ui.max_rect().top(), ui.available_width());
+                for i in visible(&tops, view.min.y, view.max.y) {
+                    let e = &entries[i];
+                    let at = top + tops[i];
+                    let rect = Rect::from_min_size(pos2(left, at), vec2(width, ROW));
+                    let r = ui.interact(rect, ui.id().with(("entry", i)), Sense::click());
                     if fv.sel == Some(i) {
                         ui.painter().rect_filled(rect, 10.0, theme::selection(ui));
                     } else if r.hovered() {
@@ -94,8 +104,9 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     p.text(pos2(rect.left() + 42.0, rect.top() + 14.0), Align2::LEFT_CENTER, &e.summary, FontId::proportional(13.5), theme::text(ui));
                     let meta = format!("{}  ·  {}  ·  {}", &e.id[..e.id.len().min(7)], e.author, relative_time(e.time, &e.date));
                     p.text(pos2(rect.left() + 42.0, rect.top() + 33.0), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme::dim(ui));
-                    if e.change.old_path.is_some() && !folder {
-                        p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{}  renamed", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::REN);
+                    if !folder && e.change.old_path.is_some() {
+                        let word = if e.change.code == 'C' { "copied" } else { "renamed" };
+                        p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{}  {word}", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::REN);
                     }
                     if r.clicked() {
                         fv.sel = Some(i);
@@ -111,27 +122,40 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                             }
                         });
                     }
-                    hunks(ui, &e.hunks);
+                    hunks(ui, &e.hunks, Rect::from_min_size(pos2(left, at + ROW), vec2(width, tops[i + 1] - tops[i] - ROW)));
                 }
                 if entries.is_empty() {
                     ui.label(RichText::new("No history (not committed yet).").color(theme::dim(ui)));
+                } else if more {
+                    let at = pos2(left + 12.0, top + tops[entries.len()] + 6.0);
+                    load_more = ui.put(Rect::from_min_size(at, vec2(160.0, 28.0)), egui::Button::new(format!("Load {} more commits", fv.limit * 3))).clicked();
                 }
             });
+            if load_more {
+                fv.more(ui.ctx());
+            }
         }
         Data::Blame(b) => blame_view(ui, b, *wrap, acts),
     }
     close
 }
 
-/// A line-range history entry's change, under its row.
-fn hunks(ui: &mut Ui, hunks: &[crate::git::Hunk]) {
-    const H: f32 = 16.0;
-    let lines = || hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind != b'\\');
-    let n = lines().count();
-    if n == 0 {
+/// Height of a line-range history entry's change under its row (0 for none).
+fn hunk_height(hunks: &[crate::git::Hunk]) -> f32 {
+    let n = hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind != b'\\').count();
+    if n == 0 { 0.0 } else { n as f32 * HUNK_H + 14.0 }
+}
+
+const HUNK_H: f32 = 16.0;
+
+/// A line-range history entry's change, in `rect` under its row.
+fn hunks(ui: &mut Ui, hunks: &[crate::git::Hunk], rect: Rect) {
+    const H: f32 = HUNK_H;
+    if rect.height() == 0.0 {
         return;
     }
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), n as f32 * H + 8.0), Sense::hover());
+    let lines = || hunks.iter().flat_map(|h| &h.lines).filter(|l| l.kind != b'\\');
+    let rect = Rect::from_min_size(rect.min, vec2(rect.width(), rect.height() - 6.0));
     let p = ui.painter().with_clip_rect(rect);
     p.rect_filled(rect.shrink2(vec2(8.0, 0.0)), 6.0, theme::faint(ui));
     // Only the lines in view: a big range is thousands of them per entry.
@@ -151,7 +175,6 @@ fn hunks(ui: &mut Ui, hunks: &[crate::git::Hunk]) {
         let text = format!("{sign} {}", crate::highlight::display(&l.text));
         p.text(pos2(row.left() + 42.0, row.center().y), Align2::LEFT_CENTER, text, FontId::monospace(11.5), theme::text(ui));
     }
-    ui.add_space(6.0);
 }
 
 fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
@@ -162,15 +185,26 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         // Wrapped: rows as tall as their lines (the scrollbar's width is left out).
         let cols = if wrap { (((ui.available_width() - 406.0) / cw) as usize).max(1) } else { usize::MAX };
-        let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
+        // Measuring every line is O(file): once per file and column count, not per frame.
+        let key = (b.lines.as_ptr() as usize, b.lines.len(), cols);
+        let id = egui::Id::new("blame_tops");
+        let cached = ui.data(|d| d.get_temp::<std::sync::Arc<((usize, usize, usize), Vec<f32>, f32)>>(id)).filter(|c| c.0 == key);
+        let cached = cached.unwrap_or_else(|| {
+            let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
+            let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0;
+            let c = std::sync::Arc::new((key, tops, width));
+            ui.data_mut(|d| d.insert_temp(id, c.clone()));
+            c
+        });
+        let (tops, width) = (&cached.1, cached.2);
         egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_viewport(ui, |ui, view| {
-            let max = if wrap { 0.0 } else { b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0 };
+            let max = if wrap { 0.0 } else { width };
             ui.set_min_size(vec2(max.max(ui.available_width()), tops[b.lines.len()]));
             let max = max.max(ui.available_width());
             let left = ui.max_rect().left();
             let top = ui.max_rect().top();
             let p = ui.painter().clone();
-            for r in visible(&tops, view.min.y, view.max.y) {
+            for r in visible(tops, view.min.y, view.max.y) {
                 let (ci, _, text) = &b.lines[r];
                 let c = &b.commits[*ci];
                 let rect = Rect::from_min_size(pos2(left, top + tops[r]), vec2(max, tops[r + 1] - tops[r]));

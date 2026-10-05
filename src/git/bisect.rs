@@ -46,18 +46,27 @@ fn parse_refs(out: &str) -> Bisect {
     b
 }
 
-fn var(vars: &str, key: &str) -> usize {
-    vars.lines().find_map(|l| l.strip_prefix(key)?.strip_prefix('=')?.trim_matches('\'').parse().ok()).unwrap_or(0)
+/// git's own estimate (`estimate_bisect_steps`), from the number of commits in range.
+fn steps(all: usize) -> usize {
+    if all < 3 {
+        return 0;
+    }
+    let (n, e) = (all.ilog2() as usize, 1 << all.ilog2());
+    if e < 3 * (all - e) { n } else { n - 1 }
 }
 
-// Skipped commits still count in `left`/`steps`; good enough for an estimate.
-pub fn bisect(dir: &Path) -> Res<Bisect> {
+// Skipped commits still count in `left`/`steps`; good enough for an estimate. `prev`: the
+// last result, reused while the marks are the same (counting a huge range takes seconds).
+pub fn bisect(dir: &Path, prev: Option<&Bisect>) -> Res<Bisect> {
     let mut b = parse_refs(&run(dir, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/bisect"])?);
+    if let Some(p) = prev.filter(|p| (&p.bad, &p.good, &p.skip) == (&b.bad, &b.good, &b.skip)) {
+        return Ok(p.clone());
+    }
     if let (Some(bad), false) = (&b.bad, b.good.is_empty()) {
-        let mut a = vec!["rev-list", "--bisect-vars", bad.as_str(), "--not"];
+        let mut a = vec!["rev-list", "--count", bad.as_str(), "--not"];
         a.extend(b.good.iter().map(String::as_str));
-        let vars = run(dir, &a)?;
-        (b.left, b.steps) = (var(&vars, "bisect_all"), var(&vars, "bisect_steps"));
+        b.left = run(dir, &a)?.trim().parse().unwrap_or(0);
+        b.steps = steps(b.left);
     }
     Ok(b)
 }
@@ -71,8 +80,8 @@ mod tests {
         let b = parse_refs("refs/bisect/bad b1\nrefs/bisect/good-g1 g1\nrefs/bisect/good-g2 g2\nrefs/bisect/skip-s1 s1\n");
         assert_eq!((b.bad.as_deref(), b.good.len(), b.skip.as_slice()), (Some("b1"), 2, &["s1".to_owned()][..]));
         assert_eq!((b.mark("b1"), b.mark("g2"), b.mark("s1"), b.mark("x")), (Some("bad"), Some("good"), Some("skip"), None));
-        let vars = "bisect_rev='abc'\nbisect_nr=9\nbisect_all=19\nbisect_steps=3\n";
-        assert_eq!((var(vars, "bisect_all"), var(vars, "bisect_steps"), var(vars, "nope")), (19, 3, 0));
+        // git's own numbers: all=19 -> 3 steps (`--bisect-vars`).
+        assert_eq!([0, 1, 2, 3, 4, 5, 6, 7, 8, 19, 46013].map(steps), [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 15]);
         assert_eq!(b.found(), None);
         assert_eq!(Bisect { left: 1, ..b }.found(), Some("b1"));
     }

@@ -11,6 +11,8 @@ use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 /// More hits than this stop the search (each is a loaded commit).
 pub const MAX_HITS: usize = 10_000;
+/// Up to this many hits the filtered graph is built on the UI thread.
+const SYNC_HITS: usize = 500;
 
 /// A parsed query: `git log` options, literal pathspecs and the free text matched here
 /// against message, author and SHA.
@@ -139,7 +141,17 @@ pub struct Search {
     run: usize,
     log_ptr: usize,
     refs_fp: u64,
-    rows_key: (usize, bool, usize, usize),
+    /// (log, wip, run) the `hits` were computed for, and how many of `found` they cover.
+    rows_key: (usize, bool, usize),
+    rows_n: usize,
+    /// The query parsed to something git can search (a half-typed `author:` does not).
+    pub(crate) active: bool,
+    /// A refs-only rerun is running: `found` is the previous run's until the new one delivers.
+    stale: bool,
+    /// (query, case) of the previous run.
+    last: (String, bool),
+    /// The hit to be current again once the rerun finds it.
+    want: Option<String>,
     /// (run, data generation, hits) the filtered graph was built from, and when.
     filtered_key: (usize, u64, usize),
     filtered_at: std::time::Instant,
@@ -169,6 +181,11 @@ impl Search {
             log_ptr: 0,
             refs_fp: 0,
             rows_key: Default::default(),
+            rows_n: 0,
+            active: false,
+            stale: false,
+            last: Default::default(),
+            want: None,
             filtered_key: Default::default(),
             filtered_at: std::time::Instant::now(),
             building: None,
@@ -217,8 +234,18 @@ impl Search {
             self.start(ctx, d);
         }
         while let Some(rx) = &self.rx {
-            match rx.try_recv() {
-                Ok(Ok(c)) => self.found.push(c),
+            let r = rx.try_recv();
+            if self.stale && !matches!(r, Err(TryRecvError::Empty)) {
+                // The rerun's first word replaces the previous results.
+                (self.found, self.cur, self.stale) = (vec![], 0, false);
+            }
+            match r {
+                Ok(Ok(c)) => {
+                    if self.want.as_deref() == Some(c.id.as_str()) {
+                        self.cur = self.found.len();
+                    }
+                    self.found.push(c)
+                }
                 Ok(Err(e)) => self.error = Some(e),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => self.rx = None,
@@ -232,9 +259,16 @@ impl Search {
         if !self.filter || self.found.is_empty() {
             (self.filtered, self.building) = (None, None);
         } else if self.filtered.is_none() {
-            // Turning the filter on (or a new query's first hit) shows it in the same frame.
-            (self.filtered_key, self.filtered_at, self.building) = (fkey, std::time::Instant::now(), None);
-            self.filtered = Some(Arc::new(self.filtered_data(d)()));
+            // Turning the filter on (or a new query's first hit): a few hits show in the same
+            // frame, many are built off the UI thread (the full graph shows until then).
+            if self.found.len() <= SYNC_HITS {
+                (self.filtered_key, self.filtered_at, self.building) = (fkey, std::time::Instant::now(), None);
+                self.filtered = Some(Arc::new(self.filtered_data(d)()));
+            } else if self.building.is_none() {
+                self.filtered_at = std::time::Instant::now();
+                let job = self.filtered_data(d);
+                self.building = Some(Task::spawn(ctx, move || (fkey, job())));
+            }
         } else if fkey != self.filtered_key && self.building.is_none() {
             // A rebuild is O(hits), off the UI thread: while they stream in, only when their
             // number doubled or a moment passed; the end of the stream brings it up to date.
@@ -251,11 +285,19 @@ impl Search {
 
     fn start(&mut self, ctx: &egui::Context, d: &RepoData) {
         self.cancel.cancel();
-        (self.rx, self.cancel, self.error, self.cur, self.filtered, self.building) = (None, Default::default(), None, 0, None, None);
-        self.found.clear();
-        self.run += 1;
         let q = parse(&self.key.0, self.case);
-        if q.is_empty() || d.log.is_empty() {
+        self.active = !q.is_empty();
+        // Only the refs moved (a fetch): the old hits stay shown until the rerun delivers.
+        let rerun = self.active && !d.log.is_empty() && !self.found.is_empty() && self.key.0 == self.last.0 && self.case == self.last.1;
+        self.last = (self.key.0.clone(), self.case);
+        self.want = rerun.then(|| self.found.get(self.cur).map(|c| c.id.clone())).flatten();
+        (self.rx, self.cancel, self.error, self.stale) = (None, Default::default(), None, rerun);
+        self.run += 1;
+        if !rerun {
+            (self.cur, self.filtered, self.building) = (0, None, None);
+            self.found.clear();
+        }
+        if !self.active || d.log.is_empty() {
             return;
         }
         let fmt = format!("{}%x1f%B", git::LOG_FORMAT);
@@ -309,10 +351,17 @@ impl Search {
 
     /// Recomputes `hits` for the graph being drawn (the full or the filtered history).
     pub(crate) fn rows(&mut self, d: &RepoData) {
-        let key = (Arc::as_ptr(&d.log) as usize, d.wip, self.run, self.found.len());
-        if key != self.rows_key {
-            self.rows_key = key;
-            self.hits = self.found.iter().filter_map(|c| d.row_of.get(&c.id).copied()).collect();
+        let key = (Arc::as_ptr(&d.log) as usize, d.wip, self.run);
+        if key != self.rows_key || self.rows_n > self.found.len() {
+            (self.rows_key, self.rows_n) = (key, 0);
+            self.hits.clear();
+        }
+        // `found` only appends within a run: look up just the new hits.
+        let new = self.found[self.rows_n..].iter().filter_map(|c| d.row_of.get(&c.id).copied());
+        let before = self.hits.len();
+        self.hits.extend(new);
+        self.rows_n = self.found.len();
+        if self.hits.len() != before {
             self.hits.sort_unstable();
         }
     }
@@ -339,7 +388,7 @@ impl Search {
     }
 
     pub(crate) fn dims(&self, r: usize) -> bool {
-        !self.query.trim().is_empty() && self.hits.binary_search(&r).is_err()
+        self.active && self.hits.binary_search(&r).is_err()
     }
 }
 
@@ -589,6 +638,61 @@ mod tests {
         sh(&dir, &["switch", "-q", "--orphan", "pages"]);
         let d = load_all(&dir, 100, View::default()).unwrap();
         assert_eq!(search(&dir, &d, "main"), ["On main"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn half_typed_operator_dims_nothing() {
+        let dir = scratch("search-half");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let mut s = Search::open(dir.clone());
+        s.query = "author:".into();
+        s.poll(&egui::Context::default(), &d);
+        assert!(!s.dims(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ref_move_keeps_results_on_screen() {
+        let dir = scratch("search-refmove");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for m in ["needle 1", "other", "needle 2"] {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let mut s = finished(&dir, &d, "needle", true);
+        s.cur = 1;
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let d2 = load_all(&dir, 100, View::default()).unwrap();
+        s.poll(&egui::Context::default(), &d2);
+        assert!(s.filtered.is_some() && s.found.len() == 2 && s.cur == 1, "old results stay until the new run delivers");
+        settle(&mut s, &d2);
+        crate::repo::testutil::wait_for("the rerun", || {
+            s.poll(&egui::Context::default(), &d2);
+            !s.running()
+        });
+        assert_eq!((s.found.len(), s.cur), (2, 1), "same current hit by SHA");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn many_hits_build_the_filter_off_thread() {
+        let dir = scratch("search-bigfilter");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let mut s = Search::open(dir.clone());
+        s.poll(&egui::Context::default(), &d);
+        (s.found, s.filter) = (vec![d.log[0].clone(); SYNC_HITS + 1], true);
+        s.poll(&egui::Context::default(), &d);
+        assert!(s.filtered.is_none() && s.building.is_some());
+        settle(&mut s, &d);
+        assert!(s.filtered.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

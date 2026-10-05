@@ -60,6 +60,8 @@ pub struct FileView {
     pub data: Option<Res<Data>>,
     task: Option<Task<Res<Data>>>,
     pub sel: Option<usize>,
+    /// Most commits a file or folder history lists (more on request: a big folder takes seconds).
+    pub limit: usize,
     dir: PathBuf,
     /// Earlier / later (path, mode) views for Back and Forward.
     pub back: Vec<(String, Mode)>,
@@ -68,16 +70,19 @@ pub struct FileView {
 
 impl FileView {
     pub fn open(ctx: &egui::Context, dir: &Path, path: &str, mode: Mode) -> Self {
-        let mut fv = FileView { path: path.into(), mode, data: None, task: None, sel: None, dir: dir.into(), back: vec![], fwd: vec![] };
-        fv.load(ctx);
+        let mut fv = FileView { path: path.into(), mode, data: None, task: None, sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
+        fv.load(ctx, false);
         fv
     }
 
-    fn load(&mut self, ctx: &egui::Context) {
-        let (dir, p, mode) = (self.dir.clone(), self.path.clone(), self.mode.clone());
-        (self.data, self.sel) = (None, None);
+    /// `keep`: leave the old data shown until the new arrives (a reload of the same view).
+    fn load(&mut self, ctx: &egui::Context, keep: bool) {
+        let (dir, p, mode, limit) = (self.dir.clone(), self.path.clone(), self.mode.clone(), self.limit);
+        if !keep {
+            (self.data, self.sel, self.limit) = (None, None, PAGE);
+        }
         self.task = Some(Task::spawn(ctx, move || match mode {
-            Mode::History => history(&dir, &p).map(Data::History),
+            Mode::History => history(&dir, &p, limit).map(Data::History),
             Mode::Blame(rev) => blame(&dir, &p, rev.as_deref()).map(Data::Blame),
             Mode::Lines { rev, start, end } => line_history(&dir, &p, rev.as_deref(), start, end).map(Data::History),
         }));
@@ -90,7 +95,7 @@ impl FileView {
         }
         self.back.push((std::mem::replace(&mut self.path, path), std::mem::replace(&mut self.mode, mode)));
         self.fwd.clear();
-        self.load(ctx);
+        self.load(ctx, false);
     }
 
     /// One view back, or forward.
@@ -98,12 +103,25 @@ impl FileView {
         let (from, to) = if forward { (&mut self.fwd, &mut self.back) } else { (&mut self.back, &mut self.fwd) };
         let Some((path, mode)) = from.pop() else { return };
         to.push((std::mem::replace(&mut self.path, path), std::mem::replace(&mut self.mode, mode)));
-        self.load(ctx);
+        self.load(ctx, false);
+    }
+
+    /// After a repo reload: the working-tree blame always, the others when HEAD moved.
+    pub fn refresh(&mut self, ctx: &egui::Context, head_moved: bool) {
+        if matches!(self.mode, Mode::Blame(None)) || (head_moved && !matches!(self.mode, Mode::Blame(_))) {
+            self.load(ctx, true);
+        }
+    }
+
+    /// Lists more commits of a file or folder history.
+    pub fn more(&mut self, ctx: &egui::Context) {
+        self.limit *= 4;
+        self.load(ctx, true);
     }
 
     pub fn poll(&mut self) {
         if let Some(d) = Task::poll(&mut self.task) {
-            self.data = Some(d);
+            (self.data, self.sel) = (Some(d), None);
         }
     }
 }
@@ -143,11 +161,19 @@ pub fn parse_history(out: &str) -> Vec<Entry> {
 
 const FORMAT: &str = "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s";
 
-fn history(dir: &Path, path: &str) -> Res<Vec<Entry>> {
+const PAGE: usize = 1000;
+
+fn history(dir: &Path, path: &str, limit: usize) -> Res<Vec<Entry>> {
     // A folder (`dir/`) can't be followed through renames.
     let follow: &[&str] = if path.ends_with('/') { &[] } else { &["--follow", "-M"] };
-    let args = [&["--literal-pathspecs", "log"], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT, "--", path]].concat();
-    Ok(parse_history(&git::run(dir, &args)?))
+    let n = format!("-n{limit}");
+    let args = [&["--literal-pathspecs", "log", &n], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT, "--", path]].concat();
+    let mut v = parse_history(&git::run(dir, &args)?);
+    // `--follow` finds copies too, but a copy's source still lives on: its commits are not this file's past.
+    if let Some(i) = v.iter().position(|e| e.change.code == 'C') {
+        v.truncate(i + 1);
+    }
+    Ok(v)
 }
 
 /// Undoes git's C-style path quoting (`"\303\274 \"x\""`); plain paths pass through.
@@ -343,7 +369,7 @@ mod tests {
         // From a revision: the file there, with its old name.
         assert_eq!(line_history(&dir, old, Some("HEAD~2"), 2, 2).unwrap().len(), 2);
 
-        let f = history(&dir, "d[1]/").unwrap();
+        let f = history(&dir, "d[1]/", PAGE).unwrap();
         assert_eq!(f.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["move and edit", "two", "add"]);
 
         let b = blame(&dir, "n ü.txt", Some("HEAD")).unwrap();
@@ -394,8 +420,50 @@ mod tests {
         commit(&dir, "f1.txt", "one");
         commit(&dir, "f[1].txt", "two");
         commit(&dir, "f1.txt", "three");
-        let h = history(&dir, "f[1].txt").unwrap();
+        let h = history(&dir, "f[1].txt", PAGE).unwrap();
         assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["two"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_ends_the_history() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-copy");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        std::fs::create_dir_all(dir.join("a")).unwrap();
+        std::fs::create_dir_all(dir.join("b")).unwrap();
+        std::fs::write(dir.join("a/__init__.py"), "").unwrap();
+        sh(&dir, &["add", "."]);
+        sh(&dir, &["commit", "-qm", "package a"]);
+        std::fs::write(dir.join("b/__init__.py"), "").unwrap();
+        sh(&dir, &["add", "."]);
+        sh(&dir, &["commit", "-qm", "package b"]);
+        let h = history(&dir, "b/__init__.py", PAGE).unwrap();
+        assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["package b"], "a's commits are not b's past");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn view_follows_new_commits() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-refresh");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "f.txt", "one\n");
+        let ctx = egui::Context::default();
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History);
+        let settle = |fv: &mut FileView| {
+            wait_for("the history", || {
+                fv.poll();
+                fv.task.is_none()
+            })
+        };
+        settle(&mut fv);
+        commit(&dir, "f.txt", "two\n");
+        fv.refresh(&ctx, true);
+        settle(&mut fv);
+        assert!(matches!(&fv.data, Some(Ok(Data::History(h))) if h.len() == 2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

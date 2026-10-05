@@ -271,8 +271,8 @@ impl RepoData {
         }
     }
 
-    pub(super) fn load_bisect(&mut self, dir: &Path) {
-        self.bisect = (self.state == git::State::Bisecting).then(|| git::bisect(dir).ok()).flatten();
+    pub(super) fn load_bisect(&mut self, dir: &Path, prev: Option<&git::Bisect>) {
+        self.bisect = (self.state == git::State::Bisecting).then(|| git::bisect(dir, prev).ok()).flatten();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -448,7 +448,7 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     d.config = Arc::new(config);
     d.author = author;
     d.health = health;
-    d.load_bisect(dir);
+    d.load_bisect(dir, None);
     d.load_conflicts(dir);
     d.stack = Arc::new(super::stack::load(dir, &d));
     Ok(d)

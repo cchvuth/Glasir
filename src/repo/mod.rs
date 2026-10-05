@@ -337,13 +337,13 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone(), d.bisect.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk))) => {
+            Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk, bis))) => {
                 let mut d = RepoData::build_reusing(log, refs, st, rm, gd, oh, git::status(&dir)?, view, Some(prev));
                 (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated, d.stack) = (wt, sm, lfs, cfg, au, tr, stk);
-                d.load_bisect(&dir);
+                d.load_bisect(&dir, bis.as_ref());
                 d.load_conflicts(&dir);
                 Ok(d)
             }
@@ -405,7 +405,8 @@ impl RepoTab {
                     }
                     let head = d.status.head.clone();
                     // Bisect checked out the next candidate: select and centre it.
-                    let bisect_moved = d.state == git::State::Bisecting && self.data.as_ref().is_some_and(|o| o.status.head != head);
+                    let head_moved = self.data.as_ref().is_some_and(|o| o.status.head != head);
+                    let bisect_moved = d.state == git::State::Bisecting && head_moved;
                     // Resolved or aborted elsewhere: the editor's markers are stale.
                     if self.merge.as_ref().is_some_and(|m| !d.status.conflicted.iter().any(|c| c.path == m.path)) {
                         self.merge = None;
@@ -413,6 +414,9 @@ impl RepoTab {
                     // Dropping a big log takes tens of ms: off the UI thread.
                     if let Some(old) = self.data.replace(d) {
                         std::thread::spawn(move || drop(old));
+                    }
+                    if let Some(fv) = &mut self.file_view {
+                        fv.refresh(ctx, head_moved);
                     }
                     if first {
                         self.prefill_template();
