@@ -5,7 +5,7 @@ use super::data::is_trunk;
 use super::{RepoData, RepoTab, Task, delete_branches};
 use crate::git::{self, RefKind, Res};
 use crate::repo::Op;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 /// Why a branch is offered, in display order.
@@ -135,22 +135,135 @@ impl Cleanup {
     }
 }
 
+/// Ahead/behind of every local branch against `target`, from one `for-each-ref` (git 2.41+);
+/// empty on older git, where `classify` counts per branch.
+fn counts(dir: &Path, target: &str) -> HashMap<String, (u32, u32)> {
+    let out = git::run(dir, &["for-each-ref", &format!("--format=%(refname:short)%1f%(ahead-behind:{target})"), "refs/heads"]).unwrap_or_default();
+    let n = |s: Option<&str>| s.and_then(|s| s.parse().ok()).unwrap_or(0);
+    let pair = |l: &str| {
+        let (name, ab) = l.split_once('\x1f')?;
+        let mut ab = ab.split_whitespace();
+        Some((name.to_owned(), (n(ab.next()), n(ab.next()))))
+    };
+    out.lines().filter_map(pair).collect()
+}
+
+/// For each of `tips`, whether merging it into `target` gives exactly `target`'s tree: all the
+/// merges in one `merge-tree --stdin` (git 2.40+). `None` if the output doesn't parse.
+fn same_tree(dir: &Path, target: &str, tree: &str, tips: &[&str]) -> Option<Vec<bool>> {
+    let input: String = tips.iter().map(|t| format!("{target} {t}\n")).collect();
+    let out = git::run_input(dir, &["merge-tree", "--stdin", "--write-tree", "--no-messages", "-z"], Some(input.as_bytes())).ok()?;
+    // Per merge: status NUL tree NUL, then conflicted-file entries up to an empty one.
+    let mut f = out.split('\0');
+    let mut res = vec![];
+    while res.len() < tips.len() {
+        let (status, t) = (f.next()?, f.next()?);
+        while !f.next()?.is_empty() {}
+        res.push(status == "1" && t == tree);
+    }
+    Some(res)
+}
+
+/// What `git cherry <target> <tip>` decides for every tip at once: all its non-merge commits
+/// outside `target` have a patch-identical twin among the target commits it lacks. Patch-ids
+/// come from one `diff-tree` + one `patch-id` over the commits since the tips' common
+/// ancestor. `None` (ask `git cherry` per branch) if there is none or the range is big.
+fn twins(dir: &Path, target: &str, tips: &[&str]) -> Option<HashMap<String, bool>> {
+    if tips.is_empty() || tips.len() > 5000 {
+        return None;
+    }
+    let base = git::run(dir, &[&["merge-base", "--octopus", target][..], tips].concat()).ok()?;
+    let mut ours = git::run(dir, &["rev-list", "--parents", target, "--not", base.trim()]).ok()?;
+    let nt = ours.lines().count();
+    ours += &git::run(dir, &[&["rev-list", "--parents"][..], tips, &["--not", target]].concat()).ok()?;
+    if nt > 20_000 || ours.lines().count() > 50_000 {
+        return None;
+    }
+    let parents: HashMap<&str, Vec<&str>> = ours.lines().map(|l| {
+        let mut w = l.split_whitespace();
+        (w.next().unwrap_or(""), w.collect())
+    }).collect();
+    let singles: String = parents.iter().filter(|(_, p)| p.len() < 2).map(|(c, _)| format!("{c}\n")).collect();
+    let diffs = git::run_input(dir, &["diff-tree", "--stdin", "-p", "--root"], Some(singles.as_bytes())).ok()?;
+    let ids = git::run_input(dir, &["patch-id", "--stable"], Some(diffs.as_bytes())).ok()?;
+    let pid: HashMap<&str, &str> = ids.lines().filter_map(|l| l.split_once(' ').map(|(p, c)| (c, p))).collect();
+    // Patch-id -> the target commits (inside the range) having it.
+    let t: HashSet<&str> = ours.lines().take(nt).filter_map(|l| l.split_whitespace().next()).collect();
+    let mut by_patch: HashMap<&str, Vec<&str>> = HashMap::new();
+    for c in &t {
+        if let Some(p) = pid.get(c) {
+            by_patch.entry(p).or_default().push(c);
+        }
+    }
+    Some(tips.iter().map(|tip| {
+        let (mut seen, mut todo) = (HashSet::new(), vec![*tip]);
+        while let Some(c) = todo.pop() {
+            if let Some(ps) = parents.get(c).filter(|_| seen.insert(c)) {
+                todo.extend(ps);
+            }
+        }
+        // The tip's own commits: reached, single-parent, not in the target's range.
+        let mine: Vec<&&str> = seen.iter().filter(|c| !t.contains(**c) && parents[**c].len() < 2).collect();
+        let twin = |c: &&&str| pid.get(**c).is_some_and(|p| by_patch.get(p).is_some_and(|v| v.iter().any(|y| !seen.contains(y))));
+        (tip.to_string(), !mine.is_empty() && mine.iter().all(twin))
+    }).collect())
+}
+
+/// Commits of each branch tip that are on no remote and not in `target`, from one `rev-list`:
+/// `None` when that set is too big to walk per branch in memory.
+fn unpushed(dir: &Path, target: &str, tips: &[&str]) -> Option<HashMap<String, u32>> {
+    let all = git::run(dir, &["rev-list", "--parents", "--branches", "--not", "--remotes", target]).ok()?;
+    if all.lines().count() > 50_000 {
+        return None;
+    }
+    let parents: HashMap<&str, Vec<&str>> = all.lines().map(|l| {
+        let mut w = l.split_whitespace();
+        (w.next().unwrap_or(""), w.collect())
+    }).collect();
+    Some(tips.iter().map(|t| {
+        let (mut seen, mut todo) = (HashSet::new(), vec![*t]);
+        while let Some(c) = todo.pop() {
+            if let Some(ps) = parents.get(c).filter(|_| seen.insert(c)) {
+                todo.extend(ps);
+            }
+        }
+        (t.to_string(), seen.len() as u32)
+    }).collect())
+}
+
 /// Classifies `rows` (name, tip, date and remote candidate filled in; with "upstream gone")
-/// against `target`.
+/// against `target`. Counts, merge results and unpushed commits come from a few bulk git
+/// commands; few commands run per branch.
 fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
     let merged = git::run(dir, &["for-each-ref", &format!("--merged={target}"), "--format=%(objectname)", "refs/heads"])?;
-    let merged: HashSet<&str> = merged.lines().collect();
+    let merged: HashSet<String> = merged.lines().map(String::from).collect();
     let tree = git::run(dir, &["rev-parse", "--verify", "-q", &format!("{target}^{{tree}}")])?;
+    let tree = tree.trim();
+    let counts = counts(dir, target);
+    let open: Vec<String> = rows.iter().map(|r| r.0.oid.clone()).filter(|o| !merged.contains(o)).collect();
+    let open: Vec<&str> = open.iter().map(String::as_str).collect();
+    let same = same_tree(dir, target, tree, &open).map(|v| open.iter().map(|o| o.to_string()).zip(v).collect::<HashMap<_, _>>());
+    let twins = twins(dir, target, &open);
+    let unpushed = unpushed(dir, target, &open);
     let s = |n: u32| if n == 1 { "" } else { "s" };
     let classify = |(c, gone): &mut (Cand, bool)| {
             let gone = *gone;
-            let lr = git::run(dir, &["rev-list", "--left-right", "--count", &format!("{target}...{}", c.oid)]).unwrap_or_default();
-            let mut n = lr.split_whitespace().filter_map(|n| n.parse().ok());
-            (c.behind, c.ahead) = (n.next().unwrap_or(0), n.next().unwrap_or(0));
-            let same = || git::run(dir, &["merge-tree", "--write-tree", target, &c.oid]).is_ok_and(|o| o.lines().next() == tree.lines().next());
-            if merged.contains(c.oid.as_str()) {
+            (c.ahead, c.behind) = counts.get(&c.name).copied().unwrap_or_else(|| {
+                let lr = git::run(dir, &["rev-list", "--left-right", "--count", &format!("{target}...{}", c.oid)]).unwrap_or_default();
+                let mut n = lr.split_whitespace().filter_map(|n| n.parse().ok());
+                let behind = n.next().unwrap_or(0);
+                (n.next().unwrap_or(0), behind)
+            });
+            let same = || match &same {
+                Some(m) => m.get(c.oid.as_str()).copied().unwrap_or(false),
+                None => git::run(dir, &["merge-tree", "--write-tree", target, &c.oid]).is_ok_and(|o| o.lines().next() == Some(tree)),
+            };
+            if merged.contains(&c.oid) {
                 (c.why, c.on) = (Some(Why::Merged), true);
-            } else if git::run(dir, &["cherry", target, &c.oid]).is_ok_and(|o| !o.is_empty() && o.lines().all(|l| l.starts_with('-'))) {
+            } else if match &twins {
+                Some(m) => m.get(&c.oid).copied().unwrap_or(false),
+                None => git::run(dir, &["cherry", target, &c.oid]).is_ok_and(|o| !o.is_empty() && o.lines().all(|l| l.starts_with('-'))),
+            } {
                 // Every commit has a patch-identical twin in the target. Patch-ids skip merge
                 // commits and whitespace, so only matching content makes it safe to pre-select.
                 let same = same();
@@ -159,22 +272,25 @@ fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>>
                 // Merging it would change nothing: its changes (not none at all) are in the target already.
                 (c.why, c.on, c.note) = (Some(Why::Squashed), true, "squash-merged".into());
             } else {
-                let unpushed = git::run(dir, &["rev-list", "--count", &c.oid, "--not", "--remotes", target])
-                    .ok()
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                    .unwrap_or(1);
+                let n = match unpushed.as_ref().and_then(|u| u.get(&c.oid)) {
+                    Some(n) => *n,
+                    None => git::run(dir, &["rev-list", "--count", &c.oid, "--not", "--remotes", target])
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .unwrap_or(1),
+                };
                 c.why = gone.then_some(Why::Gone);
-                c.on = gone && unpushed == 0;
-                c.note = match (gone, unpushed) {
+                c.on = gone && n == 0;
+                c.note = match (gone, n) {
                     (true, 0) => "upstream branch was deleted".into(),
                     (true, n) => format!("upstream deleted · {n} commit{} not on any remote", s(n)),
                     (false, 0) => String::new(),
                     (false, n) => format!("{n} commit{} not on any remote", s(n)),
                 };
             }
-            c.remote = c.remote.take().filter(|(_, _, o)| git::run(dir, &["merge-base", "--is-ancestor", o, &c.oid]).is_ok());
+            c.remote = c.remote.take().filter(|(_, _, o)| *o == c.oid || git::run(dir, &["merge-base", "--is-ancestor", o, &c.oid]).is_ok());
     };
-    // Each branch costs a handful of git processes: spread them over a few threads.
+    // Only the `diff --quiet` and remote checks (and fallbacks) run per branch: spread them over a few threads.
     let per = rows.len().div_ceil(std::thread::available_parallelism().map_or(4, |n| n.get().min(8))).max(1);
     std::thread::scope(|sc| {
         for chunk in rows.chunks_mut(per) {
@@ -462,6 +578,32 @@ mod tests {
         assert_eq!(refs(), "refs/heads/feat\nrefs/heads/main\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/remotes/origin/old\n");
         assert_eq!(sh(&a, &["config", "branch.feat.remote"]), "origin\n");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The bulk merge-tree/ahead-behind/unpushed helpers agree with the facts, conflicts included.
+    #[test]
+    fn bulk_helpers_parse_conflicts() {
+        let dir = scratch("cleanup-bulk");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base\n");
+        sh(&dir, &["switch", "-q", "-c", "sq"]);
+        commit(&dir, "s", "one\n");
+        sh(&dir, &["switch", "-q", "-c", "clash", "main"]);
+        commit(&dir, "a", "clash\n");
+        sh(&dir, &["switch", "-q", "-c", "other", "main"]);
+        commit(&dir, "o", "other\n");
+        sh(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "a", "main\n");
+        sh(&dir, &["merge", "-q", "--squash", "sq"]);
+        sh(&dir, &["commit", "-q", "-m", "Squashed sq"]);
+        let tree = sh(&dir, &["rev-parse", "main^{tree}"]);
+        let tips: Vec<String> = ["clash", "sq", "other", "sq"].iter().map(|b| sh(&dir, &["rev-parse", b]).trim().to_owned()).collect();
+        let tips: Vec<&str> = tips.iter().map(String::as_str).collect();
+        assert_eq!(same_tree(&dir, "main", tree.trim(), &tips), Some(vec![false, true, false, true]));
+        assert_eq!(counts(&dir, "main")["sq"], (1, 2));
+        assert_eq!(unpushed(&dir, "main", &tips[..3]).unwrap()[tips[2]], 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `git cherry` skips merge commits and whitespace: a "rebase-merged" branch whose

@@ -186,7 +186,7 @@ impl App {
                     ui.end_row();
                     ui.label("Cherry-pick");
                     ui.checkbox(&mut s.cherry_pick_x, "Add \"(cherry picked from commit …)\" to the message")
-                        .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing' or the interactive cherry-pick editor.");
+                        .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing'; the interactive editor adds it to picked and reworded commits.");
                     ui.end_row();
                     ui.label("Built-in terminal");
                     ui.checkbox(&mut s.terminal, keys("Embedded terminal panel (⌃`)"))

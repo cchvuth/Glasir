@@ -303,7 +303,14 @@ impl RepoTab {
     }
 
     pub fn busy(&self) -> Option<&str> {
-        self.running.as_ref().map(|r| r.0.as_str())
+        self.running.as_ref().map(|r| r.0.as_str()).or(self.drop_task.as_ref().map(|_| "Preparing the rewrite…"))
+    }
+
+    /// Builds a history rewrite (its git calls read the range and the upstream) off the UI thread;
+    /// [`Self::busy`] shows it meanwhile.
+    pub(super) fn prepare(&mut self, ctx: &egui::Context, f: impl FnOnce(&std::path::Path) -> op::Dropped + Send + 'static) {
+        let dir = self.dir.clone();
+        self.drop_task = Some(Task::spawn(ctx, move || f(&dir)));
     }
     pub fn cancellable(&self) -> bool {
         self.cancel.is_some()
@@ -461,6 +468,12 @@ impl RepoTab {
             Some(op::Dropped::Menu(title, items, at)) => self.commit_drop = Some((title, items, at)),
             Some(op::Dropped::Run(o)) => self.run(ctx, o),
             Some(op::Dropped::Note(e)) => self.notes.push(Msg { text: e, error: true }),
+            Some(op::Dropped::Editor(ed)) => (self.diff, self.merge, self.rebase) = (None, None, Some(*ed)),
+            Some(op::Dropped::Reworded(o)) => {
+                self.mark_saved();
+                self.run(ctx, o);
+            }
+            Some(op::Dropped::Split(o, sp)) => self.begin_split(ctx, o, *sp),
             None => {}
         }
         if let Some(c) = Task::poll(&mut self.conflict_task) {
@@ -583,7 +596,7 @@ impl RepoTab {
     }
 
     fn compare_query(&mut self, ctx: &egui::Context, from: String, to: String, three_dot: bool) {
-        let (dir, label) = (self.dir.clone(), if to == git::WORKTREE { format!("Working tree compared with {from}") } else { format!("{to} compared with {from}") });
+        let (dir, label) = (self.dir.clone(), if to == git::WORKTREE { format!("Working tree compared with {}", git::short_ref(&from)) } else { format!("{} compared with {}", git::short_ref(&to), git::short_ref(&from)) });
         self.info_next = false;
         self.info_due = None;
         self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
@@ -716,10 +729,7 @@ impl RepoTab {
             Action::OpenTab(p) => self.open_tab = Some(self.dir.join(p)),
             Action::AmendInto(commit) => {
                 let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
-                match crate::repo::rebase::amend_into(&self.dir, &commit, is_head) {
-                    Ok(op) => self.run(ctx, op),
-                    Err(e) => self.notes.push(Msg { text: e, error: true }),
-                }
+                self.prepare(ctx, move |dir| op::Dropped::from(crate::repo::rebase::amend_into(dir, &commit, is_head)));
             }
             Action::Absorb => self.start_absorb(ctx),
             Action::AmendToggled(true) => self.fill_amend(ctx),
@@ -732,22 +742,16 @@ impl RepoTab {
             }
             Action::SplitEnd { abort } => self.end_split(ctx, abort),
             Action::Reword { commit, message } => {
-                let Some(d) = &self.data else { return };
-                let is_head = d.status.head.as_deref() == Some(commit.as_str());
-                match crate::repo::rebase::reword(&self.dir, &d.git_dir, &commit, is_head, message) {
-                    Ok(op) => {
-                        self.mark_saved();
-                        self.run(ctx, op);
-                    }
-                    Err(e) => self.notes.push(Msg { text: e, error: true }),
-                }
+                let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
+                let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
+                self.prepare(ctx, move |dir| match crate::repo::rebase::reword(dir, &git_dir, &commit, is_head, message) {
+                    Ok(op) => op::Dropped::Reworded(op),
+                    Err(e) => op::Dropped::Note(e),
+                });
             }
             Action::Rewrite { commit, act, message } => {
                 let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
-                match crate::repo::rebase::quick(&self.dir, &git_dir, &commit, act, message) {
-                    Ok(op) => self.run(ctx, op),
-                    Err(e) => self.notes.push(Msg { text: e, error: true }),
-                }
+                self.prepare(ctx, move |dir| op::Dropped::from(crate::repo::rebase::quick(dir, &git_dir, &commit, act, message)));
             }
             Action::DropBranch { src, dst } => {
                 let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
@@ -756,8 +760,7 @@ impl RepoTab {
             Action::DropCommit { src, dst, branch, squash } => self.drop_commit(ctx, src, dst, branch, squash),
             Action::DragCommit { src, dst, act } => {
                 let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
-                let dir = self.dir.clone();
-                self.drop_task = Some(Task::spawn(ctx, move || crate::repo::rebase::drag(&dir, &git_dir, &src, &dst, act).map_or_else(op::Dropped::Note, op::Dropped::Run)));
+                self.prepare(ctx, move |dir| op::Dropped::from(crate::repo::rebase::drag(dir, &git_dir, &src, &dst, act)));
             }
             Action::FileView(path, mode) => {
                 (self.diff, self.merge) = (None, None);
@@ -766,13 +769,12 @@ impl RepoTab {
                     None => self.file_view = Some(history::FileView::open(ctx, &self.dir, &path, mode)),
                 }
             }
-            Action::Rebase { base, label } => match crate::repo::rebase::Editor::load(&self.dir, &base, &label) {
-                Ok(ed) => {
-                    (self.diff, self.merge) = (None, None);
-                    self.rebase = Some(ed);
-                }
-                Err(e) => self.notes.push(Msg { text: e, error: true }),
-            },
+            Action::Rebase { base, label } => {
+                self.prepare(ctx, move |dir| match crate::repo::rebase::Editor::load(dir, &base, &label) {
+                    Ok(ed) => op::Dropped::Editor(Box::new(ed)),
+                    Err(e) => op::Dropped::Note(e),
+                });
+            }
             Action::Reflog => {
                 (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, None);
                 self.reflog = Some(reflog::Reflog::open(ctx, &self.dir));

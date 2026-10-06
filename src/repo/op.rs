@@ -132,6 +132,16 @@ pub enum Dropped {
     Menu(String, Vec<(String, Option<Action>)>, egui::Pos2),
     Run(Op),
     Note(String),
+    Editor(Box<super::rebase::Editor>),
+    /// A reword's op: its message draft counts as saved once it runs.
+    Reworded(Op),
+    Split(Op, Box<super::split::Split>),
+}
+
+impl From<Res<Op>> for Dropped {
+    fn from(r: Res<Op>) -> Self {
+        r.map_or_else(Dropped::Note, Dropped::Run)
+    }
 }
 
 pub(super) enum Done {
@@ -945,32 +955,32 @@ impl RepoTab {
         let n = ids.len();
         let op = match kind {
             MultiOp::CherryPickEdit => {
-                match crate::repo::rebase::Editor::cherry_pick(&self.dir, &ids) {
-                    Ok(ed) => (self.diff, self.merge, self.rebase) = (None, None, Some(ed)),
-                    Err(e) => self.notes.push(Msg { text: e, error: true }),
-                }
-                return;
+                return self.prepare(ctx, move |dir| match crate::repo::rebase::Editor::cherry_pick(dir, &ids) {
+                    Ok(ed) => Dropped::Editor(Box::new(ed)),
+                    Err(e) => Dropped::Note(e),
+                });
             }
             MultiOp::CherryPick => {
                 let oldest_first: Vec<&str> = ids.iter().rev().map(String::as_str).collect();
-                Ok(super::merge_opts::pick_op(format!("Cherry-pick {n} commits"), &oldest_first, false, false))
+                super::merge_opts::pick_op(format!("Cherry-pick {n} commits"), &oldest_first, false, false)
             }
             MultiOp::Revert => {
                 let mut args = vec!["revert", "--no-edit"];
                 args.extend(ids.iter().map(String::as_str)); // newest first
-                Ok(Op::new(format!("Revert {n} commits"), &args).undo(Undo::Keep))
+                Op::new(format!("Revert {n} commits"), &args).undo(Undo::Keep)
             }
-            MultiOp::Squash => crate::repo::rebase::multi(&self.dir, &git_dir, &ids, crate::repo::rebase::Act::Squash),
-            MultiOp::Drop => crate::repo::rebase::multi(&self.dir, &git_dir, &ids, crate::repo::rebase::Act::Drop)
-                .map(|o| o.confirm(format!("Drop {n} commits from the current branch? (Undo with ⌘Z.)"))),
-        };
-        match op {
-            Ok(op) => {
+            MultiOp::Squash | MultiOp::Drop => {
                 self.multi.clear();
-                self.run(ctx, op)
+                let drop = kind == MultiOp::Drop;
+                return self.prepare(ctx, move |dir| {
+                    let act = if drop { crate::repo::rebase::Act::Drop } else { crate::repo::rebase::Act::Squash };
+                    let op = crate::repo::rebase::multi(dir, &git_dir, &ids, act);
+                    Dropped::from(op.map(|o| if drop { o.confirm(format!("Drop {n} commits from the current branch? (Undo with ⌘Z.)")) } else { o }))
+                });
             }
-            Err(e) => self.notes.push(Msg { text: e, error: true }),
-        }
+        };
+        self.multi.clear();
+        self.run(ctx, op);
     }
 
     /// The menu for a commit dropped onto a commit and/or a branch; ⌥ squashes right away.

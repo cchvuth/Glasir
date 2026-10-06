@@ -127,6 +127,12 @@ impl RepoData {
         if special || self.refs.iter().any(|o| o.name == r.name && o.full != r.full) { &r.full } else { &r.name }
     }
 
+    /// What `worktree add <path>` takes for `r`: a branch by its short name even when [`Self::rev`]
+    /// gives the full ref (`worktree add <path> refs/heads/x` detaches HEAD; `x` checks out the branch).
+    pub fn worktree_rev<'a>(&self, r: &'a Ref) -> &'a str {
+        if r.kind == RefKind::Local { &r.name } else { self.rev(r) }
+    }
+
     pub fn local(&self, name: &str) -> Option<&Ref> {
         self.refs.iter().find(|r| r.kind == RefKind::Local && r.name == name)
     }
@@ -657,6 +663,24 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "refs/heads/feat~1"]), tip);
         assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/feat\n");
         let _ = std::fs::remove_dir_all(&up);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Open in a new worktree" on a branch whose name a tag shares must check the branch out.
+    #[test]
+    fn worktree_of_an_ambiguous_branch_is_not_detached() {
+        let dir = scratch("worktree-ambiguous");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        sh(&dir, &["branch", "x"]);
+        sh(&dir, &["tag", "x"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.kind == RefKind::Local && r.name == "x").unwrap();
+        assert_eq!(d.rev(r), "refs/heads/x");
+        let wt = dir.join("wt");
+        exec(&dir, &Op::new("Create worktree", &["worktree", "add", wt.to_str().unwrap(), d.worktree_rev(r)])).unwrap();
+        assert_eq!(sh(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/x\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

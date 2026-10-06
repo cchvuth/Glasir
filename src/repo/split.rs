@@ -34,19 +34,27 @@ impl RepoTab {
             return self.notes.push(Msg { text: "Commit or stash your changes before splitting a commit.".into(), error: true });
         }
         let is_head = s.head.as_deref() == Some(commit.as_str());
-        match super::rebase::split(&self.dir, &d.git_dir, &commit, is_head) {
+        let git_dir = d.git_dir.clone();
+        self.prepare(ctx, move |dir| match super::rebase::split(dir, &git_dir, &commit, is_head) {
             Ok(op) => {
-                let message = git::run(&self.dir, &["log", "-1", "--format=%B", &commit]).unwrap_or_default().trim().to_owned();
-                let files = git::run(&self.dir, &["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", &commit]).unwrap_or_default();
-                let (summary, body) = message.split_once('\n').unwrap_or((&message, ""));
-                (self.summary, self.body, self.amend) = (summary.into(), body.trim().into(), false);
+                let message = git::run(dir, &["log", "-1", "--format=%B", &commit]).unwrap_or_default().trim().to_owned();
+                let files = git::run(dir, &["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", &commit]).unwrap_or_default();
                 let files = files.split('\0').filter(|f| !f.is_empty()).map(String::from).collect();
-                let branch = git::run(&self.dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default().trim().to_owned();
-                self.split = Some(Split { id: commit, rebase: !is_head, files, message, undo_len: self.undo.len(), branch, replaying: false });
-                self.run(ctx, op);
+                let branch = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default().trim().to_owned();
+                // `undo_len` is set when it starts.
+                super::op::Dropped::Split(op, Box::new(Split { id: commit, rebase: !is_head, files, message, undo_len: 0, branch, replaying: false }))
             }
-            Err(e) => self.notes.push(Msg { text: e, error: true }),
-        }
+            Err(e) => super::op::Dropped::Note(e),
+        });
+    }
+
+    /// The split [`Self::start_split`] prepared: the commit's message goes to the box, its op runs.
+    pub(super) fn begin_split(&mut self, ctx: &egui::Context, op: Op, mut sp: Split) {
+        let (summary, body) = sp.message.split_once('\n').unwrap_or((&sp.message, ""));
+        (self.summary, self.body, self.amend) = (summary.into(), body.trim().into(), false);
+        sp.undo_len = self.undo.len();
+        self.split = Some(sp);
+        self.run(ctx, op);
     }
 
     /// Continue: replay the rest when nothing of the commit is left uncommitted,

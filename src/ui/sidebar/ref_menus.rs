@@ -145,7 +145,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
     if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {
         let path = d.worktree_path(name);
-        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", d.rev(r)]).then_open("{}")));
+        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", d.worktree_rev(r)]).then_open("{}")));
     }
     if let Some(p) = &r.worktree
         && ui.button(format!("{}  Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()

@@ -56,9 +56,18 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                         });
                     });
                     ui.add(TextEdit::multiline(&mut c.message).margin(crate::theme::INPUT_MARGIN).hint_text("Commit message").desired_rows(1).desired_width(f32::INFINITY));
-                    for &u in &c.units {
+                    // Fixed-height rows, so only the ones in view are built (a plan can hold thousands).
+                    let rh = ui.spacing().interact_size.y;
+                    let step = rh + ui.spacing().item_spacing.y;
+                    let (clip, top) = (ui.clip_rect(), ui.cursor().top());
+                    let len = c.units.len();
+                    let lo = (((clip.top() - top) / step).floor().max(0.0) as usize).min(len);
+                    let hi = (((clip.bottom() - top) / step).ceil().max(0.0) as usize).clamp(lo, len);
+                    ui.add_space(lo as f32 * step);
+                    for &u in &c.units[lo..hi] {
                         let unit = &p.units[u];
-                        ui.horizontal(|ui| {
+                        let row = egui::vec2(ui.available_width(), rh);
+                        ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.menu_button(RichText::new(icon::ARROWS_DOWN_UP).small(), |ui| {
                                 for (j, name) in names.iter().enumerate().filter(|(j, _)| *j != k) {
                                     if ui.add(Button::new(format!("Move to {name}")).truncate()).clicked() {
@@ -75,6 +84,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                             ui.label(RichText::new(&unit.what).small().color(theme::dim(ui)));
                         });
                     }
+                    ui.add_space((len - hi) as f32 * step);
                 });
                 ui.add_space(6.0);
             }

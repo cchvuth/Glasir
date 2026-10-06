@@ -36,7 +36,7 @@ impl Purpose {
             Purpose::PullRequest { branch, .. } => format!("Pull request for {branch}"),
             Purpose::StashMessage => "Stash".into(),
             Purpose::Resolve(p) => format!("Resolve {p}"),
-            Purpose::ExplainRange { from, to } => format!("Changes in {to} since {from}"),
+            Purpose::ExplainRange { from, to } => format!("Changes in {} since {}", crate::git::short_ref(to), crate::git::short_ref(from)),
         }
     }
 }

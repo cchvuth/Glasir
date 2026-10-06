@@ -94,18 +94,31 @@ impl Editor {
                 Act::Fixup => "fixup",
                 Act::Drop => "drop",
             };
-            if it.act != Act::Reword {
+            // Settings → "(cherry picked from commit …)": `pick` has no -x, so the trailer is
+            // added by amending the fresh pick (or written into a reword's message).
+            let x = self.cherry && super::merge_opts::pick_x();
+            let note = format!("(cherry picked from commit {})", it.id);
+            if it.act != Act::Reword && !(x && it.act == Act::Pick) {
                 todo += &format!("{verb} {}\n{refs}", it.id);
                 continue;
             }
             let msg = git_dir.join(format!("glasir-msg-{n}"));
             let pre = git_dir.join(format!("glasir-pre-{n}"));
-            std::fs::write(&msg, format!("{}\n", it.message.trim())).map_err(|e| e.to_string())?;
+            let reword = it.act == Act::Reword;
+            // A pick's message is read when it runs; a reword's is fixed now.
+            let text = if x { format!("{}\n\n{note}\n", it.message.trim()) } else { format!("{}\n", it.message.trim()) };
+            if reword {
+                std::fs::write(&msg, text).map_err(|e| e.to_string())?;
+            }
             // Amend only if the pick made a commit: one that became empty and was
             // skipped would leave the amend to reword the commit before it.
             let (msg, pre) = (sh_quote(&msg), sh_quote(&pre));
+            let amend = match reword {
+                true => format!("git commit --amend --allow-empty -F {msg}"),
+                false => format!("git log -1 --format=%B > {msg} && printf '\\n%s\\n' '{note}' >> {msg} && git commit --amend --allow-empty -F {msg}"),
+            };
             todo += &format!("exec git rev-parse HEAD > {pre}\n{verb} {}\n", it.id);
-            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then git commit --amend --allow-empty -F {msg}; fi\n{refs}");
+            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then {amend}; fi\n{refs}");
         }
         let path = git_dir.join("glasir-rebase-todo");
         std::fs::write(&path, todo).map_err(|e| e.to_string())?;
@@ -714,6 +727,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Settings -> "(cherry picked from commit ...)" applies to the interactive cherry-pick too:
+    /// to plain picks and to rewords, not to drops.
+    #[test]
+    fn interactive_cherry_pick_honours_x() {
+        let (dir, g) = repo("cherry-x");
+        g(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+        for f in ["s1", "s2", "s3"] {
+            std::fs::write(dir.join(f), f).unwrap();
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", f]);
+        }
+        let side: Vec<String> = g(&["rev-list", "-3", "HEAD"]).lines().map(String::from).collect(); // s3, s2, s1
+        g(&["checkout", "-q", "main"]);
+        let mut e = Editor::cherry_pick(&dir, &side).unwrap();
+        e.items[0].act = Act::Reword;
+        e.items[0].message = "s3 better".into();
+        e.items[1].act = Act::Drop;
+        crate::repo::merge_opts::set_pick_x(true);
+        let op = e.op(&git::git_dir(&dir).unwrap());
+        crate::repo::merge_opts::set_pick_x(false);
+        run_op(&dir, &op.unwrap());
+        assert_eq!(g(&["log", "-1", "--format=%B"]).trim(), format!("s3 better\n\n(cherry picked from commit {})", side[0]));
+        assert_eq!(g(&["log", "-2", "--format=%B"]).lines().filter(|l| !l.is_empty()).last().unwrap(), format!("(cherry picked from commit {})", side[2]));
+        assert!(!g(&["log", "--format=%B"]).contains(&side[1]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Split an older commit (rebase stops there, changes uncommitted) and HEAD.
     #[test]
     fn split_commit() {
@@ -843,6 +883,7 @@ mod tests {
         settle(&ctx, &mut t);
         let ids = ["HEAD", "HEAD~1"].map(|r| sh(&dir, &["rev-parse", r]).trim().to_owned()).to_vec();
         t.apply(&ctx, Action::MultiOp(MultiOp::Drop, ids));
+        settle(&ctx, &mut t);
         let op = t.confirm.take().expect("drop asks first");
         commit(&dir, "e", "new work");
         t.apply(&ctx, Action::Git(Op { confirm: None, ..op }));

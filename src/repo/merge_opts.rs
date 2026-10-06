@@ -17,6 +17,10 @@ pub(super) const ALREADY: &str = "Already in the current branch:";
 /// Settings → "Add '(cherry picked from …)'", mirrored every frame for the menus.
 static PICK_X: AtomicBool = AtomicBool::new(false);
 
+pub fn pick_x() -> bool {
+    PICK_X.load(Ordering::Relaxed)
+}
+
 pub fn set_pick_x(on: bool) {
     PICK_X.store(on, Ordering::Relaxed);
 }
