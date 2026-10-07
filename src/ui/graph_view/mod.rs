@@ -442,7 +442,8 @@ pub fn show(
                 }
 
                 // Stashes made on this commit: dashed capsules after the pills.
-                for &i in commit.and_then(|cm| d.stash_at.get(&cm.id)).map_or(&[][..], |v| v) {
+                let here = commit.and_then(|cm| d.stash_at.get(&cm.id)).map_or(&[][..], |v| v);
+                for (k, &i) in here.iter().enumerate() {
                     let st = &d.stashes[i];
                     let b = Rect::from_min_size(pos2(stash_x, y(r) - 9.0), vec2(26.0, 18.0));
                     if b.right() > x_graph - 4.0 {
@@ -453,6 +454,21 @@ pub fn show(
                         painter.extend(Shape::dashed_line(&dash, Stroke::new(1.2, col.gamma_multiply(0.6)), 3.0, 3.0));
                     }
                     stash_x = b.right() + 4.0;
+                    // The next one won't fit: this slot says how many are left ("+N"; hover lists them, the menu reaches each).
+                    if here.len() - k > 1 && stash_x + 26.0 > x_graph - 4.0 {
+                        let rest = &here[k..];
+                        painter.rect_filled(b, 9.0, theme::bg(ui));
+                        painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, if faded { theme::dim(ui).gamma_multiply(0.4) } else { theme::dim(ui) }), 3.0, 2.0));
+                        painter.text(b.center(), Align2::CENTER_CENTER, format!("+{}", rest.len()), FontId::proportional(9.0), if faded { theme::dim(ui) } else { text });
+                        let names: Vec<_> = rest.iter().map(|&j| format!("{}  {}", d.stashes[j].name, d.stashes[j].message)).collect();
+                        let resp = ui.interact(b, ui.id().with(("stash-more", r)), Sense::click()).on_hover_text(names.join("\n"));
+                        resp.context_menu(|ui| {
+                            for &j in rest {
+                                ui.menu_button(&d.stashes[j].message, |ui| crate::ui::sidebar::stashes::stash_menu(ui, d, &d.stashes[j], acts));
+                            }
+                        });
+                        break;
+                    }
                     let on = matches!(sel, Some(Sel::Commit(id)) if *id == st.id);
                     painter.rect_filled(b, 9.0, if on { theme::accent().gamma_multiply(0.45) } else { theme::bg(ui) });
                     painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, if faded { theme::dim(ui).gamma_multiply(0.4) } else { theme::dim(ui) }), 3.0, 2.0));

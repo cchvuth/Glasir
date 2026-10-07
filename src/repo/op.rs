@@ -555,6 +555,11 @@ fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
                 Err("The stash list changed since, so no stash was touched. Check the stashes and try again.".into())
             }
         }
+        // At this position (entries can share a commit): the list must be as the op was made from.
+        [STASH_DROP, id, at] => match git::stashes(dir)?.into_iter().nth(at.parse().unwrap_or(usize::MAX)).filter(|s| s.id == *id) {
+            Some(s) => git::run(dir, &["stash", "drop", &s.name]),
+            None => Err(format!("Stash {} is no longer where it was in the stash list.", short(id))),
+        },
         [STASH_DROP, id] => match git::stashes(dir)?.into_iter().find(|s| s.id == *id) {
             Some(s) => git::run(dir, &["stash", "drop", &s.name]),
             None => Err(format!("Stash {} is no longer in the stash list.", short(id))),
@@ -671,31 +676,31 @@ pub fn stash_branch(s: &git::Stash) -> Op {
     Op::new("Create branch from stash", &["checkout", "-b", "{}", &s.base, "--"]).then(&[STASH_POP, &s.id]).undo(Undo::Keep).backup(Backup::Stash(s.id.clone()))
 }
 
-/// Drop these stashes in one op, by commit id, after checking the list is still the one shown.
-/// `git stash store` only pushes on top, so ⌘Z rebuilds the stack down to the
-/// deepest dropped stash: it pops the survivors above it, then re-stores all of
-/// them oldest first, which brings back the order and the `stash@{n}` numbers.
-pub fn drop_stashes(all: &[git::Stash], ids: &[String]) -> Op {
-    let dropped: Vec<&git::Stash> = all.iter().filter(|s| ids.contains(&s.id)).collect();
-    let (n, deepest) = (dropped.len(), all.iter().rposition(|s| ids.contains(&s.id)).unwrap_or(0));
+/// Drops these stashes (by `stash@{n}`) in one op, each at its position, after checking the list is unchanged.
+/// `git stash store` only pushes on top, so ⌘Z pops the survivors above the deepest drop and re-stores all oldest first.
+pub fn drop_stashes(all: &[git::Stash], names: &[String]) -> Op {
+    let picked = |s: &git::Stash| names.contains(&s.name);
+    let dropped: Vec<&git::Stash> = all.iter().filter(|s| picked(s)).collect();
+    let (n, deepest) = (dropped.len(), all.iter().rposition(picked).unwrap_or(0));
     let (label, ask) = match dropped[..] {
         [s] => ("Drop stash".to_owned(), format!("Delete {}? (Undo with ⌘Z.)", s.name)),
         _ => (format!("Drop {n} stashes"), format!("Delete {n} stashes? (Undo with ⌘Z.)")),
     };
     let check = |n: usize, ss: &[&git::Stash]| [STASH_LIST.to_owned(), n.to_string()].into_iter().chain(ss.iter().map(|s| s.id.clone())).collect();
-    let by_id = |cmd: &str, ss: &[&git::Stash]| ss.iter().map(|s| vec![cmd.to_owned(), s.id.clone()]).collect::<Vec<_>>();
     // The undo below is built from `all`, and redo reruns this op: both need the list unchanged.
     let mut op = Op::new(label, &[]).confirm(ask);
     op.cmds = vec![check(all.len() + 1, &all.iter().collect::<Vec<_>>())];
-    op.cmds.extend(by_id(STASH_DROP, &dropped));
+    // Deepest first, so each position is still where the list showed it.
+    op.cmds.extend(all.iter().enumerate().rev().filter(|(_, s)| picked(s)).map(|(i, s)| vec![STASH_DROP.to_owned(), s.id.clone(), i.to_string()]));
     // Check everything before popping: the survivors above the deepest drop and the one
     // below it must be where the drop left them, and every dropped commit must still exist.
-    let survivors: Vec<&git::Stash> = all.iter().filter(|s| !ids.contains(&s.id)).collect();
+    let survivors: Vec<&git::Stash> = all.iter().filter(|s| !picked(s)).collect();
     let above = deepest + 1 - n;
     let mut back = Op::new(format!("Restore {n} stashes"), &[]);
     back.cmds = vec![[STASH_HAS.to_owned()].into_iter().chain(dropped.iter().map(|s| s.id.clone())).collect()];
     back.cmds.push(check(above + 1, &survivors[..(above + 1).min(survivors.len())]));
-    back.cmds.extend(by_id(STASH_DROP, &survivors[..above]));
+    // Each is the top entry when its turn comes.
+    back.cmds.extend(survivors[..above].iter().map(|s| vec![STASH_DROP.to_owned(), s.id.clone(), "0".to_owned()]));
     back.cmds.extend(all[..=deepest].iter().rev().map(|s| ["stash", "store", "-m", &s.message, &s.id].map(String::from).to_vec()));
     op.revert(back)
 }
@@ -917,7 +922,8 @@ impl RepoTab {
                 // Hunk buttons patch the shown diff: mark it stale now, not after the status reload,
                 // or a second click re-applies the old patch wherever its context still matches.
                 self.refresh_diff(ctx);
-                self.reload(ctx, !op.light);
+                // Applying a stash moves no ref: only the status changed.
+                self.reload(ctx, !op.light && !(!op.custom && op.cmds.iter().all(|c| c[0] == STASH_APPLY)));
                 if commit_next {
                     self.run(ctx, self.commit_op());
                 }
@@ -1418,7 +1424,7 @@ mod tests {
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
         let all = t.data.as_ref().unwrap().stashes.clone();
-        let mut op = super::drop_stashes(&all, &[all[0].id.clone(), all[2].id.clone()]);
+        let mut op = super::drop_stashes(&all, &[all[0].name.clone(), all[2].name.clone()]);
         assert_eq!(op.label, "Drop 2 stashes");
         op.confirm = None;
         t.apply(&ctx, Action::Git(op));
@@ -1437,6 +1443,35 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: four\nOn main: two\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two entries sharing one commit (`git stash store`): deleting one keeps the other, and ⌘Z restores it in place.
+    #[test]
+    fn drop_stash_with_duplicate_commit() {
+        let dir = scratch("drop-dup-stash");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        std::fs::write(dir.join("a"), "x").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "first"]);
+        let x = sh(&dir, &["rev-parse", "stash@{0}"]);
+        std::fs::write(dir.join("a"), "y").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "other"]);
+        sh(&dir, &["stash", "store", "-m", "second", x.trim()]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let all = t.data.as_ref().unwrap().stashes.clone();
+        let mut op = super::drop_stashes(&all, &[all[2].name.clone()]);
+        assert_eq!(op.label, "Drop stash");
+        op.confirm = None;
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "second\nOn main: other\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "second\nOn main: other\nOn main: first\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1464,7 +1499,7 @@ mod tests {
         };
         let drop = |t: &mut RepoTab, at: &[usize]| {
             let all = t.data.as_ref().unwrap().stashes.clone();
-            let mut op = super::drop_stashes(&all, &at.iter().map(|&i| all[i].id.clone()).collect::<Vec<_>>());
+            let mut op = super::drop_stashes(&all, &at.iter().map(|&i| all[i].name.clone()).collect::<Vec<_>>());
             op.confirm = None;
             op
         };

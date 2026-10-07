@@ -15,14 +15,28 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
     let key = Id::new(MULTI);
     let mut multi: Vec<String> = ui.data(|m| m.get_temp(key)).unwrap_or_default();
     // Gone stashes drop out; clicking anything else ends the multi-selection.
-    multi.retain(|id| stashes.iter().any(|s| &s.id == id));
+    let live: std::collections::HashSet<&String> = stashes.iter().map(|s| &s.id).collect();
+    multi.retain(|id| live.contains(id));
     if !matches!(sel, Some(Sel::Commit(c)) if multi.contains(c)) {
         multi.clear();
     }
     section(ui, "STASHES", stashes.len(), |ui| {
+        // Rows are all one height: only the visible ones are built, a spacer stands in for the rest.
+        let (clip, top, gap) = (ui.clip_rect(), ui.cursor().top(), ui.spacing().item_spacing.y);
+        let mut step = 0.0;
         for (i, s) in stashes.iter().enumerate() {
+            if step > 0.0 {
+                let y = top + i as f32 * step;
+                if y + step < clip.top() || y > clip.bottom() {
+                    ui.add_space(step - gap);
+                    continue;
+                }
+            }
             let picked = multi.len() > 1 && multi.contains(&s.id);
             let resp = ui.add(super::row(ui, picked, egui::RichText::new(&s.message))).on_hover_text(&s.name);
+            if i == 0 {
+                step = resp.rect.height() + gap;
+            }
             if resp.clicked() {
                 let (cmd, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
                 let anchor = match sel {
@@ -55,7 +69,7 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
                 if picked {
                     let n = multi.len();
                     if ui.button(format!("Delete {n} stashes…")).clicked() {
-                        acts.push(Action::Git(drop_stashes(&d.stashes, &multi)));
+                        acts.push(Action::Git(drop_stashes(&d.stashes, &d.stashes.iter().filter(|s| multi.contains(&s.id)).map(|s| s.name.clone()).collect::<Vec<_>>())));
                     }
                 } else {
                     stash_menu(ui, d, s, acts);
@@ -81,6 +95,6 @@ pub fn stash_menu(ui: &mut Ui, d: &RepoData, s: &crate::git::Stash, acts: &mut V
         acts.push(prompt("New branch from stash", "", stash_branch(s)));
     }
     if ui.button("Delete stash").clicked() {
-        acts.push(Action::Git(drop_stashes(&d.stashes, std::slice::from_ref(&s.id))));
+        acts.push(Action::Git(drop_stashes(&d.stashes, std::slice::from_ref(&s.name))));
     }
 }
