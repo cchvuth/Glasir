@@ -13,7 +13,6 @@ use std::collections::BTreeSet;
 
 const LINE_H: f32 = 18.0;
 const NUM_W: f32 = 44.0;
-const CHAR_W: f32 = 7.6;
 const RAIL_W: f32 = 8.0;
 /// Lines kept above a change jumped to.
 const LEAD: usize = 3;
@@ -81,7 +80,7 @@ impl Layout {
         let kinds: Vec<u8> = f.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
         let starts = change_starts(&kinds);
         let pairs = f.map_or(vec![], |f| f.hunks.iter().map(partners).collect());
-        let max_chars = f.map_or(0, |f| f.hunks.iter().flat_map(|h| &h.lines).map(|l| l.text.len()).max().unwrap_or(0));
+        let max_chars = f.map_or(0, |f| f.hunks.iter().flat_map(|h| &h.lines).map(|l| crate::highlight::display_len(&l.text)).max().unwrap_or(0));
         let c = std::sync::Arc::new(Self { key, rows, kinds, starts, pairs, max_chars });
         ui.data_mut(|m| m.insert_temp(id, c.clone()));
         c
@@ -240,11 +239,24 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         acts.push(Action::CloseDiff);
     }
+    let narrow = ui.available_width() < 600.0;
+    let title = |ui: &mut Ui, acts: &mut Vec<Action>| {
+        if ui.button(icon::X).on_hover_text("Close (Esc)").clicked() {
+            acts.push(Action::CloseDiff);
+        }
+        if let Some(o) = &change.old_path {
+            ui.label(RichText::new(format!("{o} →")).monospace().color(theme::dim(ui)));
+        }
+        ui.label(RichText::new(&change.path).monospace().strong());
+    };
+    if narrow {
+        theme::bar(ui, |ui| theme::rest(ui, |ui| title(ui, acts)));
+    }
     theme::bar(ui, |ui| {
         if worktree && change.code != 'D' && theme::pill(ui, icon::CODE).on_hover_text("Open in editor").clicked() {
             acts.push(Action::Editor(change.path.clone()));
         }
-        if worktree && !matches!(change.code, 'D' | 'U') && theme::pill(ui, format!("{}  Edit", icon::PENCIL_SIMPLE)).on_hover_text(format!("Edit this file here ({} saves, ⌘Z undoes)", keys("⌘S"))).clicked() {
+        if worktree && !matches!(change.code, 'D' | 'U') && theme::pill(ui, if narrow { icon::PENCIL_SIMPLE.to_string() } else { format!("{}  Edit", icon::PENCIL_SIMPLE) }).on_hover_text(format!("Edit this file here ({} saves, ⌘Z undoes)", keys("⌘S"))).clicked() {
             acts.push(Action::EditFile(change.path.clone()));
         }
         if let Some(op) = crate::repo::tools::difftool_op(&src) {
@@ -281,21 +293,21 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             }
         }
         if worktree && change.code != '?' && ds.opts.ignore_ws {
-            ui.label(RichText::new(format!("{}  Line staging off", icon::INFO)).small().color(theme::MOD))
+            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off", icon::INFO) }).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
         } else if let (true, Some(f)) = (worktree, file.filter(|f| f.whole_only || f.lossy)) {
             let (note, why) = match f.whole_only {
                 true => ("git converts it on add", "git add converts this file (CRLF line endings, an LFS or other filter), so the lines shown aren't the ones staged: stage the whole file."),
                 false => ("not UTF-8", "This file isn't valid UTF-8, so its lines are shown approximately and can't be staged one by one: stage the whole file."),
             };
-            ui.label(RichText::new(format!("{}  Line staging off: {note}", icon::INFO)).small().color(theme::MOD)).on_hover_text(why);
+            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off: {note}", icon::INFO) }).small().color(theme::MOD)).on_hover_text(why);
         } else if !worktree && !wt_compare && ds.opts.ignore_ws {
-            ui.label(RichText::new(format!("{}  Hunk actions off", icon::INFO)).small().color(theme::MOD))
+            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Hunk actions off", icon::INFO) }).small().color(theme::MOD))
                 .on_hover_text("Hunks and lines can't be reverted or cherry-picked from a whitespace-ignoring diff: turn off Ignore whitespace.");
         }
         if let (false, Some(f), Some(&first)) = (worktree, file, ds.picked.first())
             && let Some((path, mode)) = line_range(&src, f, &ds.picked, first)
-            && ui.button(format!("{}  History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len())).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
+            && ui.button(if narrow { format!("{} {}", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len()) } else { format!("{}  History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len()) }).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
         {
             acts.push(Action::FileView(path, mode));
         }
@@ -304,21 +316,21 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         if let (true, Some(f)) = (partial && n > 0, file) {
             let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
             if !worktree {
-                if ui.button(format!("Revert {n} line(s)")).on_hover_text(keys(REVERT_HINT)).clicked() {
+                if ui.button(if narrow { format!("Revert {n}") } else { format!("Revert {n} line(s)") }).on_hover_text(keys(REVERT_HINT)).clicked() {
                     acts.push(apply_op("Revert lines", partial_patch(f, pick, true), &["--reverse"], &src, ds_opts, f));
                 }
-                if ui.button(format!("Cherry-pick {n} line(s)")).on_hover_text(keys(PICK_HINT)).clicked() {
+                if ui.button(if narrow { format!("Cherry-pick {n}") } else { format!("Cherry-pick {n} line(s)") }).on_hover_text(keys(PICK_HINT)).clicked() {
                     acts.push(apply_op("Cherry-pick lines", partial_patch(f, pick, false), &[], &src, ds_opts, f));
                 }
             } else if staged {
-                if ui.button(format!("Unstage {n} line(s)")).clicked() {
+                if ui.button(if narrow { format!("Unstage {n}") } else { format!("Unstage {n} line(s)") }).clicked() {
                     acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &src, ds_opts, f));
                 }
             } else {
-                if !untracked && ui.button(format!("Discard {n} line(s)")).clicked() {
+                if !untracked && ui.button(if narrow { format!("Discard {n}") } else { format!("Discard {n} line(s)") }).clicked() {
                     acts.push(discard("Discard lines", f, pick, &src, ds_opts));
                 }
-                if ui.button(format!("Stage {n} line(s)")).clicked() {
+                if ui.button(if narrow { format!("Stage {n}") } else { format!("Stage {n} line(s)") }).clicked() {
                     acts.push(stage("Stage lines", f, pick, &src, ds_opts));
                 }
             }
@@ -335,15 +347,9 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                 crate::ui::links::items(ui, d, &[(if a == b { "line" } else { "lines" }, page)], &[id], acts);
             }
         }
-        theme::rest(ui, |ui| {
-            if ui.button(icon::X).on_hover_text("Close (Esc)").clicked() {
-                acts.push(Action::CloseDiff);
-            }
-            if let Some(o) = &change.old_path {
-                ui.label(RichText::new(format!("{o} →")).monospace().color(theme::dim(ui)));
-            }
-            ui.label(RichText::new(&change.path).monospace().strong());
-        });
+        if !narrow {
+            theme::rest(ui, |ui| title(ui, acts));
+        }
     });
     if ds.image.is_none() {
         ui.add_space(4.0);
@@ -461,13 +467,15 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         }
         area.show_viewport(ui, |ui, view| {
             let range = visible(tops, view.min.y, view.max.y);
-            let content_w = if *split || *wrap { ui.available_width() } else { (NUM_W * 2.0 + 20.0 + *max_chars as f32 * CHAR_W).max(ui.available_width()) };
-            ui.set_min_size(vec2(content_w, tops[last + 1]));
-            let left = ui.max_rect().left();
+            let (view_w, pin) = (view.width(), view.min.x);
+            let text_w = if *split { view_w / 2.0 - NUM_W - 16.0 } else { view_w - NUM_W * 2.0 - 20.0 };
+            let overflow = if *wrap { 0.0 } else { (*max_chars as f32 * cw - text_w).max(0.0) };
+            ui.set_min_size(vec2(view_w + overflow, tops[last + 1]));
+            let left = ui.max_rect().left() + pin;
             let top = ui.max_rect().top();
             let painter = ui.painter().clone();
             for r in range {
-                let rect = Rect::from_min_size(pos2(left, top + tops[r]), vec2(content_w, tops[r + 1] - tops[r]));
+                let rect = Rect::from_min_size(pos2(left, top + tops[r]), vec2(view_w, tops[r + 1] - tops[r]));
                 let y = rect.top() + LINE_H / 2.0;
                 match rows[r] {
                     Row::Hunk(hi) => {
@@ -516,7 +524,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                         }
                         resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
-                        paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), (cw, cols_u), colors);
+                        paint_line(ui, &painter, rect, l.kind, l.old, l.new, &l.text, picked, &mono, true, span(hi, li), (cw, cols_u, pin), colors);
                     }
                     Row::Pair(hi, a, b) => {
                         let h = &f.hunks[hi];
@@ -538,7 +546,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                             let no = if old { l.old } else { l.new };
                             let colors = ds.hl.get(hi).and_then(|h| h.get(li));
                             let picked = ds.picked.contains(&(hi, li));
-                            paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), (cw, cols_s), colors);
+                            paint_line(ui, &painter.with_clip_rect(side), side, l.kind, no, 0, &l.text, picked, &mono, false, span(hi, li), (cw, cols_s, pin), colors);
                         }
                     }
                 }
@@ -780,7 +788,7 @@ fn paint_line(
     font: &FontId,
     two_nums: bool,
     span: Option<(usize, usize)>,
-    (cw, cols): (f32, usize),
+    (cw, cols, pin): (f32, usize, f32),
     colors: Option<&crate::highlight::Spans>,
 ) {
     let (bg, sign_color) = match kind {
@@ -803,6 +811,7 @@ fn paint_line(
         p.text(pos2(x, y), Align2::RIGHT_CENTER, num(b), FontId::monospace(11.0), dim);
     }
     x += 8.0;
+    let code = p.with_clip_rect(Rect::from_min_max(pos2(x + 12.0, rect.top()), rect.max).intersect(p.clip_rect()));
     let sign = match kind {
         b'+' => "+",
         b'-' => "-",
@@ -815,8 +824,8 @@ fn paint_line(
         for vr in s / cols..=(e - 1) / cols {
             let (c0, c1) = (if vr == s / cols { s % cols } else { 0 }, if vr == (e - 1) / cols { (e - 1) % cols + 1 } else { cols });
             let top = rect.top() + vr as f32 * LINE_H + 1.0;
-            let r = Rect::from_min_max(pos2(x + 14.0 + c0 as f32 * cw, top), pos2(x + 14.0 + c1 as f32 * cw, top + LINE_H - 2.0));
-            p.rect_filled(r, 3.0, sign_color.gamma_multiply(0.35));
+            let r = Rect::from_min_max(pos2(x + 14.0 - pin + c0 as f32 * cw, top), pos2(x + 14.0 - pin + c1 as f32 * cw, top + LINE_H - 2.0));
+            code.rect_filled(r, 3.0, sign_color.gamma_multiply(0.35));
         }
     }
     // The "\ No newline at end of file" marker is a note, not code.
@@ -835,8 +844,8 @@ fn paint_line(
         None => egui::text::LayoutJob::single_section(shown, egui::TextFormat { line_height: Some(LINE_H), ..egui::TextFormat::simple(font.clone(), if note { dim } else { theme::text(ui) }) }),
     };
     super::format::wrap_job(&mut job, cols, cw);
-    let g = p.layout_job(job);
-    p.galley(pos2(x + 14.0, rect.top()), g, theme::text(ui));
+    let g = code.layout_job(job);
+    code.galley(pos2(x + 14.0 - pin, rect.top()), g, theme::text(ui));
 }
 
 #[cfg(test)]

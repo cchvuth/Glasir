@@ -181,17 +181,18 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
     const H: f32 = 18.0;
     let mono = FontId::monospace(12.5);
     let cw = ui.fonts_mut(|f| f.glyph_width(&mono, 'M'));
+    let g = if ui.available_width() >= 760.0 { 392.0 } else { 146.0 };
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         // Wrapped: rows as tall as their lines (the scrollbar's width is left out).
-        let cols = if wrap { (((ui.available_width() - 406.0) / cw) as usize).max(1) } else { usize::MAX };
+        let cols = if wrap { (((ui.available_width() - g - 14.0) / cw) as usize).max(1) } else { usize::MAX };
         // Measuring every line is O(file): once per file and column count, not per frame.
         let key = (b.lines.as_ptr() as usize, b.lines.len(), cols);
         let id = egui::Id::new("blame_tops");
         let cached = ui.data(|d| d.get_temp::<std::sync::Arc<((usize, usize, usize), Vec<f32>, f32)>>(id)).filter(|c| c.0 == key);
         let cached = cached.unwrap_or_else(|| {
             let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
-            let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + 420.0;
+            let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + g + 28.0;
             let c = std::sync::Arc::new((key, tops, width));
             ui.data_mut(|d| d.insert_temp(id, c.clone()));
             c
@@ -200,8 +201,9 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
         egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_viewport(ui, |ui, view| {
             let max = if wrap { 0.0 } else { width };
             ui.set_min_size(vec2(max.max(ui.available_width()), tops[b.lines.len()]));
-            let max = max.max(ui.available_width());
-            let left = ui.max_rect().left();
+            let max = view.width();
+            let content_left = ui.max_rect().left();
+            let left = content_left + view.min.x;
             let top = ui.max_rect().top();
             let p = ui.painter().clone();
             for r in visible(tops, view.min.y, view.max.y) {
@@ -216,12 +218,12 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
                     p.line_segment([pos2(left, rect.top()), pos2(left + max, rect.top())], egui::Stroke::new(1.0, theme::faint(ui)));
                     let uncommitted = c.id.bytes().all(|x| x == b'0');
                     let who = if uncommitted { "Uncommitted".to_owned() } else { format!("{}  {}", &c.id[..7], c.author) };
-                    let clip = p.with_clip_rect(Rect::from_min_size(rect.min, vec2(250.0, H)));
+                    let clip = p.with_clip_rect(Rect::from_min_size(rect.min, vec2(if g > 200.0 { 250.0 } else { 100.0 }, H)));
                     clip.text(pos2(left + 10.0, y), Align2::LEFT_CENTER, who, FontId::proportional(11.5), heat);
-                    let when = if c.time > 0 { ago(c.time) } else { String::new() };
-                    p.text(pos2(left + 330.0, y), Align2::RIGHT_CENTER, when, FontId::proportional(11.0), theme::dim(ui));
+                    let when = if c.time > 0 && g > 200.0 { ago(c.time) } else { String::new() };
+                    p.text(pos2(left + g - 62.0, y), Align2::RIGHT_CENTER, when, FontId::proportional(11.0), theme::dim(ui));
                 }
-                let resp = ui.interact(Rect::from_min_size(rect.min, vec2(340.0, H)), ui.id().with(("blame", r)), Sense::click());
+                let resp = ui.interact(Rect::from_min_size(rect.min, vec2(g - 52.0, H)), ui.id().with(("blame", r)), Sense::click());
                 let uncommitted = c.id.bytes().all(|x| x == b'0');
                 if resp.clicked() && !uncommitted {
                     acts.push(Action::Jump(c.id.clone()));
@@ -242,9 +244,9 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
                     }
                 });
                 resp.on_hover_text(format!("{}\n{} — {}\nRight-click: blame at parent, history of this block", c.summary, c.author, ago(c.time)));
-                p.text(pos2(left + 380.0, y), Align2::RIGHT_CENTER, (r + 1).to_string(), FontId::monospace(11.0), theme::dim(ui));
-                let g = p.layout_job(text_job(&text.replace('\t', "    "), mono.clone(), theme::text(ui), H, cols, cw));
-                p.galley(pos2(left + 392.0, rect.top()), g, theme::text(ui));
+                p.text(pos2(left + g - 12.0, y), Align2::RIGHT_CENTER, (r + 1).to_string(), FontId::monospace(11.0), theme::dim(ui));
+                let job = p.layout_job(text_job(&text.replace('\t', "    "), mono.clone(), theme::text(ui), H, cols, cw));
+                p.with_clip_rect(Rect::from_min_max(pos2(left + g, rect.top()), rect.max).intersect(p.clip_rect())).galley(pos2(content_left + g, rect.top()), job, theme::text(ui));
             }
         });
     });

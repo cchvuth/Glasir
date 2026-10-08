@@ -36,6 +36,17 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
     let mut close = false;
     let mut auto = false;
     let thinking = ai.is_some_and(|j| j.running() && j.purpose == ai::Purpose::Resolve(ed.path.clone()));
+    let narrow = ui.available_width() < 600.0;
+    let mut title = |ui: &mut Ui| {
+        if theme::pill(ui, icon::X).on_hover_text("Close without saving (the conflict markers stay)").clicked() {
+            close = true;
+        }
+        ui.label(RichText::new(format!("{}  Resolve conflict", icon::GIT_MERGE)).strong());
+        ui.label(RichText::new(&ed.path).monospace().color(theme::dim(ui)));
+    };
+    if narrow {
+        theme::bar(ui, |ui| theme::rest(ui, &mut title));
+    }
     theme::bar(ui, |ui| {
         if ui.add(egui::Button::selectable(*wrap, format!("{}  Wrap", icon::ARROW_ELBOW_DOWN_LEFT))).on_hover_text("Wrap long lines instead of scrolling sideways").clicked() {
             *wrap = !*wrap;
@@ -49,18 +60,14 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
                 acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
             let n = ed.trivial;
-            let b = ui.add_enabled(n > 0, egui::Button::new(format!("{}  Auto-resolve trivial ({n})", icon::MAGIC_WAND)).frame_when_inactive(false).corner_radius(255));
+            let b = ui.add_enabled(n > 0, egui::Button::new(if narrow { format!("{} ({n})", icon::MAGIC_WAND) } else { format!("{}  Auto-resolve trivial ({n})", icon::MAGIC_WAND) }).frame_when_inactive(false).corner_radius(255));
             if b.on_hover_text("Resolve conflicts whose sides are identical or differ only in whitespace (keeps current)").clicked() {
                 auto = true;
             }
         }
-        theme::rest(ui, |ui| {
-            if theme::pill(ui, icon::X).on_hover_text("Close without saving (the conflict markers stay)").clicked() {
-                close = true;
-            }
-            ui.label(RichText::new(format!("{}  Resolve conflict", icon::GIT_MERGE)).strong());
-            ui.label(RichText::new(&ed.path).monospace().color(theme::dim(ui)));
-        });
+        if !narrow {
+            theme::rest(ui, title);
+        }
     });
     ui.add_space(6.0);
     let Some(d) = &ed.data else {
@@ -179,6 +186,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
             }
         });
         if let Some(c) = &cur {
+            if narrow {
+                ui.end_row();
+            }
             ui.add_space(6.0);
             theme::group(ui, |ui| {
                 let mut b = |ui: &mut Ui, text: RichText, t: Take, hint: &str| {
@@ -186,10 +196,10 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
                         pick = Some((ed.sel, t));
                     }
                 };
-                b(ui, RichText::new("Take current").color(CUR), Take::Current, &d.labels[0]);
-                b(ui, RichText::new("Take incoming").color(INC), Take::Incoming, &d.labels[1]);
-                b(ui, RichText::new("Both (current first)"), Take::CurrentFirst, "Current lines, then incoming lines");
-                b(ui, RichText::new("Both (incoming first)"), Take::IncomingFirst, "Incoming lines, then current lines");
+                b(ui, RichText::new(if narrow { "Current" } else { "Take current" }).color(CUR), Take::Current, &d.labels[0]);
+                b(ui, RichText::new(if narrow { "Incoming" } else { "Take incoming" }).color(INC), Take::Incoming, &d.labels[1]);
+                b(ui, RichText::new(if narrow { "Cur+Inc" } else { "Both (current first)" }), Take::CurrentFirst, "Current lines, then incoming lines");
+                b(ui, RichText::new(if narrow { "Inc+Cur" } else { "Both (incoming first)" }), Take::IncomingFirst, "Incoming lines, then current lines");
                 if c.base.is_some() {
                     b(ui, RichText::new("Take base").color(theme::dim(ui)), Take::Base, "The common ancestor's version");
                 }

@@ -29,16 +29,17 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             });
         });
     } else {
+        let budget = (ui.available_width() - 440.0).max(480.0);
         egui::Panel::left("sidebar")
             .show_separator_line(false)
             .default_size(250.0)
-            .size_range(180.0..=520.0)
+            .size_range(180.0..=(budget * 0.4).clamp(180.0, 520.0))
             .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 5, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| sidebar::sidebar(ui, t.data.as_ref().unwrap(), &t.dir, &t.sel, &mut t.filter, &mut acts)));
         egui::Panel::right("details")
             .show_separator_line(false)
             .default_size(390.0)
-            .size_range(300.0..=720.0)
+            .size_range(300.0..=(budget * 0.6).clamp(300.0, 720.0))
             .frame(Frame::NONE.inner_margin(Margin { left: 5, right: 12, top: 2, bottom: 12 }))
             .show(ui, |ui| theme::card(ui, 150, |ui| t.details(ui, &mut s.file_tree, &mut acts)));
         if t.term.open {
@@ -170,3 +171,4 @@ fn optimize_hint(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, busy: bool, s
     });
     ui.add_space(4.0);
 }
+

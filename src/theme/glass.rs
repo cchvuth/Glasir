@@ -189,13 +189,10 @@ pub fn primary(ui: &mut Ui, enabled: bool, text: &str, width: f32) -> egui::Resp
 pub fn card<R>(ui: &mut Ui, opacity: u8, add: impl FnOnce(&mut Ui) -> R) -> R {
     let rect = ui.max_rect();
     glass(ui, rect, 18.0, opacity);
-    let r = ui
-        .scope_builder(UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 12.0))), |ui| {
-            ui.set_clip_rect(rect.shrink(1.0));
-            add(ui)
-        })
-        .inner;
-    ui.expand_to_include_rect(rect); // the panel keeps its full size, not the content's
+    let mut inner = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(16.0, 12.0))));
+    inner.set_clip_rect(rect.shrink(1.0));
+    let r = add(&mut inner);
+    ui.allocate_rect(rect, egui::Sense::hover()); // content that doesn't fit is clipped: it never widens the panel
     r
 }
 
@@ -234,11 +231,11 @@ pub fn rest<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// buttons drop vertical padding, so the height comes from a minimum size. The
 /// label stays on one line; a wrapping row moves the whole button down instead.
 pub fn small<'a>(ui: &mut Ui, enabled: bool, text: impl egui::IntoAtoms<'a>) -> egui::Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding.x = 18.0;
-        ui.add_enabled(enabled, egui::Button::new(text).small().min_size(egui::vec2(0.0, 24.0)).wrap_mode(egui::TextWrapMode::Extend))
-    })
-    .inner
+    let old = ui.spacing().button_padding.x;
+    ui.spacing_mut().button_padding.x = 18.0;
+    let r = ui.add_enabled(enabled, egui::Button::new(text).small().min_size(egui::vec2(0.0, 24.0)).wrap_mode(egui::TextWrapMode::Extend));
+    ui.spacing_mut().button_padding.x = old;
+    r
 }
 
 /// A calm, centered empty state: a large accent glyph, a title and one line of help.

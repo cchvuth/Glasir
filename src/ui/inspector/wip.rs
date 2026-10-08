@@ -360,7 +360,7 @@ impl RepoTab {
                 ui.add(TextEdit::multiline(&mut self.body).id(body_id).margin(crate::theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
             });
             let was = self.amend;
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 // Nothing to amend before the first commit.
                 if s.head.is_some() {
                     ui.checkbox(&mut self.amend, "Amend previous commit");
@@ -455,7 +455,7 @@ impl RepoTab {
                         ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             tree::toggle(ui, as_tree);
-                            let b = theme::small(ui, !d.resolvable.is_empty() && !busy, "Mark all resolved");
+                            let b = theme::small(ui, !d.resolvable.is_empty() && !busy, if ui.available_width() < 230.0 { "Mark all" } else { "Mark all resolved" });
                             // Built only while hovered: it compares every conflicted path with every resolvable one.
                             let b = b.on_hover_ui(|ui| {
                                 let rest: Vec<&str> = s.conflicted.iter().map(|c| c.path.as_str()).filter(|p| !d.resolvable.iter().any(|r| r == p)).collect();
@@ -660,7 +660,7 @@ impl RepoTab {
                     });
                 });
                 if s.staged.is_empty() {
-                    ui.label(RichText::new("Nothing staged yet: double-click a file above, or Stage all").small().color(theme::dim(ui)));
+                    ui.add(egui::Label::new(RichText::new("Nothing staged yet: double-click a file above, or Stage all").small().color(theme::dim(ui))).wrap());
                 }
                 tree::list(ui, &s.staged, d.generation, *as_tree, "staged", &mut self.tree_closed, false, |ui, item| {
                     let (c, depth, order) = match item {

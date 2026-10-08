@@ -13,6 +13,17 @@ use egui::Id;
 
 /// The `rclick:` view's pointer events, one per frame: move there, press, release.
 pub(super) fn shot_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    let wid = Id::new("shot_wheel");
+    if let Some((pos, delta, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, egui::Vec2, u8)>(wid)) {
+        match step {
+            0 => raw.events.push(egui::Event::PointerMoved(pos)),
+            1 => raw.events.push(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, phase: egui::TouchPhase::Move, modifiers: Default::default() }),
+            _ => ctx.data_mut(|m| m.remove::<(egui::Pos2, egui::Vec2, u8)>(wid)),
+        }
+        if step < 2 {
+            ctx.data_mut(|m| m.insert_temp(wid, (pos, delta, step + 1)));
+        }
+    }
     let id = Id::new("shot_rclick");
     let Some((pos, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(id)) else { return };
     raw.events.push(match step {
@@ -177,6 +188,7 @@ impl App {
                         }
                     }
                     "wrap" => self.s.wrap = true,
+                    "split" => self.s.split_diff = true,
                     "tree" => self.s.file_tree = true,
                     q if q.starts_with("zoom:") => ctx.set_zoom_factor(q[5..].parse().unwrap_or(1.0)),
                     // `compare-wt:<ref>[:<path>]`: compare the working tree with a ref, optionally opening a file's diff.
@@ -416,6 +428,12 @@ impl App {
                     q if q.starts_with("rclick:") => {
                         if let Some((x, y)) = q[7..].split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
                             ctx.data_mut(|m| m.insert_temp(Id::new("shot_rclick"), (egui::pos2(x, y), 0u8)));
+                        }
+                    }
+                    q if q.starts_with("hscroll:") => {
+                        let n: Vec<f32> = q[8..].split('x').filter_map(|v| v.parse().ok()).collect();
+                        if let [x, y, dx] = n[..] {
+                            ctx.data_mut(|m| m.insert_temp(Id::new("shot_wheel"), (egui::pos2(x, y), egui::vec2(-dx, 0.0), 0u8)));
                         }
                     }
                     "drop-hint" => self.drop_hint_shot = true,
