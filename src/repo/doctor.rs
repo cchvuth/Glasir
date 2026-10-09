@@ -2,6 +2,7 @@
 //! classified with a fix hint, and the credential / proxy settings git uses for the URL.
 
 use super::Task;
+use super::sshkey::{KeyInfo, is_ssh};
 use crate::git;
 use std::path::Path;
 
@@ -20,12 +21,12 @@ pub struct Doctor {
     pub remote: String,
     pub report: Option<Report>,
     task: Option<Task<Report>>,
+    pub keys: Vec<KeyInfo>,
+    keys_task: Option<Task<Vec<KeyInfo>>>,
+    pub tested: Option<(bool, String)>,
+    pub testing: Option<Task<(bool, String)>>,
 }
 
-/// scp-like `git@host:path` or `ssh://` (not a local path or http).
-fn is_ssh(url: &str) -> bool {
-    url.starts_with("ssh://") || (!url.contains("://") && url.split_once(':').is_some_and(|(h, _)| h.len() > 1 && !h.contains(['/', '\\'])))
-}
 
 pub fn check(dir: &Path, remote: &str) -> Report {
     let get = |args: &[&str]| git::run(dir, args).unwrap_or_default();
@@ -75,13 +76,24 @@ fn redact_proxy(v: &str) -> String {
 impl Doctor {
     pub fn open(ctx: &egui::Context, dir: &Path, remote: &str) -> Self {
         let (dir, r) = (dir.to_path_buf(), remote.to_owned());
-        Doctor { remote: remote.into(), report: None, task: Some(Task::spawn(ctx, move || check(&dir, &r))) }
+        Doctor { remote: remote.into(), report: None, task: Some(Task::spawn(ctx, move || check(&dir, &r))), keys: vec![], keys_task: Some(Task::spawn(ctx, super::sshkey::list)), tested: None, testing: None }
     }
 
     pub fn poll(&mut self) {
         if let Some(r) = Task::poll(&mut self.task) {
             self.report = Some(r);
         }
+        if let Some(k) = Task::poll(&mut self.keys_task) {
+            self.keys = k;
+        }
+        if let Some(t) = Task::poll(&mut self.testing) {
+            self.tested = Some(t);
+        }
+    }
+
+    pub fn test(&mut self, ctx: &egui::Context, key: Option<String>, url: String) {
+        self.tested = None;
+        self.testing = Some(Task::spawn(ctx, move || super::sshkey::test(key.as_deref(), &url)));
     }
 }
 

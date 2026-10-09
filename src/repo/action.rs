@@ -127,6 +127,8 @@ pub enum Action {
     RemoteForm(super::remotes::Form),
     /// Check the connection to this remote (doctor window).
     Doctor(String),
+    SshKey(Option<String>),
+    SshTest,
     /// Export commits (newest first) as a patch: copy it, or `save` it to a file.
     Patch { ids: Vec<String>, save: bool },
     ApplyPatch,

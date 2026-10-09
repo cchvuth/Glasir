@@ -214,7 +214,7 @@ pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
 /// `remote.*`, `branch.*` and `user.*` settings, plus the commit template, comment char and
 /// signing defaults and merge / diff tools, from every config scope, in git's order (last wins).
 pub fn config(dir: &Path) -> Vec<(String, String)> {
-    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\.|^(commit\.template|core\.comment(char|string)|(commit|tag)\.gpgsign|gpg\.format|(merge|diff)\.(gui)?tool)$"]).unwrap_or_default())
+    parse_config(&run(dir, &["config", "-z", "--get-regexp", r"^(remote|branch|user)\.|^(commit\.template|core\.(comment(char|string)|sshcommand)|(commit|tag)\.gpgsign|gpg\.format|(merge|diff)\.(gui)?tool)$"]).unwrap_or_default())
 }
 
 /// The (name, email) git authors commits with: author.* and GIT_AUTHOR_* beat user.*.

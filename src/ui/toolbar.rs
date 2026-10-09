@@ -91,6 +91,12 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                 if r.clicked() && !busy {
                     acts.push(Action::Git(fetch_op()));
                 }
+                if e.to_lowercase().contains("permission denied (publickey")
+                    && let Some(remote) = t.data.as_ref().and_then(|d| d.remotes.iter().find(|r| r.0 == "origin").or(d.remotes.first())).map(|r| r.0.clone())
+                    && theme::group(ui, |ui| theme::pill(ui, format!("{}  Choose SSH key", icon::KEY))).on_hover_text("Pick the SSH key this repository uses").clicked()
+                {
+                    acts.push(Action::Doctor(remote));
+                }
             }
             if let Some(label) = t.busy() {
                 ui.spinner();

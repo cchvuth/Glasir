@@ -1,6 +1,8 @@
 //! The connection doctor window: whether git reaches the remote without
 //! prompting, what is wrong and how to fix it, and the settings git uses.
 
+use crate::repo::doctor::Doctor;
+use crate::repo::sshkey::{self, Active};
 use crate::repo::{Action, RepoTab};
 use crate::theme::{self, icon};
 use egui::{Frame, Id, Key, RichText};
@@ -48,6 +50,7 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             }
         });
         ui.add_space(8.0);
+        ssh_key_section(ui, t, doc, &r.url, acts);
         ui.horizontal(|ui| {
             if ui.button(format!("{}  Check again", icon::ARROWS_CLOCKWISE)).clicked() {
                 acts.push(Action::Doctor(doc.remote.clone()));
@@ -65,4 +68,57 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     if close {
         t.doctor = None;
     }
+}
+
+fn ssh_key_section(ui: &mut egui::Ui, t: &RepoTab, doc: &Doctor, url: &str, acts: &mut Vec<Action>) {
+    ui.label(RichText::new("SSH key for this repository").small().strong());
+    if !sshkey::is_ssh(url) {
+        ui.label(RichText::new(format!("{} uses HTTPS: the key setting only affects SSH remotes.", doc.remote)).small().color(theme::dim(ui)));
+        ui.add_space(8.0);
+        return;
+    }
+    let active = sshkey::parse(t.data.as_ref().and_then(|d| d.cfg("core.sshcommand")));
+    let mut pick = |ui: &mut egui::Ui, on: bool, label: String, sub: &str, key: Option<String>| {
+        let r = ui.add(egui::Button::selectable(on, label)).on_hover_text(sub);
+        if !sub.is_empty() {
+            ui.label(RichText::new(sub).monospace().small().color(theme::dim(ui)));
+        }
+        if r.clicked() && !on {
+            acts.push(Action::SshKey(key));
+        }
+    };
+    egui::ScrollArea::vertical().max_height(150.0).auto_shrink([false, true]).id_salt("ssh_keys").show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| pick(ui, active == Active::Default, "Default (ssh-agent / ~/.ssh/config)".into(), "", None));
+        for k in &doc.keys {
+            let on = active == Active::Ours(k.path.clone());
+            ui.horizontal_wrapped(|ui| pick(ui, on, format!("{}  {}", icon::KEY, k.name), &k.fingerprint, Some(k.path.clone())));
+        }
+        if let Active::Ours(p) = &active
+            && !doc.keys.iter().any(|k| &k.path == p)
+        {
+            ui.label(RichText::new(format!("{}  {p}", icon::KEY)).monospace().small().color(theme::accent()));
+        }
+    });
+    match &active {
+        Active::Default => ui.label(RichText::new("Active: default (ssh-agent / ~/.ssh/config)").small().color(theme::dim(ui))),
+        Active::Ours(p) => ui.label(RichText::new(format!("Active: {p}")).small().color(theme::accent())),
+        Active::Custom(c) => ui.label(RichText::new(format!("Active: custom core.sshCommand = {c}")).small().color(theme::MOD)),
+    };
+    ui.horizontal(|ui| {
+        if ui.button(format!("{}  Browse…", icon::FOLDER_OPEN)).clicked()
+            && let Some(p) = rfd::FileDialog::new().set_title("Choose a private key").set_directory(sshkey::home().unwrap_or_default().join(".ssh")).pick_file()
+        {
+            acts.push(Action::SshKey(Some(p.to_string_lossy().into_owned())));
+        }
+        if doc.testing.is_some() {
+            ui.spinner();
+        } else if ui.button(format!("{}  Test connection", icon::PLUGS_CONNECTED)).on_hover_text("ssh -T with this key, never prompting").clicked() {
+            acts.push(Action::SshTest);
+        }
+    });
+    if let Some((ok, text)) = &doc.tested {
+        let (ic, col) = if *ok { (icon::CHECK_CIRCLE, theme::ADD) } else { (icon::WARNING, theme::DEL) };
+        ui.label(RichText::new(format!("{ic}  {}", text.lines().next().unwrap_or("No output"))).small().color(col));
+    }
+    ui.add_space(8.0);
 }

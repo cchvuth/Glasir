@@ -207,6 +207,10 @@ The name fits a Git client:
 - **Manage remotes** from the sidebar: add (name, URL, optional push URL, fetched
   right away), rename, edit URLs, fetch or prune one remote, remove (⌘Z restores
   its config, branch upstreams and push remotes, and remote-tracking branches).
+- **Per-repository SSH key**: in the connection check, pick one of your `~/.ssh` keys
+  (with its fingerprint), browse for another or go back to the default; stored as the
+  repo-local `core.sshCommand` (⌘Z restores it, a custom command asks first), with a
+  non-prompting **Test connection**. Offered from the toolbar when a fetch is refused.
 - Push goes to the branch's upstream even under another name; a branch started
   from `origin/main` gets its own remote branch instead.
 

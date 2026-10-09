@@ -11,6 +11,7 @@ mod conflicts;
 mod data;
 mod diff;
 pub mod doctor;
+pub mod sshkey;
 mod fetch;
 pub mod file_edit;
 pub mod files;
@@ -781,6 +782,23 @@ impl RepoTab {
             }
             Action::RemoteForm(f) => self.remote_form = Some(f),
             Action::Doctor(remote) => self.doctor = Some(doctor::Doctor::open(ctx, &self.dir, &remote)),
+            Action::SshKey(key) => {
+                let local = git::run(&self.dir, &["config", "--local", "--get", "core.sshCommand"]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+                let custom = local.as_deref().filter(|c| matches!(sshkey::parse(Some(c)), sshkey::Active::Custom(_)));
+                if key.is_some() || local.is_some() {
+                    self.run(ctx, sshkey::set_op(key.as_deref(), local.as_deref(), custom));
+                }
+            }
+            Action::SshTest => {
+                let url = self.doctor.as_ref().and_then(|d| self.data.as_ref()?.remotes.iter().find(|r| r.0 == d.remote)).map(|r| r.1.clone());
+                let key = match sshkey::parse(self.data.as_ref().and_then(|d| d.cfg("core.sshcommand"))) {
+                    sshkey::Active::Ours(k) => Some(k),
+                    _ => None,
+                };
+                if let (Some(d), Some(url)) = (&mut self.doctor, url) {
+                    d.test(ctx, key, url);
+                }
+            }
             Action::Patch { ids, save } => self.export_patch(ctx, ids, save),
             Action::ApplyPatch => self.apply_patch(ctx),
             Action::Undo => self.undo_redo(ctx, true, false),
