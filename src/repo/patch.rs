@@ -37,13 +37,12 @@ impl RepoTab {
     pub(super) fn export_patch(&mut self, ctx: &egui::Context, ids: Vec<String>, save: bool) {
         let Some(newest) = ids.first() else { return };
         let what = if ids.len() == 1 { newest[..newest.len().min(7)].to_owned() } else { format!("{} commits", ids.len()) };
-        let path = match save {
-            true => match rfd::FileDialog::new().set_title("Save patch").set_file_name(format!("{}.patch", what.replace(' ', "-"))).save_file() {
-                Some(p) => Some(p),
-                None => return,
-            },
-            false => None,
-        };
+        let mut path = None;
+        if save {
+            let file_name = format!("{}.patch", what.replace(' ', "-"));
+            let Some(chosen) = rfd::FileDialog::new().set_title("Save patch").set_file_name(file_name).save_file() else { return };
+            path = Some(chosen);
+        }
         let dir = self.dir.clone();
         self.patch_task = Some(Task::spawn(ctx, move || {
             let bytes = format_patch(&dir, &ids)?;

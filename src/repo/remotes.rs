@@ -102,7 +102,9 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
     if d.cfg("remote.pushdefault") == Some(name) {
         back.push(add("remote.pushdefault", name));
     }
-    let refs: String = d.refs.iter().filter(|r| r.full.starts_with(&format!("refs/remotes/{name}/"))).map(|r| format!("create {} {}\n", r.full, r.target)).collect();
+    let tracking_prefix = format!("refs/remotes/{name}/");
+    let tracking: Vec<_> = d.refs.iter().filter(|r| r.full.starts_with(&tracking_prefix)).collect();
+    let refs: String = tracking.iter().map(|r| format!("create {} {}\n", r.full, r.target)).collect();
     if !refs.is_empty() {
         back.push(vec!["update-ref".into(), "--stdin".into()]);
     }
@@ -113,7 +115,7 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
     revert.cmds = back;
     // Only `update-ref --stdin` reads the input; `git config` ignores it.
     let revert = if refs.is_empty() { revert } else { revert.input(refs) };
-    let n = d.refs.iter().filter(|r| r.full.starts_with(&format!("refs/remotes/{name}/"))).count();
+    let n = tracking.len();
     Op::new(format!("Remove remote {name}"), &["remote", "remove", name])
         .confirm(format!("Remove remote {name} and its {n} remote-tracking branches? Local branches stay. (Undo with ⌘Z.)"))
         .revert(revert)
