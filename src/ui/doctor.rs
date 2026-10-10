@@ -5,7 +5,8 @@ use crate::repo::doctor::Doctor;
 use crate::repo::sshkey::{self, Active};
 use crate::repo::{Action, RepoTab};
 use crate::theme::{self, icon};
-use egui::{Frame, Id, Key, RichText};
+use crate::ui::format::dismissed;
+use egui::{Frame, Id, RichText};
 
 pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let Some(doc) = &t.doctor else { return };
@@ -18,7 +19,7 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
                 ui.spinner();
                 ui.label(RichText::new("Running git ls-remote without prompting…").color(theme::dim(ui)));
             });
-            close = ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+            close = dismissed(ui, "Close");
             return;
         };
         ui.label(RichText::new(&r.url).monospace().small().color(theme::dim(ui)));
@@ -62,7 +63,7 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
                 }
                 acts.push(Action::Copy(s));
             }
-            close = ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+            close = dismissed(ui, "Close");
         });
     });
     if close {

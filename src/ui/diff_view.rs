@@ -2,7 +2,7 @@
 //! revert / cherry-pick from commits, whitespace / context options, change navigation (F7 / ⇧F7)
 //! and a change minimap. Only visible lines are painted.
 
-use crate::ui::format::keys;
+use crate::ui::format::{keys, plural};
 use super::format::{tops, visible, wrapped};
 use crate::git::{DiffOpts, FileDiff, Page, partial_patch, selects_all};
 use crate::repo::history::Mode;
@@ -641,7 +641,7 @@ fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, wrap: &mut bool,
                 }
             });
             let n = starts.len();
-            ui.label(RichText::new(format!("{n} change{}", if n == 1 { "" } else { "s" })).small().color(theme::dim(ui)));
+            ui.label(RichText::new(format!("{n} change{}", plural(n))).small().color(theme::dim(ui)));
             ui.min_rect().width() + 12.0
         })
         .inner;

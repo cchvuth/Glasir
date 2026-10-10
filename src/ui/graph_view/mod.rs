@@ -9,7 +9,7 @@ pub mod menus;
 mod minimap;
 mod search;
 
-use crate::ui::format::keys;
+use crate::ui::format::{keys, plural};
 use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
 use crate::repo::{Action, RepoData, Search, Sel, View, branch_checkout};
@@ -489,7 +489,7 @@ pub fn show(
                         painter.with_clip_rect(msg_clip).text(
                             pos2(x_msg + 8.0, ty),
                             Align2::LEFT_CENTER,
-                            format!("// WIP  ·  {n} changed file{}", if n == 1 { "" } else { "s" }),
+                            format!("// WIP  ·  {n} changed file{}", plural(n)),
                             body.clone(),
                             theme::dim(ui),
                         );

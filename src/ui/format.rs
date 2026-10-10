@@ -10,6 +10,14 @@ pub fn initials(name: &str) -> String {
     .to_uppercase()
 }
 
+pub fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+pub fn dismissed(ui: &mut egui::Ui, label: &str) -> bool {
+    ui.button(label).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape))
+}
+
 fn age(t: i64) -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64) - t
 }

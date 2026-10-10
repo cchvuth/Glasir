@@ -1,7 +1,7 @@
 //! The interactive rebase editor window (drawing + keyboard). The todo model
 //! and git side live in `crate::repo::rebase`.
 
-use crate::ui::format::keys;
+use crate::ui::format::{keys, plural};
 use crate::repo::rebase::{Act, Editor};
 use crate::repo::Action;
 use crate::theme::{self, icon};
@@ -50,7 +50,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     ui.horizontal(|ui| {
         let title = if ed.cherry { format!("{}  Interactive cherry-pick", icon::CHERRIES) } else { format!("{}  Interactive rebase", icon::GIT_COMMIT) };
         ui.label(RichText::new(title).heading().strong());
-        ui.label(RichText::new(format!("{n} commit{} onto {}", if n == 1 { "" } else { "s" }, ed.label)).color(theme::dim(ui)));
+        ui.label(RichText::new(format!("{n} commit{} onto {}", plural(n), ed.label)).color(theme::dim(ui)));
     });
     ui.label(
         RichText::new(keys(&format!("Newest at top. Keys: {}", super::shortcuts::REBASE)))

@@ -1,10 +1,10 @@
 //! Commit Composer dialog: Claude's commit plan, editable (messages, moving
 //! changes between commits, split / merge / reorder), then Create commits.
 
-use crate::ui::format::keys;
+use crate::ui::format::{dismissed, keys, plural};
 use crate::repo::{Action, RepoTab};
 use crate::theme::{self, icon};
-use egui::{Button, Frame, Id, Key, RichText, TextEdit};
+use egui::{Button, Frame, Id, RichText, TextEdit};
 
 enum Edit {
     Move(usize, Option<usize>),
@@ -41,8 +41,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("{}  Commit {}", icon::GIT_COMMIT, k + 1)).strong());
-                        let s = if c.units.len() == 1 { "" } else { "s" };
-                        ui.label(RichText::new(format!("{} change{s}", c.units.len())).small().color(theme::dim(ui)));
+                        ui.label(RichText::new(format!("{} change{}", c.units.len(), plural(c.units.len()))).small().color(theme::dim(ui)));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if k > 0 && theme::pill(ui, icon::ARROWS_MERGE).on_hover_text("Merge into the commit above").clicked() {
                                 edit = Some(Edit::MergeUp(k));
@@ -92,11 +91,10 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let ready = p.commits.iter().all(|c| !c.message.trim().is_empty());
-            let s = if n == 1 { "" } else { "s" };
-            if theme::primary(ui, ready && !busy, &format!("Create {n} commit{s}"), 170.0).on_disabled_hover_text("Every commit needs a message").clicked() {
+            if theme::primary(ui, ready && !busy, &format!("Create {n} commit{}", plural(n)), 170.0).on_disabled_hover_text("Every commit needs a message").clicked() {
                 run = true;
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 close = true;
             }
         });

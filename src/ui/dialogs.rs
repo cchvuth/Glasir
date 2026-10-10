@@ -2,7 +2,7 @@
 //! branch cleanup, absorb preview, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
-use crate::ui::format::keys;
+use crate::ui::format::{dismissed, keys, plural};
 use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, RepoTab, Undo};
@@ -31,7 +31,7 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             if ui.button("OK").clicked() || enter {
                 done = Some(true);
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 done = Some(false);
             }
         });
@@ -95,7 +95,7 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
             if ui.add(Button::new(RichText::new("Confirm").strong()).fill(theme::DEL.gamma_multiply(0.6))).clicked() {
                 done = Some(true);
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 done = Some(false);
             }
         });
@@ -188,7 +188,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             if !job.running() && ui.button(format!("{}  Regenerate", icon::ARROWS_CLOCKWISE)).clicked() {
                 acts.push(Action::Ai(job.purpose.clone()));
             }
-            if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Close") {
                 close = true;
             }
         });
@@ -282,7 +282,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 }
                 (Some(Ok(v)), true) => {
                     let n = v.len();
-                    ui.label(RichText::new(format!("{n} ref{} gone from the remote", if n == 1 { "" } else { "s" })).small().color(theme::dim(ui)))
+                    ui.label(RichText::new(format!("{n} ref{} gone from the remote", plural(n))).small().color(theme::dim(ui)))
                         .on_hover_text(v.iter().map(|r| r.0.trim_start_matches("refs/remotes/")).collect::<Vec<_>>().join("\n"));
                 }
                 (Some(Err(e)), true) => {
@@ -301,7 +301,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 acts.push(c.op(d, *days, now).map_or_else(Action::Error, Action::Git));
                 close = true;
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 close = true;
             }
         });
@@ -343,12 +343,11 @@ pub(super) fn absorb_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         ui.add_space(8.0);
         let (n, hunks) = (p.targets().len(), p.rows.iter().filter(|r| r.target.is_ok()).count());
         ui.horizontal(|ui| {
-            let s = |k: usize| if k == 1 { "" } else { "s" };
-            if theme::primary(ui, n > 0, &format!("Absorb {hunks} hunk{} into {n} commit{}", s(hunks), s(n)), 250.0).clicked() {
+            if theme::primary(ui, n > 0, &format!("Absorb {hunks} hunk{} into {n} commit{}", plural(hunks), plural(n)), 250.0).clicked() {
                 acts.push(p.op(&t.dir, &d.git_dir).map_or_else(Action::Error, Action::Git));
                 close = true;
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 close = true;
             }
         });
@@ -376,7 +375,7 @@ pub(super) fn choice_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
                     close = true;
                 }
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 close = true;
             }
         });
