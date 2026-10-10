@@ -33,28 +33,7 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
             return; // our own git reads (inotify IN_OPEN/CLOSE) are not changes
         }
         for p in &e.paths {
-            let kind = match gits.iter().enumerate().find_map(|(i, g)| Some((i, p.strip_prefix(g).ok()?))) {
-                Some((i, rel)) => match rel.components().next().map(|c| c.as_os_str().to_string_lossy()).as_deref() {
-                    Some("refs" | "packed-refs") => Some(Change::Refs),
-                    // Per-worktree files count only in our own git dir, not the main worktree's.
-                    Some("HEAD" | "MERGE_HEAD" | "rebase-merge" | "rebase-apply" | "CHERRY_PICK_HEAD") if i == 0 => Some(Change::Refs),
-                    Some("index") if i == 0 => {
-                        ignored.clear(); // a file was tracked or untracked: verdicts may flip
-                        Some(Change::Index)
-                    }
-                    _ => None, // objects, logs, locks, other worktrees: noise
-                },
-                None => p.strip_prefix(&root).ok().and_then(|rel| {
-                    if rel.components().next()?.as_os_str() == ".git" {
-                        return None;
-                    }
-                    if rel.file_name().is_some_and(|n| n == ".gitignore") {
-                        ignored.clear();
-                    }
-                    (!is_ignored(&root, rel, &mut ignored)).then_some(Change::Tree)
-                }),
-            };
-            if let Some(c) = kind {
+            if let Some(c) = classify(p, &gits, &root, &mut ignored) {
                 let _ = tx.send(c);
                 ctx.request_repaint_after(std::time::Duration::from_millis(450));
             }
@@ -66,6 +45,29 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
         w.watch(&common, notify::RecursiveMode::Recursive).ok()?;
     }
     Some((w, rx))
+}
+
+fn classify(p: &Path, gits: &[std::path::PathBuf; 2], root: &Path, ignored: &mut std::collections::HashMap<String, bool>) -> Option<Change> {
+    let Some((i, rel)) = gits.iter().enumerate().find_map(|(i, g)| Some((i, p.strip_prefix(g).ok()?))) else {
+        let rel = p.strip_prefix(root).ok()?;
+        if rel.components().next()?.as_os_str() == ".git" {
+            return None;
+        }
+        if rel.file_name().is_some_and(|n| n == ".gitignore") {
+            ignored.clear();
+        }
+        return (!is_ignored(root, rel, ignored)).then_some(Change::Tree);
+    };
+    match rel.components().next().map(|c| c.as_os_str().to_string_lossy()).as_deref() {
+        Some("refs" | "packed-refs") => Some(Change::Refs),
+        // Per-worktree files count only in our own git dir, not the main worktree's.
+        Some("HEAD" | "MERGE_HEAD" | "rebase-merge" | "rebase-apply" | "CHERRY_PICK_HEAD") if i == 0 => Some(Change::Refs),
+        Some("index") if i == 0 => {
+            ignored.clear(); // a file was tracked or untracked: verdicts may flip
+            Some(Change::Index)
+        }
+        _ => None, // objects, logs, locks, other worktrees: noise
+    }
 }
 
 /// `rel` (under `root`) is gitignored, as `git check-ignore` sees it: a tracked file, or a

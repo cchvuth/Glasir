@@ -11,9 +11,10 @@ pub fn move_unpushed(d: &RepoData) -> Option<(String, Action)> {
     if n == 0 {
         return None;
     }
-    let what = format!("Move {n} unpushed commit{} to a new branch…", if n == 1 { "" } else { "s" });
+    let plural = if n == 1 { "" } else { "s" };
+    let what = format!("Move {n} unpushed commit{plural} to a new branch…");
     let op = Op::new(format!("Move {n} commits off {branch}"), &["checkout", "-b", "{}"]).then(&["branch", "-f", branch, up]).undo(Undo::Keep);
-    Some((what, prompt(format!("New branch for {branch}'s {n} unpushed commit{}", if n == 1 { "" } else { "s" }), "", op)))
+    Some((what, prompt(format!("New branch for {branch}'s {n} unpushed commit{plural}"), "", op)))
 }
 
 #[cfg(test)]

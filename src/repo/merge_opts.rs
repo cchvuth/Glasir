@@ -99,9 +99,10 @@ pub(super) fn pick_new(dir: &Path, a: &[&str]) -> Res<String> {
         }
         // `-` = a commit with the same patch is in HEAD; nothing at all = already reachable from HEAD.
         let Ok(out) = git::run(dir, &["cherry", "HEAD", id, &parent]) else { continue };
-        if out.trim().is_empty() || out.trim_start().starts_with('-') {
+        let reachable = out.trim().is_empty();
+        if reachable || out.trim_start().starts_with('-') {
             let line = git::run(dir, &["show", "-s", "--format=%h %s", id]).unwrap_or_default();
-            seen.push(format!("  •  {}{}", line.trim(), if out.trim().is_empty() { " (already in its history)" } else { "" }));
+            seen.push(format!("  •  {}{}", line.trim(), if reachable { " (already in its history)" } else { "" }));
         }
     }
     match seen.is_empty() {
