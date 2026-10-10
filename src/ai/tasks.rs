@@ -95,12 +95,7 @@ fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
     patch.extend_from_slice(&NOISE);
     let out = format!("{}\n{}", git::run(dir, &stat)?, git::run(dir, &patch)?);
     if out.len() > MAX_CONTEXT {
-        return Err(format!(
-            "These changes are too large to send to {} ({} KB, limit {} KB). Narrow them down (e.g. stage fewer files).",
-            super::name(),
-            out.len() / 1024,
-            MAX_CONTEXT / 1024
-        ));
+        return Err(format!("{} Narrow them down (e.g. stage fewer files).", too_large(out.len())));
     }
     Ok(out)
 }
@@ -123,6 +118,16 @@ fn head_or_empty(dir: &Path) -> Res<String> {
         Ok(_) => Ok("HEAD".into()),
         Err(_) => Ok(git::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?.trim().to_owned()),
     }
+}
+
+fn recent_subjects(dir: &Path) -> String {
+    git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default()
+}
+
+fn uncommitted_changes(dir: &Path) -> Res<(String, String)> {
+    let diff = diff_with_stat(dir, &[&head_or_empty(dir)?])?;
+    let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+    Ok((diff, untracked))
 }
 
 /// The Commit Composer's reply: `{"commits": [{"message", "units": [ids]}]}`.
@@ -200,7 +205,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             } else {
                 "the staged changes below.".into()
             };
-            let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
+            let recent = recent_subjects(dir);
             let branch = git::run(dir, &["branch", "--show-current"]).unwrap_or_default();
             let draft = if draft.trim().is_empty() { String::new() } else { format!("\nThe author's draft (improve it, keep its intent):\n{draft}\n") };
             (
@@ -264,8 +269,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             )
         }
         Purpose::ExplainWip => {
-            let diff = diff_with_stat(dir, &[&head_or_empty(dir)?])?;
-            let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+            let (diff, untracked) = uncommitted_changes(dir)?;
             (
                 format!(
                     "Explain these uncommitted changes to the developer who made them, as a reviewer would: \
@@ -280,7 +284,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             if draft.len() > MAX_CONTEXT {
                 return Err(too_large(draft.len()));
             }
-            let recent = git::run(dir, &["log", "-n", "15", "--format=%s"]).unwrap_or_default();
+            let recent = recent_subjects(dir);
             (
                 format!(
                     "Split these changes into a sequence of small, focused, logical commits, as a careful engineer would. \
@@ -294,8 +298,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             )
         }
         Purpose::StashMessage => {
-            let diff = diff_with_stat(dir, &[&head_or_empty(dir)?])?;
-            let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+            let (diff, untracked) = uncommitted_changes(dir)?;
             (
                 format!(
                     "Write a short description (at most 60 characters, no quotes) for a git stash of these uncommitted changes.\n\

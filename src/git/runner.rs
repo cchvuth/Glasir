@@ -105,6 +105,30 @@ impl Cancel {
         std::thread::spawn(move || c.stdout(Stdio::null()).stderr(Stdio::null()).status());
     }
 
+    fn active() -> Cancel {
+        SCOPE.with_borrow(Clone::clone).unwrap_or_default()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.0.lock().unwrap().0
+    }
+
+    fn attach(&self, pid: u32) {
+        let mut g = self.0.lock().unwrap();
+        g.1 = Some(pid);
+        let already_cancelled = g.0;
+        drop(g);
+        if already_cancelled {
+            self.cancel();
+        }
+    }
+
+    fn detach(&self) -> bool {
+        let mut g = self.0.lock().unwrap();
+        g.1 = None;
+        g.0
+    }
+
     /// Last progress line of a `--progress` command running under this scope.
     pub fn progress(&self) -> String {
         self.1.lock().unwrap().clone()
@@ -163,8 +187,8 @@ pub fn run_raw(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> 
 }
 
 pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> {
-    let cancel = SCOPE.with_borrow(Clone::clone).unwrap_or_default();
-    if cancel.0.lock().unwrap().0 {
+    let cancel = Cancel::active();
+    if cancel.is_cancelled() {
         return Err(CANCELLED.into());
     }
     let start = Instant::now();
@@ -183,20 +207,9 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
     }
     let squash = progress.is_some();
     let (out, err) = (read_all(child.stdout.take().unwrap(), None), read_all(child.stderr.take().unwrap(), progress));
-    let early = {
-        let mut g = cancel.0.lock().unwrap();
-        g.1 = Some(child.id());
-        g.0
-    };
-    if early {
-        cancel.cancel();
-    }
+    cancel.attach(child.id());
     let status = child.wait().map_err(|e| e.to_string());
-    let cancelled = {
-        let mut g = cancel.0.lock().unwrap();
-        g.1 = None;
-        g.0
-    };
+    let cancelled = cancel.detach();
     let status = status?;
     if cancelled && !status.success() {
         // Don't wait for the pipes: helpers git started may still hold them.
@@ -236,8 +249,8 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
 /// history search shows its first hits at once); `each` returning false stops git.
 /// Cancellable through [`Cancel::scope`] like [`run`].
 pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> Res<()> {
-    let cancel = SCOPE.with_borrow(Clone::clone).unwrap_or_default();
-    if cancel.0.lock().unwrap().0 {
+    let cancel = Cancel::active();
+    if cancel.is_cancelled() {
         return Err(CANCELLED.into());
     }
     let start = Instant::now();
@@ -246,14 +259,7 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     let mut child = c.spawn().map_err(|e| format!("could not run git: {e}"))?;
     let err = read_all(child.stderr.take().unwrap(), None);
     let mut out = child.stdout.take().unwrap();
-    let early = {
-        let mut g = cancel.0.lock().unwrap();
-        g.1 = Some(child.id());
-        g.0
-    };
-    if early {
-        cancel.cancel();
-    }
+    cancel.attach(child.id());
     let (mut buf, mut chunk, mut stopped) = (vec![], [0u8; 65536], false);
     'read: while let Ok(n @ 1..) = out.read(&mut chunk) {
         buf.extend_from_slice(&chunk[..n]);
@@ -273,11 +279,7 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     }
     drop(out);
     let status = child.wait().map_err(|e| e.to_string());
-    let cancelled = {
-        let mut g = cancel.0.lock().unwrap();
-        g.1 = None;
-        g.0
-    };
+    let cancelled = cancel.detach();
     let status = status?;
     let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
     record(dir, "git", args, start, status.code(), &stderr);

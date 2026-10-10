@@ -304,10 +304,7 @@ pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {
     }
     let parents: Vec<String> = f[1].split_whitespace().map(Into::into).collect();
     let mut args = vec!["diff-tree", "-r", "-z", "--no-commit-id", "--name-status", "-M"];
-    match parents.first() {
-        Some(p) => args.push(p),
-        None => args.push("--root"),
-    }
+    args.push(parents.first().map_or("--root", String::as_str));
     args.push(id);
     let files = parse_name_status(&run(dir, &args)?);
     Ok(CommitInfo {
@@ -343,7 +340,7 @@ fn sig_code(code: &str, raw: impl FnOnce() -> String) -> char {
 
 /// `git verify-tag`: whether the signature is good, and what gpg / ssh-keygen said (on stderr).
 pub fn verify_tag(dir: &Path, full: &str) -> (bool, String) {
-    match cmd(dir).args(["verify-tag", full]).stdin(std::process::Stdio::null()).output() {
+    match cmd(dir).args(["verify-tag", full]).stdin(Stdio::null()).output() {
         Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stderr).trim().into()),
         Err(e) => (false, e.to_string()),
     }

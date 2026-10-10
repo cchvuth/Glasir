@@ -8,13 +8,13 @@ use std::path::Path;
 
 /// The user's ssh command made to fail instead of asking (plink takes `-batch`).
 fn batch_ssh(ssh: &str, variant: &str) -> String {
-    match variant {
-        "plink" | "putty" | "tortoiseplink" => format!("{ssh} -batch"),
-        "simple" => ssh.to_owned(),
-        "ssh" => format!("{ssh} -o BatchMode=yes -o ConnectTimeout=15"),
-        _ if ssh.to_lowercase().contains("plink") => format!("{ssh} -batch"),
-        _ => format!("{ssh} -o BatchMode=yes -o ConnectTimeout=15"),
-    }
+    let is_plink = match variant {
+        "plink" | "putty" | "tortoiseplink" => true,
+        "simple" => return ssh.to_owned(),
+        "ssh" => false,
+        _ => ssh.to_lowercase().contains("plink"),
+    };
+    if is_plink { format!("{ssh} -batch") } else { format!("{ssh} -o BatchMode=yes -o ConnectTimeout=15") }
 }
 
 /// A git command that can never prompt (no askpass, no terminal, ssh in batch
