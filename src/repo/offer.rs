@@ -5,77 +5,90 @@ use super::action::Choice;
 use super::data::RepoData;
 use super::op::Op;
 
+fn pull_choices() -> Vec<(String, Op)> {
+    use super::op::{PullMode, pull_op};
+    let mut merge = pull_op(PullMode::Merge);
+    merge.label = "Pull (merge)".into();
+    vec![("Pull (rebase)".to_owned(), pull_op(PullMode::Rebase)), ("Pull (merge)".to_owned(), merge)]
+}
+
+fn cherry_pick_anyway(op: &Op, guard_at: usize, err: &str) -> Choice {
+    let mut anyway = op.clone();
+    anyway.cmds.remove(guard_at);
+    Choice {
+        title: "Already applied".into(),
+        text: format!("{err}\n\nCherry-picking anyway may stop on an empty commit or conflicts, which you can skip or abort."),
+        ops: vec![("Cherry-pick anyway".into(), anyway)],
+    }
+}
+
+fn autostash_checkout(op: &Op, err: &str) -> Choice {
+    let target = op.label.strip_prefix("Checkout ").unwrap_or(&op.label);
+    let files: Vec<String> = err.lines().filter(|l| l.starts_with('\t')).map(|l| format!("  •  {}", l.trim())).collect();
+    let mut o = op.clone();
+    o.label = format!("{} (autostash)", op.label);
+    o.autostash = Some(format!("autostash before switching to {target}"));
+    Choice {
+        title: "Uncommitted changes in the way".into(),
+        text: format!(
+            "Switching to {target} would overwrite your uncommitted changes in:\n{}\n\nGlasir can stash them, switch, and reapply them there.",
+            files.join("\n")
+        ),
+        ops: vec![("Stash, switch and reapply".into(), o)],
+    }
+}
+
+fn push_rejected(err: &str, d: Option<&RepoData>) -> Choice {
+    let mut ops = pull_choices();
+    // A force push leases on the remote commits we've seen: only possible once they're fetched.
+    let text = if err.contains("(fetch first)") {
+        ops.push(("Fetch".to_owned(), super::op::fetch_op()));
+        "The remote branch has commits you haven't fetched. Pull them in first, then push again — or fetch to see them, and push again to get the option to replace them."
+    } else {
+        ops.extend(d.and_then(|d| d.push_op(true)).map(|o| ("Force push…".to_owned(), o)));
+        "The remote branch has commits that aren't in yours. Pull them in first, then push again — or force push to replace them."
+    };
+    Choice { title: "Push rejected".into(), text: text.into(), ops }
+}
+
+fn signing_failed(op: &Op, verb: &str, err: &str) -> Choice {
+    let (on, off) = if verb == "commit" { ("-S", "--no-gpg-sign") } else { ("--sign", "--no-sign") };
+    let mut o = op.clone();
+    o.cmds[0].retain(|a| a != on);
+    o.cmds[0].insert(1, off.into());
+    Choice {
+        title: "Signing failed".into(),
+        text: format!(
+            "Git couldn't sign this {verb}:\n\n{}\n\nCheck your signing setup (user.signingkey, gpg.format, the GPG agent / pinentry or your SSH agent); Glasir uses git's configuration and doesn't manage keys.",
+            err.trim()
+        ),
+        ops: vec![(format!("{} without signing", if verb == "commit" { "Commit" } else { "Create tag" }), o)],
+    }
+}
+
 /// When `op` failed with `err` in a way that has a one-click fix, the choices to offer.
 pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> {
-    use super::op::{PullMode, pull_op};
     let args = op.cmds.first()?;
     let has = |a: &str| args.iter().any(|x| x == a);
-    let pulls = || {
-        let mut merge = pull_op(PullMode::Merge);
-        merge.label = "Pull (merge)".into();
-        vec![("Pull (rebase)".to_owned(), pull_op(PullMode::Rebase)), ("Pull (merge)".to_owned(), merge)]
-    };
     // The guard's own refusal, wherever it sits (the drag cherry-pick checks HEAD first).
     let guard = op.cmds.iter().position(|c| c.first().is_some_and(|a| a == super::merge_opts::PICK_NEW));
     if let Some(i) = guard.filter(|_| err.starts_with(super::merge_opts::ALREADY)) {
-        let mut anyway = op.clone();
-        anyway.cmds.remove(i);
-        return Some(Choice {
-            title: "Already applied".into(),
-            text: format!("{err}\n\nCherry-picking anyway may stop on an empty commit or conflicts, which you can skip or abort."),
-            ops: vec![("Cherry-pick anyway".into(), anyway)],
-        });
+        return Some(cherry_pick_anyway(op, i, err));
     }
     match args.first()?.as_str() {
         // Not for untracked files: the target's copy would be checked out and the stash couldn't pop.
-        "checkout" if err.contains("would be overwritten by checkout") && !err.contains("untracked working tree files") => {
-            let target = op.label.strip_prefix("Checkout ").unwrap_or(&op.label);
-            let files: Vec<String> = err.lines().filter(|l| l.starts_with('\t')).map(|l| format!("  •  {}", l.trim())).collect();
-            let mut o = op.clone();
-            o.label = format!("{} (autostash)", op.label);
-            o.autostash = Some(format!("autostash before switching to {target}"));
-            Some(Choice {
-                title: "Uncommitted changes in the way".into(),
-                text: format!(
-                    "Switching to {target} would overwrite your uncommitted changes in:\n{}\n\nGlasir can stash them, switch, and reapply them there.",
-                    files.join("\n")
-                ),
-                ops: vec![("Stash, switch and reapply".into(), o)],
-            })
-        }
+        "checkout" if err.contains("would be overwritten by checkout") && !err.contains("untracked working tree files") => Some(autostash_checkout(op, err)),
         "pull" if has("--ff-only") && err.contains("Not possible to fast-forward") => Some(Choice {
             title: "Branches have diverged".into(),
             text: "Your branch and its upstream both have new commits, so a fast-forward isn't possible. Combine them by rebasing your commits on top, or with a merge commit.".into(),
-            ops: pulls(),
+            ops: pull_choices(),
         }),
         // Only the toolbar push (current branch, `--progress`): pulling fixes nothing for another branch.
-        "push" if err.contains("[rejected]") && has("--progress") && !args.iter().any(|a| a.starts_with("--force")) => {
-            let mut ops = pulls();
-            // A force push leases on the remote commits we've seen: only possible once they're fetched.
-            let text = if err.contains("(fetch first)") {
-                ops.push(("Fetch".to_owned(), super::op::fetch_op()));
-                "The remote branch has commits you haven't fetched. Pull them in first, then push again — or fetch to see them, and push again to get the option to replace them."
-            } else {
-                ops.extend(d.and_then(|d| d.push_op(true)).map(|o| ("Force push…".to_owned(), o)));
-                "The remote branch has commits that aren't in yours. Pull them in first, then push again — or force push to replace them."
-            };
-            Some(Choice { title: "Push rejected".into(), text: text.into(), ops })
-        }
+        "push" if err.contains("[rejected]") && has("--progress") && !args.iter().any(|a| a.starts_with("--force")) => Some(push_rejected(err, d)),
         // gpg / ssh-keygen failed (no key, pinentry cancelled, locked agent): say so, offer to go unsigned.
         // A lone command only: in a commit-then-rebase op, a later step may be what failed to sign.
         verb @ ("commit" | "tag") if op.cmds.len() == 1 && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
-            let (on, off) = if verb == "commit" { ("-S", "--no-gpg-sign") } else { ("--sign", "--no-sign") };
-            let mut o = op.clone();
-            o.cmds[0].retain(|a| a != on);
-            o.cmds[0].insert(1, off.into());
-            Some(Choice {
-                title: "Signing failed".into(),
-                text: format!(
-                    "Git couldn't sign this {verb}:\n\n{}\n\nCheck your signing setup (user.signingkey, gpg.format, the GPG agent / pinentry or your SSH agent); Glasir uses git's configuration and doesn't manage keys.",
-                    err.trim()
-                ),
-                ops: vec![(format!("{} without signing", if verb == "commit" { "Commit" } else { "Create tag" }), o)],
-            })
+            Some(signing_failed(op, verb, err))
         }
         _ => None,
     }
