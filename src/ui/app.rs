@@ -51,10 +51,9 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext, open: Option<PathBuf>) -> Self {
-        let s: Settings = cc.storage.and_then(|st| eframe::get_value(st, "settings")).unwrap_or_default();
+        let mut s: Settings = cc.storage.and_then(|st| eframe::get_value(st, "settings")).unwrap_or_default();
         theme::install_fonts(&cc.egui_ctx);
         theme::set_transparency(s.transparency);
-        let mut s = s;
         if s.max_commits == 50_000 {
             s.max_commits = crate::repo::PAGE;
         }
@@ -70,8 +69,7 @@ impl App {
         let glass_backdrop = false;
         #[cfg(all(target_os = "macos", not(test)))]
         mac_quit::install(&cc.egui_ctx);
-        let mut app =
-            App {
+        let mut app = App {
             shot,
             stacks_stale: false,
             commits_stale: false,
@@ -246,6 +244,54 @@ impl App {
         }
     }
 
+    fn report_perf(&mut self, frame: &eframe::Frame) {
+        let Some((since, times)) = &mut self.perf else { return };
+        times.extend(frame.info().cpu_usage.map(|s| s * 1000.0));
+        if since.elapsed().as_secs_f32() >= 2.0 && !times.is_empty() {
+            times.sort_by(f32::total_cmp);
+            let avg = times.iter().sum::<f32>() / times.len() as f32;
+            let p95 = times[(times.len() * 95 / 100).min(times.len() - 1)];
+            eprintln!("perf: {} frames  avg {avg:.2} ms  p95 {p95:.2} ms  max {:.2} ms", times.len(), times[times.len() - 1]);
+            (*since, *times) = (std::time::Instant::now(), vec![]);
+        }
+    }
+
+    fn poll_tabs(&mut self, ctx: &egui::Context) {
+        let mut msgs: Vec<(Msg, Option<(PathBuf, u64)>)> = vec![];
+        for t in &mut self.tabs {
+            let (top, mut m) = (t.undo_top(), vec![]);
+            t.poll(ctx, &mut m);
+            m.append(&mut t.notes);
+            let undo = t.undo_top().filter(|&id| Some(id) > top).map(|id| (t.dir.clone(), id));
+            let n = m.len();
+            msgs.extend(m.into_iter().enumerate().map(|(i, m)| (m, undo.clone().filter(|_| i + 1 == n))));
+        }
+        let opens: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| t.open_tab.take()).collect();
+        for p in opens {
+            self.open(ctx, &p);
+        }
+        for (m, undo) in msgs {
+            self.toast_undo(ctx, m.text, m.error, undo);
+        }
+    }
+
+    fn guard_close(&mut self, ctx: &egui::Context, op_running: bool) {
+        if ctx.input(|i| i.viewport().close_requested())
+            && let Some((i, p)) = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|p| (i, p.to_owned())))
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            (self.active, self.quit_pending) = (i, false);
+            self.toast(ctx, format!("Save or discard your edits to {p} before quitting."), true);
+        }
+        if !op_running && ctx.input(|i| i.viewport().close_requested()) {
+            let n: usize = self.tabs.iter().map(|t| t.term.running()).sum();
+            if n > 0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit_ask = Some(n);
+            }
+        }
+    }
+
     fn quit_dialog(&mut self, ctx: &egui::Context) {
         let Some(n) = self.quit_ask else { return };
         let mut done = None;
@@ -297,7 +343,6 @@ impl App {
             Some(palette::Cmd::Theme) => toggle_flavor(&mut self.s, ctx),
         }
     }
-
 }
 
 fn drop_hint(ctx: &egui::Context, force: bool) {
@@ -352,16 +397,7 @@ impl eframe::App for App {
     }
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if let Some((since, times)) = &mut self.perf {
-            times.extend(frame.info().cpu_usage.map(|s| s * 1000.0));
-            if since.elapsed().as_secs_f32() >= 2.0 && !times.is_empty() {
-                times.sort_by(f32::total_cmp);
-                let avg = times.iter().sum::<f32>() / times.len() as f32;
-                let p95 = times[(times.len() * 95 / 100).min(times.len() - 1)];
-                eprintln!("perf: {} frames  avg {avg:.2} ms  p95 {p95:.2} ms  max {:.2} ms", times.len(), times[times.len() - 1]);
-                (*since, *times) = (std::time::Instant::now(), vec![]);
-            }
-        }
+        self.report_perf(frame);
         crate::repo::tools::set(&self.s.tools);
         crate::repo::avatars::set_enabled(self.s.avatars);
         crate::repo::merge_opts::set_pick_x(self.s.cherry_pick_x);
@@ -371,23 +407,7 @@ impl eframe::App for App {
             self.tabs.iter_mut().for_each(|t| t.reload(&ctx, true));
         }
         self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here
-        // An op that added an undo step gets an Undo button on its toast.
-        let mut msgs: Vec<(Msg, Option<(PathBuf, u64)>)> = vec![];
-        for t in &mut self.tabs {
-            let (top, mut m) = (t.undo_top(), vec![]);
-            t.poll(&ctx, &mut m);
-            m.append(&mut t.notes);
-            let undo = t.undo_top().filter(|&id| Some(id) > top).map(|id| (t.dir.clone(), id));
-            let n = m.len();
-            msgs.extend(m.into_iter().enumerate().map(|(i, m)| (m, undo.clone().filter(|_| i + 1 == n))));
-        }
-        let opens: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| t.open_tab.take()).collect();
-        for p in opens {
-            self.open(&ctx, &p);
-        }
-        for (m, undo) in msgs {
-            self.toast_undo(&ctx, m.text, m.error, undo);
-        }
+        self.poll_tabs(&ctx);
         for p in ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()) {
             self.open(&ctx, &p);
         }
@@ -410,21 +430,7 @@ impl eframe::App for App {
         if hold_close(&ctx, busy.as_deref(), &mut self.quit_pending) {
             self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.as_deref().unwrap_or_default()), false);
         }
-        if ctx.input(|i| i.viewport().close_requested())
-            && let Some((i, p)) = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|p| (i, p.to_owned())))
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            (self.active, self.quit_pending) = (i, false);
-            self.toast(&ctx, format!("Save or discard your edits to {p} before quitting."), true);
-        }
-        // A shell's job (vim, ssh, a dev server) may never end: ask rather than hold the quit.
-        if busy.is_none() && ctx.input(|i| i.viewport().close_requested()) {
-            let n: usize = self.tabs.iter().map(|t| t.term.running()).sum();
-            if n > 0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.quit_ask = Some(n);
-            }
-        }
+        self.guard_close(&ctx, busy.is_some());
         self.shortcuts(&ctx);
 
         theme::canvas(ui.painter(), ui.max_rect(), self.glass_backdrop);

@@ -29,16 +29,23 @@ fn stash_files_item(ui: &mut Ui, cs: &[Change], staged: bool, acts: &mut Vec<Act
     clicked
 }
 
+fn gitignore_item(ui: &mut Ui, dir: &std::path::Path, path: &str, acts: &mut Vec<Action>) {
+    if !ui.button("Add to .gitignore").clicked() {
+        return;
+    }
+    match crate::repo::files::append_gitignore(dir, path) {
+        Ok(()) => acts.push(Action::Reload),
+        Err(e) => acts.push(Action::Error(format!("Could not update .gitignore: {e}"))),
+    }
+}
+
 /// The rest of a WIP folder row's menu: stash, .gitignore (an untracked folder), file manager,
 /// history and path. True when the stash was picked (the selection goes with it).
 fn dir_items(ui: &mut Ui, dir: &std::path::Path, path: &str, files: &[Change], staged: bool, acts: &mut Vec<Action>) -> bool {
     let stashed = stash_files_item(ui, files, staged, acts);
     let untracked = files.iter().all(|c| c.code == '?');
-    if untracked && ui.button("Add to .gitignore").clicked() {
-        match crate::repo::files::append_gitignore(dir, path) {
-            Ok(()) => acts.push(Action::Reload),
-            Err(e) => acts.push(Action::Error(format!("Could not update .gitignore: {e}"))),
-        }
+    if untracked {
+        gitignore_item(ui, dir, path, acts);
     }
     if ui.button("Show in file manager").clicked() {
         acts.push(Action::Reveal(path.into()));
@@ -317,14 +324,13 @@ impl RepoTab {
                     {
                         acts.push(Action::Absorb);
                     }
-                    if !ai_on {
-                    } else if generating {
+                    if ai_on && generating {
                         ui.spinner();
                         ui.label(RichText::new("Writing…").small().color(theme::dim(ui)));
                         if theme::small(ui, true, "Cancel").clicked() {
                             acts.push(Action::AiCancel);
                         }
-                    } else if theme::small(ui, !s.staged.is_empty() || self.amend, format!("{}  Generate", icon::SPARKLE))
+                    } else if ai_on && theme::small(ui, !s.staged.is_empty() || self.amend, format!("{}  Generate", icon::SPARKLE))
                         .on_hover_text(if self.amend {
                             format!("Write the amended commit's message (its changes plus the staged ones) with {}", crate::ai::name())
                         } else {
@@ -621,11 +627,8 @@ impl RepoTab {
                         }
                         stash_files_item(ui, std::slice::from_ref(c), false, acts);
                         lfs_track_item(ui, d, &c.path, acts);
-                        if c.code == '?' && ui.button("Add to .gitignore").clicked() {
-                            match crate::repo::files::append_gitignore(&self.dir, &c.path) {
-                                Ok(()) => acts.push(Action::Reload),
-                                Err(e) => acts.push(Action::Error(format!("Could not update .gitignore: {e}"))),
-                            }
+                        if c.code == '?' {
+                            gitignore_item(ui, &self.dir, &c.path, acts);
                         }
                         if ui.button("Show in file manager").clicked() {
                             acts.push(Action::Reveal(c.path.clone()));
