@@ -356,9 +356,10 @@ The name fits a Git client:
 
 Get the latest build from [Releases](https://github.com/cchvuth/Glasir/releases/latest):
 `Glasir-macos-arm64.zip` (Glasir.app), `Glasir-linux-x86_64.tar.gz` and
-`Glasir-windows-x86_64.zip`. The macOS app is ad-hoc signed, not notarized: on first
-launch right-click it and choose **Open**, or run
-`xattr -dr com.apple.quarantine /Applications/Glasir.app`.
+`Glasir-windows-x86_64.zip`. The macOS app is not notarized, so macOS blocks it after
+download ("can't be opened" or "is damaged"). Move it to Applications and run
+`xattr -dr com.apple.quarantine /Applications/Glasir.app`, or try to open it once and then
+choose **Open Anyway** in System Settings → Privacy & Security.
 
 ## Build
 
