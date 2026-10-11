@@ -238,6 +238,18 @@ pub fn small<'a>(ui: &mut Ui, enabled: bool, text: impl egui::IntoAtoms<'a>) -> 
 
 /// A calm, centered empty state: a large accent glyph, a title and one line of help.
 /// Callers add their buttons below it.
+/// A commit description field: four rows tall, longer text scrolls inside it.
+pub fn description(ui: &mut Ui, text: &mut String, id: egui::Id) {
+    let v = ui.visuals();
+    let stroke = if ui.memory(|m| m.has_focus(id)) { v.selection.stroke } else { v.widgets.inactive.bg_stroke };
+    let frame = egui::Frame::NONE.fill(v.text_edit_bg_color()).stroke(stroke).corner_radius(v.widgets.inactive.corner_radius).inner_margin(super::INPUT_MARGIN);
+    frame.show(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt(id).max_height(ui.text_style_height(&egui::TextStyle::Body) * 4.0).show(ui, |ui| {
+            ui.add(egui::TextEdit::multiline(text).id(id).frame(egui::Frame::NONE).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
+        });
+    });
+}
+
 pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
     ui.label(RichText::new(glyph).size(34.0).color(accent().gamma_multiply(0.85)));
     ui.add_space(2.0);

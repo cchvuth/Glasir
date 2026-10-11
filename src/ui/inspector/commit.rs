@@ -175,8 +175,38 @@ impl RepoTab {
                 edit |= compare.is_none() && editable(ui, &r, why_not(&r));
                 if !body.trim().is_empty() {
                     ui.add_space(4.0);
-                    let r = linked(ui, body.trim(), web.as_deref(), |s| RichText::new(s), acts);
+                    let body = body.trim();
+                    let more_id = egui::Id::new(("msg_more", &info.id));
+                    let open = ui.data(|d| d.get_temp(more_id).unwrap_or(false));
+                    let (font, width) = (egui::TextStyle::Body.resolve(ui.style()), ui.available_width());
+                    let g = ui.fonts_mut(|f| f.layout(body.to_owned(), font, Color32::PLACEHOLDER, width));
+                    let rows = g.rows.len();
+                    let r = if rows <= 5 || open {
+                        linked(ui, body, web.as_deref(), |s| RichText::new(s), acts)
+                    } else {
+                        let at = |n: usize| {
+                            let c: usize = g.rows[..n].iter().map(|r| r.char_count_including_newline().0).sum();
+                            body.char_indices().nth(c).map_or(body.len(), |(i, _)| i)
+                        };
+                        let (mut a, mut b) = (at(3), at(4));
+                        if body[a..b].trim().is_empty() {
+                            (a, b) = (at(2), at(3));
+                        }
+                        ui.scope(|ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            let faded = ui.visuals().text_color().gamma_multiply(0.35);
+                            let r = linked(ui, body[..a].trim_end(), web.as_deref(), |s| RichText::new(s), acts);
+                            r.union(linked(ui, body[a..b].trim_end(), web.as_deref(), |s| RichText::new(s).color(faded), acts))
+                        })
+                        .inner
+                    };
                     edit |= compare.is_none() && editable(ui, &r, why_not(&r));
+                    if rows > 5 {
+                        let label = if open { "Show less".to_owned() } else { format!("Show more ({} more lines)", rows - 4) };
+                        if ui.link(RichText::new(label).small()).clicked() {
+                            ui.data_mut(|d| d.insert_temp(more_id, !open));
+                        }
+                    }
                 }
                 if edit && let Some(depth) = self.data.as_ref().and_then(|d| d.reword_depth(&info.id).ok()) {
                     self.edit_msg = Some(MsgEdit::new(&info.id, &info.message, depth));
@@ -333,7 +363,7 @@ fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Ve
         }
         ui.label(RichText::new(n.to_string()).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
     });
-    ui.add(TextEdit::multiline(&mut e.body).margin(theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
+    theme::description(ui, &mut e.body, ui.id().with("msg_body"));
     let can = !busy && !e.summary.trim().is_empty();
     let (mut save, mut cancel) = (false, false);
     ui.horizontal(|ui| {

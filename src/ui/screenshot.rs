@@ -188,6 +188,11 @@ impl App {
                             }
                         }
                     }
+                    q if q.starts_with("body:") => {
+                        if let Some(t) = self.tabs.get_mut(self.active) {
+                            t.body = (1..=q[5..].parse().unwrap_or(30)).map(|i| format!("Line {i} of a long description\n")).collect();
+                        }
+                    }
                     "wrap" => self.s.wrap = true,
                     "nowrap" => self.s.wrap = false,
                     "split" => self.s.split_diff = true,

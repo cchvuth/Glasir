@@ -361,10 +361,7 @@ impl RepoTab {
                 }
                 ui.label(RichText::new(format!("{n}")).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
             });
-            // Capped: a long message (amend, split, AI) must not push the Commit button off the card.
-            ScrollArea::vertical().id_salt("commit_body").max_height(160.0).show(ui, |ui| {
-                ui.add(TextEdit::multiline(&mut self.body).id(body_id).margin(crate::theme::INPUT_MARGIN).hint_text("Description").desired_rows(4).desired_width(f32::INFINITY));
-            });
+            theme::description(ui, &mut self.body, body_id);
             let was = self.amend;
             ui.horizontal_wrapped(|ui| {
                 // Nothing to amend before the first commit.
