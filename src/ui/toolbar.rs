@@ -185,23 +185,27 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut 
     }
 }
 
+fn pull_hint(mode: PullMode) -> &'static str {
+    match mode {
+        PullMode::Merge => "Fast-forward if possible, else merge",
+        PullMode::FfOnly => "Fast-forward only; refuse if the branches have diverged",
+        PullMode::Rebase => "Rebase your local commits onto the upstream",
+    }
+}
+
 fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, compact: bool, acts: &mut Vec<Action>) {
     {
         {
             if theme::pill(ui, label(compact, icon::CLOUD_ARROW_DOWN, "Fetch")).on_hover_text("Fetch all remotes and prune").clicked() {
                 acts.push(Action::Git(fetch_op()));
             }
-            if theme::pill(ui, label(compact, icon::ARROW_LINE_DOWN, "Pull")).on_hover_text(format!("{:?} (with autostash)", s.pull)).clicked() {
+            if theme::pill(ui, label(compact, icon::ARROW_LINE_DOWN, "Pull")).on_hover_text(format!("{} (with autostash)", pull_hint(s.pull))).clicked() {
                 acts.push(Action::Git(pull_op(s.pull)));
             }
             ui.menu_button(icon::CARET_DOWN, |ui| {
                 ui.label(RichText::new("Pull with").small().color(theme::dim(ui)));
-                for (mode, label) in [
-                    (PullMode::Merge, "Fast-forward if possible, else merge"),
-                    (PullMode::FfOnly, "Fast-forward only"),
-                    (PullMode::Rebase, "Rebase"),
-                ] {
-                    if ui.radio(s.pull == mode, label).clicked() {
+                for (mode, label) in [(PullMode::Merge, "Pull"), (PullMode::FfOnly, "Fast-forward only"), (PullMode::Rebase, "Rebase")] {
+                    if ui.radio(s.pull == mode, label).on_hover_text(pull_hint(mode)).clicked() {
                         s.pull = mode;
                         acts.push(Action::Git(pull_op(mode)));
                         ui.close();
