@@ -41,7 +41,8 @@ jobs:
           name: glasir-${{ runner.os }}-${{ runner.arch }}
           path: dist/*
 
-  # Every push to master becomes a GitHub release and a ghcr.io package.
+  # A push to master that raises the version in Cargo.toml becomes a GitHub
+  # release (tag v<version>) and a ghcr.io package; other pushes skip it.
   release:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
@@ -56,13 +57,21 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Version
-        run: echo "TAG=v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)-${{ github.run_number }}" >> "$GITHUB_ENV"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "SKIP=1" >> "$GITHUB_ENV"; fi
       - name: GitHub release
+        if: env.SKIP != '1'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "Glasir $TAG" --generate-notes --latest
       - uses: oras-project/setup-oras@v1
+        if: env.SKIP != '1'
       - name: Package (ghcr.io)
+        if: env.SKIP != '1'
         run: |
           echo "${{ github.token }}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
           cd dist
