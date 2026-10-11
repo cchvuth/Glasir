@@ -138,7 +138,7 @@ impl Cleanup {
 /// Ahead/behind of every local branch against `target`, from one `for-each-ref` (git 2.41+);
 /// empty on older git, where `classify` counts per branch.
 fn counts(dir: &Path, target: &str) -> HashMap<String, (u32, u32)> {
-    let out = git::run(dir, &["for-each-ref", &format!("--format=%(refname:short)%1f%(ahead-behind:{target})"), "refs/heads"]).unwrap_or_default();
+    let out = git::run(dir, &["for-each-ref", &format!("--format=%(refname:lstrip=2)%1f%(ahead-behind:{target})"), "refs/heads"]).unwrap_or_default();
     let n = |s: Option<&str>| s.and_then(|s| s.parse().ok()).unwrap_or(0);
     let pair = |l: &str| {
         let (name, ab) = l.split_once('\x1f')?;
@@ -184,7 +184,7 @@ fn twins(dir: &Path, target: &str, tips: &[&str]) -> Option<HashMap<String, bool
         (w.next().unwrap_or(""), w.collect())
     }).collect();
     let singles: String = parents.iter().filter(|(_, p)| p.len() < 2).map(|(c, _)| format!("{c}\n")).collect();
-    let diffs = git::run_input(dir, &["diff-tree", "--stdin", "-p", "--root"], Some(singles.as_bytes())).ok()?;
+    let diffs = git::run_input(dir, &["diff-tree", "--stdin", "-p", "--full-index", "--root"], Some(singles.as_bytes())).ok()?;
     let ids = git::run_input(dir, &["patch-id", "--stable"], Some(diffs.as_bytes())).ok()?;
     let pid: HashMap<&str, &str> = ids.lines().filter_map(|l| l.split_once(' ').map(|(p, c)| (c, p))).collect();
     // Patch-id -> the target commits (inside the range) having it.
@@ -258,19 +258,15 @@ fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>>
                 Some(m) => m.get(c.oid.as_str()).copied().unwrap_or(false),
                 None => git::run(dir, &["merge-tree", "--write-tree", target, &c.oid]).is_ok_and(|o| o.lines().next() == Some(tree)),
             };
-            if merged.contains(&c.oid) {
-                (c.why, c.on) = (Some(Why::Merged), true);
-            } else if match &twins {
+            let twin = || match &twins {
                 Some(m) => m.get(&c.oid).copied().unwrap_or(false),
                 None => git::run(dir, &["cherry", target, &c.oid]).is_ok_and(|o| !o.is_empty() && o.lines().all(|l| l.starts_with('-'))),
-            } {
-                // Every commit has a patch-identical twin in the target. Patch-ids skip merge
-                // commits and whitespace, so only matching content makes it safe to pre-select.
-                let same = same();
-                (c.why, c.on, c.note) = (Some(Why::Squashed), same, if same { "rebase-merged" } else { "rebase-merged · content differs" }.into());
-            } else if same() && git::run(dir, &["diff", "--quiet", &format!("{target}...{}", c.oid), "--"]).is_err() {
-                // Merging it would change nothing: its changes (not none at all) are in the target already.
-                (c.why, c.on, c.note) = (Some(Why::Squashed), true, "squash-merged".into());
+            };
+            let changes = || git::run(dir, &["diff", "--quiet", &format!("{target}...{}", c.oid), "--"]).is_err();
+            if merged.contains(&c.oid) {
+                (c.why, c.on) = (Some(Why::Merged), true);
+            } else if same() && let Some(how) = if twin() { Some("rebase") } else { changes().then_some("squash") } {
+                (c.why, c.on, c.note) = (Some(Why::Squashed), true, format!("{how}-merged · the content of its {} commit{} is in the target", c.ahead, s(c.ahead)));
             } else {
                 let n = match unpushed.as_ref().and_then(|u| u.get(&c.oid)) {
                     Some(n) => *n,
@@ -280,9 +276,9 @@ fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>>
                         .unwrap_or(1),
                 };
                 c.why = gone.then_some(Why::Gone);
-                c.on = gone && n == 0;
+                c.on = false;
                 c.note = match (gone, n) {
-                    (true, 0) => "upstream branch was deleted".into(),
+                    (true, 0) => format!("upstream deleted · {} commit{} not in the target, still on a remote", c.ahead, s(c.ahead)),
                     (true, n) => format!("upstream deleted · {n} commit{} not on any remote", s(n)),
                     (false, 0) => String::new(),
                     (false, n) => format!("{n} commit{} not on any remote", s(n)),
@@ -344,11 +340,14 @@ impl RepoTab {
         let Some(d) = &self.data else { return };
         let def = d.default_branch().to_owned();
         let mut c = self.cleanup.take().unwrap_or_default();
-        c.targets = d.refs.iter().filter(|r| matches!(r.kind, RefKind::Local | RefKind::Remote) && !r.name.ends_with("/HEAD")).map(|r| r.name.clone()).collect();
+        let tracked: Vec<_> = d.refs.iter().filter(|r| matches!(r.kind, RefKind::Local | RefKind::Remote) && !r.name.ends_with("/HEAD")).collect();
+        c.targets = tracked.iter().map(|r| r.name.clone()).collect();
         if !c.targets.contains(&c.target) {
-            c.target = if c.targets.contains(&format!("origin/{def}")) { format!("origin/{def}") } else { def.clone() };
+            let pick = [format!("origin/{def}"), def.clone()].into_iter().find(|t| c.targets.contains(t));
+            c.target = pick.or_else(|| c.targets.iter().find(|t| is_trunk(t)).cloned()).unwrap_or(def.clone());
         }
         let target = c.target.clone();
+        let full = tracked.iter().find(|r| r.name == target).map_or(target.clone(), |r| r.full.clone());
         let target_branch = d.split_remote(&target).map_or(target.as_str(), |(_, b)| b);
         let kept = |n: &str| protected(&self.keep_branches, n) || n == def || n == target || n == target_branch;
         // A branch being rebased or bisected has no HEAD marker, but git refuses to delete it.
@@ -370,7 +369,7 @@ impl RepoTab {
             .collect();
         if c.rows.is_none() {
             let dir = self.dir.clone();
-            c.task = Some(Task::spawn(ctx, move || scan(&dir, &target, rows)));
+            c.task = Some(Task::spawn(ctx, move || scan(&dir, &full, rows)));
         }
         if c.prune && c.stale_refs.is_none() && c.prune_task.is_none() {
             let (dir, remotes) = (self.dir.clone(), d.remotes.iter().map(|r| r.0.clone()).collect::<Vec<_>>());
@@ -468,7 +467,7 @@ mod tests {
             shown(&t, now()),
             [
                 ("feature".to_owned(), Why::Gone, "upstream deleted · 1 commit not on any remote".to_owned(), false),
-                ("pushed".to_owned(), Why::Gone, "upstream branch was deleted".to_owned(), true),
+                ("pushed".to_owned(), Why::Gone, "upstream deleted · 2 commits not in the target, still on a remote".to_owned(), false),
             ]
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -500,7 +499,10 @@ mod tests {
         settle(&ctx, &mut t);
         scanned(&ctx, &mut t);
         let sq = |n: &str, how: &str| (n.to_owned(), Why::Squashed, how.to_owned(), true);
-        assert_eq!(shown(&t, now()), [sq("rb", "rebase-merged"), sq("sq", "squash-merged")]);
+        assert_eq!(
+            shown(&t, now()),
+            [sq("rb", "rebase-merged · the content of its 1 commit is in the target"), sq("sq", "squash-merged · the content of its 2 commits is in the target")]
+        );
         let c = t.cleanup.as_ref().unwrap();
         let s = c.rows.as_ref().unwrap().as_ref().unwrap().iter().find(|c| c.name == "sq").unwrap();
         assert_eq!((s.ahead, s.behind), (2, 4));
@@ -634,9 +636,7 @@ mod tests {
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
         scanned(&ctx, &mut t);
-        let rows = shown(&t, now());
-        let rows: Vec<_> = rows.iter().map(|r| (r.0.as_str(), r.1, r.3)).collect();
-        assert_eq!(rows, [("mrg", Why::Squashed, false), ("ws", Why::Squashed, false)]);
+        assert_eq!(shown(&t, now()), []);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -655,6 +655,94 @@ mod tests {
         sh(&root.join("remote.git"), &["branch", "-D", "old"]);
         let stale = stale_refs(&a, &["origin".into()]).unwrap();
         assert_eq!(stale.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), ["refs/remotes/origin/old"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn rows_for(dir: &Path, names: &[&str]) -> Vec<(Cand, bool)> {
+        names.iter().map(|n| (Cand { name: n.to_string(), oid: sh(dir, &["rev-parse", n]).trim().to_owned(), ..Default::default() }, false)).collect()
+    }
+
+    #[test]
+    fn target_is_an_existing_trunk_by_full_name() {
+        let dir = scratch("cleanup-target");
+        sh(&dir, &["init", "-q", "-b", "master"]);
+        identity(&dir);
+        commit(&dir, "a", "base\n");
+        sh(&dir, &["switch", "-q", "-c", "feature"]);
+        commit(&dir, "f", "work\n");
+        sh(&dir, &["tag", "master"]);
+        sh(&dir, &["switch", "-q", "master"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        scanned(&ctx, &mut t);
+        assert_eq!(t.cleanup.as_ref().unwrap().target, "master");
+        assert_eq!(shown(&t, now()), []);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unmerged_branches_are_never_merged() {
+        let root = scratch("cleanup-unmerged");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let dir = root.join("a");
+        identity(&dir);
+        commit(&dir, "a", "1\n2\n3\n4\n5\n6\n7\n8\n");
+        commit(&dir, "shared", "x\n");
+        sh(&dir, &["push", "-q", "-u", "origin", "main"]);
+        let fork = |b: &str| sh(&dir, &["switch", "-q", "-c", b, "main"]);
+        fork("uniq");
+        commit(&dir, "u", "unique\n");
+        fork("conflict");
+        commit(&dir, "a", "1\nB\n3\n4\n5\n6\n7\n8\n");
+        fork("clean");
+        commit(&dir, "a", "1\n2\n3\n4\n5\n6\n7\nB\n");
+        fork("picked");
+        commit(&dir, "p1", "picked\n");
+        commit(&dir, "p2", "unique\n");
+        fork("reverted");
+        commit(&dir, "r", "reverted on main\n");
+        fork("collide");
+        commit(&dir, "c", "c\n");
+        sh(&dir, &["revert", "--no-edit", "HEAD"]);
+        commit(&dir, "c", "c\n");
+        fork("empty");
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "empty"]);
+        commit(&dir, "e", "unique\n");
+        fork("remote");
+        commit(&dir, "o", "on origin/main only\n");
+        sh(&dir, &["push", "-q", "origin", "remote:main"]);
+        sh(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "a", "1\n2\nM\n4\n5\n6\n7\n8\n");
+        commit(&dir, "a", "1\nM\nM\n4\n5\n6\n7\n8\n");
+        sh(&dir, &["cherry-pick", "picked~1"]);
+        sh(&dir, &["cherry-pick", "reverted"]);
+        sh(&dir, &["revert", "--no-edit", "HEAD"]);
+        sh(&dir, &["cherry-pick", "collide~2"]);
+        sh(&dir, &["cherry-pick", "collide~1"]);
+        let names = ["uniq", "conflict", "clean", "picked", "reverted", "collide", "empty", "remote"];
+        let main = scan(&dir, "refs/heads/main", rows_for(&dir, &names)).unwrap();
+        assert!(main.iter().all(|c| c.why.is_none() && !c.on), "{main:?}");
+        let origin = scan(&dir, "refs/remotes/origin/main", rows_for(&dir, &names)).unwrap();
+        assert_eq!((origin[0].name.as_str(), origin[0].why, origin[0].on), ("remote", Some(Why::Merged), true));
+        assert!(origin[1..].iter().all(|c| c.why.is_none() && !c.on), "{origin:?}");
+        let tips: Vec<String> = names.iter().map(|n| sh(&dir, &["rev-parse", n]).trim().to_owned()).collect();
+        let tips: Vec<&str> = tips.iter().map(String::as_str).collect();
+        let tree = sh(&dir, &["rev-parse", "main^{tree}"]);
+        let same = same_tree(&dir, "main", tree.trim(), &tips).unwrap();
+        let (twins, unpushed, counts) = (twins(&dir, "main", &tips).unwrap(), unpushed(&dir, "main", &tips).unwrap(), counts(&dir, "main"));
+        for (i, (n, t)) in names.iter().zip(&tips).enumerate() {
+            let one = git::run(&dir, &["merge-tree", "--write-tree", "main", t]).is_ok_and(|o| o.lines().next() == Some(tree.trim()));
+            let cherry = sh(&dir, &["cherry", "main", t]);
+            let lr = sh(&dir, &["rev-list", "--left-right", "--count", &format!("main...{t}")]);
+            let lr: Vec<u32> = lr.split_whitespace().map(|n| n.parse().unwrap()).collect();
+            let up: u32 = sh(&dir, &["rev-list", "--count", t, "--not", "--remotes", "main"]).trim().parse().unwrap();
+            assert_eq!(same[i], one, "{n}");
+            assert_eq!(twins[*t], !cherry.is_empty() && cherry.lines().all(|l| l.starts_with('-')), "{n}");
+            assert_eq!((counts[*n], unpushed[*t]), ((lr[1], lr[0]), up), "{n}");
+        }
+        assert!(twins[tips[4]] && twins[tips[5]] && !twins[tips[3]], "reverted and collide have twins, picked doesn't");
         let _ = std::fs::remove_dir_all(&root);
     }
 
