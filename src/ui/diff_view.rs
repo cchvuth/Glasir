@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 const LINE_H: f32 = 18.0;
 const NUM_W: f32 = 44.0;
 const RAIL_W: f32 = 8.0;
+const TITLE_MIN_W: f32 = 220.0;
 /// Lines kept above a change jumped to.
 const LEAD: usize = 3;
 
@@ -240,6 +241,13 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         acts.push(Action::CloseDiff);
     }
     let narrow = ui.available_width() < 600.0;
+    let used_id = ui.id().with("diff_actions_w");
+    if ds.picked.is_empty() {
+        ui.data_mut(|m| m.remove::<f32>(used_id));
+    }
+    let used = ui.data(|m| m.get_temp::<f32>(used_id));
+    let short = narrow || used.is_some_and(|u| u > ui.available_width());
+    let stacked = narrow || used.is_some_and(|u| u + TITLE_MIN_W > ui.available_width());
     let title = |ui: &mut Ui, acts: &mut Vec<Action>| {
         if ui.button(icon::X).on_hover_text("Close (Esc)").clicked() {
             acts.push(Action::CloseDiff);
@@ -249,10 +257,10 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         }
         ui.label(RichText::new(&change.path).monospace().strong());
     };
-    if narrow {
+    if stacked {
         theme::bar(ui, |ui| theme::rest(ui, |ui| title(ui, acts)));
     }
-    theme::bar(ui, |ui| {
+    let actions = |ui: &mut Ui| {
         if worktree && change.code != 'D' && theme::pill(ui, icon::CODE).on_hover_text("Open in editor").clicked() {
             acts.push(Action::Editor(change.path.clone()));
         }
@@ -307,7 +315,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         }
         if let (false, Some(f), Some(&first)) = (worktree, file, ds.picked.first())
             && let Some((path, mode)) = line_range(&src, f, &ds.picked, first)
-            && ui.button(if narrow { format!("{} {}", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len()) } else { format!("{}  History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len()) }).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
+            && ui.button(if short { format!("{} {}", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len()) } else { format!("{}  History of {} line(s)", icon::CLOCK_COUNTER_CLOCKWISE, ds.picked.len()) }).on_hover_text("Commits that changed the picked lines (git log -L)").clicked()
         {
             acts.push(Action::FileView(path, mode));
         }
@@ -316,21 +324,21 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         if let (true, Some(f)) = (partial && n > 0, file) {
             let pick = |h: usize, l: usize| ds.picked.contains(&(h, l));
             if !worktree {
-                if ui.button(if narrow { format!("Revert {n}") } else { format!("Revert {n} line(s)") }).on_hover_text(keys(REVERT_HINT)).clicked() {
+                if ui.button(if short { format!("Revert {n}") } else { format!("Revert {n} line(s)") }).on_hover_text(keys(REVERT_HINT)).clicked() {
                     acts.push(apply_op("Revert lines", partial_patch(f, pick, true), &["--reverse"], &src, ds_opts, f));
                 }
-                if ui.button(if narrow { format!("Cherry-pick {n}") } else { format!("Cherry-pick {n} line(s)") }).on_hover_text(keys(PICK_HINT)).clicked() {
+                if ui.button(if short { format!("Cherry-pick {n}") } else { format!("Cherry-pick {n} line(s)") }).on_hover_text(keys(PICK_HINT)).clicked() {
                     acts.push(apply_op("Cherry-pick lines", partial_patch(f, pick, false), &[], &src, ds_opts, f));
                 }
             } else if staged {
-                if ui.button(if narrow { format!("Unstage {n}") } else { format!("Unstage {n} line(s)") }).clicked() {
+                if ui.button(if short { format!("Unstage {n}") } else { format!("Unstage {n} line(s)") }).clicked() {
                     acts.push(apply_op("Unstage lines", partial_patch(f, pick, true), &["--cached", "--reverse"], &src, ds_opts, f));
                 }
             } else {
-                if !untracked && ui.button(if narrow { format!("Discard {n}") } else { format!("Discard {n} line(s)") }).clicked() {
+                if !untracked && ui.button(if short { format!("Discard {n}") } else { format!("Discard {n} line(s)") }).clicked() {
                     acts.push(discard("Discard lines", f, pick, &src, ds_opts));
                 }
-                if ui.button(if narrow { format!("Stage {n}") } else { format!("Stage {n} line(s)") }).clicked() {
+                if ui.button(if short { format!("Stage {n}") } else { format!("Stage {n} line(s)") }).clicked() {
                     acts.push(stage("Stage lines", f, pick, &src, ds_opts));
                 }
             }
@@ -347,10 +355,18 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                 crate::ui::links::items(ui, d, &[(if a == b { "line" } else { "lines" }, page)], &[id], acts);
             }
         }
-        if !narrow {
+        if !short {
+            ui.data_mut(|m| m.insert_temp(used_id, ui.min_rect().width()));
+        }
+        if !stacked {
             theme::rest(ui, |ui| title(ui, acts));
         }
-    });
+    };
+    if narrow {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min).with_main_wrap(true), actions);
+    } else {
+        theme::bar(ui, actions);
+    }
     if ds.image.is_none() {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {

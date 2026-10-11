@@ -24,11 +24,12 @@ pub(super) fn shot_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
             ctx.data_mut(|m| m.insert_temp(wid, (pos, delta, step + 1)));
         }
     }
-    let id = Id::new("shot_rclick");
+    let (id, button) = if ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(Id::new("shot_lclick")).is_some()) { (Id::new("shot_lclick"), egui::PointerButton::Primary) } else { (Id::new("shot_rclick"), egui::PointerButton::Secondary) };
     let Some((pos, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(id)) else { return };
-    raw.events.push(match step {
+    let wait = if button == egui::PointerButton::Primary { 8 } else { 0 };
+    raw.events.push(match step.saturating_sub(wait) {
         0 => egui::Event::PointerMoved(pos),
-        1 | 2 => egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed: step == 1, modifiers: Default::default() },
+        1 | 2 => egui::Event::PointerButton { pos, button, pressed: step - wait == 1, modifiers: Default::default() },
         _ => return ctx.data_mut(|m| m.remove::<(egui::Pos2, u8)>(id)),
     });
     ctx.data_mut(|m| m.insert_temp(id, (pos, step + 1)));
@@ -188,6 +189,7 @@ impl App {
                         }
                     }
                     "wrap" => self.s.wrap = true,
+                    "nowrap" => self.s.wrap = false,
                     "split" => self.s.split_diff = true,
                     "tree" => self.s.file_tree = true,
                     q if q.starts_with("zoom:") => ctx.set_zoom_factor(q[5..].parse().unwrap_or(1.0)),
@@ -428,6 +430,11 @@ impl App {
                     q if q.starts_with("rclick:") => {
                         if let Some((x, y)) = q[7..].split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
                             ctx.data_mut(|m| m.insert_temp(Id::new("shot_rclick"), (egui::pos2(x, y), 0u8)));
+                        }
+                    }
+                    q if q.starts_with("lclick:") => {
+                        if let Some((x, y)) = q[7..].split_once('x').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?))) {
+                            ctx.data_mut(|m| m.insert_temp(Id::new("shot_lclick"), (egui::pos2(x, y), 0u8)));
                         }
                     }
                     q if q.starts_with("hscroll:") => {
