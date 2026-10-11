@@ -258,6 +258,9 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                                 if !r.note.is_empty() {
                                     info.insert(0, r.note.clone());
                                 }
+                                if c.remote && !r.kept.is_empty() {
+                                    info.insert(0, r.kept.clone());
+                                }
                                 ui.label(RichText::new(info.join(" · ")).small().color(theme::dim(ui)))
                                     .on_hover_text(format!("{} commits not in {}, {} commits of {} missing", r.ahead, c.target, r.behind, c.target));
                                 theme::rest(ui, |ui| ui.checkbox(&mut r.on, RichText::new(r.name.as_str()).strong()).on_hover_text(r.name.as_str()));
@@ -269,8 +272,15 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         }
         ui.add_space(6.0);
         let remote = if c.remote { format!(" ({})", c.remote_deletes(*days, now).len()) } else { String::new() };
-        ui.checkbox(&mut c.remote, format!("Also delete on the remote{remote}"))
-            .on_hover_text("Deletes the ticked branches' same-named upstream branches, if they hold nothing the local branch lacks. Can't be undone on the remote.");
+        if ui
+            .checkbox(&mut c.remote, format!("Also delete on the remote{remote}"))
+            .on_hover_text("Fetches, then deletes the ticked branches' upstream branches whose own commits are all in the target, each only if nobody pushed to it since. Can't be undone on the remote.")
+            .changed()
+            && c.remote
+        {
+            c.rows = None;
+            acts.push(Action::Cleanup);
+        }
         ui.horizontal(|ui| {
             if ui.checkbox(&mut c.prune, "Prune stale remote-tracking refs").changed() && c.prune {
                 acts.push(Action::Cleanup);

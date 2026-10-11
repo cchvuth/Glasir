@@ -5,7 +5,7 @@ use super::data::is_trunk;
 use super::{RepoData, RepoTab, Task, delete_branches};
 use crate::git::{self, RefKind, Res};
 use crate::repo::Op;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// Why a branch is offered, in display order.
@@ -29,9 +29,8 @@ pub struct Cand {
     pub ahead: u32,
     pub behind: u32,
     pub on: bool,
-    /// Same-named upstream `(remote, branch, oid)` whose commits are all in the local
-    /// branch, so "also delete on remote" loses nothing ⌘Z can't bring back locally.
     pub remote: Option<(String, String, String)>,
+    pub kept: String,
 }
 
 #[derive(Default)]
@@ -91,7 +90,13 @@ impl Cleanup {
     pub fn remote_deletes(&self, days: u32, now: i64) -> Vec<&(String, String, String)> {
         let pruned = self.pruned();
         let gone = |(r, b, _): &&(String, String, String)| pruned.iter().any(|(p, _)| *p == format!("refs/remotes/{r}/{b}"));
-        self.chosen(days, now).into_iter().filter_map(|c| c.remote.as_ref()).filter(|x| !gone(x)).collect()
+        let mut out: Vec<&(String, String, String)> = vec![];
+        for x in self.chosen(days, now).into_iter().filter_map(|c| c.remote.as_ref()).filter(|x| !gone(x)) {
+            if !out.iter().any(|y| (&y.0, &y.1) == (&x.0, &x.1)) {
+                out.push(x);
+            }
+        }
+        out
     }
 
     /// Deletes the chosen branches (undoable with their config), prunes the stale
@@ -111,28 +116,34 @@ impl Cleanup {
         if !self.remote {
             return Ok(op);
         }
-        let mut by: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
-        for (r, b, o) in self.remote_deletes(days, now) {
-            by.entry(r).or_default().push((b, o));
-        }
-        let mut shown = vec![];
-        for (r, list) in &by {
-            // The lease refuses a remote branch someone pushed to since it was fetched.
-            let mut a = vec!["push".to_owned(), r.to_string()];
-            a.extend(list.iter().map(|(b, o)| format!("--force-with-lease=refs/heads/{b}:{o}")));
-            a.push("--delete".into());
-            a.extend(list.iter().map(|(b, _)| format!("refs/heads/{b}")));
-            op.cmds.push(a);
-            shown.extend(list.iter().map(|(b, _)| format!("{r}/{b}")));
-        }
-        if shown.is_empty() {
+        let dels = self.remote_deletes(days, now);
+        if dels.is_empty() {
             return Ok(op);
         }
+        let shown: Vec<String> = dels.iter().map(|(r, b, _)| format!("{r}/{b}")).collect();
+        op.cmds.push([REMOTE_DELETE.to_owned()].into_iter().chain(dels.iter().flat_map(|(r, b, o)| [r.clone(), b.clone(), o.clone()])).collect());
         Ok(op.confirm(format!(
-            "Also delete {} on the remote? ⌘Z brings back the local branches only: a remote delete can't be undone (push a restored branch to bring it back).",
+            "Also delete {} on the remote? Each is deleted only if it is still at the commit that was checked. ⌘Z brings back the local branches only: a remote delete can't be undone (push a restored branch to bring it back).",
             shown.join(", ")
         )))
     }
+}
+
+pub(super) const REMOTE_DELETE: &str = "!remote-delete";
+
+pub(super) fn remote_delete(dir: &Path, a: &[&str]) -> Res<String> {
+    let mut failed = vec![];
+    for x in a.chunks(3) {
+        let [r, b, o] = x else { return Err(format!("bad remote delete {a:?}")) };
+        let lease = format!("--force-with-lease=refs/heads/{b}:{o}");
+        if let Err(e) = git::run(dir, &["push", &lease, r, &format!(":refs/heads/{b}")]) {
+            failed.push(match e.contains("stale info") {
+                true => format!("{r}/{b} wasn't deleted: it changed on the remote since it was checked. Fetch and open Clean up branches again."),
+                false => format!("{r}/{b} wasn't deleted: {}", e.lines().find(|l| !l.trim().is_empty()).unwrap_or(&e)),
+            });
+        }
+    }
+    if failed.is_empty() { Ok(String::new()) } else { Err(failed.join("\n")) }
 }
 
 /// Ahead/behind of every local branch against `target`, from one `for-each-ref` (git 2.41+);
@@ -234,18 +245,54 @@ fn unpushed(dir: &Path, target: &str, tips: &[&str]) -> Option<HashMap<String, u
 /// Classifies `rows` (name, tip, date and remote candidate filled in; with "upstream gone")
 /// against `target`. Counts, merge results and unpushed commits come from a few bulk git
 /// commands; few commands run per branch.
-fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
-    let merged = git::run(dir, &["for-each-ref", &format!("--merged={target}"), "--format=%(objectname)", "refs/heads"])?;
+fn scan(dir: &Path, target: &str, fetch: bool, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>> {
+    let mut remotes: Vec<String> = rows.iter().filter_map(|r| Some(r.0.remote.as_ref()?.0.clone())).collect();
+    remotes.sort();
+    remotes.dedup();
+    let failed: HashMap<String, String> = remotes.iter().filter(|_| fetch).filter_map(|r| Some((r.clone(), git::fetch_remote_quiet(dir, r).err()?))).collect();
+    let tips = git::run(dir, &["for-each-ref", "--format=%(refname)%1f%(objectname)", "refs/remotes"])?;
+    let tips: HashMap<&str, &str> = tips.lines().filter_map(|l| l.split_once('\x1f')).collect();
+    for (c, _) in &mut rows {
+        let tip = c.remote.as_ref().and_then(|(r, b, _)| tips.get(format!("refs/remotes/{r}/{b}").as_str()));
+        match (tip, &mut c.remote) {
+            (Some(t), Some(x)) => x.2 = t.to_string(),
+            _ => c.remote = None,
+        }
+    }
+    let merged = git::run(dir, &["for-each-ref", &format!("--merged={target}"), "--format=%(objectname)", "refs/heads", "refs/remotes"])?;
     let merged: HashSet<String> = merged.lines().map(String::from).collect();
     let tree = git::run(dir, &["rev-parse", "--verify", "-q", &format!("{target}^{{tree}}")])?;
     let tree = tree.trim();
     let counts = counts(dir, target);
-    let open: Vec<String> = rows.iter().map(|r| r.0.oid.clone()).filter(|o| !merged.contains(o)).collect();
+    let mut open: Vec<String> = rows.iter().map(|r| r.0.oid.clone()).filter(|o| !merged.contains(o)).collect();
+    let local = open.len();
+    open.extend(rows.iter().filter_map(|r| Some(r.0.remote.as_ref()?.2.clone())).filter(|o| !merged.contains(o)));
     let open: Vec<&str> = open.iter().map(String::as_str).collect();
     let same = same_tree(dir, target, tree, &open).map(|v| open.iter().map(|o| o.to_string()).zip(v).collect::<HashMap<_, _>>());
     let twins = twins(dir, target, &open);
-    let unpushed = unpushed(dir, target, &open);
+    let unpushed = unpushed(dir, target, &open[..local]);
     let s = |n: u32| if n == 1 { "" } else { "s" };
+    let fate = |o: &str| {
+        if merged.contains(o) {
+            return Some("");
+        }
+        let same = match &same {
+            Some(m) => m.get(o).copied().unwrap_or(false),
+            None => git::run(dir, &["merge-tree", "--write-tree", target, o]).is_ok_and(|out| out.lines().next() == Some(tree)),
+        };
+        let twin = || match &twins {
+            Some(m) => m.get(o).copied().unwrap_or(false),
+            None => git::run(dir, &["cherry", target, o]).is_ok_and(|out| !out.is_empty() && out.lines().all(|l| l.starts_with('-'))),
+        };
+        let changes = || git::run(dir, &["diff", "--quiet", &format!("{target}...{o}"), "--"]).is_err();
+        if !same {
+            None
+        } else if twin() {
+            Some("rebase")
+        } else {
+            changes().then_some("squash")
+        }
+    };
     let classify = |(c, gone): &mut (Cand, bool)| {
             let gone = *gone;
             (c.ahead, c.behind) = counts.get(&c.name).copied().unwrap_or_else(|| {
@@ -254,19 +301,12 @@ fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>>
                 let behind = n.next().unwrap_or(0);
                 (n.next().unwrap_or(0), behind)
             });
-            let same = || match &same {
-                Some(m) => m.get(c.oid.as_str()).copied().unwrap_or(false),
-                None => git::run(dir, &["merge-tree", "--write-tree", target, &c.oid]).is_ok_and(|o| o.lines().next() == Some(tree)),
-            };
-            let twin = || match &twins {
-                Some(m) => m.get(&c.oid).copied().unwrap_or(false),
-                None => git::run(dir, &["cherry", target, &c.oid]).is_ok_and(|o| !o.is_empty() && o.lines().all(|l| l.starts_with('-'))),
-            };
-            let changes = || git::run(dir, &["diff", "--quiet", &format!("{target}...{}", c.oid), "--"]).is_err();
-            if merged.contains(&c.oid) {
-                (c.why, c.on) = (Some(Why::Merged), true);
-            } else if same() && let Some(how) = if twin() { Some("rebase") } else { changes().then_some("squash") } {
-                (c.why, c.on, c.note) = (Some(Why::Squashed), true, format!("{how}-merged · the content of its {} commit{} is in the target", c.ahead, s(c.ahead)));
+            if let Some(how) = fate(&c.oid) {
+                c.on = true;
+                c.why = Some(if how.is_empty() { Why::Merged } else { Why::Squashed });
+                if !how.is_empty() {
+                    c.note = format!("{how}-merged · the content of its {} commit{} is in the target", c.ahead, s(c.ahead));
+                }
             } else {
                 let n = match unpushed.as_ref().and_then(|u| u.get(&c.oid)) {
                     Some(n) => *n,
@@ -284,7 +324,23 @@ fn scan(dir: &Path, target: &str, mut rows: Vec<(Cand, bool)>) -> Res<Vec<Cand>>
                     (false, n) => format!("{n} commit{} not on any remote", s(n)),
                 };
             }
-            c.remote = c.remote.take().filter(|(_, _, o)| *o == c.oid || git::run(dir, &["merge-base", "--is-ancestor", o, &c.oid]).is_ok());
+            let Some((r, b, o)) = c.remote.clone() else { return };
+            if o != c.oid && git::run(dir, &["merge-base", "--is-ancestor", &o, &c.oid]).is_err() {
+                c.on = false;
+                let n = git::run(dir, &["rev-list", "--count", &o, "--not", &c.oid]).unwrap_or_default();
+                let n: u32 = n.trim().parse().unwrap_or(1);
+                c.note = [c.note.as_str(), &format!("{r}/{b} has {n} commit{} this branch lacks", s(n))].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" · ");
+            }
+            if let Some(e) = failed.get(&r) {
+                c.kept = format!("couldn't fetch {r} to check {r}/{b} ({}) — kept on the remote", e.lines().next().unwrap_or(""));
+            } else if fate(&o).is_none() {
+                let n = git::run(dir, &["rev-list", "--count", &o, "--not", target]).unwrap_or_default();
+                let n: u32 = n.trim().parse().unwrap_or(1);
+                c.kept = format!("{r}/{b} has {n} commit{} not in the target — kept on the remote", s(n));
+            } else {
+                return;
+            }
+            c.remote = None;
     };
     // Only the `diff --quiet` and remote checks (and fallbacks) run per branch: spread them over a few threads.
     let per = rows.len().div_ceil(std::thread::available_parallelism().map_or(4, |n| n.get().min(8))).max(1);
@@ -361,15 +417,24 @@ impl RepoTab {
             .iter()
             .filter(|r| r.kind == RefKind::Local && !r.head && r.worktree.is_none() && !kept(&r.name) && !busy.contains(&r.name))
             .map(|r| {
-                let up = d.split_remote(&r.upstream).filter(|(_, b)| !r.gone && *b == r.name);
-                let oid = up.and_then(|_| d.refs.iter().find(|x| x.kind == RefKind::Remote && x.name == r.upstream)).map(|x| x.target.clone());
-                let remote = up.zip(oid).map(|((rem, b), o)| (rem.to_owned(), b.to_owned(), o));
-                (Cand { name: r.name.clone(), oid: r.target.clone(), date: r.date, remote, ..Default::default() }, r.gone)
+                let mut c = Cand { name: r.name.clone(), oid: r.target.clone(), date: r.date, ..Default::default() };
+                match d.split_remote(&r.upstream).filter(|_| !r.gone) {
+                    Some((rem, b)) if kept(b) || full == format!("refs/remotes/{rem}/{b}") => c.kept = format!("{} is protected — kept on the remote", r.upstream),
+                    Some((rem, b)) => c.remote = Some((rem.to_owned(), b.to_owned(), String::new())),
+                    None if r.upstream.is_empty() => {
+                        let other = d.refs.iter().find(|x| x.kind == RefKind::Remote && d.split_remote(&x.name).is_some_and(|(_, b)| b == r.name));
+                        if let Some(x) = other {
+                            c.kept = format!("{} isn't its upstream — kept on the remote", x.name);
+                        }
+                    }
+                    None => {}
+                }
+                (c, r.gone)
             })
             .collect();
         if c.rows.is_none() {
-            let dir = self.dir.clone();
-            c.task = Some(Task::spawn(ctx, move || scan(&dir, &full, rows)));
+            let (dir, fetch) = (self.dir.clone(), c.remote);
+            c.task = Some(Task::spawn(ctx, move || scan(&dir, &full, fetch, rows)));
         }
         if c.prune && c.stale_refs.is_none() && c.prune_task.is_none() {
             let (dir, remotes) = (self.dir.clone(), d.remotes.iter().map(|r| r.0.clone()).collect::<Vec<_>>());
@@ -384,6 +449,7 @@ mod tests {
     use super::super::testutil::{commit, identity, scratch, settle, sh};
     use super::super::{Action, View};
     use super::*;
+    use std::path::PathBuf;
 
     const NOW: i64 = i64::MAX / 2;
 
@@ -582,6 +648,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    fn two_clones(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = scratch(name);
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        sh(&a, &["remote", "set-head", "origin", "main"]);
+        sh(&root, &["clone", "-q", "remote.git", "b"]);
+        let b = root.join("b");
+        identity(&b);
+        (root, a, b)
+    }
+
+    fn pushed_elsewhere(b: &Path, branch: &str) -> String {
+        sh(b, &["fetch", "-q", "origin"]);
+        sh(b, &["switch", "-q", "-C", branch, &format!("origin/{branch}")]);
+        commit(b, "more.txt", "not merged\n");
+        sh(b, &["push", "-q", "origin", branch]);
+        sh(b, &["rev-parse", "HEAD"]).trim().to_owned()
+    }
+
+    fn cand<'a>(t: &'a RepoTab, name: &str) -> &'a Cand {
+        t.cleanup.as_ref().unwrap().rows.as_ref().unwrap().as_ref().unwrap().iter().find(|c| c.name == name).unwrap()
+    }
+
+    #[test]
+    fn remote_with_unmerged_commits_is_kept() {
+        let (root, a, b) = two_clones("cleanup-remote-ahead");
+        for x in ["feat", "solo"] {
+            sh(&a, &["switch", "-q", "-c", x, "main"]);
+            commit(&a, &format!("{x}.txt"), "work\n");
+            sh(&a, &["push", "-q", "-u", "origin", x]);
+        }
+        sh(&a, &["branch", "--unset-upstream", "solo"]);
+        sh(&a, &["switch", "-q", "main"]);
+        sh(&a, &["merge", "-q", "--no-ff", "-m", "merge", "feat", "solo"]);
+        sh(&a, &["push", "-q", "origin", "main"]);
+        let extra = pushed_elsewhere(&b, "feat");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.cleanup.get_or_insert_default().remote = true;
+        scanned(&ctx, &mut t);
+        let f = cand(&t, "feat");
+        assert_eq!((f.why, f.on, f.remote.as_ref()), (Some(Why::Merged), false, None));
+        assert_eq!(f.note, "origin/feat has 1 commit this branch lacks");
+        assert_eq!(f.kept, "origin/feat has 1 commit not in the target — kept on the remote");
+        let s = cand(&t, "solo");
+        assert_eq!((s.why, s.on, s.remote.as_ref(), s.kept.as_str()), (Some(Why::Merged), true, None, "origin/solo isn't its upstream — kept on the remote"));
+        let c = t.cleanup.as_mut().unwrap();
+        c.rows.as_mut().unwrap().as_mut().unwrap().iter_mut().for_each(|c| c.on = true);
+        assert!(c.remote_deletes(90, now()).is_empty());
+        let op = c.op(t.data.as_ref().unwrap(), 90, now()).unwrap();
+        assert!(op.confirm.is_none());
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&a, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]), "main\n");
+        let remote = root.join("remote.git");
+        assert_eq!(sh(&remote, &["rev-parse", "feat"]).trim(), extra);
+        assert_eq!(sh(&remote, &["branch", "--format=%(refname:short)"]), "feat\nmain\nsolo\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_moved_after_the_scan_is_not_deleted() {
+        let (root, a, b) = two_clones("cleanup-remote-lease");
+        sh(&a, &["push", "-q", "origin", "main:feat", "main:done-remote"]);
+        sh(&a, &["fetch", "-q", "origin"]);
+        sh(&a, &["branch", "-q", "--track", "feat", "origin/feat"]);
+        sh(&a, &["branch", "-q", "--track", "done", "origin/done-remote"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.cleanup.get_or_insert_default().remote = true;
+        scanned(&ctx, &mut t);
+        let c = t.cleanup.as_ref().unwrap();
+        let dels: Vec<String> = c.remote_deletes(90, now()).iter().map(|(r, b, _)| format!("{r}/{b}")).collect();
+        assert_eq!(dels, ["origin/done-remote", "origin/feat"]);
+        let op = c.op(t.data.as_ref().unwrap(), 90, now()).unwrap();
+        assert!(op.confirm.as_ref().unwrap().starts_with("Also delete origin/done-remote, origin/feat on the remote?"));
+        let extra = pushed_elsewhere(&b, "feat");
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..op }));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("origin/feat wasn't deleted: it changed on the remote")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        let remote = root.join("remote.git");
+        assert_eq!(sh(&remote, &["branch", "--format=%(refname:short)"]), "feat\nmain\n");
+        assert_eq!(sh(&remote, &["rev-parse", "feat"]).trim(), extra);
+        assert_eq!(sh(&a, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]), "main\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&a, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]), "done\nfeat\nmain\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The bulk merge-tree/ahead-behind/unpushed helpers agree with the facts, conflicts included.
     #[test]
     fn bulk_helpers_parse_conflicts() {
@@ -722,9 +884,9 @@ mod tests {
         sh(&dir, &["cherry-pick", "collide~2"]);
         sh(&dir, &["cherry-pick", "collide~1"]);
         let names = ["uniq", "conflict", "clean", "picked", "reverted", "collide", "empty", "remote"];
-        let main = scan(&dir, "refs/heads/main", rows_for(&dir, &names)).unwrap();
+        let main = scan(&dir, "refs/heads/main", false, rows_for(&dir, &names)).unwrap();
         assert!(main.iter().all(|c| c.why.is_none() && !c.on), "{main:?}");
-        let origin = scan(&dir, "refs/remotes/origin/main", rows_for(&dir, &names)).unwrap();
+        let origin = scan(&dir, "refs/remotes/origin/main", false, rows_for(&dir, &names)).unwrap();
         assert_eq!((origin[0].name.as_str(), origin[0].why, origin[0].on), ("remote", Some(Why::Merged), true));
         assert!(origin[1..].iter().all(|c| c.why.is_none() && !c.on), "{origin:?}");
         let tips: Vec<String> = names.iter().map(|n| sh(&dir, &["rev-parse", n]).trim().to_owned()).collect();

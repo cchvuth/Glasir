@@ -45,6 +45,10 @@ pub fn fetch_quiet(dir: &Path) -> Res<String> {
     quiet(dir, &["fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"], None)
 }
 
+pub fn fetch_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
+    quiet(dir, &["fetch", "--no-tags", "--quiet", remote], None)
+}
+
 /// Talks to `remote` the way the background fetch does (never prompting): its HEAD.
 pub fn ls_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
     quiet(dir, &["ls-remote", remote, "HEAD"], None)
