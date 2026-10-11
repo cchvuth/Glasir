@@ -569,7 +569,17 @@ pub fn show(
     }
     // HEAD scrolled out of view: a chip at the edge it lies beyond jumps back to it. It sits in
     // the first / last whole row's date end, so it hides one row's date, not two messages.
-    if let Some(h) = head_row.filter(|h| !visible.is_empty() && !visible.contains(h)) {
+    let now = ui.input(|i| i.time);
+    let sid = egui::Id::new(("head_chip_scroll", &d.git_dir));
+    let (last, since) = ui.data(|m| m.get_temp::<(f32, f64)>(sid)).unwrap_or((row0, f64::NEG_INFINITY));
+    let since = if (row0 - last).abs() > 0.5 { now } else { since };
+    ui.data_mut(|m| m.insert_temp(sid, (row0, since)));
+    let wait = 0.3 - (now - since);
+    let away = head_row.filter(|h| !visible.is_empty() && !visible.contains(h));
+    if away.is_some() && wait > 0.0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(wait));
+    }
+    if let Some(h) = away.filter(|_| wait <= 0.0) {
         let up = h < visible.start;
         let name = d.status.branch.as_deref().map_or("HEAD (detached)".to_owned(), |b| format!("{b} (HEAD)"));
         let text = format!("{}  {name}", if up { icon::ARROW_UP } else { icon::ARROW_DOWN });
