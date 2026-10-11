@@ -371,12 +371,15 @@ pub fn show(
                     // The checked-out branch leads the pills.
                     let rf = ids.iter().map(|&i| &d.refs[i]).find(|r| r.head && r.kind == RefKind::Local).unwrap_or(&d.refs[ids[0]]);
                     let head_pill = rf.head && rf.kind == RefKind::Local;
-                    let more = ids.len() - 1;
+                    let tracked = |r: &Ref| r.kind == RefKind::Remote && ids.iter().any(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].upstream == r.name);
+                    let synced = rf.kind == RefKind::Local && ids.iter().any(|&i| d.refs[i].name == rf.upstream && tracked(&d.refs[i]));
+                    let more = ids.iter().filter(|&&i| !std::ptr::eq(&d.refs[i], rf) && !tracked(&d.refs[i])).count();
                     let extra = if more > 0 { 26.0 } else { 0.0 };
                     // HEAD's pill leads with a "HEAD" capsule (the name gets cut, not the capsule);
                     // a column too narrow for it still gets the pin glyph instead of the branch one.
                     let cap_w = if head_pill && refs_w - 16.0 - extra >= 80.0 { 40.0 } else { 0.0 };
                     let label = if cap_w > 0.0 { rf.name.clone() } else { ref_label(rf) };
+                    let label = if synced { format!("{label}  {}", icon::CLOUD) } else { label };
                     let font = FontId::proportional(12.0);
                     let label_col = if head_pill { theme::on_color(theme::accent()).gamma_multiply(if faded { 0.6 } else { 1.0 }) } else if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
                     let g = painter.layout_no_wrap(label, font.clone(), label_col);
