@@ -22,8 +22,8 @@ const MAX_AUTHORS: usize = 200;
 
 // Off in tests: no network, no writes to the real cache.
 static ENABLED: AtomicBool = AtomicBool::new(!cfg!(test));
-/// Hosts that answered 401/403/429: no more API calls to them this session.
-static BLOCKED: Mutex<Vec<String>> = Mutex::new(vec![]);
+/// Hosts that answered 401/403/429, with the time: no API calls to them for `MISS_TTL`.
+static BLOCKED: Mutex<Vec<(String, u64)>> = Mutex::new(vec![]);
 /// `host/owner/repo[@sha]` the API answered 404 for, with the time: skipped for `MISS_TTL`
 /// so each reload doesn't repeat them (a private repo 404s for every commit).
 static MISSING: Mutex<Vec<(String, u64)>> = Mutex::new(vec![]);
@@ -288,6 +288,10 @@ impl Lookup {
         self.token.get_or_init(|| git::credential_token(&self.dir, &self.host)).as_deref()
     }
 
+    fn blocked(&self) -> bool {
+        BLOCKED.lock().unwrap().iter().any(|(h, at)| *h == self.host && now_fresh(*at, self.now))
+    }
+
     fn skipped(&self, repo: &str, sha: &str) -> bool {
         let m = MISSING.lock().unwrap();
         m.iter().any(|(k, at)| now_fresh(*at, self.now) && (k == repo || k.strip_prefix(repo).and_then(|r| r.strip_prefix('@')) == Some(sha)))
@@ -343,7 +347,7 @@ impl Lookup {
     /// The `avatar_url` of the author of `sha` (`Some(None)`: not a GitHub user).
     fn lookup(&self, sha: &str) -> Option<Option<String>> {
         let repo = format!("{}/{}/{}", self.host, self.owner, self.repo);
-        if BLOCKED.lock().unwrap().contains(&self.host) || self.skipped(&repo, sha) || self.lookups.fetch_add(1, Ordering::Relaxed) >= MAX_LOOKUPS {
+        if self.blocked() || self.skipped(&repo, sha) || self.lookups.fetch_add(1, Ordering::Relaxed) >= MAX_LOOKUPS {
             return None;
         }
         // The commit list (one entry, no diff) carries the same author as the commit itself.
@@ -353,7 +357,7 @@ impl Lookup {
         match got.0 {
             200 => avatar_of(&got.1, &self.host),
             s if blocks_host(s, had_token) => {
-                BLOCKED.lock().unwrap().push(self.host.clone());
+                BLOCKED.lock().unwrap().push((self.host.clone(), self.now));
                 None
             }
             // 404 / 422: that commit isn't on the remote (yet), or the repo is private to us.
@@ -483,6 +487,17 @@ mod tests {
         let mut later = Lookup::new("miss.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
         later.now = l.now + MISS_TTL;
         assert!(!later.skipped(repo, "a") && !later.skipped(repo, "zzz"));
+    }
+
+    #[test]
+    fn blocked_hosts_are_retried() {
+        let l = Lookup::new("blocked.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
+        assert!(!l.blocked());
+        BLOCKED.lock().unwrap().push((l.host.clone(), l.now));
+        assert!(l.blocked());
+        let mut later = Lookup::new("blocked.example".into(), "o".into(), "r".into(), PathBuf::new(), None);
+        later.now = l.now + MISS_TTL;
+        assert!(!later.blocked());
     }
 
     #[test]
