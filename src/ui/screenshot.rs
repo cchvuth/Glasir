@@ -11,8 +11,11 @@ use crate::repo::{Action, Op, PullMode, Search, Undo, pull_op};
 use crate::theme;
 use egui::Id;
 
-/// The `rclick:` view's pointer events, one per frame: move there, press, release.
+/// The `row-hover:` pointer, and the `rclick:` view's pointer events, one per frame: move there, press, release.
 pub(super) fn shot_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
+    let pinned = ctx.data(|m| m.get_temp::<egui::Pos2>(Id::new("shot_pointer")));
+    // Moved only when it isn't there yet: a move each frame keeps tooltips from showing.
+    let pin = pinned.filter(|&p| ctx.input(|i| i.pointer.latest_pos()) != Some(p)).map(egui::Event::PointerMoved);
     let wid = Id::new("shot_wheel");
     if let Some((pos, delta, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, egui::Vec2, u8)>(wid)) {
         match step {
@@ -25,10 +28,11 @@ pub(super) fn shot_input(ctx: &egui::Context, raw: &mut egui::RawInput) {
         }
     }
     let (id, button) = if ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(Id::new("shot_lclick")).is_some()) { (Id::new("shot_lclick"), egui::PointerButton::Primary) } else { (Id::new("shot_rclick"), egui::PointerButton::Secondary) };
-    let Some((pos, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(id)) else { return };
-    let wait = if button == egui::PointerButton::Primary { 8 } else { 0 };
+    let Some((pos, step)) = ctx.data(|m| m.get_temp::<(egui::Pos2, u8)>(id)) else { return raw.events.extend(pin) };
+    // A pinned pointer stays put a while first, so what its hover opens (a ref row) is up to be clicked.
+    let wait = if button == egui::PointerButton::Primary || pinned.is_some() { 8 } else { 0 };
     raw.events.push(match step.saturating_sub(wait) {
-        0 => egui::Event::PointerMoved(pos),
+        0 => egui::Event::PointerMoved(if step < wait { pinned.unwrap_or(pos) } else { pos }),
         1 | 2 => egui::Event::PointerButton { pos, button, pressed: step - wait == 1, modifiers: Default::default() },
         _ => return ctx.data_mut(|m| m.remove::<(egui::Pos2, u8)>(id)),
     });

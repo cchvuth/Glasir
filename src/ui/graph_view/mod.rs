@@ -10,6 +10,7 @@ mod minimap;
 mod search;
 
 use crate::ui::format::{keys, plural};
+use crate::ui::sidebar::ref_menus;
 use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
 use crate::repo::{Action, RepoData, Search, Sel, View, branch_checkout};
@@ -57,6 +58,43 @@ fn ref_label(r: &Ref) -> String {
         RefKind::Remote => format!("{}  {}", icon::CLOUD, r.name),
         RefKind::Tag => format!("{}  {}", icon::TAG, r.name),
     }
+}
+
+/// A ref's pill at `min`, at most `max_w` wide; `synced`: its upstream rides along as a ☁. HEAD's leads with
+/// a "HEAD" capsule (the name gets cut, not the capsule); a pill too narrow for it gets the pin glyph instead.
+fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32, faded: bool) -> Rect {
+    let p = ui.painter();
+    let head_pill = rf.head && rf.kind == RefKind::Local;
+    let hc = if faded { theme::accent().gamma_multiply(0.3) } else { theme::accent() };
+    let cap_w = if head_pill && max_w >= 80.0 { 40.0 } else { 0.0 };
+    let label = if cap_w > 0.0 { rf.name.clone() } else { ref_label(rf) };
+    let label = if synced { format!("{label}  {}", icon::CLOUD) } else { label };
+    let label_col = if head_pill { theme::on_color(theme::accent()).gamma_multiply(if faded { 0.6 } else { 1.0 }) } else if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
+    let g = p.layout_no_wrap(label, FontId::proportional(12.0), label_col);
+    let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0 + cap_w).min(max_w).max(10.0), 20.0));
+    let fill = match rf.kind {
+        _ if head_pill => hc,
+        RefKind::Local => col.gamma_multiply(0.85),
+        RefKind::Remote => col.gamma_multiply(0.4),
+        RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
+        RefKind::Tag => theme::tag(ui),
+    };
+    p.rect_filled(pill, 10.0, fill);
+    p.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
+    if cap_w > 0.0 {
+        let cap = Rect::from_min_size(pill.min + vec2(3.0, 3.0), vec2(cap_w - 6.0, 14.0));
+        p.rect_filled(cap, 7.0, label_col.gamma_multiply(0.22));
+        p.text(cap.center(), Align2::CENTER_CENTER, "HEAD", FontId::proportional(9.5), label_col);
+    }
+    p.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0 + cap_w, pill.center().y - g.size().y / 2.0), g, label_col);
+    pill
+}
+
+/// A pill's hover text: its ref (and the upstream sharing it); annotated tags add their message.
+fn pill_tip(rf: &Ref, up: Option<&Ref>) -> String {
+    let up = up.map_or(String::new(), |u| format!("  ·  {}", u.name));
+    let msg = if rf.message.is_empty() { String::new() } else { format!("\n{}", rf.message) };
+    format!("{}{up}{msg}", ref_label(rf))
 }
 
 /// A small capsule of `fg` text on `bg` at `x`; returns where the next thing starts.
@@ -336,6 +374,10 @@ pub fn show(
             let body = FontId::proportional(13.0);
             let text = theme::text(ui);
             let head_id = d.status.head.as_deref();
+            // The commit whose refs are spread out in a row (hovering its pill / +N).
+            let open_id = gx_id.with("ref_row");
+            let open = ui.data(|m| m.get_temp::<String>(open_id));
+            let mut shown = None;
             for r in range {
                 let node = d.graph.nodes[r];
                 let c = pos2(x(node.col), y(r));
@@ -366,82 +408,76 @@ pub fn show(
                 }
 
                 let mut stash_x = left + 6.0;
-                let ids = commit.and_then(|cm| d.refs_at.get(&cm.id));
-                if let Some(ids) = ids.filter(|v| !v.is_empty()) {
-                    // The checked-out branch leads the pills.
-                    let rf = ids.iter().map(|&i| &d.refs[i]).find(|r| r.head && r.kind == RefKind::Local).unwrap_or(&d.refs[ids[0]]);
-                    let head_pill = rf.head && rf.kind == RefKind::Local;
-                    let tracked = |r: &Ref| r.kind == RefKind::Remote && ids.iter().any(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].upstream == r.name);
-                    let synced = rf.kind == RefKind::Local && ids.iter().any(|&i| d.refs[i].name == rf.upstream && tracked(&d.refs[i]));
-                    let more = ids.iter().filter(|&&i| !std::ptr::eq(&d.refs[i], rf) && !tracked(&d.refs[i])).count();
+                if let Some((cm, ids)) = commit.and_then(|cm| Some((cm, d.refs_at.get(&cm.id).filter(|v| !v.is_empty())?))) {
+                    // A local branch level with its upstream shares one pill; the checked-out branch leads.
+                    let at = || ids.iter().map(|&i| &d.refs[i]);
+                    let tracked = |r: &Ref| r.kind == RefKind::Remote && at().any(|l| l.kind == RefKind::Local && l.upstream == r.name);
+                    let mut pills: Vec<(&Ref, Option<&Ref>)> =
+                        at().filter(|r| !tracked(r)).map(|r| (r, at().find(|u| r.kind == RefKind::Local && u.kind == RefKind::Remote && u.name == r.upstream))).collect();
+                    pills.sort_by_key(|(r, _)| !(r.head && r.kind == RefKind::Local));
+                    let (rf, up) = pills[0];
+                    let more = pills.len() - 1;
                     let extra = if more > 0 { 26.0 } else { 0.0 };
-                    // HEAD's pill leads with a "HEAD" capsule (the name gets cut, not the capsule);
-                    // a column too narrow for it still gets the pin glyph instead of the branch one.
-                    let cap_w = if head_pill && refs_w - 16.0 - extra >= 80.0 { 40.0 } else { 0.0 };
-                    let label = if cap_w > 0.0 { rf.name.clone() } else { ref_label(rf) };
-                    let label = if synced { format!("{label}  {}", icon::CLOUD) } else { label };
-                    let font = FontId::proportional(12.0);
-                    let label_col = if head_pill { theme::on_color(theme::accent()).gamma_multiply(if faded { 0.6 } else { 1.0 }) } else if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
-                    let g = painter.layout_no_wrap(label, font.clone(), label_col);
-                    let w = (g.size().x + 14.0 + cap_w).min(refs_w - 16.0 - extra).max(10.0);
-                    let pill = Rect::from_min_size(pos2(left + 6.0, y(r) - 10.0), vec2(w, 20.0));
+                    let pill = ref_pill(ui, pos2(left + 6.0, y(r) - 10.0), refs_w - 16.0 - extra, rf, up.is_some(), col, faded);
                     // Node may be scrolled out of view; in a narrow column the pill can even
                     // end past the column's edge, so min/max rather than clamp (which panics).
                     let from = pill.right() + extra; // after the +N badge, not through it
                     let to = (c.x - 9.0).min(x_msg - 2.0).max(from);
-                    let line = if head_pill { Stroke::new(2.5, hc) } else { Stroke::new(1.5, col.gamma_multiply(0.7)) };
+                    let line = if rf.head && rf.kind == RefKind::Local { Stroke::new(2.5, hc) } else { Stroke::new(1.5, col.gamma_multiply(0.7)) };
                     painter.line_segment([pos2(from, y(r)), pos2(to, y(r))], line);
-                    let fill = match rf.kind {
-                        _ if head_pill => hc,
-                        RefKind::Local => col.gamma_multiply(0.85),
-                        RefKind::Remote => col.gamma_multiply(0.4),
-                        RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
-                        RefKind::Tag => theme::tag(ui),
-                    };
-                    painter.rect_filled(pill, 10.0, fill);
-                    painter.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
-                    if cap_w > 0.0 {
-                        let cap = Rect::from_min_size(pill.min + vec2(3.0, 3.0), vec2(cap_w - 6.0, 14.0));
-                        painter.rect_filled(cap, 7.0, label_col.gamma_multiply(0.22));
-                        painter.text(cap.center(), Align2::CENTER_CENTER, "HEAD", FontId::proportional(9.5), label_col);
-                    }
-                    painter.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0 + cap_w, y(r) - g.size().y / 2.0), g, label_col);
                     if more > 0 {
                         let b = Rect::from_min_size(pos2(pill.right() + 4.0, y(r) - 9.0), vec2(22.0, 18.0));
                         painter.rect_filled(b, 9.0, theme::faint(ui));
                         painter.text(b.center(), Align2::CENTER_CENTER, format!("+{more}"), FontId::proportional(10.5), text);
                     }
                     let tip_rect = Rect::from_min_max(pill.min, pos2(pill.right() + extra, pill.bottom()));
-                    // Annotated tags show their message.
-                    let names: Vec<String> = ids
-                        .iter()
-                        .map(|&i| match &d.refs[i] {
-                            t if !t.message.is_empty() => format!("{}\n{}", ref_label(t), t.message),
-                            t => ref_label(t),
-                        })
-                        .collect();
                     stash_x = tip_rect.right() + 4.0;
-                    let pill_resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag()).on_hover_text(names.join("\n"));
-                    hover_ref(ui, &pill_resp, &rf.target);
-                    if rf.kind != RefKind::Tag {
-                        pill_resp.dnd_set_drag_payload(BranchDrag(rf.name.clone(), rf.full.clone()));
-                    }
-                    if pill_resp.clicked() {
-                        acts.extend(commit.map(|c| Action::Select(Sel::Commit(c.id.clone()))));
-                    }
-                    if pill_resp.double_clicked() {
-                        acts.extend(branch_checkout(d, rf));
-                    }
-                    // Right-clicking a pill gives that ref's own menu (all refs here when several).
-                    pill_resp.context_menu(|ui| {
-                        if ids.len() == 1 {
-                            crate::ui::sidebar::ref_menus::ref_menu(ui, all, rf, acts);
-                        } else {
-                            for &i in ids {
-                                ui.menu_button(ref_label(&d.refs[i]), |ui| crate::ui::sidebar::ref_menus::ref_menu(ui, all, &d.refs[i], acts));
-                            }
+                    // Click selects the commit, double-click checks the ref out, right-click is its menu; branches drag.
+                    let mut act = |ui: &Ui, resp: &egui::Response, (rf, up): (&Ref, Option<&Ref>)| {
+                        hover_ref(ui, resp, &rf.target);
+                        if rf.kind != RefKind::Tag {
+                            resp.dnd_set_drag_payload(BranchDrag(rf.name.clone(), rf.full.clone()));
                         }
-                    });
+                        if resp.clicked() {
+                            acts.push(Action::Select(Sel::Commit(cm.id.clone())));
+                        }
+                        if resp.double_clicked() {
+                            acts.extend(branch_checkout(d, rf));
+                        }
+                        resp.context_menu(|ui| match up {
+                            Some(u) => ref_menus::synced_menu(ui, all, rf, u, acts),
+                            None => ref_menus::ref_menu(ui, all, rf, acts),
+                        })
+                        .is_some()
+                    };
+                    let resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag());
+                    if more == 0 {
+                        act(ui, &resp.on_hover_text(pill_tip(rf, up)), pills[0]);
+                    } else {
+                        act(ui, &resp, pills[0]);
+                        // Several refs: hovering shows them all, each its own pill, in a row over the table.
+                        let mut keep = resp.hovered() && !egui::DragAndDrop::has_any_payload(ui.ctx());
+                        if open.as_deref() == Some(cm.id.as_str()) {
+                            let row = egui::Area::new(open_id).order(egui::Order::Foreground).fixed_pos(pill.min - vec2(4.0, 4.0)).show(ui.ctx(), |ui| {
+                                let slot = ui.painter().add(Shape::Noop);
+                                let (mut x, mut menu) = (pill.left(), false);
+                                for (k, &p) in pills.iter().enumerate() {
+                                    let rect = ref_pill(ui, pos2(x, pill.top()), f32::INFINITY, p.0, p.1.is_some(), col, faded);
+                                    menu |= act(ui, &ui.interact(rect, ui.id().with(k), Sense::click_and_drag()).on_hover_text(pill_tip(p.0, p.1)), p);
+                                    x = rect.right() + 4.0;
+                                }
+                                let back = Rect::from_min_max(pill.min, pos2(x - 4.0, pill.bottom())).expand(4.0);
+                                ui.painter().set(slot, Shape::Vec(theme::glass_shapes(back, 14.0, ui.visuals().dark_mode, 235)));
+                                ui.allocate_rect(back, Sense::hover());
+                                menu
+                            });
+                            // Open while the pointer is on it (or its menu is): the row covers the pill, so no gap to cross.
+                            keep |= row.inner || ui.ctx().pointer_hover_pos().is_some_and(|p| row.response.rect.expand(4.0).contains(p));
+                        }
+                        if keep {
+                            shown = Some(cm.id.clone());
+                        }
+                    }
                 }
 
                 // Stashes made on this commit: dashed capsules after the pills.
@@ -537,6 +573,13 @@ pub fn show(
                     }
                 }
             }
+            if shown != open {
+                ui.ctx().request_repaint();
+            }
+            ui.data_mut(|m| match shown {
+                Some(id) => _ = m.insert_temp(open_id, id),
+                None => m.remove::<String>(open_id),
+            });
         });
     });
     if max_gx > 2.0 && graph_w > 48.0 {

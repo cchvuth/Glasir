@@ -55,8 +55,8 @@ The name fits a Git client:
   a "3 modified, 1 added" summary and per-file `+/-` line counts (loaded in the
   background); renames read `old → new`, and the file list is virtualised so
   10k-file commits stay smooth.
-- Branch, remote and tag **pills** joined to their commits (`+N` when several; a branch level with its upstream is one pill with a ☁),
-  with their own right-click menus; worktree branches get a tree icon.
+- Branch, remote and tag **pills** joined to their commits (`+N` when several; a branch level with its upstream is one pill with a ☁);
+  hovering shows all of a commit's pills, each with its own right-click menu; worktree branches get a tree icon.
 - **Grouped branch names**: local branches, each remote's branches and tags fold into
   folders by their `/` prefixes (`feature ▸ payments ▸ v2`, single-folder chains read
   `release/2.0`), with counts. The current branch's folders start open, a filter opens

@@ -13,9 +13,23 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
     ui.spacing_mut().button_padding.x = 10.0;
     match r.kind {
         RefKind::Local => local_menu(ui, d, r, acts),
-        RefKind::Remote => remote_menu(ui, d, r, acts),
+        RefKind::Remote => remote_menu(ui, d, r, false, acts),
         RefKind::Tag => tag_menu(ui, d, r, acts),
     }
+    view_items(ui, d, r, acts);
+}
+
+/// A local branch level with its upstream (one graph pill): the local's menu, then what is the remote's own.
+pub fn synced_menu(ui: &mut Ui, d: &RepoData, local: &crate::git::Ref, up: &crate::git::Ref, acts: &mut Vec<Action>) {
+    ref_menu(ui, d, local, acts);
+    ui.separator();
+    ui.label(egui::RichText::new(format!("{}  {}", icon::CLOUD, up.name)).small().weak());
+    remote_menu(ui, d, up, true, acts);
+    view_items(ui, d, up, acts);
+}
+
+/// Graph hide / solo toggles.
+fn view_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     ui.separator();
     let toggle = |list: fn(&mut crate::repo::View) -> &mut Vec<String>| {
         let mut v = d.view.clone();
@@ -187,28 +201,33 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
 }
 
-fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
-    if ui.button(format!("Checkout {}", r.name)).clicked() {
-        acts.extend(branch_checkout(d, r));
+/// `paired`: right after its local branch's menu (same commit), so only what is the remote's own.
+fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, paired: bool, acts: &mut Vec<Action>) {
+    if !paired {
+        if ui.button(format!("Checkout {}", r.name)).clicked() {
+            acts.extend(branch_checkout(d, r));
+        }
+        integrate_items(ui, d, &r.name, d.rev(r), acts);
+        reset_menu(ui, d, &r.target, &r.name, acts);
+        compare_items(ui, d, r, acts);
+        let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
+        if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
+            acts.push(prompt(
+                format!("Worktree folder for {local}"),
+                d.worktree_path(&local),
+                Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.full]).then_open("{}"),
+            ));
+        }
+        ui.separator();
     }
-    integrate_items(ui, d, &r.name, d.rev(r), acts);
-    reset_menu(ui, d, &r.target, &r.name, acts);
-    compare_items(ui, d, r, acts);
-    let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
-    if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
-        acts.push(prompt(
-            format!("Worktree folder for {local}"),
-            d.worktree_path(&local),
-            Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.full]).then_open("{}"),
-        ));
-    }
-    ui.separator();
     if let Some((remote, branch)) = d.split_remote(&r.name)
         && ui.button(format!("Delete {branch} from {remote}")).clicked()
     {
         acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch)));
     }
-    web_items(ui, d, r, acts);
+    if !paired {
+        web_items(ui, d, r, acts);
+    }
     ui.separator();
     if ui.button("Copy branch name").clicked() {
         acts.push(Action::Copy(r.name.clone()));
