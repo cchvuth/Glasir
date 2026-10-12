@@ -210,7 +210,8 @@ The name fits a Git client:
 - **Per-repository SSH key**: in the connection check, pick one of your `~/.ssh` keys
   (with its fingerprint), browse for another or go back to the default; stored as the
   repo-local `core.sshCommand` (⌘Z restores it, a custom command asks first), with a
-  non-prompting **Test connection**. Offered from the toolbar when a fetch is refused.
+  non-prompting **Test connection**. Open it from a remote's right-click menu (**SSH key…**),
+  ⌘P, or the toolbar when a fetch is refused.
 - Push goes to the branch's upstream even under another name; a branch started
   from `origin/main` gets its own remote branch instead.
 

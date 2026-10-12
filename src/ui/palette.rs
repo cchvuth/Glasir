@@ -173,6 +173,9 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             v.push(item(icon::GIT_PULL_REQUEST, format!("Check out PR #…{from}"), "fetch pull/<n>/head into pr/<n>", Cmd::Tab(pr)));
             v.push(item(icon::STETHOSCOPE, format!("Check connection to {r}"), url.clone(), Cmd::Tab(Action::Doctor(r.clone()))));
         }
+        if let Some((r, _)) = d.remotes.iter().find(|r| r.0 == "origin").or(d.remotes.first()) {
+            v.push(item(icon::KEY, "SSH key for this repository…", "core.sshCommand", Cmd::Tab(Action::Doctor(r.clone()))));
+        }
         if let Some(web) = d.web() {
             v.push(item(icon::GLOBE, "Open repository on remote", web.clone(), Cmd::Tab(Action::Url(web.clone()))));
             if let Some(b) = &d.status.branch {
