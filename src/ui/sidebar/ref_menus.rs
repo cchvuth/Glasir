@@ -10,6 +10,7 @@ use crate::ui::graph_view::menus::{integrate_items, reset_menu};
 use egui::Ui;
 
 pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
+    ui.spacing_mut().button_padding.x = 10.0;
     match r.kind {
         RefKind::Local => local_menu(ui, d, r, acts),
         RefKind::Remote => remote_menu(ui, d, r, acts),

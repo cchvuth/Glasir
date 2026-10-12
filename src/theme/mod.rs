@@ -319,5 +319,6 @@ pub fn apply(ctx: &egui::Context, f: Flavor) {
         s.spacing.icon_spacing = 8.0;
         s.spacing.menu_margin = egui::Margin::symmetric(12, 8);
         s.spacing.window_margin = egui::Margin::same(22);
+        s.interaction.tooltip_delay = 0.2;
     });
 }
