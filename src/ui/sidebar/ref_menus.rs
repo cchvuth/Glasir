@@ -151,7 +151,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     if let Some(p) = &r.worktree
         && ui.button(format!("{}  Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
     {
-        acts.push(Action::OpenTab(p.clone()));
+        acts.push(Action::Switch(p.clone()));
     }
     if ui.button("Create branch from here…").clicked() {
         acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", d.rev(r)]).undo(Undo::Keep)));

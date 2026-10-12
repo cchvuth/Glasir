@@ -10,7 +10,7 @@ use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Whether an op can be undone, and the `git reset` mode that undoes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -713,17 +713,17 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
     match r.kind {
         RefKind::Local if r.head => None,
         // Checked out in another worktree: git refuses a second checkout, so open that one.
-        RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::OpenTab),
+        RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::Switch),
         RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
             let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1);
             if let Some(p) = d.local(local).and_then(|l| l.worktree.clone().filter(|_| !l.head)) {
-                return Some(Action::OpenTab(p));
+                return Some(Action::Switch(p));
             }
-            Some(Action::Git(if d.local(local).is_some() {
-                Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep)
-            } else {
-                Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.full]).undo(Undo::Keep)
+            Some(Action::Git(match d.local(local) {
+                Some(l) if l.head => Op::new(format!("Update {local} to {}", r.name), &["merge", "--ff-only", &r.full]).undo(Undo::Keep),
+                Some(_) => Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
+                None => Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.full]).undo(Undo::Keep),
             }))
         }
         RefKind::Tag => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--detach", &r.full]).undo(Undo::Keep))),
@@ -844,7 +844,7 @@ impl RepoTab {
                     self.fetch_failed = None;
                 }
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
-                    self.open_tab = Some(PathBuf::from(p));
+                    self.switch_to = Some(self.dir.join(p));
                 }
                 // A squash merge leaves git's prepared message: put it in the commit box (never over typed text).
                 if res.is_ok() && !op.custom && op.cmds.iter().any(|c| c[0] == "merge" && c.iter().any(|a| a == "--squash")) {
@@ -1177,6 +1177,29 @@ mod tests {
     use crate::git;
 
     #[test]
+    fn remote_double_click_fast_forwards_its_local() {
+        let dir = scratch("remote-ff");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n");
+        sh(&dir, &["branch", "feat"]);
+        commit(&dir, "a", "2\n");
+        sh(&dir, &["remote", "add", "origin", "."]);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "origin/main").unwrap();
+        let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
+        for c in &op.cmds {
+            sh(&dir, &c.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        assert_eq!(sh(&dir, &["rev-parse", "main"]), sh(&dir, &["rev-parse", "origin/main"]));
+        let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
+        let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
+        assert_eq!(op.cmds[0], ["checkout", "feat", "--"]);
+    }
+
+    #[test]
     fn remote_checkout_opens_its_twins_worktree_and_counts_changes() {
         let dir = scratch("remote-twin");
         let wt = scratch("remote-twin-wt");
@@ -1192,7 +1215,7 @@ mod tests {
         std::fs::write(dir.join("a"), "2\n").unwrap();
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
-        assert!(matches!(super::branch_checkout(&d, r), Some(Action::OpenTab(_))));
+        assert!(matches!(super::branch_checkout(&d, r), Some(Action::Switch(_))));
         let n = |p: &std::path::Path| d.worktrees.iter().find(|w| std::path::Path::new(&w.path).canonicalize().unwrap() == p.canonicalize().unwrap()).unwrap().changes;
         assert_eq!((n(&dir), n(&wt)), (1, 1));
     }

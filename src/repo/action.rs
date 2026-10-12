@@ -117,6 +117,8 @@ pub enum Action {
     /// Finish the guided split (`rebase --continue`), or abort it.
     SplitEnd { abort: bool },
     OpenTab(String),
+    /// Show another worktree of this repository in this tab.
+    Switch(String),
     /// Change the graph filter (hide / solo / first-parent) and reload.
     View(View),
     /// Replace the multi-selection (commit ids, graph order: newest first).

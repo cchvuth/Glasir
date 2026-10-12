@@ -52,7 +52,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
     );
     let resp = ui.add(if current { super::head_row(ui, text, false) } else { super::row(ui, false, text) }).on_hover_text(tip);
     if (resp.double_clicked() || resp.clicked()) && !current && !w.prunable {
-        acts.push(Action::OpenTab(w.path.clone()));
+        acts.push(Action::Switch(w.path.clone()));
     }
     resp.context_menu(|ui| {
         if !current && !w.prunable && ui.button("Open in new tab").clicked() {

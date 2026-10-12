@@ -134,6 +134,7 @@ pub struct RepoTab {
     pub notes: Vec<Msg>,
     /// A repository the app should open in a new tab.
     pub open_tab: Option<PathBuf>,
+    pub switch_to: Option<PathBuf>,
     watcher: Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>,
     watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>>>,
     pub search: Option<Search>,
@@ -251,6 +252,7 @@ impl RepoTab {
             ai_cfg: ai::Config::default(),
             notes: vec![],
             open_tab: None,
+            switch_to: None,
             watcher: None,
             watcher_task: None,
             changed: None,
@@ -728,6 +730,7 @@ impl RepoTab {
                 self.reload(ctx, true);
             }
             Action::OpenTab(p) => self.open_tab = Some(self.dir.join(p)),
+            Action::Switch(p) => self.switch_to = Some(self.dir.join(p)),
             Action::AmendInto(commit) => {
                 let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
                 self.prepare(ctx, move |dir| op::Dropped::from(crate::repo::rebase::amend_into(dir, &commit, is_head)));

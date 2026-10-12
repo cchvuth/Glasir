@@ -128,6 +128,25 @@ impl App {
                 self.tabs.len() - 1
             }
         };
+        self.remember(top);
+    }
+
+    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has unsaved edits).
+    fn switch(&mut self, ctx: &egui::Context, i: usize, path: &Path) {
+        let top = match git::run(path, &["rev-parse", "--show-toplevel"]) {
+            Ok(top) => PathBuf::from(top.trim()),
+            Err(e) => return self.toast(ctx, format!("Not a git repository: {}\n{e}", path.display()), true),
+        };
+        let free = self.tabs.get(i).is_some_and(|t| t.unsaved().is_none() && t.busy().is_none() && !t.term.busy());
+        if !free || self.tabs.iter().any(|t| t.dir == top) {
+            return self.add_tab(ctx, top);
+        }
+        self.tabs[i] = RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default());
+        self.active = i;
+        self.remember(top);
+    }
+
+    fn remember(&mut self, top: PathBuf) {
         self.s.recent.retain(|p| *p != top);
         self.s.recent.insert(0, top);
         self.s.recent.truncate(15);
@@ -269,6 +288,10 @@ impl App {
         let opens: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| t.open_tab.take()).collect();
         for p in opens {
             self.open(ctx, &p);
+        }
+        let switches: Vec<(usize, PathBuf)> = self.tabs.iter_mut().enumerate().filter_map(|(i, t)| t.switch_to.take().map(|p| (i, p))).collect();
+        for (i, p) in switches {
+            self.switch(ctx, i, &p);
         }
         for (m, undo) in msgs {
             self.toast_undo(ctx, m.text, m.error, undo);
