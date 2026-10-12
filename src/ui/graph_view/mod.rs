@@ -593,7 +593,7 @@ pub fn show(
         let chip = Rect::from_min_size(pos2(full.right() - 8.0 - w, row0 + row * ROW + (ROW - 22.0) / 2.0), vec2(w, 22.0));
         let resp = ui.interact(chip, egui::Id::new(("head_chip", &d.git_dir)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Scroll to HEAD");
         let p = ui.painter();
-        p.rect_filled(chip.translate(vec2(0.0, 2.0)).expand(1.0), 12.0, Color32::from_black_alpha(60));
+        p.add(egui::epaint::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(if ui.visuals().dark_mode { 90 } else { 40 }) }.as_shape(chip, 11.0));
         p.rect_filled(chip, 11.0, if resp.hovered() { hc.lerp_to_gamma(Color32::WHITE, 0.2) } else { hc });
         p.rect_stroke(chip, 11.0, Stroke::new(1.0, Color32::from_white_alpha(110)), egui::StrokeKind::Inside);
         p.galley(chip.center() - g.size() / 2.0, g, fg);

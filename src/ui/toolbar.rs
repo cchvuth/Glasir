@@ -14,6 +14,7 @@ use egui::{Button, RichText, Ui};
 pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec<Action>) {
     ui.spacing_mut().item_spacing.x = 10.0;
     theme::bar_h(ui, 36.0, |ui| {
+        ui.set_clip_rect(ui.max_rect().expand(40.0));
         theme::group(ui, |ui| {
             // Right to left: the overflow menu sits at the far right.
             if let Some(d) = &t.data {
