@@ -212,6 +212,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::merge_opts::CLEAN] => super::merge_opts::clean(dir),
             [super::merge_opts::PICK_NEW, ..] => super::merge_opts::pick_new(dir, &a),
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
+            [super::rebase::REWRITE, commit] => super::rebase::rewrite(dir, commit, op.input.as_deref().unwrap_or_default()),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
             [_, "add", "-A", "--pathspec-from-file=-", ..] => git::run_input(dir, &a, Some(&without_vanished(dir, op.input.as_deref().unwrap_or_default()))),
             ["--literal-pathspecs", "checkout", "--", paths @ ..] => {

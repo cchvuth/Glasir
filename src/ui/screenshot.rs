@@ -407,10 +407,10 @@ impl App {
                     q if q.starts_with("edit-msg:") => {
                         if let Some(t) = self.tabs.get_mut(self.active) {
                             let id: String = git::run(&t.dir, &["rev-parse", &q[9..]]).unwrap_or_default().trim().into();
-                            let depth = t.data.as_ref().and_then(|d| d.reword_depth(&id).ok()).unwrap_or(0);
+                            let path = t.data.as_ref().and_then(|d| d.reword_path(&id).ok()).unwrap_or_default();
                             let message = git::run(&t.dir, &["log", "-1", "--format=%B", &id]).unwrap_or_default();
                             t.apply(&ctx.clone(), Action::Jump(id.clone()));
-                            t.edit_msg = Some(crate::repo::MsgEdit::new(&id, &message, depth));
+                            t.edit_msg = Some(crate::repo::MsgEdit::new(&id, &message, path));
                         }
                     }
                     q if q.starts_with("identity:") => self.s.email_rules = q[9..].into(),

@@ -3,6 +3,7 @@
 
 use super::{Action, RepoData, RepoTab, Sel};
 use crate::git;
+use std::collections::{HashMap, VecDeque};
 
 /// A commit message being edited (summary line, body, and how they were joined).
 pub struct MsgEdit {
@@ -12,8 +13,8 @@ pub struct MsgEdit {
     /// Newlines between summary and body, so an unedited message round-trips exactly.
     sep: String,
     original: String,
-    /// First-parent steps from HEAD, to find the commit again after the rebase renamed it.
-    depth: usize,
+    /// Parent steps from HEAD (which parent each), to find the commit again after the rewrite renamed it.
+    path: Vec<usize>,
     /// Save was sent: when the commit disappears, select its rewritten successor.
     saved: bool,
     /// Focus the summary field on the next frame.
@@ -21,12 +22,12 @@ pub struct MsgEdit {
 }
 
 impl MsgEdit {
-    pub fn new(id: &str, message: &str, depth: usize) -> Self {
+    pub fn new(id: &str, message: &str, path: Vec<usize>) -> Self {
         let message = message.trim_end();
         let (summary, rest) = message.split_once('\n').unwrap_or((message, ""));
         let body = rest.trim_start_matches('\n');
         let sep = if body.is_empty() { "\n\n".to_owned() } else { "\n".repeat(1 + rest.len() - body.len()) };
-        MsgEdit { id: id.into(), summary: summary.into(), body: body.into(), sep, original: message.into(), depth, saved: false, focus: true }
+        MsgEdit { id: id.into(), summary: summary.into(), body: body.into(), sep, original: message.into(), path, saved: false, focus: true }
     }
 
     /// The edited message; trailing whitespace is git's to clean up.
@@ -41,38 +42,45 @@ impl MsgEdit {
 }
 
 impl RepoData {
-    /// How many first-parent steps `id` is below HEAD, or why its message can't be edited here:
-    /// only non-merge commits on the current branch's first-parent history, with no merge above
-    /// them (the rebase engine refuses merges), and not during another operation.
-    pub fn reword_depth(&self, id: &str) -> Result<usize, &'static str> {
+    /// The parent steps from HEAD to `id` (which parent at each), or why its message can't be
+    /// edited here: only ancestors of HEAD on a branch, and not during another operation.
+    pub fn reword_path(&self, id: &str) -> Result<Vec<usize>, &'static str> {
         if self.state != git::State::Clean {
             return Err("Finish the operation in progress (merge, rebase, cherry-pick...) first.");
         }
         let Some(head) = self.status.head.as_deref().filter(|_| self.status.branch.is_some()) else {
             return Err("Check out a branch first: this isn't on a branch (HEAD is detached).");
         };
-        let c = self.row_of.get(id).and_then(|&r| self.commit(r)).ok_or("This commit isn't on the current branch.")?;
-        if c.parents.len() > 1 {
-            return Err("Merge commits can't be edited here.");
-        }
-        let (mut cur, mut depth) = (head, 0);
-        loop {
-            let at = self.row_of.get(cur).and_then(|&r| self.commit(r)).ok_or("This commit isn't on the current branch.")?;
+        let not_here = "This commit isn't on the current branch.";
+        // Rows are children before parents: the way down from HEAD never goes below `id`'s row.
+        let row = *self.row_of.get(id).ok_or(not_here)?;
+        let mut from: HashMap<&str, (&str, usize)> = HashMap::new();
+        let mut queue = VecDeque::from([head]);
+        while let Some(cur) = queue.pop_front() {
             if cur == id {
-                return if at.parents.is_empty() && depth > 0 { Err("The root commit can't be edited here; use the interactive rebase editor.") } else { Ok(depth) };
+                let (mut path, mut at) = (vec![], cur);
+                while let Some(&(child, i)) = from.get(at) {
+                    path.push(i);
+                    at = child;
+                }
+                path.reverse();
+                return Ok(path);
             }
-            if at.parents.len() > 1 {
-                return Err("A merge commit sits on top of this one, which can't be rewritten here.");
+            let Some(c) = self.row_of.get(cur).filter(|&&r| r <= row).and_then(|&r| self.commit(r)) else { continue };
+            for (i, p) in c.parents.iter().enumerate() {
+                if p != head && !from.contains_key(p.as_str()) {
+                    from.insert(p, (cur, i));
+                    queue.push_back(p);
+                }
             }
-            cur = at.parents.first().ok_or("This commit isn't on the current branch.")?;
-            depth += 1;
         }
+        Err(not_here)
     }
 
-    fn first_parent_nth(&self, n: usize) -> Option<String> {
+    fn follow(&self, path: &[usize]) -> Option<String> {
         let mut cur = self.status.head.clone()?;
-        for _ in 0..n {
-            cur = self.row_of.get(&cur).and_then(|&r| self.commit(r))?.parents.first()?.clone();
+        for &i in path {
+            cur = self.row_of.get(&cur).and_then(|&r| self.commit(r))?.parents.get(i)?.clone();
         }
         Some(cur)
     }
@@ -84,13 +92,14 @@ impl RepoTab {
     pub(super) fn sync_msg_edit(&mut self, ctx: &egui::Context) {
         let Some(e) = &self.edit_msg else { return };
         let loaded = self.data.as_ref().is_some_and(|d| d.row_of.contains_key(&e.id));
-        if matches!(&self.sel, Some(Sel::Commit(id)) if *id == e.id) && loaded {
+        // Its place from HEAD holds its rewritten self once saved (the old one may still show, from another ref).
+        let successor = self.data.as_ref().filter(|_| e.saved).and_then(|d| d.follow(&e.path)).filter(|s| *s != e.id);
+        if successor.is_none() && matches!(&self.sel, Some(Sel::Commit(id)) if *id == e.id) && loaded {
             return;
         }
-        if e.saved && !loaded && self.load.is_some() {
+        if successor.is_none() && e.saved && !loaded && self.load.is_some() {
             return; // the reload that shows the rewritten commit is on its way
         }
-        let successor = (e.saved && !loaded).then(|| self.data.as_ref().and_then(|d| d.first_parent_nth(e.depth))).flatten();
         self.edit_msg = None;
         if let Some(id) = successor {
             self.apply(ctx, Action::Jump(id));
@@ -114,11 +123,11 @@ mod tests {
     #[test]
     fn message_round_trips_and_edits() {
         for m in ["just a summary", "s\n\nbody\n\nSigned-off-by: A <a@a>", "s\nno blank line", "s\n\n\n\nwide gap\n"] {
-            let e = MsgEdit::new("x", m, 0);
+            let e = MsgEdit::new("x", m, vec![]);
             assert_eq!(e.message(), m.trim_end());
             assert!(!e.changed());
         }
-        let mut e = MsgEdit::new("x", "s", 0);
+        let mut e = MsgEdit::new("x", "s", vec![]);
         e.body = "now a body\n\n".into();
         assert_eq!(e.message(), "s\n\nnow a body");
         e.body.clear();
@@ -149,13 +158,12 @@ mod tests {
         let ids: Vec<String> = sh(&dir, &["rev-list", "HEAD"]).lines().map(String::from).collect(); // three, two, one
         let (before, trees0) = (ids.clone(), trees(&dir));
         let d = t.data.as_ref().unwrap();
-        assert_eq!([d.reword_depth(&ids[0]), d.reword_depth(&ids[1])], [Ok(0), Ok(1)]);
-        assert!(d.reword_depth(&ids[2]).is_err()); // root, not HEAD
+        assert_eq!([d.reword_path(&ids[0]), d.reword_path(&ids[1]), d.reword_path(&ids[2])], [Ok(vec![]), Ok(vec![0]), Ok(vec![0, 0])]);
         // Older commit, with uncommitted work in the way.
         std::fs::write(dir.join("a"), "dirty").unwrap();
         let msg = "two, better\n\nbody of two\n\nCo-authored-by: X <x@x>";
         t.select(&ctx, Sel::Commit(ids[1].clone()));
-        t.edit_msg = Some(MsgEdit::new(&ids[1], "two", 1));
+        t.edit_msg = Some(MsgEdit::new(&ids[1], "two", vec![0]));
         t.apply(&ctx, Action::Reword { commit: ids[1].clone(), message: msg.into() });
         settle(&ctx, &mut t);
         // The edit is done and the rewritten commit is selected in place of the old one.
@@ -172,7 +180,7 @@ mod tests {
         assert_eq!(trees(&dir), trees0);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "dirty");
         // Selecting another commit drops an open edit.
-        t.edit_msg = Some(MsgEdit::new(&ids[0], "x", 0));
+        t.edit_msg = Some(MsgEdit::new(&ids[0], "x", vec![]));
         t.select(&ctx, Sel::Wip);
         settle(&ctx, &mut t);
         assert!(t.edit_msg.is_none());
@@ -188,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn pushed_commits_ask_first_and_merges_are_refused() {
+    fn pushed_commits_ask_first() {
         let dir = scratch("inline-reword-pushed");
         let remote = scratch("inline-reword-remote");
         sh(&remote, &["init", "-q", "--bare", "-b", "main"]);
@@ -205,22 +213,82 @@ mod tests {
         assert!(reword(&dir, &gd, &ids[0], true, "3".into()).unwrap().confirm.is_none());
         let confirm = reword(&dir, &gd, &ids[1], false, "2".into()).unwrap().confirm.unwrap();
         assert!(confirm.contains("1 commit already pushed to origin/main"), "{confirm}");
-        assert!(reword(&dir, &gd, &ids[2], false, "1".into()).is_err()); // the root can't be rebased onto
-        // A merge on top blocks editing what's below it.
+        let confirm = reword(&dir, &gd, &ids[2], false, "1".into()).unwrap().confirm.unwrap(); // the root
+        assert!(confirm.contains("2 commits already pushed"), "{confirm}");
+        // With a merge on top, only the rewritten commits count.
         sh(&dir, &["checkout", "-q", "-b", "side", &ids[1]]);
         commit(&dir, "s", "side");
         sh(&dir, &["checkout", "-q", "main"]);
         sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge", "side"]);
+        assert!(reword(&dir, &gd, &ids[0], false, "3".into()).unwrap().confirm.is_none());
+        let confirm = reword(&dir, &gd, &ids[1], false, "2".into()).unwrap().confirm.unwrap();
+        assert!(confirm.contains("1 commit already pushed"), "{confirm}");
+        sh(&dir, &["checkout", "-q", "-b", "other", &ids[1]]);
+        commit(&dir, "o", "other");
+        sh(&dir, &["checkout", "-q", "main"]);
         let ctx = egui::Context::default();
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
         let d = t.data.as_ref().unwrap();
-        let head = d.status.head.clone().unwrap();
-        assert!(d.reword_depth(&head).unwrap_err().contains("Merge"));
-        assert!(d.reword_depth(&ids[0]).unwrap_err().contains("merge commit sits"));
-        let side = sh(&dir, &["rev-parse", "side"]).trim().to_owned();
-        assert!(d.reword_depth(&side).is_err()); // not on main's first-parent line
+        let rev = |r: &str| sh(&dir, &["rev-parse", r]).trim().to_owned();
+        assert_eq!([d.reword_path(&rev("HEAD")), d.reword_path(&ids[0]), d.reword_path(&rev("side"))], [Ok(vec![]), Ok(vec![0]), Ok(vec![1])]);
+        assert!(d.reword_path(&rev("other")).is_err());
+        assert!(reword(&dir, &gd, &rev("other"), false, "x".into()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// Below a merge, the merge itself, a commit merged in, and the root: each keeps every tree,
+    /// author and merge, selects its rewritten self, leaves uncommitted work alone; ⌘Z undoes it.
+    #[test]
+    fn reword_through_merges_with_undo() {
+        let dir = scratch("inline-reword-merges");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        commit(&dir, "b", "two");
+        sh(&dir, &["checkout", "-q", "-b", "side"]);
+        commit(&dir, "s", "side");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "c", "three");
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        commit(&dir, "d", "four");
+        std::fs::write(dir.join("a"), "dirty").unwrap();
+        std::fs::write(dir.join("n"), "new").unwrap();
+        sh(&dir, &["add", "n"]);
+        let revs = ["HEAD", "HEAD~1", "HEAD~1^2", "HEAD~2", "HEAD~3", "HEAD~4"];
+        let show = |fmt: &str| -> Vec<String> { revs.iter().map(|r| sh(&dir, &["log", "-1", fmt, r])).collect() };
+        let (trees, authors, head0, status) = (show("--format=%T %P"), show("--format=%an %ae %ad"), sh(&dir, &["rev-parse", "HEAD"]), sh(&dir, &["status", "--porcelain"]));
+        let parents = |s: &[String]| -> Vec<usize> { s.iter().map(|l| l.split_whitespace().count() - 1).collect() };
+        assert_eq!(parents(&trees), [1, 2, 1, 1, 1, 0]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        for (rev, path) in [("HEAD~3", vec![0, 0, 0]), ("HEAD~1", vec![0]), ("HEAD~1^2", vec![0, 1]), ("HEAD~4", vec![0, 0, 0, 0])] {
+            let id = sh(&dir, &["rev-parse", rev]).trim().to_owned();
+            assert_eq!(t.data.as_ref().unwrap().reword_path(&id), Ok(path.clone()), "{rev}");
+            let msg = format!("{rev} reworded\n\nwith a body");
+            t.select(&ctx, Sel::Commit(id.clone()));
+            t.edit_msg = Some(MsgEdit::new(&id, "x", path));
+            t.apply(&ctx, Action::Reword { commit: id, message: msg.clone() });
+            settle(&ctx, &mut t);
+            assert_eq!(sh(&dir, &["log", "-1", "--format=%B", rev]).trim_end(), msg);
+            assert!(t.edit_msg.is_none());
+            assert_eq!(t.sel, Some(Sel::Commit(sh(&dir, &["rev-parse", rev]).trim().to_owned())), "{rev}");
+            assert_eq!(parents(&show("--format=%T %P")), parents(&trees));
+            assert_eq!(show("--format=%T"), trees.iter().map(|l| l.split_whitespace().next().unwrap().to_owned() + "\n").collect::<Vec<_>>());
+            assert_eq!(show("--format=%an %ae %ad"), authors);
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), status);
+        }
+        assert_ne!(sh(&dir, &["rev-parse", "HEAD"]), head0);
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]).trim(), "refs/heads/main");
+        for _ in 0..4 {
+            t.apply(&ctx, Action::Undo);
+            settle(&ctx, &mut t);
+        }
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), head0);
+        assert_eq!(show("--format=%T %P"), trees);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), status);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

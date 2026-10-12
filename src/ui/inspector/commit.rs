@@ -168,7 +168,7 @@ impl RepoTab {
                 // Eligibility is only worked out while the message is hovered or clicked.
                 let why_not = |hit: &Response| match (&compare, hit.hovered() || hit.clicked()) {
                     (Some(_), _) | (_, false) => None,
-                    _ => self.data.as_ref().and_then(|d| d.reword_depth(&info.id).err()),
+                    _ => self.data.as_ref().and_then(|d| d.reword_path(&info.id).err()),
                 };
                 let mut edit = false;
                 let r = linked(ui, summary, web.as_deref(), |s| RichText::new(s).heading().strong(), acts);
@@ -208,8 +208,8 @@ impl RepoTab {
                         }
                     }
                 }
-                if edit && let Some(depth) = self.data.as_ref().and_then(|d| d.reword_depth(&info.id).ok()) {
-                    self.edit_msg = Some(MsgEdit::new(&info.id, &info.message, depth));
+                if edit && let Some(path) = self.data.as_ref().and_then(|d| d.reword_path(&info.id).ok()) {
+                    self.edit_msg = Some(MsgEdit::new(&info.id, &info.message, path));
                 }
             }
             ui.add_space(6.0);

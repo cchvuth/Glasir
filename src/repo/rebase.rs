@@ -219,19 +219,18 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
 
 /// Asks first when rewriting `commit` up to HEAD reaches commits already on the upstream.
 fn confirm_pushed(dir: &Path, commit: &str, op: Op) -> Op {
-    // The commits the rewrite replaces (`commit` up to HEAD), and those of them the upstream lacks.
-    let mut range = vec!["rev-list".to_owned(), "--count".into(), "HEAD".into()];
-    if git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).is_ok() {
-        range.push(format!("^{commit}^"));
-    }
-    let count = |extra: &[&str]| {
-        let args: Vec<&str> = range.iter().map(String::as_str).chain(extra.iter().copied()).collect();
-        git::run(dir, &args).ok().and_then(|n| n.trim().parse::<usize>().ok())
+    // The commits the rewrite replaces (`commit` and its descendants up to HEAD) that the upstream
+    // has: those up to the merge bases (an extra `^@{u}` would cut the ancestry path short).
+    let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", "@{u}"]) else { return op };
+    let bases = git::run(dir, &["merge-base", "--all", "HEAD", "@{u}"]).unwrap_or_default();
+    let (ancestry, parents) = (format!("--ancestry-path={commit}"), format!("^{commit}^@"));
+    let mut args = vec!["rev-list", "--count", &ancestry, &parents];
+    args.extend(bases.lines());
+    let n = match bases.trim().is_empty() {
+        true => 0,
+        false => git::run(dir, &args).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0),
     };
-    if let (Some(total), Some(unpushed), Ok(up)) = (count(&[]), count(&["^@{u}"]), git::run(dir, &["rev-parse", "--abbrev-ref", "@{u}"]))
-        && total > unpushed
-    {
-        let n = total - unpushed;
+    if n > 0 {
         return op.confirm(format!(
             "This rewrites {n} commit{} already pushed to {}. They get new hashes, so the branch will need a force push, and anyone who has them will have to reconcile.",
             if n == 1 { "" } else { "s" },
@@ -241,20 +240,76 @@ fn confirm_pushed(dir: &Path, commit: &str, op: Op) -> Op {
     op
 }
 
-/// Replace the message of `commit` (HEAD: amend, message only; older: a rebase that rewords it).
+/// Replace the message of `commit` (HEAD: amend, message only; older with no merge from its
+/// parent up to HEAD: a rebase that rewords it; else, merges or the root: [`REWRITE`]).
 /// Asks first when the rewrite reaches commits that are already on the upstream.
 pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: String) -> Res<Op> {
+    let straight = || git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{commit}^..HEAD")]).is_ok_and(|m| m.trim().is_empty());
     let op = if is_head {
         Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
-    } else {
+    } else if straight() {
         let mut op = quick(dir, git_dir, commit, Act::Reword, Some(message))?;
         // A reword changes no tree, so uncommitted work can ride along (git refuses a dirty rebase otherwise).
         if let Some(rebase) = op.cmds.last_mut() {
             rebase.insert(rebase.len() - 1, "--autostash".into());
         }
-        op
+        return Ok(op); // quick() already asked
+    } else {
+        on_branch(dir, commit)?;
+        let short = &commit[..commit.len().min(7)];
+        Op::new(format!("Reword {short}"), &[HEAD_IS, &head_state(dir)]).then(&[REWRITE, commit]).input(message).undo(Undo::Soft)
     };
-    if is_head { Ok(confirm_pushed(dir, commit, op)) } else { Ok(op) } // quick() already asked
+    Ok(confirm_pushed(dir, commit, op))
+}
+
+/// `exec` pseudo-command: `REWRITE commit` gives `commit` the message on stdin by writing it and
+/// every commit after it up to HEAD again (same trees, authors and parents, merges too; signatures
+/// dropped), then moving HEAD's branch there. No tree changes: the index and working tree stay.
+pub(super) const REWRITE: &str = "!rewrite";
+
+pub(super) fn rewrite(dir: &Path, commit: &str, message: &[u8]) -> Res<String> {
+    let head = git::run(dir, &["rev-parse", "HEAD"])?.trim().to_owned();
+    // Parents first: `commit` and its descendants up to HEAD.
+    let ids = git::run(dir, &["rev-list", "--topo-order", "--reverse", &format!("--ancestry-path={commit}"), &head, &format!("^{commit}^@")])?;
+    let raw = git::run_raw(dir, &["cat-file", "--batch"], Some(ids.as_bytes()))?;
+    let committer = git::run(dir, &["var", "GIT_COMMITTER_IDENT"])?;
+    let mut new = std::collections::HashMap::new();
+    let mut rest = &raw[..];
+    for id in ids.lines() {
+        let (obj, more) = batch_object(rest).ok_or("Unexpected git cat-file output.")?;
+        rest = more;
+        let (hdr, msg) = obj.windows(2).position(|w| w == b"\n\n").map_or((obj, &[][..]), |i| (&obj[..i], &obj[i + 2..]));
+        let (mut out, mut skip) = (vec![], false);
+        for line in hdr.split(|&b| b == b'\n') {
+            // A line starting with a space continues the header above it.
+            skip = if line.starts_with(b" ") { skip } else { line.starts_with(b"gpgsig") || (id == commit && line.starts_with(b"encoding ")) };
+            match line.strip_prefix(b"parent ").map(String::from_utf8_lossy) {
+                _ if skip => continue,
+                Some(p) => out.extend(format!("parent {}", new.get(p.as_ref()).map_or(p.as_ref(), String::as_str)).as_bytes()),
+                None if line.starts_with(b"committer ") => out.extend(format!("committer {}", committer.trim()).as_bytes()),
+                None => out.extend(line),
+            }
+            out.push(b'\n');
+        }
+        out.push(b'\n');
+        match id == commit {
+            true => out.extend(format!("{}\n", String::from_utf8_lossy(message).trim()).as_bytes()),
+            false => out.extend(msg),
+        }
+        // ponytail: one hash-object per commit; a fast-import stream if rewording far back gets slow.
+        let oid = git::run_input(dir, &["hash-object", "-t", "commit", "-w", "--stdin"], Some(&out))?;
+        new.insert(id.to_owned(), oid.trim().to_owned());
+    }
+    let to = new.get(&head).ok_or("Commit is not on the current branch.")?;
+    git::run(dir, &["update-ref", "-m", &format!("reword {}", &commit[..commit.len().min(7)]), "HEAD", to, &head])?;
+    Ok(String::new())
+}
+
+/// The first object in `git cat-file --batch` output (`<oid> <type> <size>\n<object>\n`), and the rest.
+fn batch_object(out: &[u8]) -> Option<(&[u8], &[u8])> {
+    let nl = out.iter().position(|&b| b == b'\n')?;
+    let size: usize = std::str::from_utf8(&out[..nl]).ok()?.rsplit(' ').next()?.parse().ok()?;
+    Some((out.get(nl + 1..nl + 1 + size)?, out.get(nl + 2 + size..)?))
 }
 
 /// Squash or drop several commits of the current branch in one rebase.
