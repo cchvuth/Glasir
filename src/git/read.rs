@@ -279,18 +279,19 @@ pub fn numstat(dir: &Path, base: Option<&str>, id: &str) -> Res<Stats> {
     Ok(parse_numstat(&out))
 }
 
+/// (name, email) of a `Co-authored-by: Name <email>` line, any key case.
+pub fn coauthor_line(l: &str) -> Option<(String, String)> {
+    let (k, v) = l.split_once(':')?;
+    if !k.trim().eq_ignore_ascii_case("co-authored-by") {
+        return None;
+    }
+    let (name, email) = v.rsplit_once('<').map_or((v, ""), |(n, e)| (n, e.trim_end().trim_end_matches('>')));
+    Some((name.trim().into(), email.trim().into()))
+}
+
 /// `Co-authored-by: Name <email>` lines of a commit message.
 fn parse_coauthors(msg: &str) -> Vec<(String, String)> {
-    msg.lines()
-        .filter_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            if !k.trim().eq_ignore_ascii_case("co-authored-by") {
-                return None;
-            }
-            let (name, email) = v.rsplit_once('<').map_or((v, ""), |(n, e)| (n, e.trim_end().trim_end_matches('>')));
-            Some((name.trim().into(), email.trim().into()))
-        })
-        .collect()
+    msg.lines().filter_map(coauthor_line).collect()
 }
 
 pub fn commit_info(dir: &Path, id: &str) -> Res<CommitInfo> {

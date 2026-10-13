@@ -77,6 +77,21 @@ pub fn add_coauthors(msg: &str, who: &[(String, String)]) -> String {
     format!("{msg}{}{}", if block { "\n" } else { "\n\n" }, lines.join("\n"))
 }
 
+/// `msg` without the `Co-authored-by` trailer(s) for (name, email), or `None` when it isn't in the
+/// trailer block ending the message. Every other line stays; an emptied block goes with its blank line.
+pub fn remove_coauthor(msg: &str, name: &str, email: &str) -> Option<String> {
+    let msg = msg.trim_end();
+    let (head, block) = msg.rsplit_once("\n\n")?;
+    if !block.lines().all(|l| is_trailer(l) || l.starts_with([' ', '\t'])) {
+        return None;
+    }
+    let kept: Vec<&str> = block.lines().filter(|l| crate::git::coauthor_line(l).is_none_or(|(n, e)| n != name || e != email)).collect();
+    if kept.len() == block.lines().count() {
+        return None;
+    }
+    Some(if kept.is_empty() { head.trim_end().to_owned() } else { format!("{head}\n\n{}", kept.join("\n")) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +115,19 @@ mod tests {
         // A body paragraph that isn't a trailer block starts a new one.
         assert_eq!(add_coauthors("fix\n\nNote: see this\nand that", &who[..1]), "fix\n\nNote: see this\nand that\n\nCo-authored-by: Ann Lee <ann@x.io>");
         assert_eq!(add_coauthors("fix", &[]), "fix");
+    }
+
+    #[test]
+    fn removes_coauthors() {
+        let m = "fix\n\nbody\n\nSigned-off-by: Me <m@x>\nco-authored-by: Ann <a@x>\nCo-authored-by: Bo <b@x>\n";
+        assert_eq!(remove_coauthor(m, "Ann", "a@x").unwrap(), "fix\n\nbody\n\nSigned-off-by: Me <m@x>\nCo-authored-by: Bo <b@x>");
+        assert_eq!(remove_coauthor("fix\n\nCo-authored-by: Ann <a@x>\nCo-authored-by: Ann <a@x>\n\n", "Ann", "a@x").unwrap(), "fix");
+        assert_eq!(remove_coauthor("fix\n\nbody\n\nCo-authored-by: Ann <a@x>", "Ann", "a@x").unwrap(), "fix\n\nbody");
+        // Not in the closing trailer block, not a match, or no trailer block at all.
+        assert_eq!(remove_coauthor("fix\n\nCo-authored-by: Ann <a@x>\n\nmore text", "Ann", "a@x"), None);
+        assert_eq!(remove_coauthor("fix\nCo-authored-by: Ann <a@x>", "Ann", "a@x"), None);
+        assert_eq!(remove_coauthor("fix\n\nCo-authored-by: Ann <a@x>", "Bo", "a@x"), None);
+        assert_eq!(remove_coauthor("fix\n\nbody: x\nnot a trailer\nCo-authored-by: Ann <a@x>", "Ann", "a@x"), None);
     }
 
     #[test]

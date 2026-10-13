@@ -162,7 +162,7 @@ impl RepoTab {
             ui.add_space(6.0);
             let (summary, body) = info.message.split_once('\n').unwrap_or((&info.message, ""));
             let web = self.data.as_ref().and_then(|d| d.web());
-            if self.edit_msg.as_ref().is_some_and(|e| e.id == info.id) && compare.is_none() {
+            if self.edit_msg.as_ref().is_some_and(|e| e.id == info.id && !e.quiet) && compare.is_none() {
                 msg_editor(ui, &mut self.edit_msg, busy, acts);
             } else {
                 // Eligibility is only worked out while the message is hovered or clicked.
@@ -257,10 +257,41 @@ impl RepoTab {
                     });
                 });
                 for (name, email) in &info.coauthors {
-                    ui.horizontal(|ui| {
+                    let without = crate::repo::message::remove_coauthor(&info.message, name, email);
+                    let hover_id = ui.id().with(("coauthor", &info.id, email));
+                    let hot = ui.data(|d| d.get_temp::<bool>(hover_id)).unwrap_or(false);
+                    let why = || self.data.as_ref().and_then(|d| d.reword_path(&info.id).err());
+                    let mut remove = false;
+                    let row = ui.horizontal(|ui| {
                         avatar(ui, &self.avatars, name, email, 9.0);
-                        ui.label(RichText::new(format!("co-authored by {name}")).small().color(theme::dim(ui))).on_hover_text(email);
+                        let label = ui.add(Label::new(RichText::new(format!("co-authored by {name}")).small().color(theme::dim(ui))).sense(Sense::click())).on_hover_text(email);
+                        if without.is_none() {
+                            return;
+                        }
+                        let x = ui.add_visible(hot, Label::new(RichText::new(icon::X).small().color(theme::dim(ui))).sense(Sense::click()));
+                        let reason = if x.hovered() { why() } else { None };
+                        if x.hovered() {
+                            ui.ctx().set_cursor_icon(if reason.is_some() { egui::CursorIcon::NotAllowed } else { egui::CursorIcon::PointingHand });
+                        }
+                        let x = x.on_hover_text(reason.unwrap_or("Remove this co-author from the commit message"));
+                        remove |= x.clicked() && why().is_none();
+                        label.context_menu(|ui| {
+                            let why = why();
+                            let b = ui.add_enabled(why.is_none(), egui::Button::new(format!("{}  Remove co-author", icon::X)));
+                            if b.on_hover_text("Rewrites the commit message without this Co-authored-by line").on_disabled_hover_text(why.unwrap_or_default()).clicked() {
+                                remove = true;
+                                ui.close();
+                            }
+                        });
                     });
+                    let over = ui.rect_contains_pointer(row.response.rect);
+                    ui.data_mut(|d| d.insert_temp(hover_id, over));
+                    if let Some(message) = without.filter(|_| remove) {
+                        if let Some(path) = self.data.as_ref().and_then(|d| d.reword_path(&info.id).ok()) {
+                            self.edit_msg = Some(MsgEdit::quiet(&info.id, &info.message, path));
+                        }
+                        acts.push(Action::Reword { commit: info.id.clone(), message });
+                    }
                 }
             }
             ui.add_space(8.0);

@@ -21,6 +21,8 @@ pub struct MsgEdit {
     saved: bool,
     /// Focus the summary field on the next frame.
     pub focus: bool,
+    /// No editor shown: the rewrite came from elsewhere (removing a co-author), this only follows it.
+    pub quiet: bool,
 }
 
 impl MsgEdit {
@@ -29,7 +31,12 @@ impl MsgEdit {
         let (summary, rest) = message.split_once('\n').unwrap_or((message, ""));
         let body = rest.trim_start_matches('\n');
         let sep = if body.is_empty() { "\n\n".to_owned() } else { "\n".repeat(1 + rest.len() - body.len()) };
-        MsgEdit { id: id.into(), summary: summary.into(), body: body.into(), sep, original: message.into(), at, saved: false, focus: true }
+        MsgEdit { id: id.into(), summary: summary.into(), body: body.into(), sep, original: message.into(), at, saved: false, focus: true, quiet: false }
+    }
+
+    /// An edit without an editor: lets the selection follow the commit's rewritten self.
+    pub fn quiet(id: &str, message: &str, at: (Option<String>, Vec<usize>)) -> Self {
+        MsgEdit { quiet: true, ..Self::new(id, message, at) }
     }
 
     /// The edited message; trailing whitespace is git's to clean up.
@@ -237,6 +244,38 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-list", "HEAD"]).lines().map(String::from).collect::<Vec<_>>(), before);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "dirty");
         assert_eq!(sh(&dir, &["status", "--porcelain"]).trim(), "M a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Removing a co-author from an older commit rewrites just that trailer; the selection follows.
+    #[test]
+    fn remove_coauthor_from_older_commit() {
+        let dir = scratch("inline-coauthor");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        std::fs::write(dir.join("b"), "two").unwrap();
+        sh(&dir, &["add", "b"]);
+        sh(&dir, &["commit", "-q", "-m", "two", "-m", "body\n\nSigned-off-by: Me <me@x>\nCo-authored-by: Ann <ann@x>\nCo-authored-by: Bo <bo@x>"]);
+        commit(&dir, "c", "three");
+        commit(&dir, "d", "four");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (id, trees0) = (sh(&dir, &["rev-parse", "HEAD~2"]).trim().to_owned(), trees(&dir));
+        t.select(&ctx, Sel::Commit(id.clone()));
+        settle(&ctx, &mut t);
+        let info = git::commit_info(&dir, &id).unwrap();
+        assert_eq!(info.coauthors.len(), 2);
+        let message = crate::repo::message::remove_coauthor(&info.message, "Ann", "ann@x").unwrap();
+        t.edit_msg = Some(MsgEdit::quiet(&id, &info.message, t.data.as_ref().unwrap().reword_path(&id).unwrap()));
+        t.apply(&ctx, Action::Reword { commit: id, message });
+        settle(&ctx, &mut t);
+        let new = sh(&dir, &["rev-parse", "HEAD~2"]).trim().to_owned();
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%B", &new]).trim_end(), "two\n\nbody\n\nSigned-off-by: Me <me@x>\nCo-authored-by: Bo <bo@x>");
+        assert_eq!(t.sel, Some(Sel::Commit(new)));
+        assert!(t.edit_msg.is_none());
+        assert_eq!(trees(&dir), trees0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
