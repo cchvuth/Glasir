@@ -21,12 +21,12 @@ fn matches(filter: &str, name: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
 }
 
-/// Hidden refs are dimmed with an eye-slash, soloed ones orange.
+/// Hidden refs are dimmed, soloed ones orange.
 fn view_style(ui: &Ui, d: &RepoData, r: &crate::git::Ref, text: RichText) -> RichText {
     if d.view.solo.contains(&r.full) {
         text.color(theme::MOD)
     } else if !d.view.shows(&r.full) {
-        RichText::new(format!("{}  {}", text.text(), icon::EYE_SLASH)).color(theme::dim(ui))
+        text.color(theme::dim(ui).gamma_multiply(0.7))
     } else {
         text
     }
@@ -155,7 +155,7 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
 }
 
 fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
-    let text = view_style(ui, d, r, RichText::new(name));
+    let text = view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::CLOUD)));
     let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
     hover_ref(ui, &resp, &r.target);
@@ -170,7 +170,7 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
 }
 
 fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
-    let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(name))).frame_when_inactive(false));
+    let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::TAG)))).frame_when_inactive(false));
     hover_ref(ui, &resp, &r.target);
     eye(ui, resp.rect, d, &[r], acts);
     let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
