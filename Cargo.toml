@@ -1,6 +1,6 @@
 [package]
 name = "glasir"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "A fast, free and open-source Git client with a modern commit graph and Claude-powered helpers"
 license = "MIT"
