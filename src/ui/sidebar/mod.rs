@@ -32,6 +32,27 @@ fn view_style(ui: &Ui, d: &RepoData, r: &crate::git::Ref, text: RichText) -> Ric
     }
 }
 
+/// An eye at the right end of the hovered row: hides `refs` from the graph, or shows them again
+/// once all are hidden. HEAD's branch is always in the graph, so it's left out.
+pub(super) fn eye(ui: &mut Ui, row: egui::Rect, d: &RepoData, refs: &[&crate::git::Ref], acts: &mut Vec<Action>) {
+    let refs: Vec<&str> = refs.iter().filter(|r| !r.head).map(|r| r.full.as_str()).collect();
+    let row = egui::Rect::from_x_y_ranges(row.left()..=ui.max_rect().right(), row.y_range());
+    if refs.is_empty() || !d.view.solo.is_empty() || !ui.rect_contains_pointer(row) {
+        return;
+    }
+    let hidden = refs.iter().all(|f| d.view.hidden.iter().any(|h| h == f));
+    let at = egui::Rect::from_center_size(egui::pos2(row.right() - 14.0, row.center().y), egui::vec2(26.0, 22.0));
+    let b = egui::Button::new(if hidden { icon::EYE } else { icon::EYE_SLASH }).frame_when_inactive(false);
+    if ui.put(at, b).on_hover_text(if hidden { "Show in graph" } else { "Hide from graph" }).clicked() {
+        let mut v = d.view.clone();
+        v.hidden.retain(|h| !refs.contains(&h.as_str()));
+        if !hidden {
+            v.hidden.extend(refs.iter().map(|f| f.to_string()));
+        }
+        acts.push(Action::View(v));
+    }
+}
+
 /// A thin line between the pinned default/long-lived branches and the rest.
 fn pinned_separator(ui: &mut Ui, d: &RepoData, i: usize, names: &[&str]) {
     if i > 0 && d.branch_rank(names[i - 1]) < 2 && d.branch_rank(names[i]) == 2 {
@@ -112,6 +133,7 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
     let resp = ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) });
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
     hover_ref(ui, &resp, &r.target);
+    eye(ui, resp.rect, d, &[r], acts);
     let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
     if r.head {
         tip += "\nCurrent branch (HEAD)";
@@ -137,6 +159,7 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
     let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
     hover_ref(ui, &resp, &r.target);
+    eye(ui, resp.rect, d, &[r], acts);
     if resp.clicked() {
         acts.push(Action::Jump(r.target.clone()));
     }
@@ -149,6 +172,7 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
 fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
     let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(name))).frame_when_inactive(false));
     hover_ref(ui, &resp, &r.target);
+    eye(ui, resp.rect, d, &[r], acts);
     let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
     if resp.clicked() {
         acts.push(Action::Jump(r.target.clone()));
@@ -202,7 +226,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
             }
             let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name)).collect();
             let seed = d.refs.iter().find(|r| r.head && r.kind == RefKind::Local).map(|r| r.name.as_str());
-            folders::show(ui, d, ui.id().with((dir, "local")), &nested, 0, f, seed, |ui, r, name| local_row(ui, d, r, name, 0, acts));
+            folders::show(ui, d, ui.id().with((dir, "local")), &nested, 0, f, seed, acts, |ui, r, name, acts| local_row(ui, d, r, name, 0, acts));
         });
         let mut remotes: Vec<&str> = d.remotes.iter().map(|r| r.0.as_str()).collect();
         remotes.sort();
@@ -223,8 +247,10 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                         remote_row(ui, d, r, &r.name[n..], acts);
                     }
                     let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Remote && d.split_remote(&d.refs[i].name).is_some_and(|s| s.0 == rem) && d.refs[i].name[n..].contains('/') && matches(f, &d.refs[i].name)).collect();
-                    folders::show(ui, d, ui.id().with((dir, "remote", rem)), &nested, n, f, None, |ui, r, name| remote_row(ui, d, r, name, acts));
+                    folders::show(ui, d, ui.id().with((dir, "remote", rem)), &nested, n, f, None, acts, |ui, r, name, acts| remote_row(ui, d, r, name, acts));
                 });
+                let all: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Remote && d.split_remote(&r.name).is_some_and(|s| s.0 == rem)).collect();
+                eye(ui, resp.header_response.rect, d, &all, acts);
                 resp.header_response.on_hover_text(format!("{rem}\n{url}")).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
             }
             if d.remotes.is_empty() {
@@ -249,7 +275,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                 tag_row(ui, d, &d.refs[i], &d.refs[i].name, acts);
             }
             nested.sort_unstable();
-            folders::show(ui, d, ui.id().with((dir, "tags")), &nested, 0, f, None, |ui, r, name| tag_row(ui, d, r, name, acts));
+            folders::show(ui, d, ui.id().with((dir, "tags")), &nested, 0, f, None, acts, |ui, r, name, acts| tag_row(ui, d, r, name, acts));
         });
         worktrees::list(ui, d, dir, f, acts);
         submodules::list(ui, d, f, acts);

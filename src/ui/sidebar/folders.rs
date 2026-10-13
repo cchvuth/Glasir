@@ -3,7 +3,7 @@
 //! repo for the session (not saved); with a filter every folder is open.
 
 use crate::git::Ref;
-use crate::repo::RepoData;
+use crate::repo::{Action, RepoData};
 use crate::repo::filetree::{FileTree, Node};
 use crate::ui::inspector::ROW_H;
 use crate::ui::inspector::tree::{INDENT, dir_row};
@@ -25,7 +25,7 @@ fn ancestors(name: &str) -> HashSet<String> {
 /// while the ref list, filter and open folders stay the same; rows out of view are skipped
 /// (all are `ROW_H` high), so thousands of branches stay cheap.
 #[allow(clippy::too_many_arguments)]
-pub fn show(ui: &mut Ui, d: &RepoData, id: Id, idx: &[usize], strip: usize, filter: &str, seed: Option<&str>, mut leaf: impl FnMut(&mut Ui, &Ref, &str)) {
+pub fn show(ui: &mut Ui, d: &RepoData, id: Id, idx: &[usize], strip: usize, filter: &str, seed: Option<&str>, acts: &mut Vec<Action>, mut leaf: impl FnMut(&mut Ui, &Ref, &str, &mut Vec<Action>)) {
     let (oid, key) = (id.with("open"), Arc::as_ptr(&d.refs) as usize);
     let mut open: HashSet<String> = ui.data(|x| x.get_temp(oid)).unwrap_or_else(|| ancestors(seed.unwrap_or("")));
     let old = ui.data(|x| x.get_temp::<Cached>(id)).filter(|c| c.0 == key && c.1 == filter);
@@ -60,12 +60,15 @@ pub fn show(ui: &mut Ui, d: &RepoData, id: Id, idx: &[usize], strip: usize, filt
                 rect.min.x += *depth as f32 * INDENT + 2.0;
                 ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                     ui.spacing_mut().interact_size.y = ROW_H;
-                    leaf(ui, r, r.name.rsplit('/').next().unwrap_or(&r.name));
+                    leaf(ui, r, r.name.rsplit('/').next().unwrap_or(&r.name), acts);
                 });
             }
             Node::Dir { path, name, depth, files, .. } => {
                 let isopen = filtering || open.contains(path);
-                if dir_row(ui, *depth, name, files.len(), !isopen).clicked() && !filtering {
+                let resp = dir_row(ui, *depth, name, files.len(), !isopen);
+                let refs: Vec<&Ref> = tree.files[files.clone()].iter().map(|&i| &d.refs[i]).collect();
+                super::eye(ui, resp.rect, d, &refs, acts);
+                if resp.clicked() && !filtering {
                     toggled = Some(path.clone());
                 }
             }
