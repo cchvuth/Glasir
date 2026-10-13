@@ -7,7 +7,7 @@ use crate::ai;
 use crate::git;
 use crate::repo::{PullMode, Task, tools};
 use crate::theme::{self, icon};
-use egui::{Align2, Button, Id, Key, RichText, Sense, TextEdit, Ui, vec2};
+use egui::{Align2, Button, Id, RichText, Sense, TextEdit, Ui, vec2};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -139,9 +139,17 @@ impl App {
         let s = &mut self.s;
         let mut close = false;
         let mut reload = false;
-        egui::Modal::new(Id::new("settings")).show(ctx, |ui| {
+        let modal = egui::Modal::new(Id::new("settings")).show(ctx, |ui| {
             ui.set_width(520.0);
-            ui.heading("Settings");
+            ui.set_max_height(ui.ctx().content_rect().height() - 80.0);
+            ui.horizontal(|ui| {
+                ui.heading("Settings");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if theme::pill(ui, theme::icon::X).on_hover_text("Close (Esc)").clicked() {
+                        close = true;
+                    }
+                });
+            });
             ui.add_space(6.0);
             let max_h = ui.ctx().content_rect().height() - 160.0;
             egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
@@ -354,12 +362,8 @@ impl App {
                     ui.colored_label(if *ok { theme::add() } else { theme::del() }, n);
                 }
             });
-            ui.add_space(8.0);
-            ui.add_space(4.0);
-            if ui.button("Close").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
-                close = true;
-            }
         });
+        close |= modal.should_close();
         if reload {
             self.commits_stale = true;
             for t in &mut self.tabs {
