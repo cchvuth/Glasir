@@ -347,7 +347,7 @@ impl RepoTab {
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone(), d.bisect.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.layout.clone(), d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone(), d.bisect.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
             Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk, bis))) => {

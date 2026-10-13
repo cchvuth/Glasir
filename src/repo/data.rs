@@ -38,7 +38,10 @@ pub struct RepoData {
     /// Row 0 is the uncommitted-changes pseudo commit.
     pub wip: bool,
     pub graph: Arc<Graph>,
-    /// What `graph` was laid out for besides the log and refs: (WIP row, HEAD row).
+    /// `graph` without the WIP row: a function of the log, refs and view alone, so HEAD
+    /// moving or the tree turning dirty never relays it out (nor shifts its colors).
+    pub layout: Arc<Graph>,
+    /// What `graph` was derived from `layout` for: (WIP row, HEAD row).
     pub layout_key: (bool, Option<usize>),
     /// Commit id -> display row.
     pub row_of: HashMap<String, usize>,
@@ -287,8 +290,8 @@ impl RepoData {
     }
 
     /// `build`, keeping `prev`'s lane layout (a status-only refresh over the same log, refs and
-    /// view) unless the WIP row or HEAD moved: laying out a huge log takes a long while.
-    #[allow(clippy::too_many_arguments)]
+    /// view): laying out a huge log takes a long while.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub(super) fn build_reusing(
         log: Arc<Vec<Commit>>,
         refs: Arc<Vec<Ref>>,
@@ -298,7 +301,7 @@ impl RepoData {
         origin_head: String,
         status: Status,
         view: View,
-        prev: Option<(Arc<Graph>, (bool, Option<usize>))>,
+        prev: Option<(Arc<Graph>, Arc<Graph>, (bool, Option<usize>))>,
     ) -> Self {
         let state = git::state(&git_dir);
         // An operation stopped with a clean tree (conflicts resolved to HEAD, a rebase `edit`
@@ -308,13 +311,12 @@ impl RepoData {
         let mut row_of: HashMap<String, usize> = log.iter().enumerate().map(|(i, c)| (c.id.clone(), i + off)).collect();
         // First-parent view: git still prints every parent; draw only the first.
         let keep = if view.first_parent { 1 } else { usize::MAX };
-        let mut parents: Vec<Vec<u32>> =
-            log.iter().map(|c| c.parents.iter().take(keep).map(|p| row_of.get(p).map_or(NONE, |&r| r as u32)).collect()).collect();
+        let parents: Vec<Vec<u32>> =
+            log.iter().map(|c| c.parents.iter().take(keep).map(|p| row_of.get(p).map_or(NONE, |&r| (r - off) as u32)).collect()).collect();
         let mut prio = vec![6u32; log.len()];
         let mut refs_at: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, r) in refs.iter().enumerate() {
             let p = match r.kind {
-                RefKind::Local if r.head => 0,
                 RefKind::Local if is_trunk(&r.name) => 1,
                 RefKind::Local => 2,
                 RefKind::Remote if split_remote(&remotes, &r.name).is_some_and(|(_, b)| is_trunk(b)) => 3,
@@ -333,18 +335,18 @@ impl RepoData {
             refs.iter().enumerate().filter(|(_, r)| r.kind != RefKind::Tag).filter_map(|(i, r)| row_of.get(&r.target).map(|&row| (row, i))).collect();
         tips.sort_by_key(|t| t.0);
         let head_row = status.head.as_ref().and_then(|h| row_of.get(h)).copied();
-        if let Some(r) = head_row {
-            prio[r - off] = 0;
-        }
         if wip {
-            parents.insert(0, vec![head_row.map_or(NONE, |r| r as u32)]);
-            prio.insert(0, 0);
             row_of.insert(String::new(), 0);
         }
         let layout_key = (wip, head_row);
-        let graph = match prev {
-            Some((g, key)) if key == layout_key => g,
-            _ => Arc::new(Graph::layout(&parents, &prio)),
+        let (layout, graph) = match prev {
+            Some((l, g, key)) if key == layout_key => (l, g),
+            prev => {
+                let seed = |c: &Commit| c.id.get(..8).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0);
+                let l = prev.map_or_else(|| Arc::new(Graph::layout(&parents, &prio, &log.iter().map(seed).collect::<Vec<_>>())), |p| p.0);
+                let g = if wip { Arc::new(l.with_wip(head_row.map(|r| r - 1))) } else { l.clone() };
+                (l, g)
+            }
         };
         let mut stash_at: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, s) in stashes.iter().enumerate() {
@@ -380,6 +382,7 @@ impl RepoData {
             bisect: None,
             wip,
             graph,
+            layout,
             layout_key,
             row_of,
             refs_at,
@@ -681,6 +684,44 @@ mod tests {
         let wt = dir.join("wt");
         exec(&dir, &Op::new("Create worktree", &["worktree", "add", wt.to_str().unwrap(), d.worktree_rev(r)])).unwrap();
         assert_eq!(sh(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/x\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checkout_and_changes_keep_graph_colors() {
+        let dir = scratch("lane-colors");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n");
+        for b in ["feat", "fix", "spike"] {
+            sh(&dir, &["checkout", "-q", "-b", b, "main"]);
+            commit(&dir, b, "1\n");
+            commit(&dir, b, "2\n");
+        }
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge fix", "fix"]);
+        commit(&dir, "a", "2\n");
+        let colors = |d: &RepoData| {
+            let mut v: Vec<(String, u16, u16)> = d.log.iter().map(|c| (c.id.clone(), d.graph.nodes[d.row_of[&c.id]].color, d.graph.nodes[d.row_of[&c.id]].col)).collect();
+            v.extend(d.graph.edges.iter().filter(|e| !d.wip || e.from > 0).map(|e| (format!("{}-{}", e.from as usize - d.wip as usize, e.lane), e.color, e.to_col)));
+            v
+        };
+        let main = colors(&load_all(&dir, 100, View::default()).unwrap());
+        sh(&dir, &["checkout", "-q", "spike"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(colors(&d), main);
+        std::fs::write(dir.join("a"), "dirty\n").unwrap();
+        let dirty = load_all(&dir, 100, View::default()).unwrap();
+        assert!(dirty.wip);
+        assert_eq!(colors(&dirty), main);
+        let head = &dirty.graph.nodes[dirty.row_of[dirty.status.head.as_ref().unwrap()]];
+        assert_eq!(dirty.graph.nodes[0].color, head.color);
+        // A status-only refresh reuses the layout and still adds or drops the WIP row.
+        let (l, g) = (d.layout.clone(), d.graph.clone());
+        let r = RepoData::build_reusing(d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), dirty.status.clone(), d.view.clone(), Some((l, g, d.layout_key)));
+        assert!(r.wip && Arc::ptr_eq(&r.layout, &d.layout));
+        assert_eq!(colors(&r), main);
+        assert_eq!(r.graph.nodes, dirty.graph.nodes);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

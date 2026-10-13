@@ -2,4 +2,4 @@
 
 mod layout;
 
-pub use layout::{Graph, NONE};
+pub use layout::{COLORS, Graph, NONE};

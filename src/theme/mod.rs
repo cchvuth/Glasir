@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// Phosphor icons, mixed into ordinary text (`format!("{}  Push", icon::ARROW_LINE_UP)`).
 pub use egui_phosphor::regular as icon;
 
-const LANES: [Color32; 10] = [
+const LANES: [Color32; crate::graph::COLORS as usize] = [
     Color32::from_rgb(0x2b, 0xb8, 0xff), // sky
     Color32::from_rgb(0xff, 0x5c, 0xd6), // pink
     Color32::from_rgb(0xff, 0xc4, 0x3d), // amber
