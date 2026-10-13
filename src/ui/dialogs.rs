@@ -78,17 +78,24 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
     egui::Modal::new(Id::new("confirm")).show(ctx, |ui| {
         let text = c.confirm.as_deref().unwrap_or("");
         let (text, command) = text.split_once("\n$ ").map_or((text, None), |(t, c)| (t, Some(c)));
-        ui.set_width(if command.is_some() { 640.0 } else { 380.0 });
+        let raw_id = Id::new("confirm_raw");
+        let raw = ui.data(|d| d.get_temp::<bool>(raw_id)).unwrap_or(false);
+        ui.set_width(if command.is_some() && raw { 640.0 } else { 380.0 });
         ui.heading(&c.label);
         ui.label(keys(text));
         if let Some(command) = command {
             ui.add_space(4.0);
-            // One flag per line (still paste-able), so long leases don't wrap mid-word.
-            let shown = format!("$ {}", command.replace(" --", " \\\n  --"));
-            Frame::new().fill(theme::faint(ui)).corner_radius(8).inner_margin(8).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.label(RichText::new(shown).monospace().size(11.5));
-            });
+            if ui.link(RichText::new(if raw { "Hide raw command" } else { "View raw command" }).small()).clicked() {
+                ui.data_mut(|d| d.insert_temp(raw_id, !raw));
+            }
+            if raw {
+                // One flag per line (still paste-able), so long leases don't wrap mid-word.
+                let shown = format!("$ {}", command.replace(" --", " \\\n  --"));
+                Frame::new().fill(theme::faint(ui)).corner_radius(8).inner_margin(8).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(shown).monospace().size(11.5));
+                });
+            }
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
@@ -101,6 +108,7 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         });
     });
     if let Some(ok) = done {
+        ctx.data_mut(|d| d.remove::<bool>(Id::new("confirm_raw")));
         let mut op = t.confirm.take().unwrap();
         if ok {
             op.confirm = None;

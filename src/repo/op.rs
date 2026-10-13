@@ -1162,7 +1162,7 @@ impl RepoData {
         let args = ["push", "--progress", &lease, "--force-if-includes", remote, &spec];
         let at = if sha.is_empty() { "doesn't exist".into() } else { format!("is still at {}", &sha[..7.min(sha.len())]) };
         let text = format!(
-            "Replace {up} with your {branch}? Commits on {up} that aren't in your branch will be lost. Only goes through if {up} {at}, as shown here.\n$ git {}",
+            "Replace {up} with your {branch}? Commits on {up} that aren't in your branch will be lost. Only goes through if {up} {at}.\n$ git {}",
             args.join(" ")
         );
         Some(Op::new("Force push", &args).confirm(text))
