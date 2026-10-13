@@ -94,7 +94,9 @@ fn open_tools(ui: &mut Ui, tools: &[crate::repo::tools::Open], acts: &mut Vec<Ac
 fn coauthors_menu(ui: &mut Ui, d: &RepoData, coauthors: &mut Vec<(String, String)>) {
     {
         let n = coauthors.len();
-        ui.menu_button(if n == 0 { "Co-authors".to_owned() } else { format!("Co-authors ({n})") }, |ui| {
+        let keep_open = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        let button = egui::containers::menu::MenuButton::new(if n == 0 { "Co-authors".to_owned() } else { format!("Co-authors ({n})") }).config(keep_open);
+        button.ui(ui, |ui| {
             let q = ui.id().with(("coauthor-filter", Arc::as_ptr(&d.log) as usize));
             // Most active first, cached per loaded log: the scan is too slow for every frame.
             let people: Arc<Vec<(String, String)>> = ui.data_mut(|m| {
@@ -110,8 +112,16 @@ fn coauthors_menu(ui: &mut Ui, d: &RepoData, coauthors: &mut Vec<(String, String
                 .clone()
             });
             let mut filter: String = ui.data_mut(|m| m.get_temp(q).unwrap_or_default());
-            ui.add(TextEdit::singleline(&mut filter).hint_text("Find a person").desired_width(220.0));
+            ui.add(TextEdit::singleline(&mut filter).hint_text("Find a person, or type Name <email>").desired_width(260.0));
             let f = filter.to_lowercase();
+            let typed = crate::repo::message::parse_person(&filter).filter(|p| !coauthors.contains(p) && !people.contains(p));
+            let mut filter = filter;
+            if let Some(p) = typed
+                && ui.button(format!("{}  Add {} <{}>", icon::PLUS, p.0, p.1)).clicked()
+            {
+                coauthors.push(p);
+                filter.clear();
+            }
             ui.data_mut(|m| m.insert_temp(q, filter));
             let shown = people.iter().filter(|(n, e)| f.is_empty() || n.to_lowercase().contains(&f) || e.to_lowercase().contains(&f)).take(12);
             // Picked people stay listed even when the filter hides them.
@@ -126,7 +136,7 @@ fn coauthors_menu(ui: &mut Ui, d: &RepoData, coauthors: &mut Vec<(String, String
                 }
             }
         })
-        .response
+        .0
         .on_hover_text("Adds a Co-authored-by trailer for each person (GitHub credits them)");
     }
 }

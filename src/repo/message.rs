@@ -92,9 +92,32 @@ pub fn remove_coauthor(msg: &str, name: &str, email: &str) -> Option<String> {
     Some(if kept.is_empty() { head.trim_end().to_owned() } else { format!("{head}\n\n{}", kept.join("\n")) })
 }
 
+/// A person typed as `Name <email>` or just `email` (the name then is the part before the `@`).
+pub fn parse_person(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let (name, email) = match s.rsplit_once('<') {
+        Some((n, e)) => (n.trim(), e.trim().trim_end_matches('>').trim()),
+        None => ("", s),
+    };
+    let (local, domain) = email.split_once('@')?;
+    let ok = !local.is_empty() && domain.contains('.') && !email.contains(char::is_whitespace);
+    ok.then(|| (if name.is_empty() { local.to_owned() } else { name.to_owned() }, email.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_typed_people() {
+        let p = |s| parse_person(s);
+        assert_eq!(p("Ann Lee <ann@x.org>"), Some(("Ann Lee".into(), "ann@x.org".into())));
+        assert_eq!(p("  bo@x.org "), Some(("bo".into(), "bo@x.org".into())));
+        assert_eq!(p("<cy@x.org>"), Some(("cy".into(), "cy@x.org".into())));
+        for bad in ["", "Ann", "ann@", "@x.org", "ann@x", "a b@x.org"] {
+            assert_eq!(p(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn strips_comment_lines() {
