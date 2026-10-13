@@ -18,6 +18,7 @@ impl App {
             ui.ctx().send_viewport_cmd(ViewportCommand::Maximized(!max));
         }
         theme::bar_h(ui, 30.0, |ui| {
+            ui.set_clip_rect(ui.max_rect().expand(40.0));
             if theme::pill(ui, icon::GEAR_SIX).on_hover_text(keys("Settings (⌘,)")).clicked() {
                 self.open_settings();
             }

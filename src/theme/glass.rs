@@ -113,7 +113,7 @@ pub fn glass_shapes(rect: Rect, radius: f32, dark: bool, opacity: u8) -> Vec<Sha
         let (l, m, r) = (rect.left() + inset, rect.center().x, rect.right() - inset);
         let (t, b) = (rect.top() + 1.0, rect.top() + h);
         let mut mesh = Mesh::default();
-        for (x, alpha) in [(l, a / 3), (m, a), (r, a / 3)] {
+        for (x, alpha) in [(l, 0), (m, a), (r, 0)] {
             mesh.colored_vertex(pos2(x, t), Color32::from_white_alpha(alpha));
             mesh.colored_vertex(pos2(x, b), Color32::TRANSPARENT);
         }
