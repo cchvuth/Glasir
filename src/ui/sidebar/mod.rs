@@ -42,8 +42,13 @@ pub(super) fn eye(ui: &mut Ui, row: egui::Rect, d: &RepoData, refs: &[&crate::gi
     }
     let hidden = refs.iter().all(|f| d.view.hidden.iter().any(|h| h == f));
     let at = egui::Rect::from_center_size(egui::pos2(row.right() - 14.0, row.center().y), egui::vec2(26.0, 22.0));
-    let b = egui::Button::new(if hidden { icon::EYE } else { icon::EYE_SLASH }).frame_when_inactive(false);
-    if ui.put(at, b).on_hover_text(if hidden { "Show in graph" } else { "Hide from graph" }).clicked() {
+    let resp = ui.interact(at, egui::Id::new(("eye", &refs, row.top() as i32)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.hovered() {
+        ui.painter().rect_filled(at, 6.0, theme::hover(ui));
+    }
+    let col = if resp.hovered() { theme::text(ui) } else { theme::dim(ui) };
+    ui.painter().text(at.center(), egui::Align2::CENTER_CENTER, if hidden { icon::EYE } else { icon::EYE_SLASH }, egui::FontId::proportional(14.0), col);
+    if resp.on_hover_text(if hidden { "Show in graph" } else { "Hide from graph" }).clicked() {
         let mut v = d.view.clone();
         v.hidden.retain(|h| !refs.contains(&h.as_str()));
         if !hidden {
