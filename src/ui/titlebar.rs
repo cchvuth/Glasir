@@ -34,7 +34,7 @@ impl App {
             }
             theme::rest(ui, |ui| {
                 let (mut close, mut others, mut drag) = (None, None, None);
-                let mut rects = vec![];
+                let (mut rects, mut ends) = (vec![], vec![]);
                 // Tabs share the width left of the global buttons (labels cut with "…", the
                 // "+" kept clear), so long branch names never push tabs off the bar.
                 let w = ((ui.available_width() - 40.0) / self.tabs.len().max(1) as f32 - 58.0).clamp(0.0, 260.0);
@@ -77,7 +77,13 @@ impl App {
                             ui.close();
                         }
                     });
+                    ends.push(ui.min_rect().right());
                     ui.add_space(4.0);
+                }
+                let line = egui::Stroke::new(1.0, theme::dim(ui).gamma_multiply(0.35));
+                for i in (1..rects.len()).filter(|&i| i != self.active && i - 1 != self.active) {
+                    let y = rects[i].center().y;
+                    ui.painter().vline((ends[i - 1] + rects[i].left()) / 2.0, y - 7.0..=y + 7.0, line);
                 }
                 if let (Some((from, dropped)), Some(x)) = (drag, ui.ctx().pointer_latest_pos().map(|p| p.x)) {
                     let (to, at) = move_target(&rects.iter().map(|r| r.center().x).collect::<Vec<_>>(), from, x);
