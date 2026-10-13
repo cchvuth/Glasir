@@ -1,9 +1,9 @@
-//! Ref hover highlight: hovering a ref (sidebar row or graph pill) for a moment
+//! Ref hover highlight: hovering a graph pill for a moment
 //! fades the commits it can't reach.
 
 use egui::Ui;
 
-/// Hovering a ref (sidebar row or graph pill) this long highlights its history.
+/// Hovering a graph pill this long highlights its history.
 const HOVER_SECS: f64 = 0.05;
 
 pub fn hover_ref(ui: &Ui, resp: &egui::Response, target: &str) {

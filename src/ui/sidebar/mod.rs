@@ -13,7 +13,6 @@ use crate::git::RefKind;
 use crate::repo::{Action, RepoData, Sel, branch_checkout, stack};
 use crate::theme::{self, icon};
 use crate::ui::graph_view::dnd::branch_dnd;
-use crate::ui::graph_view::hover::hover_ref;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use ref_menus::ref_menu;
 
@@ -137,7 +136,6 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
     let rt = view_style(ui, d, r, rt);
     let resp = ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) });
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
-    hover_ref(ui, &resp, &r.target);
     eye(ui, resp.rect, d, &[r], acts);
     let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
     if r.head {
@@ -163,7 +161,6 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
     let text = view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::CLOUD)));
     let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
-    hover_ref(ui, &resp, &r.target);
     eye(ui, resp.rect, d, &[r], acts);
     if resp.clicked() {
         acts.push(Action::Jump(r.target.clone()));
@@ -176,7 +173,6 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
 
 fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
     let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::TAG)))).frame_when_inactive(false));
-    hover_ref(ui, &resp, &r.target);
     eye(ui, resp.rect, d, &[r], acts);
     let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
     if resp.clicked() {

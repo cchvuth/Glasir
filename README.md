@@ -66,7 +66,7 @@ The name fits a Git client:
 - Loads the latest 1,000 commits for a fast start; **Load 1,000 more** at the
   bottom pages in older history. Smooth even with 85k+ commits loaded (only
   visible rows are drawn); resizable columns; the message column stays readable.
-- **Hover a branch** to highlight its history and fade the rest.
+- **Hover a branch pill** in the graph to highlight its history and fade the rest.
 - **Hide / Solo** branches (hover a sidebar row, remote or folder for its eye button), **first-parent** view.
 - **Stashes** drawn next to the commit they were made on.
 - **Unmistakable HEAD**: the checked-out commit's title is larger, bold and in the accent colour, and its branch pill carries a **HEAD** badge (a **detached HEAD** badge when detached); the sidebar marks the current branch with a ✓. Scrolled away, a chip ("↑ main (HEAD)") at the edge jumps back to it.
