@@ -4,7 +4,7 @@
 use egui::Ui;
 
 /// Hovering a ref (sidebar row or graph pill) this long highlights its history.
-const HOVER_SECS: f64 = 0.25;
+const HOVER_SECS: f64 = 0.05;
 
 pub fn hover_ref(ui: &Ui, resp: &egui::Response, target: &str) {
     if !resp.hovered() {

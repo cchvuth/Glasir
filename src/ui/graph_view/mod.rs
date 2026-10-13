@@ -91,6 +91,12 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
 }
 
 /// A pill's hover text: its ref (and the upstream sharing it); annotated tags add their message.
+fn tip_now(r: &egui::Response, text: String) {
+    if r.hovered() && !egui::Popup::is_any_open(&r.ctx) && !egui::DragAndDrop::has_any_payload(&r.ctx) {
+        egui::Popup::from_response(r).id(r.id.with("tip")).kind(egui::PopupKind::Tooltip).align(egui::RectAlign::RIGHT).gap(8.0).show(|ui| ui.label(text));
+    }
+}
+
 fn pill_tip(rf: &Ref, up: Option<&Ref>) -> String {
     let up = up.map_or(String::new(), |u| format!("  ·  {}", u.name));
     let msg = if rf.message.is_empty() { String::new() } else { format!("\n{}", rf.message) };
@@ -452,21 +458,24 @@ pub fn show(
                     };
                     let resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag());
                     if more == 0 {
-                        act(ui, &resp.on_hover_text(pill_tip(rf, up)), pills[0]);
+                        tip_now(&resp, pill_tip(rf, up));
+                        act(ui, &resp, pills[0]);
                     } else {
                         act(ui, &resp, pills[0]);
-                        // Several refs: hovering shows them all, each its own pill, in a row over the table.
+                        // Several refs: hovering shows them all, each its own pill, stacked over the table.
                         let mut keep = resp.hovered() && !egui::DragAndDrop::has_any_payload(ui.ctx());
                         if open.as_deref() == Some(cm.id.as_str()) {
                             let row = egui::Area::new(open_id).order(egui::Order::Foreground).fixed_pos(pill.min - vec2(4.0, 4.0)).show(ui.ctx(), |ui| {
                                 let slot = ui.painter().add(Shape::Noop);
-                                let (mut x, mut menu) = (pill.left(), false);
+                                let (mut back, mut menu) = (pill, false);
                                 for (k, &p) in pills.iter().enumerate() {
-                                    let rect = ref_pill(ui, pos2(x, pill.top()), f32::INFINITY, p.0, p.1.is_some(), col, faded);
-                                    menu |= act(ui, &ui.interact(rect, ui.id().with(k), Sense::click_and_drag()).on_hover_text(pill_tip(p.0, p.1)), p);
-                                    x = rect.right() + 4.0;
+                                    let rect = ref_pill(ui, pos2(pill.left(), back.bottom() + if k == 0 { -pill.height() } else { 4.0 }), f32::INFINITY, p.0, p.1.is_some(), col, faded);
+                                    let r = ui.interact(rect, ui.id().with(k), Sense::click_and_drag());
+                                    tip_now(&r, pill_tip(p.0, p.1));
+                                    menu |= act(ui, &r, p);
+                                    back = back.union(rect);
                                 }
-                                let back = Rect::from_min_max(pill.min, pos2(x - 4.0, pill.bottom())).expand(4.0);
+                                let back = back.expand(4.0);
                                 ui.painter().set(slot, Shape::Vec(theme::glass_shapes(back, 14.0, ui.visuals().dark_mode, 235)));
                                 ui.allocate_rect(back, Sense::hover());
                                 menu
