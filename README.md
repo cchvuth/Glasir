@@ -161,8 +161,8 @@ The name fits a Git client:
   with single-key shortcuts.
 - **One-click history edits**: reword, squash into parent, drop, or
   **amend staged changes into any older commit**, or click a commit's message
-  in its details to **edit it inline**, merges and commits below them included (⌘↩ saves;
-  warns before rewriting pushed commits).
+  in its details to **edit it inline**, on any local branch without checking it out, merges
+  and commits below them included (⌘↩ saves; warns before rewriting pushed commits).
 - **Absorb staged changes**: each staged hunk becomes a fixup of the unpushed
   commit that last changed its lines and is folded in; a preview lists hunk →
   commit first, ambiguous hunks stay staged, one undo step.

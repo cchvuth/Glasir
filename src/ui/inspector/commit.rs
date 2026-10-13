@@ -208,8 +208,8 @@ impl RepoTab {
                         }
                     }
                 }
-                if edit && let Some(path) = self.data.as_ref().and_then(|d| d.reword_path(&info.id).ok()) {
-                    self.edit_msg = Some(MsgEdit::new(&info.id, &info.message, path));
+                if edit && let Some(at) = self.data.as_ref().and_then(|d| d.reword_path(&info.id).ok()) {
+                    self.edit_msg = Some(MsgEdit::new(&info.id, &info.message, at));
                 }
             }
             ui.add_space(6.0);

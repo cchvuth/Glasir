@@ -214,15 +214,16 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
         Act::Drop => format!("Drop {short}"),
         _ => op.label,
     };
-    Ok(confirm_pushed(dir, commit, op))
+    Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op))
 }
 
-/// Asks first when rewriting `commit` up to HEAD reaches commits already on the upstream.
-fn confirm_pushed(dir: &Path, commit: &str, op: Op) -> Op {
+/// Asks first when rewriting `commit` up to `tip` (HEAD or `refs/heads/<branch>`) reaches
+/// commits already on the upstream (`HEAD@{u}` or `<branch>@{u}`).
+fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: Op) -> Op {
     // The commits the rewrite replaces (`commit` and its descendants up to HEAD) that the upstream
     // has: those up to the merge bases (an extra `^@{u}` would cut the ancestry path short).
-    let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", "@{u}"]) else { return op };
-    let bases = git::run(dir, &["merge-base", "--all", "HEAD", "@{u}"]).unwrap_or_default();
+    let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", upstream]) else { return op };
+    let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
     let (ancestry, parents) = (format!("--ancestry-path={commit}"), format!("^{commit}^@"));
     let mut args = vec!["rev-list", "--count", &ancestry, &parents];
     args.extend(bases.lines());
@@ -243,7 +244,14 @@ fn confirm_pushed(dir: &Path, commit: &str, op: Op) -> Op {
 /// Replace the message of `commit` (HEAD: amend, message only; older with no merge from its
 /// parent up to HEAD: a rebase that rewords it; else, merges or the root: [`REWRITE`]).
 /// Asks first when the rewrite reaches commits that are already on the upstream.
-pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: String) -> Res<Op> {
+pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, branch: Option<&str>, message: String) -> Res<Op> {
+    let short = &commit[..commit.len().min(7)];
+    if let Some(b) = branch {
+        let full = format!("refs/heads/{b}");
+        let old = git::run(dir, &["rev-parse", &full])?.trim().to_owned();
+        let op = Op::new(format!("Reword {short} on {b}"), &[REWRITE, commit, &full]).input(message).revert(Op::new(format!("Move {b} back"), &["update-ref", &full, &old]));
+        return Ok(confirm_pushed(dir, commit, (&full, &format!("{b}@{{u}}")), op));
+    }
     let straight = || git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{commit}^..HEAD")]).is_ok_and(|m| m.trim().is_empty());
     let op = if is_head {
         Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
@@ -256,10 +264,9 @@ pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: 
         return Ok(op); // quick() already asked
     } else {
         on_branch(dir, commit)?;
-        let short = &commit[..commit.len().min(7)];
         Op::new(format!("Reword {short}"), &[HEAD_IS, &head_state(dir)]).then(&[REWRITE, commit]).input(message).undo(Undo::Soft)
     };
-    Ok(confirm_pushed(dir, commit, op))
+    Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op))
 }
 
 /// `exec` pseudo-command: `REWRITE commit` gives `commit` the message on stdin by writing it and
@@ -267,8 +274,8 @@ pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, message: 
 /// dropped), then moving HEAD's branch there. No tree changes: the index and working tree stay.
 pub(super) const REWRITE: &str = "!rewrite";
 
-pub(super) fn rewrite(dir: &Path, commit: &str, message: &[u8]) -> Res<String> {
-    let head = git::run(dir, &["rev-parse", "HEAD"])?.trim().to_owned();
+pub(super) fn rewrite(dir: &Path, commit: &str, tip: &str, message: &[u8]) -> Res<String> {
+    let head = git::run(dir, &["rev-parse", tip])?.trim().to_owned();
     // Parents first: `commit` and its descendants up to HEAD.
     let ids = git::run(dir, &["rev-list", "--topo-order", "--reverse", &format!("--ancestry-path={commit}"), &head, &format!("^{commit}^@")])?;
     let raw = git::run_raw(dir, &["cat-file", "--batch"], Some(ids.as_bytes()))?;
@@ -301,7 +308,7 @@ pub(super) fn rewrite(dir: &Path, commit: &str, message: &[u8]) -> Res<String> {
         new.insert(id.to_owned(), oid.trim().to_owned());
     }
     let to = new.get(&head).ok_or("Commit is not on the current branch.")?;
-    git::run(dir, &["update-ref", "-m", &format!("reword {}", &commit[..commit.len().min(7)]), "HEAD", to, &head])?;
+    git::run(dir, &["update-ref", "-m", &format!("reword {}", &commit[..commit.len().min(7)]), tip, to, &head])?;
     Ok(String::new())
 }
 
@@ -342,7 +349,7 @@ pub fn multi(dir: &Path, git_dir: &Path, ids: &[String], act: Act) -> Res<Op> {
     }
     let mut op = e.op(git_dir)?;
     op.label = format!("{} {} commits", if act == Act::Squash { "Squash" } else { "Drop" }, ids.len());
-    Ok(confirm_pushed(dir, oldest, op))
+    Ok(confirm_pushed(dir, oldest, ("HEAD", "@{u}"), op))
 }
 
 /// The todo for dragging `src` onto `dst` in the graph: both unpushed, on the
@@ -401,7 +408,7 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &base])
         .undo(Undo::Soft)
         .backup(super::Backup::Tree { revs: vec![base], untracked: false });
-    Ok(confirm_pushed(dir, commit, op))
+    Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op))
 }
 
 /// Uncommit `commit` so it can be split: HEAD is just reset; an older commit

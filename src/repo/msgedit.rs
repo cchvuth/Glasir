@@ -2,6 +2,7 @@
 //! which commits may be reworded, and keeping the state in step with reloads.
 
 use super::{Action, RepoData, RepoTab, Sel};
+use crate::git::RefKind;
 use crate::git;
 use std::collections::{HashMap, VecDeque};
 
@@ -13,8 +14,9 @@ pub struct MsgEdit {
     /// Newlines between summary and body, so an unedited message round-trips exactly.
     sep: String,
     original: String,
-    /// Parent steps from HEAD (which parent each), to find the commit again after the rewrite renamed it.
-    path: Vec<usize>,
+    /// The branch it's rewritten on (`None`: HEAD's), and the parent steps from its tip (which
+    /// parent each), to find the commit again after the rewrite renamed it.
+    at: (Option<String>, Vec<usize>),
     /// Save was sent: when the commit disappears, select its rewritten successor.
     saved: bool,
     /// Focus the summary field on the next frame.
@@ -22,12 +24,12 @@ pub struct MsgEdit {
 }
 
 impl MsgEdit {
-    pub fn new(id: &str, message: &str, path: Vec<usize>) -> Self {
+    pub fn new(id: &str, message: &str, at: (Option<String>, Vec<usize>)) -> Self {
         let message = message.trim_end();
         let (summary, rest) = message.split_once('\n').unwrap_or((message, ""));
         let body = rest.trim_start_matches('\n');
         let sep = if body.is_empty() { "\n\n".to_owned() } else { "\n".repeat(1 + rest.len() - body.len()) };
-        MsgEdit { id: id.into(), summary: summary.into(), body: body.into(), sep, original: message.into(), path, saved: false, focus: true }
+        MsgEdit { id: id.into(), summary: summary.into(), body: body.into(), sep, original: message.into(), at, saved: false, focus: true }
     }
 
     /// The edited message; trailing whitespace is git's to clean up.
@@ -42,20 +44,28 @@ impl MsgEdit {
 }
 
 impl RepoData {
-    /// The parent steps from HEAD to `id` (which parent at each), or why its message can't be
-    /// edited here: only ancestors of HEAD on a branch, and not during another operation.
-    pub fn reword_path(&self, id: &str) -> Result<Vec<usize>, &'static str> {
+    /// The branch to rewrite `id` on (`None`: HEAD's, else a local branch that has it) and the
+    /// parent steps from its tip to `id`, or why its message can't be edited here.
+    pub fn reword_path(&self, id: &str) -> Result<(Option<String>, Vec<usize>), &'static str> {
         if self.state != git::State::Clean {
             return Err("Finish the operation in progress (merge, rebase, cherry-pick...) first.");
         }
-        let Some(head) = self.status.head.as_deref().filter(|_| self.status.branch.is_some()) else {
-            return Err("Check out a branch first: this isn't on a branch (HEAD is detached).");
-        };
-        let not_here = "This commit isn't on the current branch.";
-        // Rows are children before parents: the way down from HEAD never goes below `id`'s row.
-        let row = *self.row_of.get(id).ok_or(not_here)?;
+        let head = self.status.head.as_deref().filter(|_| self.status.branch.is_some());
+        if let Some(path) = head.and_then(|h| self.path_from(h, id)) {
+            return Ok((None, path));
+        }
+        self.refs
+            .iter()
+            .filter(|r| r.kind == RefKind::Local && !r.head)
+            .find_map(|r| self.path_from(&r.target, id).map(|p| (Some(r.name.clone()), p)))
+            .ok_or("This commit isn't on a local branch.")
+    }
+
+    fn path_from(&self, tip: &str, id: &str) -> Option<Vec<usize>> {
+        // Rows are children before parents: the way down from the tip never goes below `id`'s row.
+        let row = *self.row_of.get(id)?;
         let mut from: HashMap<&str, (&str, usize)> = HashMap::new();
-        let mut queue = VecDeque::from([head]);
+        let mut queue = VecDeque::from([tip]);
         while let Some(cur) = queue.pop_front() {
             if cur == id {
                 let (mut path, mut at) = (vec![], cur);
@@ -64,21 +74,24 @@ impl RepoData {
                     at = child;
                 }
                 path.reverse();
-                return Ok(path);
+                return Some(path);
             }
             let Some(c) = self.row_of.get(cur).filter(|&&r| r <= row).and_then(|&r| self.commit(r)) else { continue };
             for (i, p) in c.parents.iter().enumerate() {
-                if p != head && !from.contains_key(p.as_str()) {
+                if p != tip && !from.contains_key(p.as_str()) {
                     from.insert(p, (cur, i));
                     queue.push_back(p);
                 }
             }
         }
-        Err(not_here)
+        None
     }
 
-    fn follow(&self, path: &[usize]) -> Option<String> {
-        let mut cur = self.status.head.clone()?;
+    fn follow(&self, (branch, path): &(Option<String>, Vec<usize>)) -> Option<String> {
+        let mut cur = match branch {
+            Some(b) => self.local(b)?.target.clone(),
+            None => self.status.head.clone()?,
+        };
         for &i in path {
             cur = self.row_of.get(&cur).and_then(|&r| self.commit(r))?.parents.get(i)?.clone();
         }
@@ -93,7 +106,7 @@ impl RepoTab {
         let Some(e) = &self.edit_msg else { return };
         let loaded = self.data.as_ref().is_some_and(|d| d.row_of.contains_key(&e.id));
         // Its place from HEAD holds its rewritten self once saved (the old one may still show, from another ref).
-        let successor = self.data.as_ref().filter(|_| e.saved).and_then(|d| d.follow(&e.path)).filter(|s| *s != e.id);
+        let successor = self.data.as_ref().filter(|_| e.saved).and_then(|d| d.follow(&e.at)).filter(|s| *s != e.id);
         if successor.is_none() && matches!(&self.sel, Some(Sel::Commit(id)) if *id == e.id) && loaded {
             return;
         }
@@ -123,11 +136,11 @@ mod tests {
     #[test]
     fn message_round_trips_and_edits() {
         for m in ["just a summary", "s\n\nbody\n\nSigned-off-by: A <a@a>", "s\nno blank line", "s\n\n\n\nwide gap\n"] {
-            let e = MsgEdit::new("x", m, vec![]);
+            let e = MsgEdit::new("x", m, (None, vec![]));
             assert_eq!(e.message(), m.trim_end());
             assert!(!e.changed());
         }
-        let mut e = MsgEdit::new("x", "s", vec![]);
+        let mut e = MsgEdit::new("x", "s", (None, vec![]));
         e.body = "now a body\n\n".into();
         assert_eq!(e.message(), "s\n\nnow a body");
         e.body.clear();
@@ -142,6 +155,38 @@ mod tests {
 
     /// Reword HEAD and an older commit through the action: new message, same trees, one ⌘Z step each,
     /// uncommitted work kept, and a pushed commit asks before rewriting.
+    #[test]
+    fn reword_on_a_branch_not_checked_out() {
+        let dir = scratch("inline-reword-other");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "b", "two");
+        commit(&dir, "c", "three");
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("a"), "dirty").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (head, feat) = (sh(&dir, &["rev-parse", "HEAD"]), sh(&dir, &["rev-parse", "feat"]));
+        let two = sh(&dir, &["rev-parse", "feat~1"]).trim().to_owned();
+        assert_eq!(t.data.as_ref().unwrap().reword_path(&two), Ok((Some("feat".into()), vec![0])));
+        t.select(&ctx, Sel::Commit(two.clone()));
+        t.edit_msg = Some(MsgEdit::new(&two, "two", (Some("feat".into()), vec![0])));
+        t.apply(&ctx, Action::Reword { commit: two.clone(), message: "two, better".into() });
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["log", "--format=%s", "feat"]).lines().collect::<Vec<_>>(), ["three", "two, better", "one"]);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), head);
+        assert_eq!(sh(&dir, &["symbolic-ref", "--short", "HEAD"]).trim(), "main");
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "dirty");
+        assert_eq!(t.sel, Some(Sel::Commit(sh(&dir, &["rev-parse", "feat~1"]).trim().into())));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), feat);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reword_head_and_older_with_undo() {
         let dir = scratch("inline-reword");
@@ -158,12 +203,12 @@ mod tests {
         let ids: Vec<String> = sh(&dir, &["rev-list", "HEAD"]).lines().map(String::from).collect(); // three, two, one
         let (before, trees0) = (ids.clone(), trees(&dir));
         let d = t.data.as_ref().unwrap();
-        assert_eq!([d.reword_path(&ids[0]), d.reword_path(&ids[1]), d.reword_path(&ids[2])], [Ok(vec![]), Ok(vec![0]), Ok(vec![0, 0])]);
+        assert_eq!([d.reword_path(&ids[0]), d.reword_path(&ids[1]), d.reword_path(&ids[2])], [Ok((None, vec![])), Ok((None, vec![0])), Ok((None, vec![0, 0]))]);
         // Older commit, with uncommitted work in the way.
         std::fs::write(dir.join("a"), "dirty").unwrap();
         let msg = "two, better\n\nbody of two\n\nCo-authored-by: X <x@x>";
         t.select(&ctx, Sel::Commit(ids[1].clone()));
-        t.edit_msg = Some(MsgEdit::new(&ids[1], "two", vec![0]));
+        t.edit_msg = Some(MsgEdit::new(&ids[1], "two", (None, vec![0])));
         t.apply(&ctx, Action::Reword { commit: ids[1].clone(), message: msg.into() });
         settle(&ctx, &mut t);
         // The edit is done and the rewritten commit is selected in place of the old one.
@@ -180,7 +225,7 @@ mod tests {
         assert_eq!(trees(&dir), trees0);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "dirty");
         // Selecting another commit drops an open edit.
-        t.edit_msg = Some(MsgEdit::new(&ids[0], "x", vec![]));
+        t.edit_msg = Some(MsgEdit::new(&ids[0], "x", (None, vec![])));
         t.select(&ctx, Sel::Wip);
         settle(&ctx, &mut t);
         assert!(t.edit_msg.is_none());
@@ -210,18 +255,18 @@ mod tests {
         let gd = git::git_dir(&dir).unwrap();
         let ids: Vec<String> = sh(&dir, &["rev-list", "HEAD"]).lines().map(String::from).collect();
         use super::super::rebase::reword;
-        assert!(reword(&dir, &gd, &ids[0], true, "3".into()).unwrap().confirm.is_none());
-        let confirm = reword(&dir, &gd, &ids[1], false, "2".into()).unwrap().confirm.unwrap();
+        assert!(reword(&dir, &gd, &ids[0], true, None, "3".into()).unwrap().confirm.is_none());
+        let confirm = reword(&dir, &gd, &ids[1], false, None, "2".into()).unwrap().confirm.unwrap();
         assert!(confirm.contains("1 commit already pushed to origin/main"), "{confirm}");
-        let confirm = reword(&dir, &gd, &ids[2], false, "1".into()).unwrap().confirm.unwrap(); // the root
+        let confirm = reword(&dir, &gd, &ids[2], false, None, "1".into()).unwrap().confirm.unwrap(); // the root
         assert!(confirm.contains("2 commits already pushed"), "{confirm}");
         // With a merge on top, only the rewritten commits count.
         sh(&dir, &["checkout", "-q", "-b", "side", &ids[1]]);
         commit(&dir, "s", "side");
         sh(&dir, &["checkout", "-q", "main"]);
         sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge", "side"]);
-        assert!(reword(&dir, &gd, &ids[0], false, "3".into()).unwrap().confirm.is_none());
-        let confirm = reword(&dir, &gd, &ids[1], false, "2".into()).unwrap().confirm.unwrap();
+        assert!(reword(&dir, &gd, &ids[0], false, None, "3".into()).unwrap().confirm.is_none());
+        let confirm = reword(&dir, &gd, &ids[1], false, None, "2".into()).unwrap().confirm.unwrap();
         assert!(confirm.contains("1 commit already pushed"), "{confirm}");
         sh(&dir, &["checkout", "-q", "-b", "other", &ids[1]]);
         commit(&dir, "o", "other");
@@ -231,9 +276,9 @@ mod tests {
         settle(&ctx, &mut t);
         let d = t.data.as_ref().unwrap();
         let rev = |r: &str| sh(&dir, &["rev-parse", r]).trim().to_owned();
-        assert_eq!([d.reword_path(&rev("HEAD")), d.reword_path(&ids[0]), d.reword_path(&rev("side"))], [Ok(vec![]), Ok(vec![0]), Ok(vec![1])]);
-        assert!(d.reword_path(&rev("other")).is_err());
-        assert!(reword(&dir, &gd, &rev("other"), false, "x".into()).is_err());
+        assert_eq!([d.reword_path(&rev("HEAD")), d.reword_path(&ids[0]), d.reword_path(&rev("side"))], [Ok((None, vec![])), Ok((None, vec![0])), Ok((None, vec![1]))]);
+        assert_eq!(d.reword_path(&rev("other")), Ok((Some("other".into()), vec![])));
+        assert!(reword(&dir, &gd, &rev("other"), false, None, "x".into()).is_err());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }
@@ -266,10 +311,10 @@ mod tests {
         settle(&ctx, &mut t);
         for (rev, path) in [("HEAD~3", vec![0, 0, 0]), ("HEAD~1", vec![0]), ("HEAD~1^2", vec![0, 1]), ("HEAD~4", vec![0, 0, 0, 0])] {
             let id = sh(&dir, &["rev-parse", rev]).trim().to_owned();
-            assert_eq!(t.data.as_ref().unwrap().reword_path(&id), Ok(path.clone()), "{rev}");
+            assert_eq!(t.data.as_ref().unwrap().reword_path(&id), Ok((None, path.clone())), "{rev}");
             let msg = format!("{rev} reworded\n\nwith a body");
             t.select(&ctx, Sel::Commit(id.clone()));
-            t.edit_msg = Some(MsgEdit::new(&id, "x", path));
+            t.edit_msg = Some(MsgEdit::new(&id, "x", (None, path)));
             t.apply(&ctx, Action::Reword { commit: id, message: msg.clone() });
             settle(&ctx, &mut t);
             assert_eq!(sh(&dir, &["log", "-1", "--format=%B", rev]).trim_end(), msg);

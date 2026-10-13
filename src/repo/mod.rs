@@ -746,9 +746,11 @@ impl RepoTab {
             }
             Action::SplitEnd { abort } => self.end_split(ctx, abort),
             Action::Reword { commit, message } => {
-                let Some(git_dir) = self.data.as_ref().map(|d| d.git_dir.clone()) else { return };
-                let is_head = self.data.as_ref().and_then(|d| d.status.head.as_deref()) == Some(commit.as_str());
-                self.prepare(ctx, move |dir| match crate::repo::rebase::reword(dir, &git_dir, &commit, is_head, message) {
+                let Some(d) = self.data.as_ref() else { return };
+                let git_dir = d.git_dir.clone();
+                let branch = d.reword_path(&commit).ok().and_then(|at| at.0);
+                let is_head = branch.is_none() && d.status.head.as_deref() == Some(commit.as_str());
+                self.prepare(ctx, move |dir| match crate::repo::rebase::reword(dir, &git_dir, &commit, is_head, branch.as_deref(), message) {
                     Ok(op) => op::Dropped::Reworded(op),
                     Err(e) => op::Dropped::Note(e),
                 });
