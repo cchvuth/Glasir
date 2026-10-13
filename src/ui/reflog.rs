@@ -11,11 +11,11 @@ use egui::{Align2, Color32, FontId, Rect, RichText, Sense, Ui, pos2, vec2};
 
 fn action_color(action: &str) -> Color32 {
     match action.split([' ', '(']).next().unwrap_or("") {
-        "commit" | "merge" | "cherry-pick" | "am" => theme::ADD,
-        "reset" => theme::DEL,
-        "rebase" | "pull" => theme::REN,
+        "commit" | "merge" | "cherry-pick" | "am" => theme::add(),
+        "reset" => theme::del(),
+        "rebase" | "pull" => theme::change_color('R'),
         "checkout" | "switch" => theme::accent(),
-        _ => theme::MOD,
+        _ => theme::changed(),
     }
 }
 
@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) 
             return close;
         }
         Some(Err(e)) => {
-            ui.colored_label(theme::DEL, e);
+            ui.colored_label(theme::del(), e);
             return close;
         }
         Some(Ok(v)) => v,
@@ -109,10 +109,10 @@ pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) 
             }
             let m = p.text(pos2(rect.left() + 12.0, rect.top() + 34.0), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme::dim(ui));
             if e.lost {
-                let g = p.layout_no_wrap("on no branch".into(), FontId::proportional(10.5), theme::MOD);
+                let g = p.layout_no_wrap("on no branch".into(), FontId::proportional(10.5), theme::changed());
                 let b = Rect::from_min_size(pos2(m.right() + 10.0, m.center().y - 8.0), vec2(g.size().x + 12.0, 16.0));
-                p.rect_stroke(b, 8.0, egui::Stroke::new(1.0, theme::MOD.gamma_multiply(0.7)), egui::StrokeKind::Inside);
-                p.galley(pos2(b.left() + 6.0, b.center().y - g.size().y / 2.0), g, theme::MOD);
+                p.rect_stroke(b, 8.0, egui::Stroke::new(1.0, theme::changed().gamma_multiply(0.7)), egui::StrokeKind::Inside);
+                p.galley(pos2(b.left() + 6.0, b.center().y - g.size().y / 2.0), g, theme::changed());
             }
             let r = if e.lost { r.on_hover_text("Only the reflog remembers this commit: create a branch here to keep it.") } else { r };
             if r.clicked() {

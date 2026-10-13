@@ -43,7 +43,7 @@ impl App {
         };
         egui::Area::new(Id::new("toasts")).anchor(Align2::RIGHT_BOTTOM, egui::vec2(-18.0, -18.0)).show(ctx, |ui| {
             for (i, t) in self.toasts.iter().enumerate() {
-                let color = if t.error { theme::DEL } else { theme::ADD };
+                let color = if t.error { theme::del() } else { theme::add() };
                 let slot = ui.painter().add(egui::Shape::Noop);
                 // The click-to-dismiss sense sits under the content, so the Undo button still gets its clicks.
                 let r = ui.scope_builder(UiBuilder::new().id_salt(("toast", i)).sense(egui::Sense::click()), |ui| {

@@ -42,7 +42,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
             None if n == 0 => "No matches".into(),
             None => format!("{} of {n}{more}", s.cur + 1),
         };
-        let l = ui.label(egui::RichText::new(label).small().color(if s.error.is_some() { theme::DEL } else { theme::dim(ui) }));
+        let l = ui.label(egui::RichText::new(label).small().color(if s.error.is_some() { theme::del() } else { theme::dim(ui) }));
         if let Some(e) = &s.error {
             l.on_hover_text(e);
         }

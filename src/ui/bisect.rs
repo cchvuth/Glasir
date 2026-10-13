@@ -7,10 +7,10 @@ use egui::{RichText, Ui};
 
 pub fn mark_color(mark: &str) -> egui::Color32 {
     match mark {
-        "bad" => theme::DEL,
-        "good" => theme::ADD,
+        "bad" => theme::del(),
+        "good" => theme::add(),
         "testing" => theme::accent(),
-        _ => theme::MOD,
+        _ => theme::changed(),
     }
 }
 
@@ -18,7 +18,7 @@ pub fn banner(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Action>) {
     let b = d.bisect.clone().unwrap_or_default();
     let short = |id: &str| id[..id.len().min(7)].to_owned();
     let summary = |id: &str| d.row_of.get(id).and_then(|&r| d.commit(r)).map_or(String::new(), |c| c.summary.clone());
-    egui::Frame::new().fill(theme::MOD.gamma_multiply(0.18)).inner_margin(egui::Margin::symmetric(10, 6)).corner_radius(12.0).show(ui, |ui| {
+    egui::Frame::new().fill(theme::changed().gamma_multiply(0.18)).inner_margin(egui::Margin::symmetric(10, 6)).corner_radius(12.0).show(ui, |ui| {
         let found = b.found().map(str::to_owned);
         let text = match (&found, &b.bad) {
             (Some(id), _) => format!("First bad commit: {} {}", short(id), summary(id)),
@@ -57,7 +57,7 @@ pub fn banner(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Action>) {
             }
             theme::rest(ui, |ui| {
                 ui.label(RichText::new(format!("{}  Bisect", icon::BUG)).strong());
-                ui.label(RichText::new(text).color(if found.is_some() { theme::DEL } else { theme::text(ui) }));
+                ui.label(RichText::new(text).color(if found.is_some() { theme::del() } else { theme::text(ui) }));
             });
         });
     });

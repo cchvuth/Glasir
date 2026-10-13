@@ -69,9 +69,6 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
     let cap_w = if head_pill && max_w >= 80.0 { 40.0 } else { 0.0 };
     let label = if cap_w > 0.0 { rf.name.clone() } else { ref_label(rf) };
     let label = if synced { format!("{label}  {}", icon::CLOUD) } else { label };
-    let label_col = if head_pill { theme::on_color(theme::accent()).gamma_multiply(if faded { 0.6 } else { 1.0 }) } else if faded { Color32::WHITE.gamma_multiply(0.6) } else { Color32::WHITE };
-    let g = p.layout_no_wrap(label, FontId::proportional(12.0), label_col);
-    let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0 + cap_w).min(max_w).max(10.0), 20.0));
     let fill = match rf.kind {
         _ if head_pill => hc,
         RefKind::Local => col.gamma_multiply(0.85),
@@ -79,6 +76,10 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
         RefKind::Tag => theme::tag(ui),
     };
+    let solid = if head_pill { theme::accent() } else { fill + theme::bg(ui).gamma_multiply(1.0 - fill.a() as f32 / 255.0) };
+    let label_col = theme::on_color(solid.to_opaque()).gamma_multiply(if faded { 0.6 } else { 1.0 });
+    let g = p.layout_no_wrap(label, FontId::proportional(12.0), label_col);
+    let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0 + cap_w).min(max_w).max(10.0), 20.0));
     p.rect_filled(pill, 10.0, fill);
     p.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
     if cap_w > 0.0 {
@@ -151,7 +152,7 @@ pub fn show(
             if v.first_parent {
                 what.push("first-parent only".to_owned());
             }
-            ui.label(egui::RichText::new(format!("{}  {}", icon::FUNNEL, what.join("  ·  "))).small().color(theme::MOD));
+            ui.label(egui::RichText::new(format!("{}  {}", icon::FUNNEL, what.join("  ·  "))).small().color(theme::changed()));
             if ui.link(egui::RichText::new("Show all").small()).clicked() {
                 acts.push(Action::View(View::default()));
             }

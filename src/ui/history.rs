@@ -72,7 +72,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
             return close;
         }
         Some(Err(e)) => {
-            ui.colored_label(theme::DEL, e);
+            ui.colored_label(theme::del(), e);
             return close;
         }
         Some(Ok(d)) => d,
@@ -106,7 +106,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     p.text(pos2(rect.left() + 42.0, rect.top() + 33.0), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme::dim(ui));
                     if !folder && e.change.old_path.is_some() {
                         let word = if e.change.code == 'C' { "copied" } else { "renamed" };
-                        p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{}  {word}", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::REN);
+                        p.text(pos2(rect.right() - 8.0, rect.center().y), Align2::RIGHT_CENTER, format!("{}  {word}", icon::ARROW_RIGHT), FontId::proportional(11.0), theme::change_color('R'));
                     }
                     if r.clicked() {
                         fv.sel = Some(i);

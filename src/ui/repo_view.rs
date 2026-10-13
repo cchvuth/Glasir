@@ -24,7 +24,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     if t.data.is_none() {
         egui::CentralPanel::default().frame(Frame::NONE).show(ui, |ui| {
             ui.centered_and_justified(|ui| match &t.error {
-                Some(e) => ui.colored_label(theme::DEL, e),
+                Some(e) => ui.colored_label(theme::del(), e),
                 None => ui.spinner(),
             });
         });

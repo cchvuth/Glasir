@@ -92,7 +92,7 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui.add(Button::new(RichText::new("Confirm").strong()).fill(theme::DEL.gamma_multiply(0.6))).clicked() {
+            if ui.add(Button::new(RichText::new("Confirm").strong()).fill(theme::del().gamma_multiply(0.6))).clicked() {
                 done = Some(true);
             }
             if dismissed(ui, "Cancel") {
@@ -135,7 +135,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
         });
         ui.add_space(4.0);
         if let Some(Err(e)) = &job.done {
-            ui.colored_label(theme::DEL, e);
+            ui.colored_label(theme::del(), e);
         }
         egui::ScrollArea::vertical().max_height(460.0).auto_shrink([false, true]).show(ui, |ui| {
             let mut text = job.text.as_str();
@@ -232,7 +232,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 });
             }
             Some(Err(e)) => {
-                ui.colored_label(theme::DEL, e.as_str());
+                ui.colored_label(theme::del(), e.as_str());
             }
             Some(Ok(rows)) if !rows.iter().any(|r| Cleanup::group(r, *days, now).is_some()) => {
                 ui.label(RichText::new("Nothing to clean up: no merged, orphaned or stale local branches.").color(theme::dim(ui)));
@@ -296,7 +296,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                         .on_hover_text(v.iter().map(|r| r.0.trim_start_matches("refs/remotes/")).collect::<Vec<_>>().join("\n"));
                 }
                 (Some(Err(e)), true) => {
-                    ui.label(RichText::new(e.lines().next().unwrap_or("")).small().color(theme::DEL)).on_hover_text(e.as_str());
+                    ui.label(RichText::new(e.lines().next().unwrap_or("")).small().color(theme::del())).on_hover_text(e.as_str());
                 }
             }
         });
@@ -340,7 +340,7 @@ pub(super) fn absorb_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
                     match &r.target {
                         Ok(i) => {
                             let (id, summary) = &p.cands[*i];
-                            ui.add(egui::Label::new(RichText::new(format!("{}  {} {summary}", icon::ARROW_RIGHT, &id[..7.min(id.len())])).color(theme::ADD)).truncate());
+                            ui.add(egui::Label::new(RichText::new(format!("{}  {} {summary}", icon::ARROW_RIGHT, &id[..7.min(id.len())])).color(theme::add())).truncate());
                         }
                         Err(why) => {
                             ui.add(egui::Label::new(RichText::new(format!("stays staged: {why}")).italics().color(theme::dim(ui))).truncate());

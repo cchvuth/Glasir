@@ -177,7 +177,7 @@ pub fn slider(ui: &mut Ui, value: &mut f32) -> egui::Response {
 
 /// Accent-tinted primary action.
 pub fn primary(ui: &mut Ui, enabled: bool, text: &str, width: f32) -> egui::Response {
-    let b = egui::Button::new(egui::RichText::new(text).strong().color(Color32::WHITE))
+    let b = egui::Button::new(egui::RichText::new(text).strong().color(super::on_color(accent())))
         .fill(if enabled { accent() } else { accent().gamma_multiply(0.35) })
         .corner_radius(255)
         .min_size(vec2(width, 32.0))

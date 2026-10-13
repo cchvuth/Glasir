@@ -129,13 +129,13 @@ fn tab_label(ui: &Ui, t: &crate::repo::RepoTab, alias: Option<&String>, active: 
     if let Some(s) = t.data.as_ref().map(|d| &d.status) {
         add(format!("  {} {}", icon::GIT_BRANCH, s.branch.as_deref().unwrap_or("detached")), dim, &small);
         if s.is_dirty() {
-            add(" ●".into(), theme::MOD, &small);
+            add(" ●".into(), theme::changed(), &small);
         }
         if s.ahead > 0 {
-            add(format!(" ↑{}", s.ahead), theme::ADD, &small);
+            add(format!(" ↑{}", s.ahead), theme::add(), &small);
         }
         if s.behind > 0 {
-            add(format!(" ↓{}", s.behind), theme::DEL, &small);
+            add(format!(" ↓{}", s.behind), theme::del(), &small);
         }
     }
     job

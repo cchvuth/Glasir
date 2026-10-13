@@ -57,7 +57,7 @@ fn row(ui: &mut Ui, d: &RepoData, s: &Submodule, acts: &mut Vec<Action>) {
     }
     let text = match (init, moved) {
         (false, _) => RichText::new(label).color(theme::dim(ui)),
-        (true, true) => RichText::new(label).color(theme::MOD),
+        (true, true) => RichText::new(label).color(theme::changed()),
         _ => RichText::new(label),
     };
     let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(tip.join("\n"));

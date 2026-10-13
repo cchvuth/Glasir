@@ -96,12 +96,12 @@ fn restore_items(ui: &mut Ui, d: &RepoData, id: &str, parent: Option<&str>, c: &
 /// The signature badge (`%G?`) with its tooltip: what git concluded, then signer and key.
 fn sig_badge(ui: &mut Ui, info: &CommitInfo) {
     let (ic, text, color, why) = match info.sig {
-        'G' => (icon::SEAL_CHECK, "Good signature", theme::ADD, "Git verified the signature with a trusted key."),
-        'U' => (icon::SEAL_QUESTION, "Signed, unknown signer", theme::MOD, "The signature is valid, but the key isn't trusted (GPG) or isn't in gpg.ssh.allowedSignersFile (SSH)."),
-        'X' => (icon::SEAL_WARNING, "Signed, signature expired", theme::MOD, "The signature is valid but has expired."),
-        'Y' => (icon::SEAL_WARNING, "Signed, key expired", theme::MOD, "The signature is valid, made by a key that has since expired."),
-        'R' => (icon::SEAL_WARNING, "Signed, key revoked", theme::DEL, "The signature was made by a revoked key."),
-        'B' => (icon::SEAL_WARNING, "Bad signature", theme::DEL, "The signature doesn't match the commit: it was changed after signing, or forged."),
+        'G' => (icon::SEAL_CHECK, "Good signature", theme::add(), "Git verified the signature with a trusted key."),
+        'U' => (icon::SEAL_QUESTION, "Signed, unknown signer", theme::changed(), "The signature is valid, but the key isn't trusted (GPG) or isn't in gpg.ssh.allowedSignersFile (SSH)."),
+        'X' => (icon::SEAL_WARNING, "Signed, signature expired", theme::changed(), "The signature is valid but has expired."),
+        'Y' => (icon::SEAL_WARNING, "Signed, key expired", theme::changed(), "The signature is valid, made by a key that has since expired."),
+        'R' => (icon::SEAL_WARNING, "Signed, key revoked", theme::del(), "The signature was made by a revoked key."),
+        'B' => (icon::SEAL_WARNING, "Bad signature", theme::del(), "The signature doesn't match the commit: it was changed after signing, or forged."),
         'E' => (icon::SEAL_QUESTION, "Signed, can't verify", theme::dim(ui), "Git couldn't check the signature: the public key isn't in your keyring (GPG), or gpg.ssh.allowedSignersFile isn't set (SSH)."),
         'N' => (icon::SEAL, "Not signed", theme::dim(ui), "This commit has no signature."),
         _ => return,
@@ -129,7 +129,7 @@ impl RepoTab {
         let info = match info {
             Ok(i) => i,
             Err(e) => {
-                ui.colored_label(theme::DEL, e);
+                ui.colored_label(theme::del(), e);
                 return;
             }
         };
@@ -392,7 +392,7 @@ fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Ve
         if std::mem::take(&mut e.focus) {
             field.request_focus();
         }
-        ui.label(RichText::new(n.to_string()).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
+        ui.label(RichText::new(n.to_string()).small().color(if n > 72 { theme::del() } else { theme::dim(ui) }));
     });
     theme::description(ui, &mut e.body, ui.id().with("msg_body"));
     let can = !busy && !e.summary.trim().is_empty();

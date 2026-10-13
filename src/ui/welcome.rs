@@ -121,7 +121,7 @@ impl App {
                 ui.label(RichText::new(format!("→ {}", dest.display())).small().color(theme::dim(ui)));
             }
             if let Some(e) = &c.error {
-                ui.colored_label(theme::DEL, e);
+                ui.colored_label(theme::del(), e);
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {

@@ -27,10 +27,10 @@ pub(super) fn doctor_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
         let host = crate::git::host(&r.url).unwrap_or_else(|| "<host>".into());
         match r.problem {
             None => {
-                ui.label(RichText::new(format!("{}  Connected: git can fetch from {} without asking for anything.", icon::CHECK_CIRCLE, doc.remote)).color(theme::ADD).strong());
+                ui.label(RichText::new(format!("{}  Connected: git can fetch from {} without asking for anything.", icon::CHECK_CIRCLE, doc.remote)).color(theme::add()).strong());
             }
             Some((what, hint)) => {
-                ui.label(RichText::new(format!("{}  {what}", icon::WARNING)).color(theme::DEL).strong());
+                ui.label(RichText::new(format!("{}  {what}", icon::WARNING)).color(theme::del()).strong());
                 ui.label(hint.replace("<host>", &host));
             }
         }
@@ -103,7 +103,7 @@ fn ssh_key_section(ui: &mut egui::Ui, t: &RepoTab, doc: &Doctor, url: &str, acts
     match &active {
         Active::Default => ui.label(RichText::new("Active: default (ssh-agent / ~/.ssh/config)").small().color(theme::dim(ui))),
         Active::Ours(p) => ui.label(RichText::new(format!("Active: {p}")).small().color(theme::accent())),
-        Active::Custom(c) => ui.label(RichText::new(format!("Active: custom core.sshCommand = {c}")).small().color(theme::MOD)),
+        Active::Custom(c) => ui.label(RichText::new(format!("Active: custom core.sshCommand = {c}")).small().color(theme::changed())),
     };
     ui.horizontal(|ui| {
         if ui.button(format!("{}  Browse…", icon::FOLDER_OPEN)).clicked()
@@ -118,7 +118,7 @@ fn ssh_key_section(ui: &mut egui::Ui, t: &RepoTab, doc: &Doctor, url: &str, acts
         }
     });
     if let Some((ok, text)) = &doc.tested {
-        let (ic, col) = if *ok { (icon::CHECK_CIRCLE, theme::ADD) } else { (icon::WARNING, theme::DEL) };
+        let (ic, col) = if *ok { (icon::CHECK_CIRCLE, theme::add()) } else { (icon::WARNING, theme::del()) };
         ui.label(RichText::new(format!("{ic}  {}", text.lines().next().unwrap_or("No output"))).small().color(col));
     }
     ui.add_space(8.0);

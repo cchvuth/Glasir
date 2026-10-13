@@ -156,9 +156,9 @@ fn identity_row(ui: &mut Ui, d: &RepoData, rules: &str, acts: &mut Vec<Action>) 
     });
     let hosts = d.remotes.iter().filter_map(|r| crate::git::host(&r.1));
     let Some((host, dom)) = identity::mismatch(email, hosts, &identity::rules(rules)) else { return };
-    egui::Frame::new().fill(theme::MOD.gamma_multiply(0.18)).inner_margin(6.0).corner_radius(6.0).show(ui, |ui| {
+    egui::Frame::new().fill(theme::changed().gamma_multiply(0.18)).inner_margin(6.0).corner_radius(6.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(RichText::new(format!("{}  {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::MOD));
+        ui.label(RichText::new(format!("{}  {host} expects an @{dom} email", icon::WARNING)).small().strong().color(theme::changed()));
         ui.horizontal(|ui| {
             if theme::small(ui, true, "Set for this repo…").on_hover_text(format!("git config --local {}", key("email"))).clicked() {
                 acts.push(set("email", &identity::suggest(email, &dom)));
@@ -283,7 +283,7 @@ impl RepoTab {
                 State::Reverting => ("Revert", "revert"),
                 _ => ("Patch (git am)", "am"),
             };
-            egui::Frame::new().fill(theme::MOD.gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
+            egui::Frame::new().fill(theme::changed().gamma_multiply(0.2)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
                 ui.label(RichText::new(format!("{what} in progress")).strong());
                 if !s.conflicted.is_empty() {
                     ui.label(format!("{} conflicted file(s) — resolve, then continue.", s.conflicted.len()));
@@ -346,7 +346,7 @@ impl RepoTab {
             // A rebase or bisect detaches HEAD on purpose; only a plain detached checkout loses commits.
             if s.branch.is_none() && s.head.is_some() && d.state == State::Clean {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new(format!("{}  Detached HEAD: commits made here are easy to lose.", icon::WARNING)).small().color(theme::MOD));
+                    ui.label(RichText::new(format!("{}  Detached HEAD: commits made here are easy to lose.", icon::WARNING)).small().color(theme::changed()));
                     if theme::pill(ui, format!("{}  Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at HEAD; your staged changes come along").clicked() {
                         acts.push(prompt("New branch at HEAD", "", Op::new("Create branch", &["checkout", "-b", "{}"]).undo(Undo::Keep)));
                     }
@@ -359,7 +359,7 @@ impl RepoTab {
                 if std::mem::take(&mut self.focus_summary) {
                     r.request_focus();
                 }
-                ui.label(RichText::new(format!("{n}")).small().color(if n > 72 { theme::DEL } else { theme::dim(ui) }));
+                ui.label(RichText::new(format!("{n}")).small().color(if n > 72 { theme::del() } else { theme::dim(ui) }));
             });
             theme::description(ui, &mut self.body, body_id);
             let was = self.amend;
@@ -455,7 +455,7 @@ impl RepoTab {
             ScrollArea::vertical().id_salt("wip_files").auto_shrink(false).show(ui, |ui| {
                 if !s.conflicted.is_empty() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::DEL));
+                        ui.label(RichText::new(format!("Conflicts  {}", s.conflicted.len())).small().strong().color(theme::del()));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             tree::toggle(ui, as_tree);
                             let b = theme::small(ui, !d.resolvable.is_empty() && !busy, if ui.available_width() < 230.0 { "Mark all" } else { "Mark all resolved" });

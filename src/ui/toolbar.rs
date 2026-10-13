@@ -82,12 +82,12 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             });
             if let Some((target, files)) = t.conflicts.as_ref().filter(|c| !c.1.is_empty()) {
                 let chip = RichText::new(format!("{}  {} conflict{} with {target}", icon::WARNING, files.len(), if files.len() == 1 { "" } else { "s" }))
-                    .color(theme::MOD);
+                    .color(theme::changed());
                 theme::group(ui, |ui| ui.label(chip))
                     .on_hover_text(format!("Merging {target} now would conflict in:\n{}", files.join("\n")));
             }
             if let Some(e) = &t.fetch_failed {
-                let chip = RichText::new(format!("{}  {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::MOD);
+                let chip = RichText::new(format!("{}  {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::changed());
                 let r = theme::group(ui, |ui| theme::pill(ui, chip)).on_hover_text(format!("Background fetch failed:\n{}\n\nClick to fetch now (asks for credentials if needed).", e.trim()));
                 if r.clicked() && !busy {
                     acts.push(Action::Git(fetch_op()));
@@ -167,7 +167,7 @@ fn history_tools(ui: &mut Ui, d: &crate::repo::RepoData, busy: bool, acts: &mut 
     if d.lfs.used {
         ui.separator();
         if !d.lfs.installed {
-            ui.label(RichText::new(format!("{}  {}", icon::WARNING, crate::repo::LFS_MISSING)).small().color(theme::MOD));
+            ui.label(RichText::new(format!("{}  {}", icon::WARNING, crate::repo::LFS_MISSING)).small().color(theme::changed()));
             return;
         }
         ui.menu_button(format!("{}  Git LFS", icon::DATABASE), |ui| {

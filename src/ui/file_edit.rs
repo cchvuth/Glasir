@@ -48,7 +48,7 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
     if ed.conflict {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(RichText::new(format!("{}  {} changed on disk since you opened it.", icon::WARNING, ed.path)).color(theme::MOD));
+            ui.label(RichText::new(format!("{}  {} changed on disk since you opened it.", icon::WARNING, ed.path)).color(theme::changed()));
             if ui.button("Reload").on_hover_text("Throw away your edits and load the file again").clicked() {
                 match FileEdit::load(dir, &ed.path) {
                     Ok(n) => *ed = n,
@@ -141,7 +141,7 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
                 if theme::primary(ui, !ed.saving, "Save", 80.0).clicked() {
                     done = Some(0);
                 }
-                if ui.add(egui::Button::new(RichText::new("Discard").color(theme::DEL))).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Discard").color(theme::del()))).clicked() {
                     done = Some(1);
                 }
                 if ui.button("Keep editing").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {

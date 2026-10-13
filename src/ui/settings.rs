@@ -304,7 +304,7 @@ impl App {
                             None => format!("{}  No token configured", icon::WARNING),
                         })
                         .small()
-                        .color(if st.source.is_some() { theme::ADD } else { theme::MOD }),
+                        .color(if st.source.is_some() { theme::add() } else { theme::changed() }),
                     );
                     ui.end_row();
                     let (model, base_url, _) = s.ai.current();
@@ -351,7 +351,7 @@ impl App {
                     }
                 });
                 if let Some((ok, n)) = &st.note {
-                    ui.colored_label(if *ok { theme::ADD } else { theme::DEL }, n);
+                    ui.colored_label(if *ok { theme::add() } else { theme::del() }, n);
                 }
             });
             ui.add_space(8.0);
@@ -464,4 +464,34 @@ fn flavor_swatch(ui: &mut Ui, f: theme::Flavor, selected: bool) -> egui::Respons
     let ring = if selected { egui::Stroke::new(2.5, f.palette().accent) } else { egui::Stroke::new(1.0, theme::faint(ui)) };
     p.rect_stroke(r, 10.0, ring, egui::StrokeKind::Outside);
     resp.on_hover_text(if f.dark() { "Dark flavour" } else { "Light flavour" })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Store(std::collections::HashMap<String, String>);
+    impl eframe::Storage for Store {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.into(), value);
+        }
+        fn remove_string(&mut self, key: &str) {
+            self.0.remove(key);
+        }
+        fn flush(&mut self) {}
+    }
+
+    #[test]
+    fn removed_flavor_loads_as_default() {
+        let mut st = Store(Default::default());
+        let s = Settings { flavor: theme::Flavor::Plum, last_dark: theme::Flavor::Plum, stale_days: 45, ..Default::default() };
+        eframe::set_value(&mut st, "settings", &s);
+        let saved = st.0["settings"].replace("Plum", "Ocean");
+        st.0.insert("settings".into(), saved);
+        let s: Settings = eframe::get_value(&st, "settings").expect("settings still load");
+        assert_eq!((s.flavor, s.last_dark, s.last_light, s.stale_days), (theme::Flavor::Midnight, theme::Flavor::Midnight, theme::Flavor::Daylight, 45));
+    }
 }

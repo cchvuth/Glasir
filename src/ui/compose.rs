@@ -29,7 +29,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 .color(theme::dim(ui)),
         );
         if let Some(n) = &p.note {
-            ui.label(RichText::new(format!("{}  {n}", icon::WARNING)).small().color(theme::MOD));
+            ui.label(RichText::new(format!("{}  {n}", icon::WARNING)).small().color(theme::changed()));
         }
         ui.add_space(6.0);
         let n = p.commits.len();

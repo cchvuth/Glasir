@@ -32,7 +32,7 @@ pub(super) fn minimap(ui: &Ui, rail: Rect, d: &RepoData, sel_row: Option<usize>,
         }
     }
     if d.wip {
-        marks.push((0, theme::MOD, "Uncommitted changes", 3.0));
+        marks.push((0, theme::changed(), "Uncommitted changes", 3.0));
     }
     if let Some(&row) = d.status.head.as_ref().and_then(|h| d.row_of.get(h)) {
         marks.push((row, theme::accent(), "HEAD", 3.0));

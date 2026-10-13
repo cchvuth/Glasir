@@ -22,7 +22,7 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, shown: &RepoData, multi: &[S
             acts.push(Action::MultiOp(kind, multi.to_vec()));
         }
     }
-    if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::DEL)).clicked() {
+    if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::del())).clicked() {
         acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
     }
     recompose_items(ui, d, &format!("Recompose {n} commits…"), &multi[n - 1], multi, acts);
@@ -225,7 +225,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
                 acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Squash, message: None });
                 ui.close();
             }
-            if ui.button(egui::RichText::new("Drop commit").color(theme::DEL)).clicked() {
+            if ui.button(egui::RichText::new("Drop commit").color(theme::del())).clicked() {
                 acts.push(Action::Rewrite { commit: c.id.clone(), act: crate::repo::rebase::Act::Drop, message: None });
                 ui.close();
             }
@@ -311,7 +311,7 @@ pub fn reset_items(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) 
         ("--hard", "discard all changes (⌘Z restores them)"),
     ] {
         let text = egui::RichText::new(keys(&format!("{} — {hint}", &mode[2..])));
-        if ui.button(if mode == "--hard" { text.color(theme::DEL) } else { text }).clicked() {
+        if ui.button(if mode == "--hard" { text.color(theme::del()) } else { text }).clicked() {
             acts.push(Action::Git(crate::repo::reset_op(d, id, mode)));
         }
     }

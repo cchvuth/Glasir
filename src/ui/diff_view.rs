@@ -301,16 +301,16 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             }
         }
         if worktree && change.code != '?' && ds.opts.ignore_ws {
-            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off", icon::INFO) }).small().color(theme::MOD))
+            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off", icon::INFO) }).small().color(theme::changed()))
                 .on_hover_text("Hunks and lines can't be staged from a whitespace-ignoring diff: turn off Ignore whitespace to stage parts of this file.");
         } else if let (true, Some(f)) = (worktree, file.filter(|f| f.whole_only || f.lossy)) {
             let (note, why) = match f.whole_only {
                 true => ("git converts it on add", "git add converts this file (CRLF line endings, an LFS or other filter), so the lines shown aren't the ones staged: stage the whole file."),
                 false => ("not UTF-8", "This file isn't valid UTF-8, so its lines are shown approximately and can't be staged one by one: stage the whole file."),
             };
-            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off: {note}", icon::INFO) }).small().color(theme::MOD)).on_hover_text(why);
+            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off: {note}", icon::INFO) }).small().color(theme::changed())).on_hover_text(why);
         } else if !worktree && !wt_compare && ds.opts.ignore_ws {
-            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Hunk actions off", icon::INFO) }).small().color(theme::MOD))
+            ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Hunk actions off", icon::INFO) }).small().color(theme::changed()))
                 .on_hover_text("Hunks and lines can't be reverted or cherry-picked from a whitespace-ignoring diff: turn off Ignore whitespace.");
         }
         if let (false, Some(f), Some(&first)) = (worktree, file, ds.picked.first())
@@ -382,7 +382,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             return;
         }
         Some(Err(e)) => {
-            ui.colored_label(theme::DEL, e);
+            ui.colored_label(theme::del(), e);
             return;
         }
         Some(Ok(f)) => f,
@@ -425,7 +425,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         return;
     }
     if let Some(m) = mode {
-        ui.label(RichText::new(format!("{}  {m}", icon::INFO)).small().color(theme::MOD));
+        ui.label(RichText::new(format!("{}  {m}", icon::INFO)).small().color(theme::changed()));
     }
 
     let area = ui.available_rect_before_wrap();
@@ -698,9 +698,9 @@ fn minimap(ui: &Ui, rail: Rect, kinds: &[u8], v0: f32, v1: f32) {
         }
         last = top;
         let color = match k {
-            b'+' => theme::ADD,
-            b'-' => theme::DEL,
-            _ => theme::MOD,
+            b'+' => theme::add(),
+            b'-' => theme::del(),
+            _ => theme::changed(),
         };
         p.rect_filled(Rect::from_x_y_ranges(rail.x_range(), top..=top + h), 1.0, color);
     }
@@ -728,9 +728,9 @@ fn submodule_note(ui: &mut Ui, path: &str, sm: &crate::git::SubmoduleDiff, acts:
         for l in &sm.log {
             // `> subject` came in, `< subject` was dropped (rewind).
             let (sign, color, text) = match l.split_once(' ') {
-                Some(("<", t)) => ("−", theme::DEL, t),
-                Some((_, t)) => ("+", theme::ADD, t),
-                None => ("+", theme::ADD, l.as_str()),
+                Some(("<", t)) => ("−", theme::del(), t),
+                Some((_, t)) => ("+", theme::add(), t),
+                None => ("+", theme::add(), l.as_str()),
             };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(sign).monospace().color(color));
@@ -738,7 +738,7 @@ fn submodule_note(ui: &mut Ui, path: &str, sm: &crate::git::SubmoduleDiff, acts:
             });
         }
         for d in &sm.dirty {
-            ui.label(RichText::new(format!("{}  Working copy {d}", icon::PENCIL_SIMPLE)).color(theme::MOD));
+            ui.label(RichText::new(format!("{}  Working copy {d}", icon::PENCIL_SIMPLE)).color(theme::changed()));
         }
         ui.add_space(6.0);
         if !zero(&sm.to) && ui.button(format!("{}  Open submodule in new tab", icon::ARROW_SQUARE_OUT)).clicked() {
@@ -808,8 +808,8 @@ fn paint_line(
     colors: Option<&crate::highlight::Spans>,
 ) {
     let (bg, sign_color) = match kind {
-        b'+' => (theme::added_bg(ui), theme::ADD),
-        b'-' => (theme::removed_bg(ui), theme::DEL),
+        b'+' => (theme::added_bg(ui), theme::add()),
+        b'-' => (theme::removed_bg(ui), theme::del()),
         _ => (Color32::TRANSPARENT, theme::dim(ui)),
     };
     p.rect_filled(rect, 0.0, bg);

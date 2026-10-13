@@ -144,7 +144,7 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option
     let x = rect.left() + tree::indent(depth);
     let mut right = rect.right() - 6.0;
     let counts = match stat {
-        Some(Some((a, d))) => [(a, '+', theme::ADD), (d, '-', theme::DEL)].into_iter().filter(|c| c.0 > 0).map(|(n, s, col)| (format!("{s}{n}"), col)).collect(),
+        Some(Some((a, d))) => [(a, '+', theme::add()), (d, '-', theme::del())].into_iter().filter(|c| c.0 > 0).map(|(n, s, col)| (format!("{s}{n}"), col)).collect(),
         Some(None) => vec![("bin".to_owned(), theme::dim(ui))],
         None => vec![],
     };

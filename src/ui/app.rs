@@ -324,7 +324,7 @@ impl App {
             ui.label(if n == 1 { "A command is still running in the terminal. Quitting stops it.".into() } else { format!("{n} commands are still running in the terminal. Quitting stops them.") });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.add(egui::Button::new(RichText::new("Quit anyway").strong()).fill(theme::DEL.gamma_multiply(0.6))).clicked() {
+                if ui.add(egui::Button::new(RichText::new("Quit anyway").strong()).fill(theme::del().gamma_multiply(0.6))).clicked() {
                     done = Some(true);
                 }
                 if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
@@ -470,7 +470,7 @@ impl eframe::App for App {
             egui::Panel::top("git_warn").show_separator_line(false).frame(Frame::NONE.inner_margin(Margin { left: 14, right: 14, top: 2, bottom: 6 })).show(ui, |ui| {
                 theme::group(ui, |ui| {
                     ui.add_space(6.0);
-                    ui.label(RichText::new(icon::WARNING).color(theme::MOD).size(16.0));
+                    ui.label(RichText::new(icon::WARNING).color(theme::changed()).size(16.0));
                     ui.add(egui::Label::new(w.as_str()).wrap());
                     dismiss = theme::pill(ui, icon::X).on_hover_text("Dismiss").clicked();
                 });

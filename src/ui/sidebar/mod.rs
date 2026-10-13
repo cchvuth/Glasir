@@ -24,7 +24,7 @@ fn matches(filter: &str, name: &str) -> bool {
 /// Hidden refs are dimmed, soloed ones orange.
 fn view_style(ui: &Ui, d: &RepoData, r: &crate::git::Ref, text: RichText) -> RichText {
     if d.view.solo.contains(&r.full) {
-        text.color(theme::MOD)
+        text.color(theme::changed())
     } else if !d.view.shows(&r.full) {
         text.color(theme::dim(ui).gamma_multiply(0.7))
     } else {

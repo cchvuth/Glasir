@@ -27,9 +27,9 @@ pub(super) fn show(ui: &mut Ui, open: &mut bool) {
             ui.horizontal(|ui| {
                 ui.set_height(h);
                 let (glyph, color, status) = match e.code {
-                    Some(0) => (icon::CHECK_CIRCLE, theme::ADD, "exit 0".to_owned()),
-                    Some(c) => (icon::X_CIRCLE, theme::DEL, format!("exit {c}")),
-                    None => (icon::STOP_CIRCLE, theme::MOD, "cancelled".to_owned()),
+                    Some(0) => (icon::CHECK_CIRCLE, theme::add(), "exit 0".to_owned()),
+                    Some(c) => (icon::X_CIRCLE, theme::del(), format!("exit {c}")),
+                    None => (icon::STOP_CIRCLE, theme::changed(), "cancelled".to_owned()),
                 };
                 ui.label(RichText::new(glyph).color(color)).on_hover_text(&status);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

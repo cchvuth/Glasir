@@ -11,7 +11,6 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId, RichText, Sense, TextEdit, Ui, pos2, vec2};
 
 const CUR: Color32 = Color32::from_rgb(0x0a, 0x84, 0xff);
-const INC: Color32 = theme::MOD;
 
 fn tint(c: Color32, strong: bool) -> Color32 {
     c.gamma_multiply(if strong { 0.32 } else { 0.14 })
@@ -80,7 +79,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
         ui.label(format!("{why} Pick the version to keep:"));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            for ((op, label), c) in whole_ops(&ed.path, d).into_iter().zip(&d.labels).zip([CUR, INC]) {
+            for ((op, label), c) in whole_ops(&ed.path, d).into_iter().zip(&d.labels).zip([CUR, theme::changed()]) {
                 let b = egui::Button::new(RichText::new(format!("{} · {label}", op.label)).strong().color(c)).corner_radius(255);
                 if ui.add(b).clicked() {
                     acts.push(Action::Git(op));
@@ -106,7 +105,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
 
     ui.columns(2, |cols| {
         for (s, ui) in cols.iter_mut().enumerate() {
-            let (title, color) = if s == 0 { ("Current", CUR) } else { ("Incoming", INC) };
+            let (title, color) = if s == 0 { ("Current", CUR) } else { ("Incoming", theme::changed()) };
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{}  {title}", icon::CIRCLE)).strong().color(color));
                 ui.add(egui::Label::new(RichText::new(&d.labels[s]).small().color(theme::dim(ui))).truncate());
@@ -174,7 +173,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
     ui.horizontal_wrapped(|ui| {
         theme::group(ui, |ui| {
             if m == 0 {
-                ui.label(RichText::new(format!("{}  No conflicts left", icon::CHECK_CIRCLE)).color(theme::ADD));
+                ui.label(RichText::new(format!("{}  No conflicts left", icon::CHECK_CIRCLE)).color(theme::add()));
                 return;
             }
             if theme::pill(ui, icon::CARET_UP).on_hover_text("Previous conflict").clicked() {
@@ -197,7 +196,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
                     }
                 };
                 b(ui, RichText::new(if narrow { "Current" } else { "Take current" }).color(CUR), Take::Current, &d.labels[0]);
-                b(ui, RichText::new(if narrow { "Incoming" } else { "Take incoming" }).color(INC), Take::Incoming, &d.labels[1]);
+                b(ui, RichText::new(if narrow { "Incoming" } else { "Take incoming" }).color(theme::changed()), Take::Incoming, &d.labels[1]);
                 b(ui, RichText::new(if narrow { "Cur+Inc" } else { "Both (current first)" }), Take::CurrentFirst, "Current lines, then incoming lines");
                 b(ui, RichText::new(if narrow { "Inc+Cur" } else { "Both (incoming first)" }), Take::IncomingFirst, "Incoming lines, then current lines");
                 if c.base.is_some() {
@@ -236,8 +235,8 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
                         let format = match part {
                             0 => fmt(text_col, tint(CUR, false)),
                             1 => fmt(dim, Color32::TRANSPARENT),
-                            2 => fmt(text_col, tint(INC, false)),
-                            _ => fmt(theme::DEL, tint(theme::DEL, false)),
+                            2 => fmt(text_col, tint(theme::changed(), false)),
+                            _ => fmt(theme::del(), tint(theme::del(), false)),
                         };
                         job.append(l, 0.0, format);
                     }
@@ -285,7 +284,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
             close = true;
         }
         if let Some(e) = &ed.error {
-            ui.colored_label(theme::DEL, e);
+            ui.colored_label(theme::del(), e);
         }
     });
 

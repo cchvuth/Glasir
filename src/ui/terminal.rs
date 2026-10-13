@@ -48,7 +48,7 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path, new: bool) {
                     ts.focus = true;
                 }
                 if ts.confirm == Some(i) {
-                    if theme::pill(ui, RichText::new("Stop & close").small().color(theme::DEL)).clicked() {
+                    if theme::pill(ui, RichText::new("Stop & close").small().color(theme::del())).clicked() {
                         close = Some(i);
                     }
                     if theme::pill(ui, RichText::new("Keep").small()).clicked() {
@@ -65,7 +65,7 @@ pub(super) fn show(ui: &mut Ui, ts: &mut Terminals, dir: &Path, new: bool) {
         ts.close(i);
     }
     if let Some(e) = &ts.error {
-        ui.colored_label(theme::DEL, e);
+        ui.colored_label(theme::del(), e);
     }
     let focus = std::mem::take(&mut ts.focus);
     if let Some(s) = ts.tabs.get_mut(ts.active) {

@@ -94,10 +94,10 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                     });
                     for (a, label, _, hint) in ACTS {
                         let color = match a {
-                            Act::Drop => theme::DEL,
-                            Act::Squash | Act::Fixup => theme::MOD,
-                            Act::Reword | Act::Edit => theme::REN,
-                            Act::Pick => theme::ADD,
+                            Act::Drop => theme::del(),
+                            Act::Squash | Act::Fixup => theme::changed(),
+                            Act::Reword | Act::Edit => theme::change_color('R'),
+                            Act::Pick => theme::add(),
                         };
                         let text = if it.act == a { RichText::new(label).strong().color(color) } else { RichText::new(label).color(theme::dim(ui)) };
                         if ui.add(egui::Button::selectable(it.act == a, text).corner_radius(255)).on_hover_text(hint).clicked() {
@@ -137,7 +137,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     ui.add_space(6.0);
     let problem = ed.problem();
     if let Some(p) = problem {
-        ui.colored_label(theme::DEL, p);
+        ui.colored_label(theme::del(), p);
     }
     ui.horizontal(|ui| {
         let start = if ed.cherry { "Start cherry-pick" } else { "Start rebase" };
