@@ -149,7 +149,7 @@ impl App {
                     ui.label("Theme");
                     ui.vertical(|ui| {
                         for row in [theme::Flavor::DARK, theme::Flavor::LIGHT] {
-                            ui.horizontal(|ui| {
+                            ui.horizontal_wrapped(|ui| {
                                 for f in row {
                                     if flavor_swatch(ui, f, s.flavor == f).clicked() {
                                         set_flavor(s, ui.ctx(), f);
@@ -451,14 +451,14 @@ pub(super) fn toggle_flavor(s: &mut Settings, ctx: &egui::Context) {
 
 /// A clickable mini-preview of a flavour: its backdrop, a glass card and the accent.
 fn flavor_swatch(ui: &mut Ui, f: theme::Flavor, selected: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(86.0, 62.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(66.0, 58.0), Sense::click());
     let p = ui.painter().with_clip_rect(rect);
     let r = rect.shrink(2.0);
     theme::canvas_in(&p, r, 10.0, false, f);
     let [gr, gg, gb] = f.palette().glass;
-    let card = egui::Rect::from_min_size(r.min + vec2(8.0, 8.0), vec2(r.width() - 16.0, 22.0));
+    let card = egui::Rect::from_min_size(r.min + vec2(6.0, 7.0), vec2(r.width() - 12.0, 20.0));
     p.rect_filled(card, 7.0, egui::Color32::from_rgba_unmultiplied(gr, gg, gb, 200));
-    p.circle_filled(card.left_center() + vec2(11.0, 0.0), 5.0, f.palette().accent);
+    p.circle_filled(card.left_center() + vec2(10.0, 0.0), 5.0, f.palette().accent);
     let text = if f.dark() { egui::Color32::from_white_alpha(210) } else { egui::Color32::from_black_alpha(190) };
     p.text(r.center_bottom() - vec2(0.0, 13.0), Align2::CENTER_CENTER, f.name(), egui::FontId::proportional(11.5), text);
     let ring = if selected { egui::Stroke::new(2.5, f.palette().accent) } else { egui::Stroke::new(1.0, theme::faint(ui)) };

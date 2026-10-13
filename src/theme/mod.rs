@@ -45,7 +45,7 @@ pub fn avatar(email: &str) -> Color32 {
 }
 
 // ---------------------------------------------------------------------------
-// Flavours: three dark, three light.
+// Flavours: ten dark, ten light.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Flavor {
@@ -53,9 +53,23 @@ pub enum Flavor {
     Midnight,
     Graphite,
     Abyss,
+    Nord,
+    Forest,
+    Plum,
+    Ember,
+    Ocean,
+    Mocha,
+    Rose,
     Daylight,
     Paper,
     Blossom,
+    Sand,
+    Mint,
+    Lavender,
+    Sky,
+    Peach,
+    Stone,
+    Sage,
 }
 
 /// Canvas base, three glow blobs ((x, y), radius, rgba), glass tint, accent.
@@ -68,8 +82,30 @@ pub struct Palette {
 }
 
 impl Flavor {
-    pub const DARK: [Flavor; 3] = [Flavor::Midnight, Flavor::Graphite, Flavor::Abyss];
-    pub const LIGHT: [Flavor; 3] = [Flavor::Daylight, Flavor::Paper, Flavor::Blossom];
+    pub const DARK: [Flavor; 10] = [
+        Flavor::Midnight,
+        Flavor::Graphite,
+        Flavor::Abyss,
+        Flavor::Nord,
+        Flavor::Forest,
+        Flavor::Plum,
+        Flavor::Ember,
+        Flavor::Ocean,
+        Flavor::Mocha,
+        Flavor::Rose,
+    ];
+    pub const LIGHT: [Flavor; 10] = [
+        Flavor::Daylight,
+        Flavor::Paper,
+        Flavor::Blossom,
+        Flavor::Sand,
+        Flavor::Mint,
+        Flavor::Lavender,
+        Flavor::Sky,
+        Flavor::Peach,
+        Flavor::Stone,
+        Flavor::Sage,
+    ];
 
     pub fn dark(self) -> bool {
         Self::DARK.contains(&self)
@@ -83,6 +119,20 @@ impl Flavor {
             Flavor::Daylight => "Daylight",
             Flavor::Paper => "Paper",
             Flavor::Blossom => "Blossom",
+            Flavor::Nord => "Nord",
+            Flavor::Forest => "Forest",
+            Flavor::Plum => "Plum",
+            Flavor::Ember => "Ember",
+            Flavor::Ocean => "Ocean",
+            Flavor::Mocha => "Mocha",
+            Flavor::Rose => "Rose",
+            Flavor::Sand => "Sand",
+            Flavor::Mint => "Mint",
+            Flavor::Lavender => "Lavender",
+            Flavor::Sky => "Sky",
+            Flavor::Peach => "Peach",
+            Flavor::Stone => "Stone",
+            Flavor::Sage => "Sage",
         }
     }
 
@@ -108,6 +158,48 @@ impl Flavor {
                 glass: [0x0e, 0x1d, 0x24],
                 accent: rgb(0x14, 0xc8, 0xb0),
             },
+            Flavor::Nord => Palette {
+                base: rgb(0x1a,0x1f,0x2a),
+                blobs: [(a, 0.75, [0x5e,0x81,0xac, 100]), (b, 0.6, [0x88,0xc0,0xd0, 60]), (c, 0.75, [0x81,0xa1,0xc1, 55])],
+                glass: [0x26,0x2d,0x3b],
+                accent: rgb(0x88,0xc0,0xd0),
+            },
+            Flavor::Forest => Palette {
+                base: rgb(0x0a,0x13,0x0e),
+                blobs: [(a, 0.75, [0x1f,0x7a,0x45, 95]), (b, 0.6, [0x4d,0x7c,0x0f, 70]), (c, 0.75, [0x0f,0x76,0x6e, 55])],
+                glass: [0x14,0x20,0x19],
+                accent: rgb(0x7f,0xc9,0x5f),
+            },
+            Flavor::Plum => Palette {
+                base: rgb(0x14,0x0b,0x1a),
+                blobs: [(a, 0.75, [0x86,0x19,0x8f, 95]), (b, 0.6, [0x5b,0x21,0xb6, 70]), (c, 0.75, [0xbe,0x18,0x5d, 55])],
+                glass: [0x24,0x18,0x2c],
+                accent: rgb(0xd9,0x7b,0xf0),
+            },
+            Flavor::Ember => Palette {
+                base: rgb(0x15,0x0d,0x0d),
+                blobs: [(a, 0.75, [0xc2,0x41,0x0c, 90]), (b, 0.6, [0x99,0x1b,0x1b, 75]), (c, 0.75, [0xb4,0x53,0x09, 55])],
+                glass: [0x26,0x1b,0x1a],
+                accent: rgb(0xff,0x7a,0x45),
+            },
+            Flavor::Ocean => Palette {
+                base: rgb(0x06,0x12,0x22),
+                blobs: [(a, 0.75, [0x03,0x69,0xa1, 105]), (b, 0.6, [0x1d,0x4e,0xd8, 75]), (c, 0.75, [0x08,0x91,0xb2, 65])],
+                glass: [0x0d,0x1c,0x2f],
+                accent: rgb(0x5e,0xd4,0xf4),
+            },
+            Flavor::Mocha => Palette {
+                base: rgb(0x17,0x11,0x0e),
+                blobs: [(a, 0.75, [0x6f,0x4e,0x37, 105]), (b, 0.6, [0x8b,0x5e,0x3c, 70]), (c, 0.75, [0x5c,0x40,0x33, 65])],
+                glass: [0x27,0x1e,0x1a],
+                accent: rgb(0xd4,0xa3,0x74),
+            },
+            Flavor::Rose => Palette {
+                base: rgb(0x1a,0x10,0x16),
+                blobs: [(a, 0.75, [0xe1,0x1d,0x48, 80]), (b, 0.6, [0xf4,0x72,0xb6, 55]), (c, 0.75, [0x9d,0x17,0x4d, 70])],
+                glass: [0x2a,0x1c,0x25],
+                accent: rgb(0xf4,0x8f,0xb1),
+            },
             Flavor::Daylight => Palette {
                 base: rgb(0xec, 0xef, 0xf5),
                 blobs: [(a, 0.75, [0xa8, 0xc8, 0xff, 170]), (b, 0.6, [0xe0, 0xc8, 0xff, 150]), (c, 0.75, [0xb8, 0xf0, 0xe4, 140])],
@@ -125,6 +217,48 @@ impl Flavor {
                 blobs: [(a, 0.75, [0xff, 0xc4, 0xd4, 170]), (b, 0.6, [0xff, 0xd6, 0xbc, 150]), (c, 0.75, [0xe4, 0xd0, 0xff, 125])],
                 glass: [0xff, 0xf8, 0xfa],
                 accent: rgb(0xe0, 0x3e, 0x76),
+            },
+            Flavor::Sand => Palette {
+                base: rgb(0xf2,0xeb,0xdc),
+                blobs: [(a, 0.75, [0xe8,0xd3,0xa8, 165]), (b, 0.6, [0xf0,0xdc,0xb8, 150]), (c, 0.75, [0xd9,0xd2,0xbc, 125])],
+                glass: [0xff,0xfc,0xf3],
+                accent: rgb(0x1b,0x7f,0x79),
+            },
+            Flavor::Mint => Palette {
+                base: rgb(0xe8,0xf5,0xee),
+                blobs: [(a, 0.75, [0xb4,0xec,0xd0, 165]), (b, 0.6, [0xc8,0xf0,0xe0, 150]), (c, 0.75, [0xd8,0xf4,0xc8, 130])],
+                glass: [0xf7,0xff,0xfb],
+                accent: rgb(0x0d,0x8a,0x5a),
+            },
+            Flavor::Lavender => Palette {
+                base: rgb(0xf0,0xec,0xfa),
+                blobs: [(a, 0.75, [0xd4,0xc4,0xff, 165]), (b, 0.6, [0xe8,0xc8,0xf8, 150]), (c, 0.75, [0xc4,0xd4,0xff, 130])],
+                glass: [0xfb,0xf9,0xff],
+                accent: rgb(0x6d,0x4a,0xe0),
+            },
+            Flavor::Sky => Palette {
+                base: rgb(0xe6,0xf2,0xfb),
+                blobs: [(a, 0.75, [0x9e,0xd4,0xff, 165]), (b, 0.6, [0xc0,0xe4,0xff, 150]), (c, 0.75, [0xb8,0xf0,0xf4, 130])],
+                glass: [0xf8,0xfc,0xff],
+                accent: rgb(0x00,0x84,0xa8),
+            },
+            Flavor::Peach => Palette {
+                base: rgb(0xfd,0xf0,0xe6),
+                blobs: [(a, 0.75, [0xff,0xcf,0xa8, 170]), (b, 0.6, [0xff,0xdc,0xc0, 150]), (c, 0.75, [0xff,0xc8,0xc0, 125])],
+                glass: [0xff,0xfa,0xf6],
+                accent: rgb(0xd9,0x53,0x30),
+            },
+            Flavor::Stone => Palette {
+                base: rgb(0xe9,0xea,0xec),
+                blobs: [(a, 0.75, [0xc9,0xce,0xd6, 160]), (b, 0.6, [0xd8,0xdc,0xe2, 150]), (c, 0.75, [0xbf,0xc6,0xcf, 120])],
+                glass: [0xfc,0xfc,0xfd],
+                accent: rgb(0x4a,0x5f,0x80),
+            },
+            Flavor::Sage => Palette {
+                base: rgb(0xee,0xf2,0xe8),
+                blobs: [(a, 0.75, [0xcf,0xdc,0xbc, 165]), (b, 0.6, [0xdf,0xe8,0xcc, 150]), (c, 0.75, [0xc4,0xdc,0xd0, 130])],
+                glass: [0xfb,0xfd,0xf8],
+                accent: rgb(0x5a,0x7d,0x3a),
             },
         }
     }

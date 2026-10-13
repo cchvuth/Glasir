@@ -351,7 +351,7 @@ The name fits a Git client:
 
 ### Design
 - **Liquid Glass** look: translucent glass cards, capsule controls, unified title bar; the glass edges separate areas, so there are no divider lines.
-- **Six flavours**: Midnight, Graphite, Abyss (dark) and Daylight, Paper, Blossom (light).
+- **Twenty flavours**: Midnight, Graphite, Abyss, Nord, Forest, Plum, Ember, Ocean, Mocha, Rose (dark) and Daylight, Paper, Blossom, Sand, Mint, Lavender, Sky, Peach, Stone, Sage (light).
 - **Glass transparency** slider; optional native macOS glass backdrop (experimental).
 
 ## Download
