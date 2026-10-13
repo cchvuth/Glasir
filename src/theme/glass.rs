@@ -241,7 +241,7 @@ pub fn small<'a>(ui: &mut Ui, enabled: bool, text: impl egui::IntoAtoms<'a>) -> 
 /// A commit description field: four rows tall, longer text scrolls inside it.
 pub fn description(ui: &mut Ui, text: &mut String, id: egui::Id) {
     let v = ui.visuals();
-    let stroke = if ui.memory(|m| m.has_focus(id)) { v.selection.stroke } else { v.widgets.inactive.bg_stroke };
+    let stroke = if ui.memory(|m| m.has_focus(id)) { v.selection.stroke } else { Stroke::new(v.selection.stroke.width, Color32::TRANSPARENT) };
     let frame = egui::Frame::NONE.fill(v.text_edit_bg_color()).stroke(stroke).corner_radius(v.widgets.inactive.corner_radius).inner_margin(super::INPUT_MARGIN);
     frame.show(ui, |ui| {
         egui::ScrollArea::vertical().id_salt(id).max_height(ui.text_style_height(&egui::TextStyle::Body) * 4.0).show(ui, |ui| {
