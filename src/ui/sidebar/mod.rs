@@ -154,7 +154,7 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
     if resp.double_clicked() {
         acts.extend(branch_checkout(d, r));
     }
-    resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+    theme::context_menu(&resp, |ui| ref_menu(ui, d, r, acts));
 }
 
 fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
@@ -168,7 +168,7 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
     if resp.double_clicked() {
         acts.extend(branch_checkout(d, r));
     }
-    resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+    theme::context_menu(&resp, |ui| ref_menu(ui, d, r, acts));
 }
 
 fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
@@ -178,7 +178,7 @@ fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mu
     if resp.clicked() {
         acts.push(Action::Jump(r.target.clone()));
     }
-    resp.context_menu(|ui| ref_menu(ui, d, r, acts));
+    theme::context_menu(&resp, |ui| ref_menu(ui, d, r, acts));
 }
 
 fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {

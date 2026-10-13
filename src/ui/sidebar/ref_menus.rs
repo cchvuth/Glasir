@@ -10,10 +10,6 @@ use crate::ui::graph_view::menus::{integrate_items, reset_menu};
 use egui::Ui;
 
 pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
-    crate::theme::menu_scroll(ui, |ui| ref_items(ui, d, r, acts));
-}
-
-fn ref_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     ui.spacing_mut().button_padding.x = 10.0;
     match r.kind {
         RefKind::Local => local_menu(ui, d, r, acts),
@@ -25,13 +21,11 @@ fn ref_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
 
 /// A local branch level with its upstream (one graph pill): the local's menu, then what is the remote's own.
 pub fn synced_menu(ui: &mut Ui, d: &RepoData, local: &crate::git::Ref, up: &crate::git::Ref, acts: &mut Vec<Action>) {
-    crate::theme::menu_scroll(ui, |ui| {
-        ref_items(ui, d, local, acts);
-        ui.separator();
-        ui.label(egui::RichText::new(format!("{}  {}", icon::CLOUD, up.name)).small().weak());
-        remote_menu(ui, d, up, true, acts);
-        view_items(ui, d, up, acts);
-    });
+    ref_menu(ui, d, local, acts);
+    ui.separator();
+    ui.label(egui::RichText::new(format!("{}  {}", icon::CLOUD, up.name)).small().weak());
+    remote_menu(ui, d, up, true, acts);
+    view_items(ui, d, up, acts);
 }
 
 /// Graph hide / solo toggles.

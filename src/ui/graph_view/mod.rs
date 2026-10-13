@@ -331,12 +331,10 @@ pub fn show(
                         acts.push(Action::DropCommit { src: p.0.clone(), dst: Some(c.id.clone()), branch, squash });
                     }
                 }
-                resp.context_menu(|ui| {
-                    theme::menu_scroll(ui, |ui| match commit {
-                        Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
-                        Some(c) => commit_menu(ui, all, c, on_branch(ui, all, search, &c.id), acts),
-                        None => wip_menu(ui, acts),
-                    })
+                theme::context_menu(&resp, |ui| match commit {
+                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
+                    Some(c) => commit_menu(ui, all, c, on_branch(ui, all, search, &c.id), acts),
+                    None => wip_menu(ui, acts),
                 });
             }
             let _ = hovered;
@@ -452,7 +450,7 @@ pub fn show(
                         if resp.double_clicked() {
                             acts.extend(branch_checkout(d, rf));
                         }
-                        resp.context_menu(|ui| match up {
+                        theme::context_menu(resp, |ui| match up {
                             Some(u) => ref_menus::synced_menu(ui, all, rf, u, acts),
                             None => ref_menus::ref_menu(ui, all, rf, acts),
                         })

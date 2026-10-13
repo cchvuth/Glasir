@@ -11,7 +11,7 @@ mod glass;
 /// (egui's default of 4 px puts the text against a capsule's edge).
 pub const INPUT_MARGIN: egui::Margin = egui::Margin::symmetric(12, 6);
 
-pub use glass::{bar, bar_h, canvas, canvas_in, card, description, empty_state, menu_scroll, glass_shapes, group, photo, pill, primary, progress, rest, set_transparency, slider, small};
+pub use glass::{bar, bar_h, canvas, canvas_in, card, context_menu, description, empty_state, glass_shapes, group, photo, pill, primary, progress, rest, set_transparency, slider, small};
 
 use egui::epaint::Shadow;
 use egui::{Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Ui, Visuals, vec2};

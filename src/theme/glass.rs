@@ -250,10 +250,41 @@ pub fn description(ui: &mut Ui, text: &mut String, id: egui::Id) {
     });
 }
 
-/// A menu's items, scrolling when they don't fit the window.
-pub fn menu_scroll<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let h = (ui.ctx().content_rect().height() - 48.0).max(120.0);
-    egui::ScrollArea::vertical().max_height(h).show(ui, add).inner
+/// A right-click menu. One taller than the room above or below the click starts at the top
+/// of the window instead, uses its full height and scrolls the rest, with an arrow at the
+/// edge that has more.
+pub fn context_menu<R>(resp: &egui::Response, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
+    let ctx = resp.ctx.clone();
+    let (at_id, h_id) = (resp.id.with("menu_at"), resp.id.with("menu_h"));
+    if resp.secondary_clicked()
+        && let Some(p) = ctx.pointer_interact_pos()
+    {
+        ctx.data_mut(|d| d.insert_temp(at_id, p));
+    }
+    let screen = ctx.content_rect().shrink(6.0);
+    let tall = ctx.data(|d| d.get_temp::<f32>(h_id)).unwrap_or(0.0);
+    let mut popup = egui::Popup::context_menu(resp);
+    if let Some(p) = ctx.data(|d| d.get_temp::<Pos2>(at_id)).filter(|p| tall > (screen.bottom() - p.y).max(p.y - screen.top()))
+    {
+        popup = popup.anchor(pos2(p.x, screen.top())).align(egui::RectAlign::BOTTOM_START).gap(0.0);
+    }
+    popup
+        .show(|ui| {
+            let margin = ui.spacing().menu_margin.sum().y;
+            ui.set_max_height(screen.height() - margin);
+            let o = egui::ScrollArea::vertical().max_height(screen.height() - margin).show(ui, add);
+            ctx.data_mut(|d| d.insert_temp(h_id, o.content_size.y + margin));
+            let (view, off) = (o.inner_rect, o.state.offset.y);
+            for (more, y, glyph) in [(off > 1.0, view.top(), super::icon::CARET_UP), (off + view.height() < o.content_size.y - 1.0, view.bottom(), super::icon::CARET_DOWN)] {
+                if more {
+                    let band = Rect::from_center_size(pos2(view.center().x, y), vec2(view.width(), 16.0)).intersect(view.expand2(vec2(0.0, 2.0)));
+                    ui.painter().rect_filled(band, 4.0, ui.visuals().window_fill.to_opaque());
+                    ui.painter().text(band.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(12.0), super::dim(ui));
+                }
+            }
+            o.inner
+        })
+        .map(|r| r.inner)
 }
 
 pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
