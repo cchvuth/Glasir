@@ -118,6 +118,10 @@ pub fn row_button(ui: &Ui, row: &egui::Response, glyph: &str, label: &str) -> bo
     if !hovering(ui, row.rect) {
         return false;
     }
+    if ui.input(|i| i.is_scrolling()) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(60));
+        return false;
+    }
     let g = ui.painter().layout_no_wrap(format!("{glyph} {label}"), egui::FontId::proportional(11.5), egui::Color32::PLACEHOLDER);
     let rect = egui::Rect::from_center_size(egui::pos2(row.rect.right() - 6.0 - (g.size().x + 14.0) / 2.0, row.rect.center().y), g.size() + egui::vec2(14.0, 6.0));
     let resp = ui.interact(rect, row.id.with("quick"), Sense::click());
