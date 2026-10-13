@@ -76,8 +76,7 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
         RefKind::Tag => theme::tag(ui),
     };
-    let solid = if head_pill { theme::accent() } else { fill + theme::bg(ui).gamma_multiply(1.0 - fill.a() as f32 / 255.0) };
-    let label_col = theme::on_color(solid.to_opaque()).gamma_multiply(if faded { 0.6 } else { 1.0 });
+    let label_col = Color32::WHITE.gamma_multiply(if faded { 0.6 } else { 1.0 });
     let g = p.layout_no_wrap(label, FontId::proportional(12.0), label_col);
     let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0 + cap_w).min(max_w).max(10.0), 20.0));
     p.rect_filled(pill, 10.0, fill);
@@ -552,7 +551,7 @@ pub fn show(
                         // A detached HEAD has no branch pill to carry the HEAD mark: a chip before the message does.
                         if Some(r) == head_row && detached {
                             let t = if d.state == crate::git::State::Clean { "detached HEAD" } else { "HEAD" };
-                            x_text = chip(&mp, x_text, ty, t, theme::on_color(theme::accent()).gamma_multiply(if faded { 0.5 } else { 1.0 }), hc);
+                            x_text = chip(&mp, x_text, ty, t, Color32::WHITE.gamma_multiply(if faded { 0.5 } else { 1.0 }), hc);
                         }
                         // Bisect: good / bad / skip marks, and the commit being tested.
                         if let Some(b) = &d.bisect
@@ -641,7 +640,7 @@ pub fn show(
         let up = h < visible.start;
         let name = d.status.branch.as_deref().map_or("HEAD (detached)".to_owned(), |b| format!("{b} (HEAD)"));
         let text = format!("{}  {name}", if up { icon::ARROW_UP } else { icon::ARROW_DOWN });
-        let fg = theme::on_color(hc);
+        let fg = Color32::WHITE;
         let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.5), fg);
         let row = if up { ((body.top() - row0) / ROW).ceil() } else { ((body.bottom() - row0) / ROW).floor() - 1.0 };
         let w = g.size().x + 28.0;

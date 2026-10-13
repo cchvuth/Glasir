@@ -163,7 +163,12 @@ impl Flavor {
     /// backdrop stays behind the content; light ones washed with their accent, so they tell apart.
     pub fn palette(self) -> Palette {
         let mut p = self.raw_palette();
-        let (toward_grey, glow, wash) = if self.dark() { (0.55, 0.4, 0.0) } else { (0.3, 0.6, 0.07) };
+        let (toward_grey, glow, wash) = match self {
+            Flavor::Forest | Flavor::Mocha | Flavor::Ember | Flavor::Rose | Flavor::Plum => (0.88, 0.15, 0.0),
+            _ if self.dark() => (0.75, 0.25, 0.0),
+            Flavor::Blossom | Flavor::Lavender | Flavor::Sky | Flavor::Mint | Flavor::Sage => (0.55, 0.4, 0.05),
+            _ => (0.3, 0.6, 0.07),
+        };
         let a = [p.accent.r(), p.accent.g(), p.accent.b()];
         let tone = |[r, g, b]: [u8; 3], wash: f32| -> [u8; 3] {
             let l = r as f32 * 0.3 + g as f32 * 0.59 + b as f32 * 0.11;
