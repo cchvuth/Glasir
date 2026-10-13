@@ -315,7 +315,7 @@ pub fn apply(ctx: &egui::Context, f: Flavor) {
         s.spacing.interact_size.x = 24.0;
         // Checkboxes and radio buttons: a bigger box, the tick inset, room before the label.
         s.spacing.icon_width = 18.0;
-        s.spacing.icon_width_inner = 10.0;
+        s.spacing.icon_width_inner = 7.0;
         s.spacing.icon_spacing = 8.0;
         s.spacing.menu_margin = egui::Margin::symmetric(12, 8);
         s.spacing.window_margin = egui::Margin::same(22);
