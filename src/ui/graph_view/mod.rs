@@ -331,10 +331,12 @@ pub fn show(
                         acts.push(Action::DropCommit { src: p.0.clone(), dst: Some(c.id.clone()), branch, squash });
                     }
                 }
-                resp.context_menu(|ui| match commit {
-                    Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
-                    Some(c) => commit_menu(ui, all, c, on_branch(ui, all, search, &c.id), acts),
-                    None => wip_menu(ui, acts),
+                resp.context_menu(|ui| {
+                    theme::menu_scroll(ui, |ui| match commit {
+                        Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
+                        Some(c) => commit_menu(ui, all, c, on_branch(ui, all, search, &c.id), acts),
+                        None => wip_menu(ui, acts),
+                    })
                 });
             }
             let _ = hovered;

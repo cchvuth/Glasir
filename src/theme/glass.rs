@@ -250,6 +250,12 @@ pub fn description(ui: &mut Ui, text: &mut String, id: egui::Id) {
     });
 }
 
+/// A menu's items, scrolling when they don't fit the window.
+pub fn menu_scroll<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let h = (ui.ctx().content_rect().height() - 48.0).max(120.0);
+    egui::ScrollArea::vertical().max_height(h).show(ui, add).inner
+}
+
 pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
     ui.label(RichText::new(glyph).size(34.0).color(accent().gamma_multiply(0.85)));
     ui.add_space(2.0);
