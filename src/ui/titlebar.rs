@@ -52,7 +52,18 @@ impl App {
                         let x = theme::pill(ui, RichText::new(icon::X).small().color(dim)).on_hover_text(keys("Close tab (⌘W)"));
                         (r, x.clicked())
                     };
-                    let (r, closed) = if active { theme::group(ui, tab) } else { ui.horizontal(tab).inner };
+                    let (r, closed) = if active {
+                        theme::group(ui, tab)
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.add_space(4.0);
+                            let r = tab(ui);
+                            ui.add_space(4.0);
+                            r
+                        })
+                        .inner
+                    };
                     rects.push(r.rect);
                     if r.clicked() {
                         self.active = i;
