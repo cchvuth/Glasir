@@ -87,8 +87,9 @@ fn quote(s: &str) -> String {
     }
 }
 
-/// The first `{key}` inside quotes the user wrote or right after an escape: there ours would
-/// end theirs (`''$(…)''`) or be literal (`"'$(…)'"`, `\'$(…)'`), leaving the value open to the shell.
+/// The first `{key}` inside quotes or (sh) backticks the user wrote, or right after an escape: there
+/// ours would end theirs (`''$(…)''`; a backtick in the value ends `` `…` ``, quotes or not) or be
+/// literal (`"'$(…)'"`, `\'$(…)'`), leaving the value open to the shell.
 fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
     let esc = if cfg!(windows) { '`' } else { '\\' };
     let key = |i: usize| keys.iter().find(|k| line[i + 1..].strip_prefix(**k).is_some_and(|r| r.starts_with('}'))).copied();
@@ -100,7 +101,7 @@ fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
             c => c,
         };
         match (open, c) {
-            (Some('\''), '\'') | (Some('"'), '"') => open = None,
+            (Some('\''), '\'') | (Some('"'), '"') | (Some('`'), '`') => open = None,
             (Some(_), '{') if key(i).is_some() => return key(i),
             (Some('\'' | '$'), _) => {}
             (_, c) if c == esc => {
@@ -115,7 +116,7 @@ fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
                 chars.next();
                 open = Some('$');
             }
-            (None, '\'' | '"') => open = Some(c),
+            (None, '\'' | '"' | '`') => open = Some(c),
             _ => {}
         }
     }
@@ -124,10 +125,15 @@ fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
 
 /// The op that runs `c`: plain `git …` lines run without a shell (one word per argument),
 /// anything else through `sh -c` / PowerShell with the values quoted. Ref changes undo with ⌘Z.
-/// Refuses quoted placeholders in shell lines ([`quoted_key`]).
+/// Refuses quoted placeholders in shell lines ([`quoted_key`]) and a branch name that would read
+/// as an option; a path starting with `-` is passed as `./-…`.
 pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
+    if v.branch.starts_with('-') && c.uses("branch") {
+        return Err(format!("The branch name {} starts with '-': custom command '{}' could take it as an option.", v.branch, c.name.trim()));
+    }
     let repo = dir.to_string_lossy();
-    let vals = [("repo", &*repo), ("branch", &*v.branch), ("sha", &*v.sha), ("path", &*v.path)];
+    let path = if v.path.starts_with('-') { format!("./{}", v.path) } else { v.path.clone() };
+    let vals = [("repo", &*repo), ("branch", &*v.branch), ("sha", &*v.sha), ("path", &*path)];
     let line = c.command.trim();
     let op = match line.strip_prefix("git ") {
         Some(rest) if !rest.contains(['|', '&', ';', '<', '>', '$', '`', '"', '\'', '*', '\\']) => {
@@ -136,7 +142,7 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
         }
         _ => {
             if let Some(k) = quoted_key(line, &vals.map(|(k, _)| k)) {
-                return Err(format!("Remove the quotes or escape around {{{k}}} in custom command '{}': Glasir quotes values itself.", c.name.trim()));
+                return Err(format!("Remove the quotes, backticks or escape around {{{k}}} in custom command '{}' (use $(…) for backticks): Glasir quotes values itself.", c.name.trim()));
             }
             Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)])
         }
@@ -359,27 +365,47 @@ pub fn default_terminal() -> &'static str {
     }
 }
 
-/// Starts `template` (split on whitespace; `{path}` replaced, else `path` appended) in `cwd`.
-fn launch(template: &str, path: &Path, cwd: &Path, append: bool) -> std::io::Result<()> {
-    let p = path.to_string_lossy();
-    let mut words: Vec<String> = template.split_whitespace().map(|w| w.replace("{path}", &p)).collect();
-    if append && !template.contains("{path}") {
-        words.push(p.into_owned());
+fn launch_path(p: &str, wt: bool, cmd: bool) -> String {
+    if wt {
+        p.replace(';', r"\;")
+    } else if cmd {
+        let t = p.trim_end_matches('\\');
+        format!("\"{}{}\"", t.replace('%', "%%cd:~,%"), p[t.len()..].repeat(2))
+    } else {
+        p.to_owned()
     }
-    let Some(first) = words.first() else { return Err(std::io::Error::other("no command set")) };
+}
+
+/// Starts `template` (split on whitespace; `{path}` replaced, else `path` appended) in `cwd`, the
+/// path escaped for `wt` (it splits at every `;` but `\;`) and for the `cmd /c start` a console shell
+/// goes through: quoted (`& | ^ ( )` are literal there; `%%cd:~,%` is a lone `%`; a trailing `\`
+/// doubled before the quote), with the template's own quotes dropped so they can't end ours.
+fn launch(template: &str, path: &Path, cwd: &Path, append: bool) -> std::io::Result<()> {
+    let exe = template.split_whitespace().next().unwrap_or_default();
+    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe).to_lowercase();
+    let name = name.trim_end_matches(".exe");
     // A console shell given our null stdio would read NUL and exit: `start` gives it a
     // new console window with its own handles (cmd itself stays windowless).
-    let console = cfg!(windows) && matches!(first.to_lowercase().trim_end_matches(".exe"), "powershell" | "pwsh");
-    if console {
-        words.splice(0..0, ["cmd", "/c", "start", ""].map(String::from)); // "" = window title
+    let console = cfg!(windows) && matches!(name, "powershell" | "pwsh");
+    let p = launch_path(&path.to_string_lossy(), cfg!(windows) && name == "wt", console);
+    let mut words: Vec<String> = template.split_whitespace().map(|w| if console { w.replace('"', "") } else { w.into() }).map(|w| w.replace("{path}", &p)).collect();
+    if append && !template.contains("{path}") {
+        words.push(p);
     }
-    let prog = which(&words[0]).unwrap_or_else(|| words[0].clone().into());
-    let mut c = Command::new(prog);
-    c.args(&words[1..]).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let Some(first) = words.first() else { return Err(std::io::Error::other("no command set")) };
+    let prog = if console { "cmd" } else { first.as_str() };
+    let mut c = Command::new(which(prog).unwrap_or_else(|| prog.into()));
+    c.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     if console {
         use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        c.creation_flags(0x0800_0000).args(["/c", "start", ""]); // CREATE_NO_WINDOW; "" = window title
+        for w in &words {
+            c.raw_arg(w);
+        }
+    }
+    if !console {
+        c.args(&words[1..]);
     }
     let mut child = c.spawn()?;
     std::thread::spawn(move || child.wait()); // reap it
@@ -472,8 +498,35 @@ mod tests {
         for command in ["echo $'\\'{path}", "echo $'\\'' {path}'"] {
             assert!(run(command).is_err(), "{command}");
         }
+        #[cfg(unix)]
+        {
+            for command in ["echo `git log -1 --format=%s {branch}`", "code `dirname {path}`", "echo `echo \\` {sha}`"] {
+                assert!(run(command).is_err_and(|e| e.contains("Remove the quotes, backticks")), "{command}");
+            }
+            assert!(run("echo `date` {branch} \\` {sha}").is_ok());
+        }
         let o = run(&format!("echo {{branch}} \"{{nope}}\" {esc}\"{{sha}}")).unwrap();
         assert_eq!(o.cmds[0][1], format!("echo 'x$(touch${{IFS}}PWNED)' \"{{nope}}\" {esc}\"'abc'"));
+    }
+
+    #[test]
+    fn values_never_read_as_options() {
+        let v = Vars { branch: "main".into(), sha: "abc".into(), path: "--output=README.md".into() };
+        let run = |command: &str, v: &Vars| op(&Custom { name: "C".into(), command: command.into() }, Path::new("/r"), v);
+        assert_eq!(run("git log {path}", &v).unwrap().cmds[0], ["log", "./--output=README.md"]);
+        assert_eq!(run("prettier --write {path}", &v).unwrap().cmds[0][1], format!("prettier --write {}", quote("./--output=README.md")));
+        let v = Vars { branch: "--extcmd=touch${IFS}PWNED".into(), ..v };
+        assert!(run("git difftool {branch}", &v).is_err_and(|e| e.contains("starts with '-'")));
+        assert!(run("echo {branch}", &v).is_err());
+        assert!(run("git log {path}", &v).is_ok());
+    }
+
+    #[test]
+    fn launch_paths_are_escaped_for_wt_and_cmd() {
+        assert_eq!(launch_path(r"C:\src\x;calc", true, false), r"C:\src\x\;calc");
+        assert_eq!(launch_path(r"C:\R&D (1)\100%x%", false, true), r#""C:\R&D (1)\100%%cd:~,%x%%cd:~,%""#);
+        assert_eq!(launch_path(r"C:\", false, true), r#""C:\\""#);
+        assert_eq!(launch_path("/home/a;b&c", false, false), "/home/a;b&c");
     }
 
     /// A custom command's free-text name must not trigger the label-keyed follow-ups.

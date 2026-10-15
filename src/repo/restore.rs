@@ -16,8 +16,8 @@ pub fn apply_stash_file(d: &RepoData, label: String, stash: &str, path: &str) ->
 }
 
 pub(super) fn apply_stash(dir: &Path, stash: &str, path: &str) -> Res<String> {
-    let patch = git::run(dir, &["--literal-pathspecs", "diff", "--binary", "-U0", &format!("{stash}^1"), stash, "--", path])?;
-    git::run_input(dir, &["apply", "--unidiff-zero", "--whitespace=nowarn"], Some(patch.as_bytes()))
+    let patch = git::run_raw(dir, &["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--binary", &format!("{stash}^1"), stash, "--", path], None)?;
+    git::run_input(dir, &["apply", "--whitespace=nowarn"], Some(&patch))
 }
 
 /// Overwrite `path` in the working tree with its version in `source`; `what`
@@ -46,14 +46,38 @@ mod tests {
         let dir = scratch("stashfile");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
-        commit(&dir, "a", "1\n2\n3\n");
-        std::fs::write(dir.join("a"), "1 stash\n2\n3\n").unwrap();
+        commit(&dir, "a", "1\n2\n3\n4\n5\n");
+        std::fs::write(dir.join("a"), "1 stash\n2\n3\n4\n5\n").unwrap();
         sh(&dir, &["stash", "push"]);
-        commit(&dir, "a", "1\n2\n3 later\n");
+        commit(&dir, "a", "1\n2\n3\n4\n5 later\n");
         let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
         let d = load_all(&dir, 100, View::default()).unwrap();
         exec(&dir, &super::apply_stash_file(&d, "Apply".into(), &id, "a")).unwrap();
-        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1 stash\n2\n3 later\n");
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1 stash\n2\n3\n4\n5 later\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stash_file_lands_by_its_context_or_not_at_all() {
+        let dir = scratch("stashfile-moved");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "color.diff", "always"]);
+        sh(&dir, &["config", "diff.external", "echo"]);
+        let lines = |r: std::ops::RangeInclusive<u32>| r.map(|i| format!("{i}\n")).collect::<String>();
+        let top = "n1\nn2\nn3\n";
+        commit(&dir, "a", &lines(1..=10));
+        commit(&dir, "b", "x\ny\nx\n");
+        std::fs::write(dir.join("a"), lines(1..=5) + "STASHED\n" + &lines(6..=10)).unwrap();
+        std::fs::write(dir.join("b"), "x\ny\nX\n").unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        commit(&dir, "a", &(top.to_owned() + &lines(1..=10)));
+        commit(&dir, "b", "n1\nn2\nx\ny\nx\n");
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        super::apply_stash(&dir, &id, "a").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), top.to_owned() + &lines(1..=5) + "STASHED\n" + &lines(6..=10));
+        assert!(super::apply_stash(&dir, &id, "b").is_err());
+        assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "n1\nn2\nx\ny\nx\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

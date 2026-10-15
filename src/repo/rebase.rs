@@ -214,17 +214,29 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
         Act::Drop => format!("Drop {short}"),
         _ => op.label,
     };
-    Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op))
+    let first = if matches!(act, Act::Squash | Act::Fixup) { format!("{commit}^") } else { commit.to_owned() };
+    Ok(confirm_pushed(dir, &first, ("HEAD", "@{u}"), op))
 }
 
 /// Asks first when rewriting `commit` up to `tip` (HEAD or `refs/heads/<branch>`) reaches
-/// commits already on the upstream (`HEAD@{u}` or `<branch>@{u}`).
+/// commits already on the upstream (`HEAD@{u}` or `<branch>@{u}`; with none, on any remote branch).
 fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: Op) -> Op {
     // The commits the rewrite replaces (`commit` and its descendants up to HEAD) that the upstream
     // has: those up to the merge bases (an extra `^@{u}` would cut the ancestry path short).
-    let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", upstream]) else { return op };
-    let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
     let (ancestry, parents) = (format!("--ancestry-path={commit}"), format!("^{commit}^@"));
+    let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", upstream]) else {
+        let all = git::run(dir, &["rev-list", &ancestry, tip, &parents]).unwrap_or_default();
+        let local = git::run(dir, &["rev-list", tip, &parents, "--not", "--remotes"]).unwrap_or_default();
+        let local: std::collections::HashSet<&str> = local.lines().collect();
+        return match all.lines().filter(|c| !local.contains(c)).count() {
+            0 => op,
+            n => op.confirm(format!(
+                "This rewrites {n} commit{} already on a remote branch. They get new hashes, so merging this branch later brings in duplicates of them.",
+                if n == 1 { "" } else { "s" }
+            )),
+        };
+    };
+    let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
     let mut args = vec!["rev-list", "--count", &ancestry, &parents];
     args.extend(bases.lines());
     let n = match bases.trim().is_empty() {
@@ -243,18 +255,18 @@ fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: O
 
 /// Replace the message of `commit` (HEAD: amend, message only; older with no merge from its
 /// parent up to HEAD: a rebase that rewords it; else, merges or the root: [`REWRITE`]).
-/// Asks first when the rewrite reaches commits that are already on the upstream.
+/// Asks first when the rewrite reaches commits that are already pushed.
 pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, branch: Option<&str>, message: String) -> Res<Op> {
     let short = &commit[..commit.len().min(7)];
     if let Some(b) = branch {
         let full = format!("refs/heads/{b}");
-        let old = git::run(dir, &["rev-parse", &full])?.trim().to_owned();
-        let op = Op::new(format!("Reword {short} on {b}"), &[REWRITE, commit, &full]).input(message).revert(Op::new(format!("Move {b} back"), &["update-ref", &full, &old]));
+        let op = Op::new(format!("Reword {short} on {b}"), &[REWRITE, commit, &full]).input(message).undo(Undo::Soft);
         return Ok(confirm_pushed(dir, commit, (&full, &format!("{b}@{{u}}")), op));
     }
     let straight = || git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{commit}^..HEAD")]).is_ok_and(|m| m.trim().is_empty());
     let op = if is_head {
-        Op::new("Reword HEAD", &["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
+        let sym = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();
+        Op::new("Reword HEAD", &[HEAD_IS, &format!("{} {commit}", sym.trim())]).then(&["commit", "--amend", "--only", "-F", "-"]).input(message).undo(Undo::Soft)
     } else if straight() {
         let mut op = quick(dir, git_dir, commit, Act::Reword, Some(message))?;
         // A reword changes no tree, so uncommitted work can ride along (git refuses a dirty rebase otherwise).
@@ -417,7 +429,7 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
 pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     let short = &commit[..commit.len().min(7)];
     if is_head {
-        return Ok(Op::new(format!("Split {short}"), &["reset", "-q", "HEAD^"]).undo(Undo::Mixed));
+        return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), Op::new(format!("Split {short}"), &["reset", "-q", "HEAD^"]).undo(Undo::Mixed)));
     }
     on_branch(dir, commit)?;
     let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).map_err(|_| "The root commit can't be split.".to_string())?;
@@ -425,7 +437,7 @@ pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op>
     ed.items.iter_mut().find(|i| i.id == commit).ok_or("Commit is not on the current branch.")?.act = Act::Edit;
     let mut op = ed.op(git_dir)?.then(&["reset", "-q", "HEAD^"]);
     op.label = format!("Split {short}");
-    Ok(op)
+    Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op))
 }
 
 /// `rebase --autosquash` would also fold the user's own fixup!/squash!/amend!
@@ -721,8 +733,49 @@ mod tests {
         assert!(quick(&dir, &gd, &c2, Act::Drop, None).unwrap().confirm.is_some());
         let ids: Vec<String> = g(&["rev-list", "HEAD"]).lines().map(String::from).collect();
         assert!(multi(&dir, &gd, &ids[..2], Act::Drop).unwrap().confirm.is_some());
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "d"]);
+        g(&["commit", "-q", "-m", "c4"]);
+        let c4 = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        assert!(quick(&dir, &gd, &c4, Act::Reword, Some("c4 better".into())).unwrap().confirm.is_none());
+        for act in [Act::Squash, Act::Fixup] {
+            let ask = quick(&dir, &gd, &c4, act, None).unwrap().confirm;
+            assert!(ask.as_deref().is_some_and(|c| c.contains("1 commit already pushed to origin/main")), "{act:?}: {ask:?}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&bare);
+    }
+
+    #[test]
+    fn rewrites_of_commits_on_a_remote_ask_first_without_an_upstream() {
+        let (dir, g) = repo("pushed-no-upstream");
+        let gd = git::git_dir(&dir).unwrap();
+        g(&["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+        g(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "d"]);
+        g(&["commit", "-q", "-m", "c4"]);
+        let rev = |r: &str| g(&["rev-parse", r]).trim().to_owned();
+        let ask = quick(&dir, &gd, &rev("HEAD~2"), Act::Drop, None).unwrap().confirm;
+        assert!(ask.as_deref().is_some_and(|c| c.contains("1 commit already on a remote branch")), "{ask:?}");
+        assert!(quick(&dir, &gd, &rev("HEAD~1"), Act::Drop, None).unwrap().confirm.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reword_head_refuses_once_head_moved() {
+        let (dir, g) = repo("reword-head-moved");
+        let gd = git::git_dir(&dir).unwrap();
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        let op = reword(&dir, &gd, &head, true, None, "c3 better".into()).unwrap();
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "d"]);
+        g(&["commit", "-q", "-m", "new work"]);
+        assert!(crate::repo::op::exec(&dir, &op).is_err());
+        let stale = reword(&dir, &gd, &head, true, None, "c3 better".into()).unwrap();
+        assert!(crate::repo::op::exec(&dir, &stale).is_err());
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["new work", "c3", "c2", "c1"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

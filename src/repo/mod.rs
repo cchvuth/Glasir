@@ -146,6 +146,7 @@ pub struct RepoTab {
     pub multi: Vec<String>,
     /// Selected files of the WIP lists (⌘/⇧-click) as (staged, path): the target of S / U / Discard.
     pub file_sel: Vec<(bool, String)>,
+    pub file_sel_gen: u64,
     /// Collapsed folders of each file list in tree view ("unstaged", "staged", "conflicts", "commit"), kept while the app runs.
     pub tree_closed: HashMap<&'static str, std::collections::HashSet<String>>,
     pub rebase: Option<crate::repo::rebase::Editor>,
@@ -261,6 +262,7 @@ impl RepoTab {
             jump_after: None,
             multi: vec![],
             file_sel: vec![],
+            file_sel_gen: 0,
             tree_closed: HashMap::new(),
             rebase: None,
             merge: None,
@@ -344,15 +346,17 @@ impl RepoTab {
             self.queued = Some(self.queued.unwrap_or(false) || full);
             return;
         }
+        self.changed = self.changed.filter(|&(refs, _)| refs && !full);
         let dir = self.dir.clone();
         let (limit, view) = (self.max_commits, self.view.clone());
         let cached = self.data.as_ref().filter(|d| !full && d.view == view).map(|d| {
-            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.layout.clone(), d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone(), d.bisect.clone()))
+            (d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), (d.layout.clone(), d.graph.clone(), d.layout_key), (d.worktrees.clone(), d.submodules.clone(), d.lfs.clone(), d.config.clone(), d.author.clone(), d.truncated, d.stack.clone(), d.health.clone(), d.bisect.clone()))
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
-            Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk, bis))) => {
+            Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk, hl, bis))) => {
                 let mut d = RepoData::build_reusing(log, refs, st, rm, gd, oh, git::status(&dir)?, view, Some(prev));
-                (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated, d.stack) = (wt, sm, lfs, cfg, au, tr, stk);
+                (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated, d.stack, d.health) = (wt, sm, lfs, cfg, au, tr, stk, hl);
+                d.count_worktree_changes(&dir);
                 d.load_bisect(&dir, bis.as_ref());
                 d.load_conflicts(&dir);
                 Ok(d)
@@ -389,7 +393,6 @@ impl RepoTab {
                 && self.load.is_none()
                 && self.running.is_none()
             {
-                self.changed = None;
                 self.reload(ctx, full);
             }
         }
@@ -472,10 +475,6 @@ impl RepoTab {
             Some(op::Dropped::Run(o)) => self.run(ctx, o),
             Some(op::Dropped::Note(e)) => self.notes.push(Msg { text: e, error: true }),
             Some(op::Dropped::Editor(ed)) => (self.diff, self.merge, self.rebase) = (None, None, Some(*ed)),
-            Some(op::Dropped::Reworded(o)) => {
-                self.mark_saved();
-                self.run(ctx, o);
-            }
             Some(op::Dropped::Split(o, sp)) => self.begin_split(ctx, o, *sp),
             None => {}
         }
@@ -738,7 +737,7 @@ impl RepoTab {
             Action::Absorb => self.start_absorb(ctx),
             Action::AmendToggled(true) => self.fill_amend(ctx),
             Action::AmendToggled(false) => self.unfill_amend(),
-            Action::Split(commit) => self.start_split(ctx, commit),
+            Action::Split(commit) => self.start_split(ctx, commit, false),
             Action::Recompose(r) => {
                 if self.ai_free() {
                     self.start_compose(ctx, Some(r));
@@ -751,7 +750,7 @@ impl RepoTab {
                 let branch = d.reword_path(&commit).ok().and_then(|at| at.0);
                 let is_head = branch.is_none() && d.status.head.as_deref() == Some(commit.as_str());
                 self.prepare(ctx, move |dir| match crate::repo::rebase::reword(dir, &git_dir, &commit, is_head, branch.as_deref(), message) {
-                    Ok(op) => op::Dropped::Reworded(op),
+                    Ok(op) => op::Dropped::Run(Op { reword: Some(commit), ..op }),
                     Err(e) => op::Dropped::Note(e),
                 });
             }
@@ -971,6 +970,64 @@ mod tests {
         tx.send(watch::Change::Tree).unwrap();
         t.poll(&ctx, &mut vec![]);
         assert!(t.changed.is_some_and(|c| !c.0), "an outside save was dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reload_covers_the_watcher_events_before_it() {
+        let dir = scratch("watch-covered");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.watcher = Some((notify::recommended_watcher(|_| {}).unwrap(), rx));
+        t.watcher_task = None;
+        let event = |t: &mut RepoTab, c| {
+            tx.send(c).unwrap();
+            t.poll(&ctx, &mut vec![]);
+        };
+        event(&mut t, watch::Change::Refs);
+        event(&mut t, watch::Change::Tree);
+        t.reload(&ctx, false);
+        assert!(t.changed.is_some_and(|c| c.0), "a status reload does not cover moved refs");
+        settle(&ctx, &mut t);
+        t.reload(&ctx, true);
+        assert!(t.changed.is_none(), "a full reload covers every event before it");
+        event(&mut t, watch::Change::Refs);
+        assert!(t.changed.is_some_and(|c| c.0), "a ref move during the reload gets its own");
+        settle(&ctx, &mut t);
+        t.changed = Some((false, 0.0));
+        t.reload(&ctx, false);
+        assert!(t.changed.is_none(), "a status reload covers file events before it");
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Commit", &["commit", "-q", "--allow-empty", "-m", "c"]).undo(Undo::Soft)));
+        event(&mut t, watch::Change::Refs);
+        settle(&ctx, &mut t);
+        assert!(t.changed.is_none(), "an op's reload covers the ref writes seen while it ran");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn status_reload_keeps_health_and_recounts_changes() {
+        let dir = scratch("status-health");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let health = t.data.as_ref().unwrap().health.clone();
+        assert!(health.loose > 0);
+        assert_eq!(t.data.as_ref().unwrap().worktrees[0].changes, 0);
+        std::fs::write(dir.join("f"), "dirty\n").unwrap();
+        std::fs::write(dir.join("g"), "new\n").unwrap();
+        t.reload(&ctx, false);
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!(d.health, health);
+        assert_eq!(d.worktrees[0].changes, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

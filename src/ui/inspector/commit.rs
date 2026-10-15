@@ -260,7 +260,15 @@ impl RepoTab {
                     let without = crate::repo::message::remove_coauthor(&info.message, name, email);
                     let hover_id = ui.id().with(("coauthor", &info.id, email));
                     let hot = ui.data(|d| d.get_temp::<bool>(hover_id)).unwrap_or(false);
-                    let why = || self.data.as_ref().and_then(|d| d.reword_path(&info.id).err());
+                    let why = || {
+                        if busy {
+                            Some("Wait for the running operation to finish.")
+                        } else if self.edit_msg.as_ref().is_some_and(|e| e.id == info.id && !e.quiet) {
+                            Some("Save or cancel the message edit first.")
+                        } else {
+                            self.data.as_ref().and_then(|d| d.reword_path(&info.id).err())
+                        }
+                    };
                     let mut remove = false;
                     let row = ui.horizontal(|ui| {
                         avatar(ui, &self.avatars, name, email, 9.0);
@@ -385,16 +393,17 @@ impl RepoTab {
 /// The inline message editor: summary (72-char hint) and body, Save / Cancel, Esc / ⌘↩.
 fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Vec<Action>) {
     let Some(e) = edit else { return };
+    let (sum_id, body_id) = (ui.id().with(("msg_summary", &e.id)), ui.id().with(("msg_body", &e.id)));
     ui.horizontal(|ui| {
         let n = e.summary.chars().count();
         let w = ui.available_width() - 30.0;
-        let field = ui.add(TextEdit::singleline(&mut e.summary).margin(theme::INPUT_MARGIN).hint_text("Summary").desired_width(w));
+        let field = ui.add(TextEdit::singleline(&mut e.summary).id(sum_id).margin(theme::INPUT_MARGIN).hint_text("Summary").desired_width(w));
         if std::mem::take(&mut e.focus) {
             field.request_focus();
         }
         ui.label(RichText::new(n.to_string()).small().color(if n > 72 { theme::del() } else { theme::dim(ui) }));
     });
-    theme::description(ui, &mut e.body, ui.id().with("msg_body"));
+    theme::description(ui, &mut e.body, body_id);
     let can = !busy && !e.summary.trim().is_empty();
     let (mut save, mut cancel) = (false, false);
     ui.horizontal(|ui| {
@@ -402,8 +411,11 @@ fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Ve
         cancel = theme::small(ui, true, "Cancel").on_hover_text("Discard the edit (Esc)").clicked();
     });
     // Not while a dialog is open: Esc and ⌘↩ there belong to the dialog.
-    if ui.ctx().memory(|m| m.top_modal_layer().is_none()) {
+    let (free, focus, held) = ui.ctx().memory(|m| (m.top_modal_layer().is_none(), m.focused(), m.had_focus_last_frame(sum_id) || m.had_focus_last_frame(body_id)));
+    if free && held {
         cancel |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    }
+    if free && focus.is_none_or(|f| f == sum_id || f == body_id) {
         save |= can && ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Enter));
     }
     if cancel {
@@ -414,5 +426,65 @@ fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Ve
         } else {
             *edit = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::{Event, Id, Key, Modifiers, RawInput};
+
+    /// Esc cancels the edit while one of its fields has the keyboard, ⌘↩ saves it then or with nothing
+    /// focused: another field (the graph search, the terminal) keeps both keys.
+    #[test]
+    fn esc_and_enter_belong_to_the_focused_field() {
+        let ctx = egui::Context::default();
+        let other = Id::new("other_field");
+        let mut n = 0.0;
+        let mut frame = |edit: &mut Option<MsgEdit>, key: Option<(Key, Modifiers)>, focus_other: bool| {
+            n += 0.05;
+            let mods = key.map_or(Modifiers::NONE, |k| k.1);
+            let events = [Event::ModifiersChanged(mods)].into_iter().chain(key.map(|(key, modifiers)| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers })).collect();
+            let raw = RawInput { time: Some(n), events, ..Default::default() };
+            let mut acts = vec![];
+            let mut out = ctx.run_ui(raw, |ui| {
+                msg_editor(ui, edit, false, &mut acts);
+                let mut text = String::new();
+                let field = ui.add(TextEdit::singleline(&mut text).id(other));
+                if focus_other {
+                    field.request_focus();
+                }
+            });
+            out.textures_delta.clear();
+            acts
+        };
+        let esc = Some((Key::Escape, Modifiers::NONE));
+        let save = Some((Key::Enter, Modifiers::COMMAND));
+        let fresh = || {
+            let mut e = MsgEdit::new("c1", "one", (None, vec![]));
+            e.summary = "two".into();
+            Some(e)
+        };
+
+        let mut edit = fresh();
+        frame(&mut edit, None, false);
+        frame(&mut edit, esc, false);
+        assert!(edit.is_none(), "Esc in the editor's own field cancels");
+
+        let mut edit = fresh();
+        frame(&mut edit, None, false);
+        frame(&mut edit, None, true);
+        frame(&mut edit, esc, true);
+        assert!(edit.is_some(), "Esc that leaves another field isn't the editor's");
+        assert!(frame(&mut edit, save, true).is_empty(), "⌘↩ in another field isn't either");
+
+        let mut edit = fresh();
+        frame(&mut edit, None, false);
+        let acts = frame(&mut edit, save, false);
+        assert!(matches!(&acts[..], [Action::Reword { commit, message }] if commit == "c1" && message == "two"));
+
+        frame(&mut edit, None, false);
+        ctx.memory_mut(|m| m.stop_text_input());
+        assert_eq!(frame(&mut edit, save, false).len(), 1, "⌘↩ with nothing focused saves");
     }
 }

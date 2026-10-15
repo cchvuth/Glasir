@@ -21,7 +21,7 @@ impl RepoTab {
         } else if let Some(up) = d.status.upstream.clone().filter(|_| d.status.behind > 0) {
             up
         } else {
-            (self.conflicts, self.conflict_key) = (None, None);
+            (self.conflicts, self.conflict_task, self.conflict_key) = (None, None, None);
             return;
         };
         // The answer depends only on the two commits: status-only reloads keep it.
@@ -38,12 +38,10 @@ impl RepoTab {
 #[cfg(test)]
 mod tests {
     use crate::repo::testutil::{commit, identity, scratch, settle, sh, wait_for};
-    use crate::repo::{RepoTab, View};
+    use crate::repo::{RepoTab, Task, View};
 
-    /// The chip follows HEAD: gone once detached, not recomputed by a status-only reload.
-    #[test]
-    fn prediction_follows_head() {
-        let dir = scratch("predict-detach");
+    fn conflicting(name: &str) -> std::path::PathBuf {
+        let dir = scratch(name);
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
         commit(&dir, "f", "base\n");
@@ -53,6 +51,13 @@ mod tests {
         commit(&dir, "f", "main\n");
         sh(&dir, &["update-ref", "refs/remotes/origin/main", "main"]);
         sh(&dir, &["checkout", "-q", "feature"]);
+        dir
+    }
+
+    /// The chip follows HEAD: gone once detached, not recomputed by a status-only reload.
+    #[test]
+    fn prediction_follows_head() {
+        let dir = conflicting("predict-detach");
         let ctx = egui::Context::default();
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         let mut msgs = vec![];
@@ -66,6 +71,27 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!((t.conflicts.clone(), t.conflict_key.clone()), (None, None));
         assert!(key.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_running_prediction_does_not_outlive_its_target() {
+        let dir = conflicting("predict-no-target");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        let mut msgs = vec![];
+        wait_for("the prediction", || {
+            t.poll(&ctx, &mut msgs);
+            t.conflicts.is_some()
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.conflict_task = Some(Task(rx));
+        t.apply(&ctx, crate::repo::op("Checkout", &["checkout", "-q", "main"]));
+        settle(&ctx, &mut t);
+        assert_eq!(t.conflicts, None);
+        let _ = tx.send(Some(("origin/main".into(), vec!["f".into()])));
+        t.poll(&ctx, &mut msgs);
+        assert_eq!(t.conflicts, None, "the chip came back on main");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

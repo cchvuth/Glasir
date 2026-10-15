@@ -95,6 +95,12 @@ fn range(dir: &Path, r: &Recompose) -> Res<(String, usize, String)> {
     Ok((base, ids.len(), subjects))
 }
 
+fn secret(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    [".env", "credentials", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".netrc", "_netrc", ".npmrc", ".pypirc", ".git-credentials", ".pgpass"].iter().any(|p| name.starts_with(p))
+        || [".env", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".ppk"].iter().any(|e| name.ends_with(e))
+}
+
 /// The changes the units are made of: `git diff <base>` and the untracked
 /// files (`wip`), or `git diff <base> HEAD`. Submodules with only local edits are left out: `git add`
 /// can't commit those. Each commit starts from HEAD's tree, so a staged version
@@ -113,8 +119,8 @@ fn changes(dir: &Path, base: &str, wip: bool) -> Res<(String, String)> {
 }
 
 impl Plan {
-    /// The units and their listing for Claude (`[id] path (what)` + the diff);
-    /// `r`: recompose those commits instead of committing the uncommitted changes.
+    /// The units and their listing for Claude (`[id] path (what)` + the diff, none for an untracked
+    /// file named like a key or `.env`); `r`: recompose those commits instead of committing the uncommitted changes.
     pub fn load(dir: &Path, r: Option<&Recompose>) -> Res<(Plan, String)> {
         let head = git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).map_err(|_| "Make a first commit first.".to_string())?.trim().to_owned();
         let (base, replaces, mut listing) = match r {
@@ -156,6 +162,10 @@ impl Plan {
             // Too big to send: don't read thousands more files to find out.
             if listing.len() > ai::MAX_CONTEXT {
                 return Err(ai::too_large(listing.len()));
+            }
+            if secret(path) {
+                add(&mut units, &mut listing, path, "new file, untracked, contents not sent: may hold secrets".into(), None, &[]);
+                continue;
             }
             let c = git::Change { path: path.into(), old_path: None, code: '?' };
             let f = git::worktree_diff(dir, &c, false, git::DiffOpts { no_attrs: true, ..Default::default() }).unwrap_or_default();
@@ -371,6 +381,25 @@ mod tests {
         }
         let e = Plan::load(&dir, None).err().expect("too large");
         assert!(e.contains("too large"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untracked_secrets_go_by_name_only() {
+        assert!(["config/.env.local", "prod.env", "id_rsa", "keys/ID_ED25519.pub", "tls/server.pem", "a.key", "c.p12", "app.keystore", "credentials.json", ".netrc", ".npmrc"].iter().all(|p| secret(p)));
+        assert!(!["src/main.rs", "environment.ts", "keyboard.rs", "monkey"].iter().any(|p| secret(p)));
+        let dir = scratch("compose-secret");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        sh(&dir, &["config", "core.excludesFile", &dir.join(".git/none").to_string_lossy()]);
+        commit(&dir, "a", "one\n");
+        std::fs::write(dir.join(".env"), "API_KEY=sk-live-123\n").unwrap();
+        std::fs::write(dir.join("c"), "new\n").unwrap();
+        let (mut plan, listing) = Plan::load(&dir, None).unwrap();
+        assert!(!listing.contains("sk-live") && listing.contains("[1] .env (new file, untracked, contents not sent") && listing.contains("+new"), "{listing}");
+        plan.fill(r#"{"commits":[{"message":"Add both","units":[1,2]}]}"#).unwrap();
+        super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
+        assert_eq!(sh(&dir, &["ls-tree", "--name-only", "HEAD"]), ".env\na\nc\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

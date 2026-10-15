@@ -37,7 +37,7 @@ pub(super) fn record(dir: &Path, prog: &str, args: &[&str], start: Instant, code
     let lines: Vec<&str> = stderr.trim_end().lines().collect();
     let entry = Logged {
         prog: prog.into(),
-        args: args.iter().map(|a| redact(a)).collect(),
+        args: args.iter().map(|a| super::url::redact(a)).collect(),
         cwd: dir.to_path_buf(),
         ms: start.elapsed().as_millis(),
         code,
@@ -53,17 +53,6 @@ pub(super) fn record(dir: &Path, prog: &str, args: &[&str], start: Instant, code
     log.push_back(entry);
 }
 
-/// Hides credentials embedded in a URL: `https://user:token@host` -> `https://***@host`.
-fn redact(arg: &str) -> String {
-    if let Some(i) = arg.find("://")
-        && let Some(at) = arg[i + 3..].find('@')
-        && !arg[i + 3..i + 3 + at].contains('/')
-    {
-        return format!("{}://***{}", &arg[..i], &arg[i + 3 + at..]);
-    }
-    arg.to_owned()
-}
-
 pub(super) fn shell_quote(s: &str) -> String {
     if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,@+%^".contains(c)) {
         return s.to_owned();
@@ -77,9 +66,12 @@ mod tests {
 
     #[test]
     fn command_log_redacts_and_quotes() {
-        assert_eq!(redact("https://me:ghp_secret@github.com/o/r.git"), "https://***@github.com/o/r.git");
-        assert_eq!(redact("git@github.com:o/r.git"), "git@github.com:o/r.git");
-        assert_eq!(redact("https://example.com/o/r@v1"), "https://example.com/o/r@v1");
+        let dir = std::env::temp_dir().join(format!("glasir-log-redact-{}", std::process::id()));
+        for a in ["https://me:ghp_secret@github.com/o/r.git", "git fetch https://a.example/x; git push https://u:ghp_tok@b.example/y", "https://u:p@ss@host/r", "git@github.com:o/r.git", "https://example.com/o/r@v1"] {
+            record(&dir, "sh", &["-c", a], Instant::now(), Some(0), "");
+        }
+        let logged: Vec<String> = LOG.lock().unwrap().iter().filter(|e| e.cwd == dir).map(|e| e.args[1].clone()).collect();
+        assert_eq!(logged, ["https://***@github.com/o/r.git", "git fetch https://a.example/x; git push https://***@b.example/y", "https://***@host/r", "git@github.com:o/r.git", "https://example.com/o/r@v1"]);
         let e = Logged { prog: "git".into(), args: vec!["log".into(), "--format=%H %s".into(), "it's".into()], cwd: "/tmp/a b".into(), ms: 0, code: Some(0), stderr: String::new() };
         assert_eq!(e.shell(), r"git -C '/tmp/a b' log '--format=%H %s' 'it'\''s'");
         let e = Logged { prog: "sh".into(), args: vec!["-c".into(), "echo hi".into()], ..e };

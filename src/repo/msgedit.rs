@@ -17,7 +17,7 @@ pub struct MsgEdit {
     /// The branch it's rewritten on (`None`: HEAD's), and the parent steps from its tip (which
     /// parent each), to find the commit again after the rewrite renamed it.
     at: (Option<String>, Vec<usize>),
-    /// Save was sent: when the commit disappears, select its rewritten successor.
+    /// Its reword went through: when the commit disappears, select its rewritten successor.
     saved: bool,
     /// Focus the summary field on the next frame.
     pub focus: bool,
@@ -126,9 +126,9 @@ impl RepoTab {
         }
     }
 
-    /// Save the edited message (`Action::Reword`): a no-op close when nothing changed.
-    pub(super) fn mark_saved(&mut self) {
-        if let Some(e) = &mut self.edit_msg {
+    /// The reword of `commit` went through: its edit follows the rewritten commit.
+    pub(super) fn mark_saved(&mut self, commit: &str) {
+        if let Some(e) = self.edit_msg.as_mut().filter(|e| e.id == commit) {
             e.saved = true;
         }
     }
@@ -137,7 +137,7 @@ impl RepoTab {
 #[cfg(test)]
 mod tests {
     use super::super::testutil::{commit, identity, scratch, settle, sh};
-    use super::super::{Action, RepoTab, Sel, View};
+    use super::super::{Action, Op, RepoTab, Sel, View};
     use super::*;
 
     #[test]
@@ -191,6 +191,15 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "feat"]), feat);
+        t.apply(&ctx, Action::Redo);
+        settle(&ctx, &mut t);
+        assert_ne!(sh(&dir, &["rev-parse", "feat"]), feat);
+        let four = sh(&dir, &["commit-tree", "-p", "feat", "-m", "four", "feat^{tree}"]).trim().to_owned();
+        sh(&dir, &["update-ref", "refs/heads/feat", &four]);
+        t.apply(&ctx, Action::Undo);
+        let msgs: Vec<String> = settle(&ctx, &mut t).into_iter().map(|m| m.text).collect();
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]).trim(), four, "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("outside Glasir")), "{msgs:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -318,6 +327,48 @@ mod tests {
         assert_eq!([d.reword_path(&rev("HEAD")), d.reword_path(&ids[0]), d.reword_path(&rev("side"))], [Ok((None, vec![])), Ok((None, vec![0])), Ok((None, vec![1]))]);
         assert_eq!(d.reword_path(&rev("other")), Ok((Some("other".into()), vec![])));
         assert!(reword(&dir, &gd, &rev("other"), false, None, "x".into()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A pushed commit's reword waits in its confirm dialog: the edit isn't saved until the reword
+    /// went through, so cancelling it and a branch that moves later leave the editor alone, and
+    /// confirming it follows the rewritten commit.
+    #[test]
+    fn a_reword_waiting_in_its_confirm_is_not_saved_yet() {
+        let dir = scratch("inline-reword-confirm");
+        let remote = scratch("inline-reword-confirm-remote");
+        sh(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        commit(&dir, "b", "two");
+        sh(&dir, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        sh(&dir, &["push", "-q", "-u", "origin", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let two = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        t.select(&ctx, Sel::Commit(two.clone()));
+        t.edit_msg = Some(MsgEdit::new(&two, "two", (None, vec![])));
+        t.apply(&ctx, Action::Reword { commit: two.clone(), message: "two, better".into() });
+        settle(&ctx, &mut t);
+        assert!(t.confirm.take().is_some(), "a pushed commit asks first");
+        commit(&dir, "c", "three");
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        assert!(t.edit_msg.is_some());
+        assert_eq!(t.sel, Some(Sel::Commit(two.clone())));
+        t.edit_msg = Some(MsgEdit::new(&two, "two", (None, vec![0])));
+        t.apply(&ctx, Action::Reword { commit: two, message: "two, better".into() });
+        settle(&ctx, &mut t);
+        let ask = t.confirm.take().expect("a pushed commit asks first");
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..ask }));
+        settle(&ctx, &mut t);
+        let new = sh(&dir, &["rev-parse", "HEAD~1"]).trim().to_owned();
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%s", &new]).trim(), "two, better");
+        assert!(t.edit_msg.is_none());
+        assert_eq!(t.sel, Some(Sel::Commit(new)));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

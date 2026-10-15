@@ -114,7 +114,11 @@ impl App {
     pub(super) fn open(&mut self, ctx: &egui::Context, path: &Path) {
         let path = if path.is_file() { path.parent().unwrap_or(path) } else { path };
         match git::run(path, &["rev-parse", "--show-toplevel"]) {
-            Ok(top) => self.add_tab(ctx, PathBuf::from(top.trim())),
+            Ok(top) => {
+                let top = PathBuf::from(top.trim());
+                self.add_tab(ctx, top.clone());
+                self.remember(top);
+            }
             Err(e) => self.toast(ctx, format!("Not a git repository: {}\n{e}", path.display()), true),
         }
     }
@@ -128,19 +132,19 @@ impl App {
                 self.tabs.len() - 1
             }
         };
-        self.remember(top);
     }
 
-    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has unsaved edits).
+    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, a message draft).
     fn switch(&mut self, ctx: &egui::Context, i: usize, path: &Path) {
         let top = match git::run(path, &["rev-parse", "--show-toplevel"]) {
             Ok(top) => PathBuf::from(top.trim()),
             Err(e) => return self.toast(ctx, format!("Not a git repository: {}\n{e}", path.display()), true),
         };
-        let free = self.tabs.get(i).is_some_and(|t| t.unsaved().is_none() && t.busy().is_none() && !t.term.busy());
-        if !free || self.tabs.iter().any(|t| t.dir == top) {
-            return self.add_tab(ctx, top);
+        if !self.tabs.get(i).is_some_and(replaceable) || self.tabs.iter().any(|t| t.dir == top) {
+            self.add_tab(ctx, top.clone());
+            return self.remember(top);
         }
+        drop_data_off_thread(&mut self.tabs[i]);
         self.tabs[i] = RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default());
         self.active = i;
         self.remember(top);
@@ -154,11 +158,13 @@ impl App {
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
         let typing = ctx.memory(|m| m.focused().is_some());
+        let modal = super::format::modal_open(ctx);
         let (cmd, shift) = ctx.input(|i| (i.modifiers.command, i.modifiers.shift));
         let pressed = |k: Key| ctx.input(|i| i.key_pressed(k));
         // Consumed: off macOS a text field would also take Ctrl+K / W / U as readline edits.
         let eat = |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_key(m, k));
-        if ctx.input(|i| i.modifiers.ctrl && !i.modifiers.mac_cmd && i.key_pressed(Key::Backtick))
+        if !modal
+            && ctx.input(|i| i.modifiers.ctrl && !i.modifiers.mac_cmd && i.key_pressed(Key::Backtick))
             && let Some(t) = self.tabs.get_mut(self.active)
         {
             t.apply(ctx, if self.s.terminal || !t.term.tabs.is_empty() { Action::ToggleTerminal } else { Action::Terminal });
@@ -167,7 +173,7 @@ impl App {
         if !cfg!(target_os = "macos") && ctx.memory(|m| m.has_focus(super::terminal::id())) {
             return;
         }
-        if cmd && pressed(Key::O) {
+        if cmd && !modal && pressed(Key::O) {
             self.pick_and_open(ctx);
         }
         if cmd && pressed(Key::Comma) {
@@ -180,8 +186,11 @@ impl App {
             self.show_log = !self.show_log;
         }
         let fetch = cmd && !shift && pressed(Key::L);
-        if eat(Modifiers::COMMAND, Key::P) | eat(Modifiers::COMMAND, Key::K) {
+        if !modal && (eat(Modifiers::COMMAND, Key::P) | eat(Modifiers::COMMAND, Key::K)) {
             self.palette = Some(Default::default());
+        }
+        if modal {
+            return;
         }
         if cmd && pressed(Key::T) {
             self.active = self.tabs.len();
@@ -197,7 +206,13 @@ impl App {
             }
         }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Tab)) && !self.tabs.is_empty() {
-            self.active = (self.active + 1) % self.tabs.len();
+            let n = self.tabs.len();
+            self.active = match (self.active >= n, shift) {
+                (true, false) => 0,
+                (true, true) => n - 1,
+                (false, false) => (self.active + 1) % n,
+                (false, true) => (self.active + n - 1) % n,
+            };
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
         let mut act = None;
@@ -228,7 +243,7 @@ impl App {
             act = Some(Action::Git(unstage_all_op()));
         }
         // S / U: stage / unstage the files selected in the WIP lists (not while typing or in a dialog).
-        let plain = ctx.input(|i| !i.modifiers.any()) && ctx.memory(|m| m.top_modal_layer().is_none());
+        let plain = ctx.input(|i| !i.modifiers.any());
         for (key, stage) in [(Key::S, true), (Key::U, false)] {
             if !typing && plain && pressed(key) {
                 act = t.file_key(stage).or(act);
@@ -251,6 +266,7 @@ impl App {
         if self.tabs.get(i).is_some_and(|t| t.term.busy()) {
             return self.toast(ctx, "A command is still running in this tab's terminal: let it finish or stop it there, then close the tab.".into(), true);
         }
+        drop_data_off_thread(&mut self.tabs[i]);
         self.tabs.remove(i);
         if self.active > i || self.active >= self.tabs.len() {
             self.active = self.active.saturating_sub(1);
@@ -346,14 +362,15 @@ impl App {
     fn command_palette(&mut self, ctx: &egui::Context) {
         let Some(p) = &mut self.palette else { return };
         if p.items.is_empty() {
+            p.dir = self.tabs.get(self.active).map(|t| t.dir.clone());
             p.items = palette::items(self.tabs.get(self.active), &self.s.recent, self.s.pull, self.s.terminal || self.tabs.get(self.active).is_some_and(|t| !t.term.tabs.is_empty()));
         }
         let Some(choice) = palette::show(ctx, p) else { return };
-        self.palette = None;
+        let dir = self.palette.take().and_then(|p| p.dir);
         match choice {
             None => {}
             Some(palette::Cmd::Tab(a)) => {
-                if let Some(t) = self.tabs.get_mut(self.active) {
+                if let Some(t) = self.tabs.iter_mut().find(|t| Some(&t.dir) == dir.as_ref()) {
                     t.apply(ctx, a);
                 }
             }
@@ -515,6 +532,17 @@ impl eframe::App for App {
         self.s.open = self.tabs.iter().map(|t| t.dir.clone()).collect();
         self.s.active = self.active;
         eframe::set_value(storage, "settings", &self.s);
+    }
+}
+
+fn replaceable(t: &RepoTab) -> bool {
+    let draft = !(t.summary.is_empty() && t.body.is_empty()) && !t.template.as_ref().is_some_and(|m| (&m.summary, &m.body) == (&t.summary, &t.body));
+    t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.split.is_none() && t.rebase.is_none() && t.merge.is_none() && t.compose.is_none() && !draft
+}
+
+fn drop_data_off_thread(t: &mut RepoTab) {
+    if let Some(d) = t.data.take() {
+        std::thread::spawn(move || drop(d));
     }
 }
 
@@ -713,5 +741,178 @@ mod close_tests {
         app.close_tab(&ctx, 0);
         assert_eq!(app.tabs.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::{App, replaceable};
+    use crate::repo::{Action, RepoTab};
+    use egui::{Event, Key, Modifiers, RawInput};
+    use std::path::{Path, PathBuf};
+
+    fn repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("glasir-shell-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        dir
+    }
+
+    fn app(ctx: &egui::Context, first: &Path) -> App {
+        App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(first.to_path_buf()))
+    }
+
+    fn frame(ctx: &egui::Context, modifiers: Modifiers, keys: &[Key], f: impl FnMut(&mut egui::Ui)) {
+        let mut events = vec![Event::ModifiersChanged(modifiers)];
+        events.extend(keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }));
+        let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0))), events, ..Default::default() };
+        ctx.run_ui(raw, f).textures_delta.clear();
+    }
+
+    fn step(ctx: &egui::Context, app: &mut App, modifiers: Modifiers, keys: &[Key]) {
+        frame(ctx, modifiers, keys, |ui| {
+            app.shortcuts(ui.ctx());
+            if app.shortcuts {
+                app.shortcuts = super::super::shortcuts::show(ui.ctx());
+            }
+        });
+    }
+
+    #[test]
+    fn a_dialog_blocks_the_tab_and_repo_shortcuts() {
+        let (a, b) = (repo("modal-a"), repo("modal-b"));
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        app.open(&ctx, &b);
+        assert_eq!((app.tabs.len(), app.active), (2, 1));
+        app.shortcuts = true;
+        step(&ctx, &mut app, Modifiers::NONE, &[]);
+        step(&ctx, &mut app, Modifiers::NONE, &[]);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Num1]);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::W]);
+        step(&ctx, &mut app, Modifiers::CTRL, &[Key::Tab]);
+        assert_eq!((app.tabs.len(), app.active), (2, 1), "nothing behind the shortcut sheet reacts");
+        app.shortcuts = false;
+        step(&ctx, &mut app, Modifiers::NONE, &[]);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Num1]);
+        assert_eq!(app.active, 0);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::W]);
+        assert_eq!(app.tabs.len(), 1);
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_from_the_welcome_page_too() {
+        let dirs: Vec<_> = (0..3).map(|i| repo(&format!("tab-{i}"))).collect();
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &dirs[0]);
+        app.open(&ctx, &dirs[1]);
+        app.open(&ctx, &dirs[2]);
+        let mut press = |from: usize, shift: bool| {
+            app.active = from;
+            step(&ctx, &mut app, Modifiers::CTRL | if shift { Modifiers::SHIFT } else { Modifiers::NONE }, &[Key::Tab]);
+            app.active
+        };
+        assert_eq!([press(3, false), press(0, false), press(1, false), press(2, false)], [0, 1, 2, 0]);
+        assert_eq!([press(3, true), press(0, true), press(2, true), press(1, true)], [2, 2, 1, 0]);
+        for d in dirs {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn escape_in_a_dirty_editor_asks_before_leaving() {
+        let dir = repo("esc-edit");
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let mut ed = crate::repo::file_edit::FileEdit::load(&dir, "a.txt").unwrap();
+        ed.text.push_str("two\n");
+        let ctx = egui::Context::default();
+        let mut acts = vec![];
+        let mut wrap = false;
+        let mut esc = |ed: &mut crate::repo::file_edit::FileEdit, keys: &[Key]| {
+            frame(&ctx, Modifiers::NONE, keys, |ui| super::super::file_edit::show(ui, ed, &dir, &mut wrap, &mut acts));
+            ed.ask.is_some()
+        };
+        assert!(!esc(&mut ed, &[]));
+        assert!(esc(&mut ed, &[Key::Escape]), "Esc opens the dialog, and the same press does not close it again");
+        assert!(esc(&mut ed, &[]));
+        assert!(!esc(&mut ed, &[Key::Escape]), "the next Esc is Keep editing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_palette_runs_its_command_on_the_tab_it_was_built_for() {
+        use super::super::palette::{Cmd, Item, Palette};
+        let (a, b) = (repo("pal-a"), repo("pal-b"));
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        app.open(&ctx, &b);
+        let go = |dir: PathBuf| Palette {
+            items: vec![Item { icon: "", label: "Go".into(), detail: String::new(), cmd: Cmd::Tab(Action::OpenTab("x".into())) }],
+            dir: Some(dir),
+            ..Default::default()
+        };
+        app.palette = Some(go(app.tabs[0].dir.clone()));
+        assert_eq!(app.active, 1, "the active tab moved on while the palette was open");
+        frame(&ctx, Modifiers::NONE, &[Key::Enter], |ui| app.command_palette(ui.ctx()));
+        assert!(app.palette.is_none());
+        assert!(app.tabs[0].open_tab.is_some() && app.tabs[1].open_tab.is_none());
+        app.tabs[0].open_tab = None;
+        app.palette = Some(go(PathBuf::from("/closed/meanwhile")));
+        frame(&ctx, Modifiers::NONE, &[Key::Enter], |ui| app.command_palette(ui.ctx()));
+        assert!(app.palette.is_none() && app.tabs.iter().all(|t| t.open_tab.is_none()), "a closed tab's command is dropped");
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn switching_worktrees_keeps_what_would_be_lost() {
+        use crate::repo::message::Template;
+        let (a, b, c) = (repo("sw-a"), repo("sw-b"), repo("sw-c"));
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        app.switch(&ctx, 0, &b);
+        assert_eq!(app.tabs.len(), 1, "a free tab is replaced in place");
+        assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()));
+        app.tabs[0].summary = "half typed".into();
+        app.switch(&ctx, 0, &a);
+        assert_eq!((app.tabs.len(), app.active), (2, 1), "a message draft gets a new tab");
+        assert_eq!(app.tabs[0].summary, "half typed");
+        let mut t = RepoTab::new(&ctx, c.clone(), 1000, Default::default());
+        assert!(replaceable(&t));
+        t.template = Some(Template { prefix: "#".into(), summary: "feat:".into(), body: "# hint".into() });
+        (t.summary, t.body) = ("feat:".into(), "# hint".into());
+        assert!(replaceable(&t), "a template nobody edited is no draft");
+        t.summary.push_str(" add");
+        assert!(!replaceable(&t));
+        (t.summary, t.body) = Default::default();
+        for m in ["one", "two"] {
+            crate::git::run(&c, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", m]).unwrap();
+        }
+        t.rebase = Some(crate::repo::rebase::Editor::load(&c, "HEAD~1", "one").unwrap());
+        assert!(!replaceable(&t), "an edited rebase plan");
+        for d in [a, b, c] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn restoring_tabs_leaves_the_recent_list_alone() {
+        let (a, b) = (repo("rec-a"), repo("rec-b"));
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        let recent = vec![PathBuf::from("/x"), PathBuf::from("/y")];
+        app.s.recent = recent.clone();
+        app.add_tab(&ctx, std::fs::canonicalize(&b).unwrap());
+        assert_eq!(app.s.recent, recent);
+        app.open(&ctx, &a);
+        assert!(app.s.recent[0].ends_with(a.file_name().unwrap()) && app.s.recent.len() == 3);
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }

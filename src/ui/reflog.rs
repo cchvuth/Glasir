@@ -43,7 +43,7 @@ fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action
 /// Draws the reflog; returns true when it should close.
 pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) -> bool {
     rl.poll();
-    let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut close = super::format::esc_pressed(ui);
     let entries = match &rl.entries {
         Some(Ok(v)) => Some(v),
         _ => None,

@@ -1,7 +1,7 @@
 //! The ⌘F search bar above the graph. The query, the git search and its hits live in
 //! `crate::repo::Search`.
 
-use crate::ui::format::keys;
+use crate::ui::format::{esc_pressed, keys};
 use crate::repo::{Action, RepoData, Search, Sel};
 use crate::theme::{self, icon};
 use egui::{Button, Key, Ui};
@@ -79,7 +79,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
             if std::mem::take(&mut s.focus) {
                 te.request_focus();
             }
-            let (enter, esc) = ui.input(|i| (i.key_pressed(Key::Enter), i.key_pressed(Key::Escape)));
+            let (enter, esc) = (ui.input(|i| i.key_pressed(Key::Enter)), esc_pressed(ui));
             if te.lost_focus() && enter {
                 step = if shift { -1 } else { 1 };
                 te.request_focus();

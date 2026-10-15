@@ -51,11 +51,11 @@ fn push_rejected(err: &str, d: Option<&RepoData>) -> Choice {
     Choice { title: "Push rejected".into(), text: text.into(), ops }
 }
 
-fn signing_failed(op: &Op, verb: &str, err: &str) -> Choice {
+fn signing_failed(op: &Op, i: usize, verb: &str, err: &str) -> Choice {
     let (on, off) = if verb == "commit" { ("-S", "--no-gpg-sign") } else { ("--sign", "--no-sign") };
     let mut o = op.clone();
-    o.cmds[0].retain(|a| a != on);
-    o.cmds[0].insert(1, off.into());
+    o.cmds[i].retain(|a| a != on);
+    o.cmds[i].insert(1, off.into());
     Choice {
         title: "Signing failed".into(),
         text: format!(
@@ -68,7 +68,8 @@ fn signing_failed(op: &Op, verb: &str, err: &str) -> Choice {
 
 /// When `op` failed with `err` in a way that has a one-click fix, the choices to offer.
 pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> {
-    let args = op.cmds.first()?;
+    let i = op.cmds.iter().take_while(|c| c.first().is_some_and(|a| a == super::rebase::HEAD_IS)).count();
+    let args = op.cmds.get(i)?;
     let has = |a: &str| args.iter().any(|x| x == a);
     // The guard's own refusal, wherever it sits (the drag cherry-pick checks HEAD first).
     let guard = op.cmds.iter().position(|c| c.first().is_some_and(|a| a == super::merge_opts::PICK_NEW));
@@ -87,8 +88,8 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
         "push" if err.contains("[rejected]") && has("--progress") && !args.iter().any(|a| a.starts_with("--force")) => Some(push_rejected(err, d)),
         // gpg / ssh-keygen failed (no key, pinentry cancelled, locked agent): say so, offer to go unsigned.
         // A lone command only: in a commit-then-rebase op, a later step may be what failed to sign.
-        verb @ ("commit" | "tag") if op.cmds.len() == 1 && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
-            Some(signing_failed(op, verb, err))
+        verb @ ("commit" | "tag") if op.cmds.len() == i + 1 && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
+            Some(signing_failed(op, i, verb, err))
         }
         _ => None,
     }
@@ -343,6 +344,10 @@ mod tests {
         assert_ne!(sh(&dir, &["rev-parse", "HEAD"]), head);
         assert_eq!(info().sig, 'N');
         op_unsigned(&dir, &Op::new("Create tag", &["tag", "--sign", "-a", "v2", "-m", "m", "HEAD"]), "Create tag without signing");
+        let head = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let reword = crate::repo::rebase::reword(&dir, &git::git_dir(&dir).unwrap(), &head, true, None, "reworded".into()).unwrap();
+        op_unsigned(&dir, &reword, "Commit without signing");
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%s"]).trim(), "reworded");
         assert!(!git::verify_tag(&dir, "refs/tags/v2").0);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -25,9 +25,10 @@ pub struct Split {
 /// Label of the ops that end a split (matched in `poll_op`).
 pub(super) const FINISH: &str = "Finish split";
 pub(super) const ABORT: &str = "Abort split";
+pub(super) const CONFIRMED: &str = "__split_confirmed__";
 
 impl RepoTab {
-    pub(super) fn start_split(&mut self, ctx: &egui::Context, commit: String) {
+    pub(super) fn start_split(&mut self, ctx: &egui::Context, commit: String, sure: bool) {
         let Some(d) = &self.data else { return };
         let s = &d.status;
         if !s.staged.is_empty() || !s.conflicted.is_empty() || s.unstaged.iter().any(|c| c.code != '?') {
@@ -36,7 +37,10 @@ impl RepoTab {
         let is_head = s.head.as_deref() == Some(commit.as_str());
         let git_dir = d.git_dir.clone();
         self.prepare(ctx, move |dir| match super::rebase::split(dir, &git_dir, &commit, is_head) {
-            Ok(op) => {
+            Ok(mut op) => {
+                if sure {
+                    op.confirm = None;
+                }
                 let message = git::run(dir, &["log", "-1", "--format=%B", &commit]).unwrap_or_default().trim().to_owned();
                 let files = git::run(dir, &["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", &commit]).unwrap_or_default();
                 let files = files.split('\0').filter(|f| !f.is_empty()).map(String::from).collect();
@@ -49,7 +53,12 @@ impl RepoTab {
     }
 
     /// The split [`Self::start_split`] prepared: the commit's message goes to the box, its op runs.
+    /// One that rewrites pushed commits asks first, and is prepared again once confirmed.
     pub(super) fn begin_split(&mut self, ctx: &egui::Context, op: Op, mut sp: Split) {
+        if let Some(text) = op.confirm {
+            self.confirm = Some(Op::new(op.label, &[CONFIRMED, &sp.id]).confirm(text));
+            return;
+        }
         let (summary, body) = sp.message.split_once('\n').unwrap_or((&sp.message, ""));
         (self.summary, self.body, self.amend) = (summary.into(), body.trim().into(), false);
         sp.undo_len = self.undo.len();
@@ -220,6 +229,31 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn splitting_a_pushed_commit_asks_before_it_starts() {
+        let dir = scratch("split-pushed");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "c1");
+        commit(&dir, "b", "c2");
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let (tip, c1) = (sh(&dir, &["rev-parse", "HEAD"]), sh(&dir, &["rev-parse", "HEAD~1"]));
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.summary = "my draft".into();
+        t.apply(&ctx, Action::Split(tip.trim().into()));
+        settle(&ctx, &mut t);
+        let ask = t.confirm.take().expect("asks first");
+        assert!(t.split.is_none() && t.summary == "my draft");
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..ask }));
+        settle(&ctx, &mut t);
+        assert!(t.confirm.is_none() && t.split.is_some() && t.summary == "c2");
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), c1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

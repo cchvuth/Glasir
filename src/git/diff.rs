@@ -288,6 +288,7 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
         None => vec!["--literal-pathspecs", "show", "--format=", "--no-color", "--no-ext-diff", "--submodule=log", id],
     };
     args.extend(opts.iter().map(String::as_str));
+    args.push("--no-textconv");
     args.push("--");
     if let Some(o) = &c.old_path {
         args.push(o);
@@ -510,6 +511,30 @@ mod tests {
         assert_eq!(index("a.env"), "# c1\n# c2\nPASSWORD=hunter2\n");
         assert_eq!(index("src/main.rs"), "a\nB\nc\nd\n");
         assert_eq!(index("main.rs"), lines);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn commit_hunks_are_the_real_content() {
+        let dir = std::env::temp_dir().join(format!("glasir-commit-textconv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        g(&["config", "diff.redact.textconv", "sed 's/=.*/=***/'"]);
+        std::fs::write(dir.join(".gitattributes"), "*.env diff=redact\n").unwrap();
+        std::fs::write(dir.join("a.env"), "x\n").unwrap();
+        let commit = |m: &str| g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", m]);
+        g(&["add", "-A"]);
+        commit("one");
+        std::fs::write(dir.join("a.env"), "x=1\n").unwrap();
+        g(&["add", "-A"]);
+        commit("two");
+        let c = Change { path: "a.env".into(), old_path: None, code: 'M' };
+        for parent in [Some("HEAD~"), None] {
+            let f = commit_diff(&dir, "HEAD", parent, &c, DiffOpts::default()).unwrap();
+            assert_eq!(partial_patch(&f, |_, _| true, false).unwrap().lines().last(), Some("+x=1"), "{parent:?}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

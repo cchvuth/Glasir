@@ -3,7 +3,9 @@
 
 use super::{Res, run, run_input};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::io::{BufRead, Read, Write};
 use std::path::Path;
+use std::process::Stdio;
 
 /// Local branches, tags and HEAD: what undo/redo restores.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -386,16 +388,14 @@ pub fn write(dir: &Path, files: &[Entry], index: &[Entry], head: &str, raw: bool
             _ => ancestors(&e.name).rev().take_while(|a| std::fs::remove_dir(dir.join(a)).is_ok()).for_each(drop),
         }
     }
-    let put: Vec<(&str, Option<&(u32, String)>)> = files.iter().filter_map(|e| Some((e.name.as_str(), Some(e.disk.as_ref()?)))).collect();
-    // Raw: no line-ending conversion or filters (`--attr-source`: git 2.40).
-    let attr = format!("--attr-source={}", empty_tree(dir)?);
-    let new = raw && super::env::parse_version(&run(dir, &["--version"])?).is_some_and(|v| v >= (2, 40));
-    let mut args: Vec<&str> = if raw { vec!["-c", "core.autocrlf=false"] } else { vec![] };
-    args.extend(new.then_some(attr.as_str()).into_iter().chain(["checkout-index", "-f", "-z", "--stdin"]));
+    let put: Vec<(&str, &(u32, String))> = files.iter().filter_map(|e| Some((e.name.as_str(), e.disk.as_ref()?))).collect();
+    // Raw: no line-ending conversion, filters or encodings (links and submodules have none).
+    let (bytes, put): (Vec<_>, Vec<_>) = put.into_iter().partition(|(_, (m, _))| raw && matches!(m, 0o100644 | 0o100755));
+    put_raw(dir, &bytes)?;
     if !put.is_empty() {
         scratch(dir, |tmp| {
-            on_index(dir, tmp, &["update-index", "-z", "--index-info"], &info(put.iter().copied(), &"0".repeat(head.len())))?;
-            on_index(dir, tmp, &args, &put.iter().map(|(p, _)| format!("{p}\0")).collect::<String>())
+            on_index(dir, tmp, &["update-index", "-z", "--index-info"], &info(put.iter().map(|&(p, e)| (p, Some(e))), &"0".repeat(head.len())))?;
+            on_index(dir, tmp, &["checkout-index", "-f", "-z", "--stdin"], &put.iter().map(|(p, _)| format!("{p}\0")).collect::<String>())
         })?;
     }
     // Each index entry, conflict stages cleared: its `idx` (mode 0: none), else `head`'s.
@@ -409,6 +409,40 @@ pub fn write(dir: &Path, files: &[Entry], index: &[Entry], head: &str, raw: bool
         let _ = run(dir, &["update-index", "-q", "--refresh"]);
     }
     Ok(())
+}
+
+fn put_raw(dir: &Path, put: &[(&str, &(u32, String))]) -> Res<()> {
+    if put.is_empty() {
+        return Ok(());
+    }
+    let (start, args) = (std::time::Instant::now(), ["cat-file", "--batch", "--buffer"]);
+    let mut child = super::cmd(dir).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("could not run git: {e}"))?;
+    let (mut stdin, input) = (child.stdin.take().unwrap(), put.iter().map(|(_, (_, o))| format!("{o}\n")).collect::<String>());
+    std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+    let res = put.iter().try_for_each(|&(p, e)| {
+        let (mut head, oid) = (String::new(), &e.1);
+        let size = out.read_line(&mut head).ok().and_then(|_| head.strip_prefix(oid.as_str())?.strip_prefix(" blob ")?.trim_end().parse::<u64>().ok());
+        let size = size.ok_or_else(|| format!("{p}: git can't read its backup ({oid})"))?;
+        for a in ancestors(p).map(|a| dir.join(a)) {
+            if !std::fs::symlink_metadata(&a).is_ok_and(|m| m.is_dir()) {
+                let _ = std::fs::remove_file(&a);
+                std::fs::create_dir(&a).map_err(|e| format!("{p}: {e}"))?;
+            }
+        }
+        let f = dir.join(p);
+        let _ = std::fs::remove_file(&f).or_else(|_| std::fs::remove_dir_all(&f));
+        let mut o = std::fs::OpenOptions::new();
+        o.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut o, if e.0 == 0o100755 { 0o777 } else { 0o666 });
+        let n = o.open(&f).and_then(|mut w| std::io::copy(&mut (&mut out).take(size), &mut w)).map_err(|e| format!("{p}: {e}"))?;
+        (n == size && out.read_exact(&mut [0u8]).is_ok()).then_some(()).ok_or_else(|| format!("{p}: git stopped reading its backup"))
+    });
+    drop(out);
+    let code = child.wait().ok().and_then(|s| s.code());
+    super::log::record(dir, "git", &args, start, code, "");
+    res
 }
 
 /// A ref move's files, per path like `reset <mode>` from commit `from` to `tip`, but only where

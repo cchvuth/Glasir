@@ -59,6 +59,7 @@ pub struct FileView {
     pub mode: Mode,
     pub data: Option<Res<Data>>,
     task: Option<Task<Res<Data>>>,
+    cancel: git::Cancel,
     pub sel: Option<usize>,
     /// Most commits a file or folder history lists (more on request: a big folder takes seconds).
     pub limit: usize,
@@ -70,21 +71,26 @@ pub struct FileView {
 
 impl FileView {
     pub fn open(ctx: &egui::Context, dir: &Path, path: &str, mode: Mode) -> Self {
-        let mut fv = FileView { path: path.into(), mode, data: None, task: None, sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
+        let mut fv = FileView { path: path.into(), mode, data: None, task: None, cancel: Default::default(), sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
         fv.load(ctx, false);
         fv
     }
 
     /// `keep`: leave the old data shown until the new arrives (a reload of the same view).
     fn load(&mut self, ctx: &egui::Context, keep: bool) {
-        let (dir, p, mode, limit) = (self.dir.clone(), self.path.clone(), self.mode.clone(), self.limit);
         if !keep {
             (self.data, self.sel, self.limit) = (None, None, PAGE);
         }
-        self.task = Some(Task::spawn(ctx, move || match mode {
-            Mode::History => history(&dir, &p, limit).map(Data::History),
-            Mode::Blame(rev) => blame(&dir, &p, rev.as_deref()).map(Data::Blame),
-            Mode::Lines { rev, start, end } => line_history(&dir, &p, rev.as_deref(), start, end).map(Data::History),
+        let (dir, p, mode, limit) = (self.dir.clone(), self.path.clone(), self.mode.clone(), self.limit);
+        self.cancel.cancel();
+        self.cancel = Default::default();
+        let cancel = self.cancel.clone();
+        self.task = Some(Task::spawn(ctx, move || {
+            cancel.scope(|| match mode {
+                Mode::History => history(&dir, &p, limit).map(Data::History),
+                Mode::Blame(rev) => blame(&dir, &p, rev.as_deref()).map(Data::Blame),
+                Mode::Lines { rev, start, end } => line_history(&dir, &p, rev.as_deref(), start, end).map(Data::History),
+            })
         }));
     }
 
@@ -464,6 +470,73 @@ mod tests {
         fv.refresh(&ctx, true);
         settle(&mut fv);
         assert!(matches!(&fv.data, Some(Ok(Data::History(h))) if h.len() == 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn another_view_lists_the_first_page_again() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-limit");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "f.txt", "one\n");
+        commit(&dir, "g.txt", "two\n");
+        let ctx = egui::Context::default();
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History);
+        let settle = |fv: &mut FileView| {
+            wait_for("the history", || {
+                fv.poll();
+                fv.task.is_none()
+            })
+        };
+        let listed = || {
+            let log = git::LOG.lock().unwrap();
+            log.iter().rev().find(|l| l.cwd == dir && l.args.iter().any(|a| a == "log")).and_then(|l| l.args.iter().find(|a| a.starts_with("-n")).cloned())
+        };
+        settle(&mut fv);
+        fv.more(&ctx);
+        settle(&mut fv);
+        assert_eq!(listed().as_deref(), Some("-n4000"));
+        fv.go(&ctx, "g.txt".into(), Mode::History);
+        settle(&mut fv);
+        assert_eq!((listed().as_deref(), fv.limit), (Some("-n1000"), PAGE));
+        fv.more(&ctx);
+        settle(&mut fv);
+        fv.step(&ctx, false);
+        settle(&mut fv);
+        assert_eq!((listed().as_deref(), fv.limit), (Some("-n1000"), PAGE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_newer_load_stops_the_blame_still_running() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-cancel");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "f.txt", "one\n");
+        std::fs::write(dir.join(".gitattributes"), "f.txt diff=slow\n").unwrap();
+        let (gate, script) = (dir.join(".git/gate"), dir.join(".git/slow.sh"));
+        std::fs::write(&script, format!("if [ -e '{0}' ]; then exec cat \"$1\"; fi\n: > '{0}'\nsleep 30\ncat \"$1\"\n", gate.display())).unwrap();
+        sh(&dir, &["config", "diff.slow.textconv", &format!("sh '{}'", script.display())]);
+        let ctx = egui::Context::default();
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::Blame(None));
+        wait_for("the first blame to start", || gate.exists());
+        fv.refresh(&ctx, false);
+        wait_for("the second blame", || {
+            fv.poll();
+            fv.data.is_some()
+        });
+        assert!(matches!(&fv.data, Some(Ok(Data::Blame(b))) if b.lines.len() == 1));
+        let stopped = || git::LOG.lock().unwrap().iter().any(|l| l.cwd == dir && l.args.iter().any(|a| a == "blame") && l.code.is_none());
+        for _ in 0..500 {
+            if stopped() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(stopped(), "the superseded blame was left running");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

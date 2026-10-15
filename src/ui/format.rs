@@ -15,7 +15,15 @@ pub fn plural(n: usize) -> &'static str {
 }
 
 pub fn dismissed(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.button(label).clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape))
+    ui.button(label).clicked() || (ui.ctx().memory(|m| m.top_modal_layer()) == Some(ui.layer_id()) && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+}
+
+pub fn modal_open(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.top_modal_layer().is_some())
+}
+
+pub fn esc_pressed(ui: &egui::Ui) -> bool {
+    !modal_open(ui.ctx()) && ui.input(|i| i.key_pressed(egui::Key::Escape))
 }
 
 fn age(t: i64) -> i64 {
@@ -30,7 +38,7 @@ pub fn ago(t: i64) -> String {
         d if d < 3600 => f(d / 60, "min"),
         d if d < 86400 => f(d / 3600, "hour"),
         d if d < 30 * 86400 => f(d / 86400, "day"),
-        d if d < 365 * 86400 => f(d / (30 * 86400), "month"),
+        d if d < 365 * 86400 => f((d / (30 * 86400)).min(11), "month"),
         d => f(d / (365 * 86400), "year"),
     }
 }
@@ -183,6 +191,50 @@ mod tests {
         assert_eq!(k("Next (↩ / F3), ⇧F3, ⌥↑ / ⌥↓, ⌫ ⎋"), "Next (Enter / F3), Shift+F3, Alt+↑ / Alt+↓, Backspace Esc");
         assert_eq!(k("↑ ↓ / J K, F5, Esc"), "↑ ↓ / J K, F5, Esc");
         assert_eq!(k("ends with ⌘"), "ends with Ctrl");
+    }
+
+    #[test]
+    fn ago_never_says_twelve_months() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let days = |d: i64| super::ago(now - d * 86400);
+        assert_eq!([days(29), days(31), days(362), days(366)], ["29 days ago", "1 month ago", "11 months ago", "1 year ago"]);
+    }
+
+    #[test]
+    fn escape_belongs_to_the_dialog_on_top() {
+        let ctx = egui::Context::default();
+        let run = |esc: bool, dialogs: &[&str]| {
+            let mut raw = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), ..Default::default() };
+            if esc {
+                raw.events.push(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() });
+            }
+            let mut took = std::collections::BTreeSet::new();
+            ctx.run_ui(raw, |ui| {
+                if super::esc_pressed(ui) {
+                    took.insert("view".to_owned());
+                }
+                for id in dialogs {
+                    egui::Modal::new(egui::Id::new(id)).show(ui.ctx(), |ui| {
+                        if super::dismissed(ui, "Cancel") {
+                            took.insert(id.to_string());
+                        }
+                    });
+                }
+            })
+            .textures_delta
+            .clear();
+            took.into_iter().collect::<Vec<_>>()
+        };
+        assert_eq!(run(true, &[]), ["view"], "no dialog: the view takes Esc");
+        assert_eq!(run(true, &["lower"]), ["view"], "a dialog that opens in the same frame does not take that Esc too");
+        assert_eq!(run(false, &["lower"]), [] as [&str; 0]);
+        assert_eq!(run(true, &["lower"]), ["lower"], "the dialog takes Esc, the view behind it does not");
+        run(false, &["lower", "upper"]);
+        run(false, &["lower", "upper"]);
+        assert_eq!(run(true, &["lower", "upper"]), ["upper"], "only the dialog on top of the others");
+        run(false, &[]);
+        run(false, &[]);
+        assert_eq!(run(true, &[]), ["view"], "Esc is the view's again once the dialogs are gone");
     }
 
     #[test]

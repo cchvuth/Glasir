@@ -238,6 +238,7 @@ impl Search {
             if self.stale && !matches!(r, Err(TryRecvError::Empty)) {
                 // The rerun's first word replaces the previous results.
                 (self.found, self.cur, self.stale) = (vec![], 0, false);
+                self.run += 1;
             }
             match r {
                 Ok(Ok(c)) => {
@@ -676,6 +677,37 @@ mod tests {
             !s.running()
         });
         assert_eq!((s.found.len(), s.cur), (2, 1), "same current hit by SHA");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rerun_delivered_at_once_replaces_the_hit_rows() {
+        let dir = scratch("search-rerun-rows");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for m in ["needle 1", "other", "needle 2", "needle 3"] {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let mut s = finished(&dir, &d, "needle", false);
+        s.rows(&d);
+        assert_eq!(s.hits, [0, 1, 3]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "needle 4"]);
+        let d2 = load_all(&dir, 100, View::default()).unwrap();
+        let ctx = egui::Context::default();
+        s.poll(&ctx, &d2);
+        assert!(s.stale, "the rerun answered before its first poll");
+        s.rows(&d2);
+        assert_eq!(s.hits, [1, 2, 4], "the old results stay on the new graph meanwhile");
+        let (tx, rx) = channel();
+        s.rx = Some(rx);
+        for c in d2.log.iter().filter(|c| c.summary.starts_with("needle")) {
+            tx.send(Ok(c.clone())).unwrap();
+        }
+        drop(tx);
+        s.poll(&ctx, &d2);
+        s.rows(&d2);
+        assert_eq!(s.hits, [0, 1, 2, 4]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

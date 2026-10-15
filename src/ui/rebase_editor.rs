@@ -21,7 +21,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     let mut close = false;
     let n = ed.items.len();
     // Keyboard: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D set the action.
-    if !ui.ctx().memory(|m| m.focused().is_some()) {
+    if !ui.ctx().memory(|m| m.focused().is_some() || m.top_modal_layer().is_some()) {
         ui.input(|i| {
             let alt = i.modifiers.alt;
             if i.key_pressed(Key::ArrowUp) && ed.sel > 0 {
@@ -155,4 +155,46 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
         }
     });
     close
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::repo::rebase::{Act, Editor};
+    use egui::{Event, Key, Modifiers, RawInput};
+
+    #[test]
+    fn a_dialog_over_the_editor_keeps_the_keys_and_the_plan() {
+        let dir = std::env::temp_dir().join(format!("glasir-rebase-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        for m in ["one", "two"] {
+            crate::git::run(&dir, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", m]).unwrap();
+        }
+        let mut ed = Editor::load(&dir, "HEAD~1", "one").unwrap();
+        let ctx = egui::Context::default();
+        let frame = |ed: &mut Editor, keys: &[Key], dialog: bool| {
+            let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
+            let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), events, ..Default::default() };
+            let mut close = false;
+            ctx.run_ui(raw, |ui| {
+                close |= super::show(ui, ed, &dir.join(".git"), &mut vec![]);
+                if dialog {
+                    egui::Modal::new(egui::Id::new("sheet")).show(ui.ctx(), |ui| ui.label("Keyboard shortcuts"));
+                }
+            })
+            .textures_delta
+            .clear();
+            close
+        };
+        frame(&mut ed, &[], true);
+        frame(&mut ed, &[], true);
+        assert!(!frame(&mut ed, &[Key::D, Key::Escape], true), "Esc closes the dialog, not the editor");
+        assert_eq!(ed.items[0].act, Act::Pick, "D belongs to the dialog too");
+        frame(&mut ed, &[], false);
+        frame(&mut ed, &[], false);
+        assert!(frame(&mut ed, &[Key::D, Key::Escape], false));
+        assert_eq!(ed.items[0].act, Act::Drop);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

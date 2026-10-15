@@ -284,6 +284,19 @@ impl RepoData {
         self.bisect = (self.state == git::State::Bisecting).then(|| git::bisect(dir, prev).ok()).flatten();
     }
 
+    pub(super) fn count_worktree_changes(&mut self, dir: &Path) {
+        let me = dir.canonicalize().ok();
+        let mut paths: Vec<&str> = self.status.staged.iter().chain(&self.status.unstaged).chain(&self.status.conflicted).map(|c| c.path.as_str()).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        let n = paths.len();
+        if let Some(i) = self.worktrees.iter().position(|w| Path::new(&w.path).canonicalize().ok() == me)
+            && self.worktrees[i].changes != n
+        {
+            Arc::make_mut(&mut self.worktrees)[i].changes = n;
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build(log: Arc<Vec<Commit>>, refs: Arc<Vec<Ref>>, stashes: Arc<Vec<git::Stash>>, remotes: Arc<Vec<(String, String)>>, git_dir: PathBuf, origin_head: String, status: Status, view: View) -> Self {
         Self::build_reusing(log, refs, stashes, remotes, git_dir, origin_head, status, view, None)
@@ -437,21 +450,15 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
         .map(|s| s.trim().trim_start_matches("origin/").to_owned())
         .unwrap_or_default();
-    let (stashes, mut worktrees) = stashes;
+    let (stashes, worktrees) = stashes;
     let mut log = log?;
     // One extra commit tells "exactly a page" from "more to load".
     let truncated = log.len() > limit;
     log.truncate(limit);
     let mut d = RepoData::build(Arc::new(log), Arc::new(refs?), Arc::new(stashes), Arc::new(remotes), git_dir, origin_head, status?, view);
     d.truncated = truncated;
-    let me = dir.canonicalize().ok();
-    if let Some(w) = worktrees.iter_mut().find(|w| Path::new(&w.path).canonicalize().ok() == me) {
-        let mut paths: Vec<&str> = d.status.staged.iter().chain(&d.status.unstaged).chain(&d.status.conflicted).map(|c| c.path.as_str()).collect();
-        paths.sort_unstable();
-        paths.dedup();
-        w.changes = paths.len();
-    }
     d.worktrees = Arc::new(worktrees);
+    d.count_worktree_changes(dir);
     d.submodules = Arc::new(submodules);
     d.lfs = Arc::new(lfs);
     d.config = Arc::new(config);

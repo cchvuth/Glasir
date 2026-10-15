@@ -37,6 +37,7 @@ pub struct Palette {
     /// Indices of the best matches for the query they were ranked for (and the item count then):
     /// scoring thousands of items is only redone when the query changes.
     pub ranked: (String, usize, Vec<usize>),
+    pub dir: Option<PathBuf>,
 }
 
 /// Subsequence match, case-insensitive. Higher is better; rewards consecutive

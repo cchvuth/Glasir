@@ -18,7 +18,7 @@ fn heat_color(t: f32) -> Color32 {
 /// Draws the file view; returns true when it should close.
 pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     fv.poll();
-    let mut close = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    let mut close = super::format::esc_pressed(ui);
     let mut nav = ui.input_mut(|i| {
         let cmd = egui::Modifiers::COMMAND;
         (i.consume_key(cmd, egui::Key::OpenBracket).then_some(false)).or(i.consume_key(cmd, egui::Key::CloseBracket).then_some(true))
@@ -81,13 +81,22 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
         Data::History(entries) => {
             const ROW: f32 = 46.0;
             // Rows as tall as their entry (a line-range entry carries its diff).
-            let tops = tops(1.0, entries.iter().map(|e| hunk_height(&e.hunks) as usize + ROW as usize));
+            let (id, key) = (egui::Id::new("history_tops"), (entries.as_ptr() as usize, entries.len()));
+            let tops = match ui.data(|d| d.get_temp::<std::sync::Arc<((usize, usize), Vec<f32>)>>(id)).filter(|c| c.0 == key) {
+                Some(c) => c,
+                None => {
+                    let c = std::sync::Arc::new((key, tops(1.0, entries.iter().map(|e| hunk_height(&e.hunks) as usize + ROW as usize))));
+                    ui.data_mut(|d| d.insert_temp(id, c.clone()));
+                    c
+                }
+            };
+            let tops = &tops.1;
             let more = matches!(fv.mode, Mode::History) && entries.len() >= fv.limit;
             let mut load_more = false;
             egui::ScrollArea::vertical().id_salt("file_history").auto_shrink(false).show_viewport(ui, |ui, view| {
                 ui.set_min_height(tops[entries.len()] + if more { 40.0 } else { 0.0 });
                 let (left, top, width) = (ui.max_rect().left(), ui.max_rect().top(), ui.available_width());
-                for i in visible(&tops, view.min.y, view.max.y) {
+                for i in visible(tops, view.min.y, view.max.y) {
                     let e = &entries[i];
                     let at = top + tops[i];
                     let rect = Rect::from_min_size(pos2(left, at), vec2(width, ROW));

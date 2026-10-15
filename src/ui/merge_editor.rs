@@ -59,7 +59,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
                 acts.push(Action::Ai(ai::Purpose::Resolve(ed.path.clone())));
             }
             let n = ed.trivial;
-            let b = ui.add_enabled(n > 0, egui::Button::new(if narrow { format!("{} ({n})", icon::MAGIC_WAND) } else { format!("{}  Auto-resolve trivial ({n})", icon::MAGIC_WAND) }).frame_when_inactive(false).corner_radius(255));
+            let b = ui.add_enabled(n > 0 && !thinking, egui::Button::new(if narrow { format!("{} ({n})", icon::MAGIC_WAND) } else { format!("{}  Auto-resolve trivial ({n})", icon::MAGIC_WAND) }).frame_when_inactive(false).corner_radius(255));
             if b.on_hover_text("Resolve conflicts whose sides are identical or differ only in whitespace (keeps current)").clicked() {
                 auto = true;
             }
@@ -139,7 +139,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
                                 p.rect_filled(rect, 4.0, tint(color, sel_orig == Some(*k)));
                                 let what = if i.is_some() { format!("Conflict {}", k + 1) } else { format!("{}  Conflict {} resolved", icon::CHECK, k + 1) };
                                 p.text(pos2(rect.left() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, what, FontId::proportional(11.5), color);
-                                if let Some(i) = i {
+                                if let Some(i) = i.filter(|_| !thinking) {
                                     let take = if s == 0 { Take::Current } else { Take::Incoming };
                                     // Painted, not a widget: a widget would push the next rows down.
                                     let br = egui::Rect::from_min_size(pos2(rect.left() + 96.0, rect.top() + 1.0), vec2(46.0, row_h - 2.0));
@@ -190,6 +190,9 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
             }
             ui.add_space(6.0);
             theme::group(ui, |ui| {
+                if thinking {
+                    ui.disable();
+                }
                 let mut b = |ui: &mut Ui, text: RichText, t: Take, hint: &str| {
                     if theme::pill(ui, text).on_hover_text(hint).clicked() {
                         pick = Some((ed.sel, t));

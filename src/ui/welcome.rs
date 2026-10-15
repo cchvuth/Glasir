@@ -139,7 +139,8 @@ impl App {
                         let cancel = c.cancel.clone();
                         c.task = Some(Task::spawn(ctx, move || {
                             std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
-                            cancel.scope(|| git::run(&parent, &["clone", "--progress", "--", &url, &d2.to_string_lossy()])).map(|_| d2)
+                            clone_cleaning_up(&d2, || cancel.scope(|| git::run(&parent, &["clone", "--progress", "--", &url, &d2.to_string_lossy()])))?;
+                            Ok(d2)
                         }));
                     }
                     if ui.button("Cancel").clicked() {
@@ -153,6 +154,20 @@ impl App {
         }
     }
 
+}
+
+fn clone_cleaning_up(dest: &Path, clone: impl FnOnce() -> git::Res<String>) -> git::Res<String> {
+    let fresh = std::fs::symlink_metadata(dest).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound);
+    let res = clone();
+    if fresh && res.as_ref().is_err_and(|e| e == git::CANCELLED) {
+        for _ in 0..10 {
+            if std::fs::remove_dir_all(dest).map_or_else(|e| e.kind() == std::io::ErrorKind::NotFound, |_| true) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    res
 }
 
 /// First-run tips in a glass strip; returns false once dismissed.
@@ -195,6 +210,42 @@ fn clone_dir(dir: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use crate::git;
+
+    #[test]
+    fn a_cancelled_clone_removes_only_the_folder_it_made() {
+        let base = std::env::temp_dir().join(format!("glasir-clone-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let cancelled = || Err::<String, _>(git::CANCELLED.to_owned());
+        let fresh = base.join("fresh");
+        let res = super::clone_cleaning_up(&fresh, || {
+            std::fs::create_dir_all(fresh.join(".git/objects/pack")).unwrap();
+            cancelled()
+        });
+        assert_eq!(res, cancelled());
+        assert!(!fresh.exists(), "what the killed git left behind goes");
+        let theirs = base.join("theirs");
+        std::fs::create_dir_all(&theirs).unwrap();
+        std::fs::write(theirs.join("keep.txt"), "x").unwrap();
+        let _ = super::clone_cleaning_up(&theirs, || {
+            std::fs::create_dir_all(theirs.join(".git")).unwrap();
+            cancelled()
+        });
+        assert!(theirs.join("keep.txt").exists() && theirs.join(".git").exists(), "a folder that was already there stays");
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let _ = super::clone_cleaning_up(&empty, cancelled);
+        assert!(empty.exists());
+        let failed = base.join("failed");
+        let res = super::clone_cleaning_up(&failed, || {
+            std::fs::create_dir_all(&failed).unwrap();
+            Err("fatal: repository not found".into())
+        });
+        assert!(res.is_err() && failed.exists(), "git cleans up after its own failures");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn clone_dir_is_absolute() {
         let h = super::home().unwrap();

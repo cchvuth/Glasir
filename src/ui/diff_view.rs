@@ -237,7 +237,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let anchor = first + LEAD;
     let mut nav = ui.input(|i| i.key_pressed(egui::Key::F7).then_some(!i.modifiers.shift));
 
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if super::format::esc_pressed(ui) {
         acts.push(Action::CloseDiff);
     }
     let narrow = ui.available_width() < 600.0;
@@ -536,7 +536,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                         let resp = ui.interact(rect, ui.id().with(("dl", r)), if pick { Sense::click_and_drag() } else { Sense::click() });
                         // Commit diffs pick any line, for "History of these lines".
                         if pick {
-                            pick_lines(ui, mem, &mut ds.picked, rows, tops, f, &resp, r, None, (hi, li));
+                            pick_lines(ui, mem, &mut ds.picked, ds.stamp, rows, tops, f, &resp, r, None, (hi, li));
                         }
                         resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                         let colors = ds.hl.get(hi).and_then(|h| h.get(li));
@@ -556,7 +556,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                             let pick = l.kind != b'\\' && ((partial && l.kind != b' ') || !worktree);
                             let resp = ui.interact(side, ui.id().with(("sl", r, old)), if pick { Sense::click_and_drag() } else { Sense::click() });
                             if pick {
-                                pick_lines(ui, mem, &mut ds.picked, rows, tops, f, &resp, r, Some(old), (hi, li));
+                                pick_lines(ui, mem, &mut ds.picked, ds.stamp, rows, tops, f, &resp, r, Some(old), (hi, li));
                             }
                             resp.context_menu(|ui| line_menu(ui, &src, f, &ds.picked, (hi, li), acts));
                             let no = if old { l.old } else { l.new };
@@ -587,15 +587,15 @@ fn row_changes(f: &FileDiff, row: &Row, old: Option<bool>) -> Vec<(usize, usize)
 /// Click toggles a change line; dragging from one selects (or, starting on a picked line,
 /// deselects) every change line down to the pointer, relative to the picks at the drag's start.
 #[allow(clippy::too_many_arguments)]
-fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(usize, usize)>, rows: &[Row], tops: &[f32], f: &FileDiff, resp: &egui::Response, r: usize, old: Option<bool>, at: (usize, usize)) {
+fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(usize, usize)>, stamp: u64, rows: &[Row], tops: &[f32], f: &FileDiff, resp: &egui::Response, r: usize, old: Option<bool>, at: (usize, usize)) {
     if resp.clicked() && !picked.remove(&at) {
         picked.insert(at);
     }
     let key = mem.with("drag");
     if resp.drag_started() {
-        ui.data_mut(|m| m.insert_temp(key, (picked.clone(), !picked.contains(&at))));
+        ui.data_mut(|m| m.insert_temp(key, (picked.clone(), !picked.contains(&at), stamp)));
     }
-    if let (true, Some(p), Some((base, add))) = (resp.dragged(), resp.interact_pointer_pos(), ui.data(|m| m.get_temp::<(std::collections::BTreeSet<(usize, usize)>, bool)>(key))) {
+    if let (true, Some(p), Some((base, add, _))) = (resp.dragged(), resp.interact_pointer_pos(), ui.data(|m| m.get_temp::<(std::collections::BTreeSet<(usize, usize)>, bool, u64)>(key)).filter(|d| d.2 == stamp)) {
         // Rows are as tall as their wrapped lines: find the pointer's row by the row tops.
         let y = tops[r] + p.y - resp.rect.top();
         let end = tops.partition_point(|&t| t <= y).saturating_sub(1).min(rows.len() - 1);

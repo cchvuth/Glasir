@@ -301,13 +301,17 @@ pub(super) fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
 }
 
 /// One undo or redo: `refs` (from, to, mode) move if each ref they move is still at either
-/// side, then `legs` (from, to, scope) apply in order. Files go first and refs last, in one
-/// transaction: a failure leaves the refs as they were, and a retry finishes the job. Ok: one
-/// note, and whether the refs were valid (else only the files were put back).
+/// side (and HEAD is still on the branch a soft or mixed one moves), then `legs` (from, to,
+/// scope) apply in order. Files go first and refs last, in one transaction: a failure leaves
+/// the refs as they were, and a retry finishes the job. Ok: one note, and whether the refs
+/// were valid (else only the files were put back).
 pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapshot, Undo)>, legs: &[(Snap, Snap, Vec<String>)]) -> Res<(Option<String>, bool)> {
     let mut notes = vec![];
     let cur_refs = git::snapshot(dir)?;
-    let valid = refs.as_ref().is_none_or(|(f, t, _)| moved(f, t).iter().all(|r| at(&cur_refs, r) == at(f, r) || at(&cur_refs, r) == at(t, r)));
+    let valid = refs.as_ref().is_none_or(|(f, t, m)| {
+        let mv = moved(f, t);
+        mv.iter().all(|r| at(&cur_refs, r) == at(f, r) || at(&cur_refs, r) == at(t, r)) && (!matches!(m, Undo::Soft | Undo::Mixed) || !mv.contains(&f.head) || cur_refs.head == f.head)
+    });
     if !valid {
         notes.push(format!("{label}: its branches changed outside Glasir since, so {}.", if legs.is_empty() { "nothing was moved" } else { "only its files were put back" }));
     }
@@ -399,28 +403,32 @@ impl RepoTab {
         if !skip {
             return self.undo_redo(ctx, undo, true);
         }
+        if self.running.is_some() {
+            return;
+        }
         let Some(e) = stack.pop() else { return };
         let msg = format!("Glasir: {} {}", if undo { "Undo" } else { "Redo" }, e.label);
-        // Each side the files no longer hold: a half-done step may have overwritten either. One
-        // that couldn't be kept stays in refs/glasir/backups (pruned in 7 days).
-        let (mut done, mut names) = (vec![], BTreeSet::new());
-        for f in &e.files {
-            let cur = git::current(&self.dir, &f.before.paths).ok();
-            for (s, name) in [(&f.before, msg.clone()), (&f.after, format!("{msg} (its result)"))] {
-                let need = cur.is_none() || git::view(&self.dir, s, &f.before.paths).ok() != cur;
-                if need && git::keep(&self.dir, &s.commit, &name).is_ok() {
-                    names.insert(format!("\"{name}\""));
-                } else if need {
-                    continue;
+        let dir = self.dir.clone();
+        self.running = Some((format!("Skip {}", e.label), Task::spawn(ctx, move || {
+            // Each side the files no longer hold: a half-done step may have overwritten either. One
+            // that couldn't be kept stays in refs/glasir/backups (pruned in 7 days).
+            let (mut done, mut names) = (vec![], BTreeSet::new());
+            for f in &e.files {
+                let cur = git::current(&dir, &f.before.paths).ok();
+                for (s, name) in [(&f.before, msg.clone()), (&f.after, format!("{msg} (its result)"))] {
+                    let need = cur.is_none() || git::view(&dir, s, &f.before.paths).ok() != cur;
+                    if need && git::keep(&dir, &s.commit, &name).is_ok() {
+                        names.insert(format!("\"{name}\""));
+                    } else if need {
+                        continue;
+                    }
+                    done.push(s.refname.clone());
                 }
-                done.push(s.refname.clone());
             }
-        }
-        git::drop_backups(&self.dir, &done);
-        let names = names.into_iter().collect::<Vec<_>>().join(" and ");
-        let text = format!("Skipped {}{}.", e.label, if names.is_empty() { String::new() } else { format!(": its files are in the stash list as {names}") });
-        self.notes.push(Msg { text, error: false });
-        self.reload(ctx, true);
+            git::drop_backups(&dir, &done);
+            let names = names.into_iter().collect::<Vec<_>>().join(" and ");
+            Done::Skipped(format!("Skipped {}{}.", e.label, if names.is_empty() { String::new() } else { format!(": its files are in the stash list as {names}") }))
+        })));
     }
 
     /// `sure`: the user confirmed dropping commits that were pushed since the step.
@@ -898,7 +906,9 @@ mod tests {
         // Retry while still blocked: the same choice; Skip: one stash entry, the step gone.
         step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
         let c = t.choice.take().expect("still blocked");
-        let msgs = step(&ctx, &mut t, Action::Git(c.ops[1].1.clone()));
+        t.apply(&ctx, Action::Git(c.ops[1].1.clone()));
+        assert!(t.running.is_some());
+        let msgs: Vec<String> = settle(&ctx, &mut t).into_iter().map(|m| m.text).collect();
         assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1, "{msgs:?}");
         assert!(in_stash(&dir, "keep", "MINE\n"));
         assert_eq!((labels(&t), backups(&dir)), (vec!["Create branch y".to_owned()], 0));
@@ -909,6 +919,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+
+    #[test]
+    fn undoing_a_commit_refuses_once_head_switched_branches() {
+        let dir = repo("undo-switched");
+        sh(&dir, &["branch", "y"]);
+        let (ctx, mut t) = tab(&dir);
+        std::fs::write(dir.join("f"), "f\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        t.summary = "add f".into();
+        let op = t.commit_op();
+        step(&ctx, &mut t, Action::Git(op));
+        let c = rev(&dir, "main");
+        sh(&dir, &["checkout", "-q", "y"]);
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(rev(&dir, "main"), c, "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("outside Glasir")), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn discard_is_restorable() {
@@ -1142,6 +1170,24 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("b")).unwrap(), b"one\ntwo\n");
         assert_eq!(sh(&dir, &["status", "--porcelain"]), before);
         assert_eq!(sh(&dir, &["show", ":c"]).replace('\r', ""), "c1\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_discard_restores_the_bytes_past_info_attributes() {
+        let dir = repo("undo-raw-attr");
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::write(dir.join(".git/info/attributes"), "*.txt text eol=crlf working-tree-encoding=UTF-16LE\n").unwrap();
+        let utf16 = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        std::fs::write(dir.join("u.txt"), utf16("h\r\n")).unwrap();
+        sh(&dir, &["add", "u.txt"]);
+        sh(&dir, &["commit", "-q", "-m", "u"]);
+        std::fs::write(dir.join("u.txt"), utf16("hi\r\n")).unwrap();
+        let f = run_backed(&dir, &Op::new("Discard", &["checkout", "--", "u.txt"]).backup(Backup::Paths(vec!["u.txt".into()]))).unwrap().unwrap();
+        assert_eq!(std::fs::read(dir.join("u.txt")).unwrap(), utf16("h\r\n"));
+        undo_files(&dir, &f).unwrap();
+        assert_eq!(std::fs::read(dir.join("u.txt")).unwrap(), utf16("hi\r\n"));
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M u.txt\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

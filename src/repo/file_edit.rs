@@ -153,8 +153,11 @@ pub(super) fn save(dir: &Path, a: &[&str], input: &[u8]) -> Res<String> {
     // Temp file + rename: a failure mid-write leaves the original untouched (mode is copied).
     let tmp = p.with_file_name(format!(".{}.glasir-tmp", p.file_name().unwrap_or_default().to_string_lossy()));
     let w = || -> std::io::Result<()> {
-        std::fs::write(&tmp, input)?;
-        std::fs::set_permissions(&tmp, std::fs::metadata(&p)?.permissions())?;
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        std::io::Write::write_all(&mut f, input)?;
+        f.set_permissions(std::fs::metadata(&p)?.permissions())?;
+        drop(f);
         std::fs::rename(&tmp, &p)
     };
     w().map_err(|e| {
@@ -262,6 +265,29 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("w.txt")).unwrap(), b"a\r\nb\r\n");
         assert!(std::fs::read_dir(&dir).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().contains("glasir-tmp")));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_the_temp_path_is_not_written_through() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, outside) = (repo("fe_link"), scratch("fe_link_target"));
+        let hook = outside.join("pre-commit");
+        std::fs::write(&hook, "theirs\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(dir.join("run.sh"), "echo hi\n").unwrap();
+        std::fs::set_permissions(dir.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&hook, dir.join(".run.sh.glasir-tmp")).unwrap();
+        let mut ed = FileEdit::load(&dir, "run.sh").unwrap();
+        ed.text = "echo edited\n".into();
+        exec(&dir, &ed.save_op(&dir).unwrap()).unwrap();
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), "theirs\n");
+        assert_eq!(std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777, 0o600);
+        let m = std::fs::symlink_metadata(dir.join("run.sh")).unwrap();
+        assert!(m.is_file() && m.permissions().mode() & 0o777 == 0o755);
+        assert_eq!(std::fs::read_to_string(dir.join("run.sh")).unwrap(), "echo edited\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

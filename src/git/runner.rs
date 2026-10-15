@@ -6,15 +6,17 @@ use super::log::record;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub fn cmd(dir: &Path) -> Command {
     let mut c = base("git", dir);
-    // Neutralize user config that would change the formats we parse.
+    // Neutralize user config and translations that would change the output we parse.
     c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
         .args(["-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/"])
-        .args(["-c", "core.quotepath=off", "-c", "color.ui=never"]);
+        .args(["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "color.diff=never"])
+        .env("LANGUAGE", "en");
     c
 }
 
@@ -143,23 +145,30 @@ impl Cancel {
     }
 }
 
-/// Reads `r` to the end; with `progress`, keeps it set to the latest progress line.
-fn read_all(mut r: impl Read + Send + 'static, progress: Option<Arc<Mutex<String>>>) -> std::thread::JoinHandle<Vec<u8>> {
+/// Reads `r` to the end into the buffer it returns, then drops `done`; with `progress`, keeps it
+/// set to the latest progress line.
+fn read_all(mut r: impl Read + Send + 'static, progress: Option<Arc<Mutex<String>>>, done: Sender<()>) -> Arc<Mutex<Vec<u8>>> {
+    let v = Arc::new(Mutex::new(vec![]));
+    let w = v.clone();
     std::thread::spawn(move || {
-        let Some(p) = progress else {
-            let mut v = vec![];
-            let _ = r.read_to_end(&mut v);
-            return v;
-        };
-        let (mut v, mut buf) = (vec![], [0u8; 4096]);
-        while let Ok(n @ 1..) = r.read(&mut buf) {
+        let (_done, mut buf) = (done, vec![0u8; 1 << 16]);
+        loop {
+            let n = match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            };
+            let mut v = w.lock().unwrap();
             v.extend_from_slice(&buf[..n]);
-            if let Some(l) = last_progress(&String::from_utf8_lossy(&v[v.len().saturating_sub(1024)..])) {
+            if let Some(p) = &progress
+                && let Some(l) = last_progress(&String::from_utf8_lossy(&v[v.len().saturating_sub(1024)..]))
+            {
                 *p.lock().unwrap() = l.to_owned();
             }
         }
-        v
-    })
+    });
+    v
 }
 
 /// Latest complete line of `--progress` output (git rewrites lines with `\r`).
@@ -206,7 +215,8 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
         std::thread::spawn(move || stdin.write_all(&data));
     }
     let squash = progress.is_some();
-    let (out, err) = (read_all(child.stdout.take().unwrap(), None), read_all(child.stderr.take().unwrap(), progress));
+    let (done, ended) = std::sync::mpsc::channel();
+    let (out, err) = (read_all(child.stdout.take().unwrap(), None, done.clone()), read_all(child.stderr.take().unwrap(), progress, done));
     cancel.attach(child.id());
     let status = child.wait().map_err(|e| e.to_string());
     let cancelled = cancel.detach();
@@ -218,18 +228,10 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
         drop_index_lock(dir, started);
         return Err(CANCELLED.into());
     }
-    if prog != "git" {
-        // A shell line's background jobs (`server &`) inherit our pipes: don't wait for them to exit.
-        let (done, exited) = (|| out.is_finished() && err.is_finished(), Instant::now());
-        while !done() && exited.elapsed() < std::time::Duration::from_millis(300) {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        if !done() {
-            record(dir, &prog, args, start, status.code(), "(output held by a background process)");
-            return if status.success() { Ok(vec![]) } else { Err(format!("{prog} failed ({status})")) };
-        }
-    }
-    let (stdout, stderr) = (out.join().unwrap_or_default(), err.join().unwrap_or_default());
+    // Background jobs (a shell line's `server &`, a hook's) inherit our pipes: don't wait for them to exit.
+    let _ = ended.recv_timeout(std::time::Duration::from_millis(300));
+    let take = |b: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *b.lock().unwrap());
+    let (stdout, stderr) = (take(out), take(err));
     let mut stderr = String::from_utf8_lossy(&stderr).into_owned();
     if squash {
         stderr = squash_progress(&stderr);
@@ -242,7 +244,7 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
     }
     let msg = format!("{}\n{}", stderr.trim(), String::from_utf8_lossy(&stdout).trim());
     let msg = msg.trim();
-    Err(if msg.is_empty() { format!("{prog} {} failed ({status})", args.join(" ")) } else { msg.to_owned() })
+    Err(if msg.is_empty() { format!("{prog} {} failed ({status})", super::url::redact(&args.join(" "))) } else { msg.to_owned() })
 }
 
 /// Runs git, handing each NUL-terminated stdout record to `each` as it arrives (a long
@@ -257,7 +259,8 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     let mut c = cmd(dir);
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|e| format!("could not run git: {e}"))?;
-    let err = read_all(child.stderr.take().unwrap(), None);
+    let (done, ended) = std::sync::mpsc::channel();
+    let err = read_all(child.stderr.take().unwrap(), None, done);
     let mut out = child.stdout.take().unwrap();
     cancel.attach(child.id());
     let (mut buf, mut chunk, mut stopped) = (vec![], [0u8; 65536], false);
@@ -281,12 +284,13 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     let status = child.wait().map_err(|e| e.to_string());
     let cancelled = cancel.detach();
     let status = status?;
-    let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
+    let _ = ended.recv_timeout(std::time::Duration::from_millis(300));
+    let stderr = String::from_utf8_lossy(&err.lock().unwrap()).into_owned();
     record(dir, "git", args, start, status.code(), &stderr);
     match () {
         _ if cancelled => Err(CANCELLED.into()),
         _ if stopped || status.success() => Ok(()),
-        _ => Err(if stderr.trim().is_empty() { format!("git {} failed ({status})", args.join(" ")) } else { stderr.trim().to_owned() }),
+        _ => Err(if stderr.trim().is_empty() { format!("git {} failed ({status})", super::url::redact(&args.join(" "))) } else { stderr.trim().to_owned() }),
     }
 }
 
@@ -333,6 +337,7 @@ mod tests {
         assert_eq!(g(&["log", "--format=%s"]).trim(), "msg with sk-ant-secret");
         assert_eq!(g(&["ls-files", "-z"]), "ä b.txt\0");
         assert!(run(&dir, &["rev-parse", "nope"]).is_err());
+        assert!(run(&dir, &["-c", "alias.no=!false", "no", "https://u:tok@h.example/r"]).is_err_and(|e| e.contains("https://***@h.example/r") && !e.contains("tok")));
         let log = LOG.lock().unwrap();
         let mine: Vec<&Logged> = log.iter().filter(|e| e.cwd == dir).collect();
         assert!(mine.iter().any(|e| e.args == ["commit", "-q", "-F", "-"] && e.code == Some(0)));
@@ -369,5 +374,24 @@ mod tests {
         assert_eq!(run_shell(&std::env::temp_dir(), "sleep 3 &").unwrap(), "");
         assert!(t.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(run_shell(&std::env::temp_dir(), "echo hi").unwrap(), "hi\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hooks_background_job_does_not_hold_the_commit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("glasir-hook-bg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("hooks")).unwrap();
+        run(&dir, &["init", "-q"]).unwrap();
+        let hook = dir.join("hooks/post-commit");
+        std::fs::write(&hook, "#!/bin/sh\necho hooked\nsleep 5 &\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let hooks = format!("core.hooksPath={}", dir.join("hooks").display());
+        let t = Instant::now();
+        run(&dir, &["-c", &hooks, "-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "x"]).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_secs(3), "{:?}", t.elapsed());
+        assert!(LOG.lock().unwrap().iter().any(|e| e.cwd == dir && e.args.contains(&"commit".to_owned()) && e.stderr.contains("hooked")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

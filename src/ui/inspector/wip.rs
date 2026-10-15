@@ -203,15 +203,15 @@ fn pick_file(sel: &mut Vec<(bool, String)>, list: &[Change], staged: bool, i: us
 /// The WIP selection resolved against the status, rebuilt only when either changes (a 10k-file
 /// select-all must not hash the whole selection every frame).
 struct SelCache {
-    key: (u64, usize, Option<(bool, String)>, Option<(bool, String)>),
+    key: (u64, usize, u64),
     paths: [std::collections::HashSet<String>; 2],
     un: Vec<Change>,
     st: Vec<Change>,
 }
 
 impl SelCache {
-    fn get(ui: &Ui, id: egui::Id, d: &RepoData, sel: &[(bool, String)]) -> Arc<Self> {
-        let key = (d.generation, sel.len(), sel.first().cloned(), sel.last().cloned());
+    fn get(ui: &Ui, id: egui::Id, d: &RepoData, sel: &[(bool, String)], edits: u64) -> Arc<Self> {
+        let key = (d.generation, sel.len(), edits);
         if let Some(c) = ui.data(|x| x.get_temp::<Arc<Self>>(id)).filter(|c| c.key == key) {
             return c;
         }
@@ -281,7 +281,7 @@ impl RepoTab {
         let open = self.diff.as_ref().map(|d| d.src.clone());
         let busy = self.busy().is_some();
         let head = s.head.as_deref().unwrap_or_default();
-        let sc = SelCache::get(ui, ui.id().with((&self.dir, "wipsel")), d, &self.file_sel);
+        let sc = SelCache::get(ui, ui.id().with((&self.dir, "wipsel")), d, &self.file_sel, self.file_sel_gen);
 
         // A bisect has its own banner above the graph.
         // A guided split has its own banner (`split_banner`), shown for any selection.
@@ -320,7 +320,7 @@ impl RepoTab {
 
         let generating = matches!(self.ai_busy(), Some(Purpose::CommitMessage { .. }));
         let ai_on = crate::ai::enabled();
-        let (sum_id, body_id) = (egui::Id::new("commit_summary"), egui::Id::new("commit_description"));
+        let (sum_id, body_id) = (egui::Id::new(("commit_summary", &self.dir)), egui::Id::new(("commit_description", &self.dir)));
         let (mut commit, mut stage_commit) = (false, false);
         egui::Panel::bottom("commit_box").show_separator_line(false).frame(egui::Frame::NONE.inner_margin(egui::Margin { top: 8, ..Default::default() })).resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -605,6 +605,7 @@ impl RepoTab {
                         acts.extend(stage_one());
                     } else if resp.clicked() && {
                         let (list, i) = order.place(c);
+                        self.file_sel_gen += 1;
                         pick_file(&mut self.file_sel, &list, false, i, mods)
                     } {
                         acts.push(Action::Diff(src));
@@ -698,6 +699,7 @@ impl RepoTab {
                         acts.push(Action::Git(crate::repo::unstage_op(c)));
                     } else if resp.clicked() && {
                         let (list, i) = order.place(c);
+                        self.file_sel_gen += 1;
                         pick_file(&mut self.file_sel, &list, true, i, mods)
                     } {
                         acts.push(Action::Diff(src));

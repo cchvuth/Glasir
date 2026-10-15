@@ -34,7 +34,7 @@ pub fn check(dir: &Path, remote: &str) -> Report {
     let res = git::ls_remote_quiet(dir, remote);
     let mut settings: Vec<(String, String)> = get(&["config", "--show-origin", "--get-all", "credential.helper"])
         .lines()
-        .map(|l| l.split_once('\t').map_or(l.into(), |(origin, v)| format!("{v}   ({origin})")))
+        .map(|l| l.split_once('\t').map_or_else(|| helper(l), |(origin, v)| format!("{}   ({origin})", helper(v))))
         .filter(|v: &String| !v.trim().is_empty())
         .map(|v| ("credential.helper".into(), v))
         .collect();
@@ -71,6 +71,10 @@ pub fn check(dir: &Path, remote: &str) -> Report {
 /// A proxy may omit its scheme (`user:pw@host:port`, for git and curl alike).
 fn redact_proxy(v: &str) -> String {
     if v.contains("://") { git::redact(v) } else { git::redact(&format!("http://{v}"))["http://".len()..].to_owned() }
+}
+
+fn helper(v: &str) -> String {
+    if v.trim_start().starts_with('!') { "inline shell command (hidden: it may hold a token)".into() } else { v.into() }
 }
 
 impl Doctor {
@@ -110,9 +114,13 @@ mod tests {
         sh(&dir, &["remote", "add", "gone", &dir.join("nope").to_string_lossy()]);
         sh(&dir, &["remote", "add", "self", &dir.to_string_lossy()]);
         sh(&dir, &["config", "credential.helper", "store"]);
+        sh(&dir, &["config", "--add", "credential.helper", "!f() { echo password=ghp_abc; }; f"]);
         let r = check(&dir, "gone");
         assert_eq!(r.problem.map(|p| p.0), Some("Repository not found"));
         assert!(r.settings.iter().any(|(k, v)| k == "credential.helper" && v.starts_with("store ")), "{:?}", r.settings);
+        assert!(r.settings.iter().any(|(_, v)| v.starts_with("inline shell command")) && r.settings.iter().all(|(_, v)| !v.contains("ghp_abc")), "{:?}", r.settings);
+        assert_eq!((helper("osxkeychain"), helper("cache --timeout=3600")), ("osxkeychain".into(), "cache --timeout=3600".into()));
+        assert!(!helper(" !echo password=ghp_abc").contains("ghp_"));
         assert!(check(&dir, "self").problem.is_none());
         assert!(is_ssh("git@ghe.corp:o/r.git") && is_ssh("ssh://git@ghe.corp/o/r"));
         assert!(!is_ssh("https://ghe.corp/o/r") && !is_ssh("/srv/r.git") && !is_ssh("C:\\r") && !is_ssh("./a:b"));

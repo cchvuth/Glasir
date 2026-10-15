@@ -168,9 +168,12 @@ const MAX_INSTRUCTIONS: usize = 8000;
 
 /// This repo's own instructions: `.glasir/ai.md` once `git config glasir.aiFile true`
 /// opted in (a cloned repo mustn't steer the AI unasked), else `git config glasir.aiInstructions`.
+/// Only a regular file in a real `.glasir` folder counts: a committed symlink could point anywhere.
 fn repo_instructions(dir: &Path) -> String {
     let trusted = git::run(dir, &["config", "--bool", "--get", "glasir.aiFile"]).is_ok_and(|v| v.trim() == "true");
-    let text = trusted.then(|| std::fs::read_to_string(dir.join(".glasir/ai.md")).ok()).flatten().filter(|t| !t.trim().is_empty());
+    let (folder, file) = (dir.join(".glasir"), dir.join(".glasir/ai.md"));
+    let real = trusted && std::fs::symlink_metadata(&folder).is_ok_and(|m| m.is_dir()) && std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file());
+    let text = real.then(|| std::fs::read_to_string(&file).ok()).flatten().filter(|t| !t.trim().is_empty());
     text.unwrap_or_else(|| git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default())
 }
 
@@ -427,6 +430,19 @@ mod tests {
         assert_eq!(repo_instructions(&dir).trim(), "from a checked-out commit");
         std::fs::write(dir.join(".glasir/ai.md"), "  \n").unwrap();
         assert_eq!(repo_instructions(&dir).trim(), "from config");
+        #[cfg(unix)]
+        {
+            let outside = std::env::temp_dir().join(format!("glasir-ai-outside-{}", std::process::id()));
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("ai.md"), "aws_secret_access_key = x\n").unwrap();
+            std::fs::remove_file(dir.join(".glasir/ai.md")).unwrap();
+            std::os::unix::fs::symlink(outside.join("ai.md"), dir.join(".glasir/ai.md")).unwrap();
+            assert_eq!(repo_instructions(&dir).trim(), "from config");
+            std::fs::remove_dir_all(dir.join(".glasir")).unwrap();
+            std::os::unix::fs::symlink(&outside, dir.join(".glasir")).unwrap();
+            assert_eq!(repo_instructions(&dir).trim(), "from config");
+            let _ = std::fs::remove_dir_all(&outside);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

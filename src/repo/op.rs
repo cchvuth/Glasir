@@ -56,6 +56,7 @@ pub struct Op {
     pub custom: bool,
     /// Run (even when cancelled) if a command fails: rolls a multi-step op back, stopping at a failing step.
     pub on_fail: Vec<Vec<String>>,
+    pub reword: Option<String>,
 }
 
 /// What an op is about to overwrite, backed up first so ⌘Z brings it back.
@@ -88,6 +89,7 @@ impl Op {
             revert: None,
             custom: false,
             on_fail: vec![],
+            reword: None,
         }
     }
     pub fn revert(mut self, op: Op) -> Self {
@@ -133,8 +135,6 @@ pub enum Dropped {
     Run(Op),
     Note(String),
     Editor(Box<super::rebase::Editor>),
-    /// A reword's op: its message draft counts as saved once it runs.
-    Reworded(Op),
     Split(Op, Box<super::split::Split>),
 }
 
@@ -151,6 +151,7 @@ pub(super) enum Done {
     /// Undo or redo of step `id`, and its result: a redone op's fresh undo, a note, whether the
     /// refs were valid.
     Undo(bool, u64, Res<(Option<Box<Op>>, Option<String>, bool)>),
+    Skipped(String),
 }
 
 /// Pseudo-commands that only check state (and change nothing).
@@ -742,6 +743,11 @@ impl RepoTab {
             let message = if body.is_empty() { msg.clone() } else { format!("{msg}\n\n{body}") };
             return self.apply(ctx, Action::Reword { commit: commit.clone(), message });
         }
+        if let [cmd, commit] = op.cmds[0].as_slice()
+            && cmd == super::split::CONFIRMED
+        {
+            return self.start_split(ctx, commit.clone(), true);
+        }
         if let [cmd, undo, id] = op.cmds[0].as_slice()
             && (cmd == UNDO_RETRY || cmd == UNDO_SKIP)
         {
@@ -847,6 +853,9 @@ impl RepoTab {
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
                     self.switch_to = Some(self.dir.join(p));
                 }
+                if let (Ok(_), Some(c)) = (&res, &op.reword) {
+                    self.mark_saved(c);
+                }
                 // A squash merge leaves git's prepared message: put it in the commit box (never over typed text).
                 if res.is_ok() && !op.custom && op.cmds.iter().any(|c| c[0] == "merge" && c.iter().any(|a| a == "--squash")) {
                     let untouched = (self.summary.trim().is_empty() && self.body.trim().is_empty())
@@ -946,6 +955,10 @@ impl RepoTab {
                 {
                     let _ = git::run(&self.dir, &["rebase", "--quit"]);
                 }
+                self.reload(ctx, true);
+            }
+            Done::Skipped(text) => {
+                msgs.push(Msg { text, error: false });
                 self.reload(ctx, true);
             }
         }

@@ -23,7 +23,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("⌘-click / ⇧-click", "Select several commits, or WIP files to stage / unstage / discard"),
     ("⌘O / ⌘T / ⌘W", "Open repo / new tab / close tab"),
     ("⌘1 – ⌘9", "Go to tab 1–8 / the last tab"),
-    ("⌃Tab", "Next tab"),
+    ("⌃Tab / ⌃⇧Tab", "Next / previous tab"),
     ("⌘,", "Settings"),
     ("F5 / ⌘R", "Refresh"),
     ("⌘+ / ⌘- / ⌘0", "Zoom in / out / reset"),

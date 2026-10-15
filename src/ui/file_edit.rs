@@ -15,7 +15,7 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
     // ⌘⇧S is the global stage-all; consume_key ignores the extra Shift.
     let save = ui.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::COMMAND, Key::S));
     let dirty = ed.dirty();
-    let mut leave = ed.ask.is_none() && ui.input(|i| i.key_pressed(Key::Escape));
+    let mut leave = ed.ask.is_none() && super::format::esc_pressed(ui);
     if save && dirty && !ed.saving {
         acts.push(Action::EditSave);
     }
@@ -124,7 +124,7 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
                 }
                 start = r.ends_with_newline;
             }
-            if !ui.memory(|m| m.has_focus(out.response.id)) && ed.ask.is_none() && !ed.conflict && !ui.ctx().input(|i| i.pointer.any_down()) {
+            if ui.memory(|m| m.focused().is_none() && m.top_modal_layer().is_none()) && ed.ask.is_none() && !ed.conflict && !ui.ctx().input(|i| i.pointer.any_down()) {
                 out.response.request_focus();
             }
         });
@@ -144,7 +144,7 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
                 if ui.add(egui::Button::new(RichText::new("Discard").color(theme::del()))).clicked() {
                     done = Some(1);
                 }
-                if ui.button("Keep editing").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if super::format::dismissed(ui, "Keep editing") {
                     done = Some(2);
                 }
             });

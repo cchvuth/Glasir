@@ -1,7 +1,7 @@
 //! Patches: commits as `git format-patch` mbox text (copied or saved to a
 //! file), and applying a patch file (`git am` for mbox, `git apply` for plain diffs).
 
-use super::{Msg, Op, RepoTab, Task, Undo};
+use super::{Backup, Msg, Op, RepoTab, Task, Undo};
 use crate::git::{self, Res};
 use std::path::{Path, PathBuf};
 
@@ -28,7 +28,7 @@ pub(super) fn apply_op(path: &Path, text: &[u8]) -> Op {
     if text.starts_with(b"From ") {
         Op::new("Apply patch as commits", &["am", "--3way", &p]).undo(Undo::Keep)
     } else {
-        Op::new("Apply patch", &["apply", "--3way", &p])
+        Op::new("Apply patch", &["apply", "--3way", &p]).backup(Backup::Tree { revs: vec![], untracked: false })
     }
 }
 
@@ -83,7 +83,8 @@ impl RepoTab {
 mod tests {
     use super::*;
     use crate::repo::op::exec;
-    use crate::repo::testutil::{commit, identity, scratch, sh};
+    use crate::repo::Action;
+    use crate::repo::testutil::{commit, identity, scratch, settle, sh};
 
     #[test]
     fn patches_round_trip() {
@@ -100,7 +101,7 @@ mod tests {
         assert!(text.find("feat 1").unwrap() < text.find("feat 2").unwrap(), "oldest first");
         let files = scratch("patch-files");
         std::fs::write(files.join("p.mbox"), &mbox).unwrap();
-        let plain = git::run_raw(&dir, &["diff", "main", "feat"], None).unwrap();
+        let plain = git::run_raw(&dir, &["diff", "--no-ext-diff", "main", "feat"], None).unwrap();
         std::fs::write(files.join("p.diff"), &plain).unwrap();
 
         // A mailbox becomes commits.
@@ -116,6 +117,48 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "feat 2\n");
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), sh(&dir, &["rev-parse", "main"]));
         assert!(format_patch(&dir, &[]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&files);
+    }
+
+    #[test]
+    fn an_applied_diff_is_undone_with_the_staged_work_under_it() {
+        let dir = scratch("patch-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let lines = "1\n2\n3\n4\n5\n6\n7\n";
+        commit(&dir, "a.txt", lines);
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "a.txt", &lines.replace('7', "7 feat"));
+        commit(&dir, "b.txt", "new\n");
+        let plain = git::run_raw(&dir, &["diff", "--no-ext-diff", "main", "feat"], None).unwrap();
+        let files = scratch("patch-undo-files");
+        std::fs::write(files.join("p.diff"), &plain).unwrap();
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("a.txt"), lines.replace('1', "1 staged")).unwrap();
+        sh(&dir, &["add", "a.txt"]);
+        let state = || (sh(&dir, &["status", "--porcelain"]), sh(&dir, &["diff", "--cached"]), std::fs::read_to_string(dir.join("a.txt")).unwrap());
+        let before = state();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, crate::repo::View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(apply_op(&files.join("p.diff"), &plain)));
+        settle(&ctx, &mut t);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), lines.replace('1', "1 staged").replace('7', "7 feat"));
+        assert_eq!(sh(&dir, &["show", ":b.txt"]), "new\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(state(), before);
+        assert!(!dir.join("b.txt").exists());
+        std::fs::write(dir.join("a.txt"), lines.replace('7', "7 mine")).unwrap();
+        sh(&dir, &["add", "a.txt"]);
+        let before = state();
+        t.apply(&ctx, Action::Git(apply_op(&files.join("p.diff"), &plain)));
+        settle(&ctx, &mut t);
+        assert!(std::fs::read_to_string(dir.join("a.txt")).unwrap().contains("<<<<<<<"));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(state(), before);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&files);
     }
