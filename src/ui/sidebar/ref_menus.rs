@@ -55,21 +55,22 @@ fn view_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
 }
 
-fn worktree_compare(ui: &mut Ui, name: &str, acts: &mut Vec<Action>) {
-    if ui.button(format!("{}  Compare working tree with {name}", icon::GIT_DIFF)).on_hover_text("What your working tree changes relative to this ref").clicked() {
-        acts.push(Action::Select(Sel::Compare { from: name.into(), to: crate::git::WORKTREE.into(), three_dot: false }));
+fn worktree_compare(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
+    if ui.button(format!("{}  Compare working tree with {}", icon::GIT_DIFF, r.name)).on_hover_text("What your working tree changes relative to this ref").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: d.rev(r).into(), to: crate::git::WORKTREE.into(), three_dot: false }));
     }
 }
 
 fn compare_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     let (name, rev, tip) = (r.name.as_str(), d.rev(r), r.target.as_str());
-    worktree_compare(ui, name, acts);
+    worktree_compare(ui, d, r, acts);
     let Some(head) = d.status.branch.clone().filter(|h| h != name) else { return };
+    let from = d.local(&head).map_or(head.as_str(), |b| d.rev(b));
     if ui.button(format!("{}  Compare with {head}", icon::GIT_DIFF)).on_hover_text(format!("Changes on {name} since it diverged from {head}")).clicked() {
-        acts.push(Action::Select(Sel::Compare { from: head.clone(), to: rev.into(), three_dot: true }));
+        acts.push(Action::Select(Sel::Compare { from: from.into(), to: rev.into(), three_dot: true }));
     }
     if crate::ai::enabled() && ui.button(format!("{}  Explain changes vs {head}", icon::SPARKLE)).clicked() {
-        acts.push(Action::Ai(Purpose::ExplainRange { from: head.clone(), to: rev.into() }));
+        acts.push(Action::Ai(Purpose::ExplainRange { from: from.into(), to: rev.into() }));
     }
     if let Some(base) = d.local(&head) {
         // By commit id: a local branch name need not exist on the remote.
@@ -78,18 +79,35 @@ fn compare_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<
     }
 }
 
+/// The remote and its branch that `name` (a local or remote-tracking branch) stands for:
+/// where a local branch pushes to; origin and its own name when that is unknown.
+fn remote_branch(d: &RepoData, name: &str) -> (String, String) {
+    let r = d.refs.iter().find(|r| (r.name == name || r.full == name) && matches!(r.kind, RefKind::Local | RefKind::Remote));
+    let name = r.map_or(crate::git::short_ref(name), |r| r.name.as_str());
+    let dest = match r {
+        Some(r) if r.kind == RefKind::Local => d.push_dest(name, &r.upstream),
+        _ => d.split_remote(name),
+    };
+    dest.map_or(("origin".into(), name.to_owned()), |(a, b)| (a.to_owned(), b.to_owned()))
+}
+
+/// The compare page that opens a pull request of `head` into `base` (each a local or
+/// remote-tracking branch), on the remote `head` is on.
+pub(crate) fn pull_request_url(d: &RepoData, head: &str, base: &str) -> Option<String> {
+    let (remote, branch) = remote_branch(d, head);
+    let base = crate::git::short_ref(base);
+    let base = d.split_remote(base).map_or(base, |(_, b)| b);
+    Some(format!("{}/compare/{}...{}?expand=1", d.web_of(&remote)?, crate::git::url_path(base), crate::git::url_path(&branch)))
+}
+
 /// `r` is the branch (local or remote-tracking) whose PR / web pages these open.
 fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
-    let dest = match r.kind {
-        RefKind::Remote => d.split_remote(&r.name),
-        _ => d.push_dest(&r.name, &r.upstream),
-    };
-    let (remote, branch) = dest.map_or(("origin".into(), r.name.clone()), |(a, b)| (a.to_owned(), b.to_owned()));
+    let (remote, branch) = remote_branch(d, &r.name);
     ui.separator();
     if crate::ai::enabled() && ui.button(format!("{}  Write pull request…", icon::SPARKLE)).clicked() {
         let def = d.default_branch().to_owned();
         let base = if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def };
-        acts.push(Action::Ai(Purpose::PullRequest { branch: r.name.clone(), base }));
+        acts.push(Action::Ai(Purpose::PullRequest { branch: d.rev(r).into(), base }));
     }
     let Some(web) = d.web_of(&remote) else { return };
     let enc = crate::git::url_path;
@@ -110,7 +128,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
             acts.extend(branch_checkout(d, r));
         }
         if !r.upstream.is_empty() && r.behind > 0 && r.ahead == 0 && ui.button(format!("Fast-forward {name} to {}", r.upstream)).clicked() {
-            acts.push(Action::Git(Op::new(format!("Fast-forward {name}"), &["fetch", ".", &format!("{}:{name}", r.upstream)]).undo(Undo::Keep)));
+            acts.push(Action::Git(Op::new(format!("Fast-forward {name}"), &["fetch", ".", &format!("{}:{}", r.upstream, r.full)]).undo(Undo::Keep)));
         }
         if let Some((remote, rb)) = d.split_remote(&r.upstream).filter(|_| !r.gone)
             && ui.button(format!("Pull {name} (fast-forward, without checkout)")).clicked()
@@ -239,7 +257,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
         acts.extend(branch_checkout(d, r));
     }
     reset_menu(ui, d, &r.target, &r.name, acts);
-    worktree_compare(ui, &r.name, acts);
+    worktree_compare(ui, d, r, acts);
     if let Some(remote) = d.default_remote() {
         if ui.button(format!("Push tag to {remote}")).clicked() {
             acts.push(op(format!("Push tag {}", r.name), &["push", remote, &r.full]));
@@ -302,5 +320,86 @@ mod tests {
         load(&mut t, &sim.ctx);
         assert_eq!(git(&remote, &["rev-parse", "refs/heads/release-1.0"]), git(&dir, &["rev-parse", "HEAD"]));
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    #[test]
+    fn fast_forward_moves_the_branch_whatever_its_name() {
+        let mut sim = Sim::new(500.0, 900.0);
+        let mut t = tab(&sim.ctx, "ff-name", &["one"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        let main = git(&["branch", "--show-current"]).trim().to_owned();
+        git(&["branch", "tags/v1"]);
+        std::fs::write(dir.join("f"), "two").unwrap();
+        git(&["commit", "-q", "-am", "two"]);
+        git(&["branch", "-q", "-u", &main, "tags/v1"]);
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let (d, mut acts) = (t.data.as_ref().unwrap(), vec![]);
+        let mut draw = |ui: &mut Ui| ref_menu(ui, d, d.local("tags/v1").unwrap(), &mut acts);
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s.starts_with("Fast-forward tags/v1")).expect("the fast-forward item");
+        sim.click(at, PointerButton::Primary, draw);
+        t.apply(&sim.ctx, acts.remove(0));
+        load(&mut t, &sim.ctx);
+        assert_eq!(git(&["rev-parse", "refs/heads/tags/v1"]), git(&["rev-parse", "HEAD"]));
+        assert_eq!(git(&["tag"]), "");
+    }
+
+    #[test]
+    fn a_pull_request_opens_where_its_branch_is_pushed() {
+        let ctx = egui::Context::default();
+        let mut t = tab(&ctx, "pr-url", &["one"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        git(&["remote", "add", "origin", "https://github.com/o/r.git"]);
+        git(&["remote", "add", "upstream", "https://github.com/u/r.git"]);
+        for r in ["origin/main", "origin/bugfix-123", "upstream/feature"] {
+            git(&["update-ref", &format!("refs/remotes/{r}"), "HEAD"]);
+        }
+        git(&["branch", "-q", "fix"]);
+        git(&["branch", "-q", "--set-upstream-to=origin/bugfix-123", "fix"]);
+        t.reload(&ctx, true);
+        load(&mut t, &ctx);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!(pull_request_url(d, "fix", "origin/main").as_deref(), Some("https://github.com/o/r/compare/main...bugfix-123?expand=1"));
+        assert_eq!(pull_request_url(d, "upstream/feature", "origin/main").as_deref(), Some("https://github.com/u/r/compare/main...feature?expand=1"));
+        assert_eq!(pull_request_url(d, "refs/heads/fix", "origin/main").as_deref(), Some("https://github.com/o/r/compare/main...bugfix-123?expand=1"));
+    }
+
+    #[test]
+    fn compares_and_pull_requests_mean_the_branch_not_a_same_named_tag() {
+        let mut sim = Sim::new(500.0, 1400.0);
+        let mut t = tab(&sim.ctx, "compare-tagged", &["one"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap().trim().to_owned();
+        let other = git(&["branch", "--show-current"]);
+        git(&["tag", "release-1.0"]);
+        git(&["checkout", "-q", "-b", "release-1.0"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "two"]);
+        let branch = git(&["rev-parse", "refs/heads/release-1.0"]);
+        let mut revs = vec![];
+        for (head, menu, items) in [(&other, "release-1.0", &["Compare working tree with", "Write pull request"][..]), (&"release-1.0".to_owned(), other.as_str(), &["Compare with", "Explain changes vs"][..])] {
+            git(&["checkout", "-q", head]);
+            t.reload(&sim.ctx, true);
+            load(&mut t, &sim.ctx);
+            let d = t.data.as_ref().unwrap();
+            for item in items {
+                let mut acts = vec![];
+                let mut draw = |ui: &mut Ui| ref_menu(ui, d, d.local(menu).unwrap(), &mut acts);
+                sim.frame(vec![], &mut draw);
+                let at = sim.text(|s| s.contains(item)).unwrap_or_else(|| panic!("{item} is not in the menu"));
+                sim.click(at, PointerButton::Primary, draw);
+                revs.push(match acts.pop() {
+                    Some(Action::Select(Sel::Compare { from, .. })) => from,
+                    Some(Action::Ai(Purpose::ExplainRange { from, .. })) => from,
+                    Some(Action::Ai(Purpose::PullRequest { branch, .. })) => branch,
+                    _ => panic!("{item}: no compare or AI action"),
+                });
+            }
+        }
+        for rev in revs {
+            assert_eq!(git(&["rev-parse", &rev]), branch, "{rev} is the tag");
+        }
     }
 }

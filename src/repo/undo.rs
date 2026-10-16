@@ -436,7 +436,7 @@ impl RepoTab {
             let mut listed: HashSet<String> = git::stashes(&dir).unwrap_or_default().into_iter().map(|s| s.id).collect();
             for c in e.ops.iter().flat_map(|(u, _)| &u.cmds) {
                 match c.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-                    ["stash", "store", "-m", m, id] | [super::op::STASH_UNPOP, id, m] => {
+                    ["stash", "store", "-m", m, id] | [super::op::STASH_UNPOP | super::op::STASH_RENAME, id, m] => {
                         if listed.insert(id.to_owned()) && git::run(&dir, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_ok() && git::keep(&dir, id, m).is_ok() {
                             names.insert(format!("\"{m}\""));
                         }

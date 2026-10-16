@@ -187,7 +187,7 @@ impl Plan {
                 op = op.then(&["read-tree", "--reset", &self.head]);
             }
             op = op
-                .then(&["apply", "--cached", "--unidiff-zero", &file])
+                .then(&["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", &file])
                 // `fixup! <sha>`: `--fixup` writes the subject, which autosquash matches to the oldest commit with it.
                 .then(&["commit", "-q", "--no-verify", "-m", &format!("fixup! {}", self.cands[t].0)]);
         }
@@ -228,7 +228,7 @@ impl RepoTab {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repo::testutil::{identity, scratch, sh};
+    use crate::repo::testutil::{commit, identity, scratch, sh};
 
     #[test]
     fn blame_porcelain() {
@@ -441,6 +441,23 @@ mod tests {
         assert_eq!(g(&["show", "HEAD:g"]), "g1 fixed\n");
         assert_eq!(g(&["diff", "--cached", "--name-only"]), "p\n");
         assert_eq!((g(&["ls-files", "-t", "README"]), g(&["status", "--porcelain"])), ("S README\n".into(), "M  p\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `apply.whitespace=fix` changes nothing absorbed: trailing whitespace stays.
+    #[test]
+    fn absorb_keeps_trailing_whitespace() {
+        let dir = scratch("absorb-ws");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "README", "root\n");
+        commit(&dir, "f", "f1\nf2\n");
+        sh(&dir, &["config", "apply.whitespace", "fix"]);
+        std::fs::write(dir.join("f"), "f1 fixed \nf2\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        let plan = Plan::load(&dir).unwrap();
+        crate::repo::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
+        assert_eq!((sh(&dir, &["show", "HEAD:f"]), sh(&dir, &["rev-list", "--count", "HEAD"])), ("f1 fixed \nf2\n".into(), "2\n".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

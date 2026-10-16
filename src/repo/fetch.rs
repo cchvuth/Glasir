@@ -66,19 +66,21 @@ mod tests {
         settle(&ctx, &mut a);
         settle(&ctx, &mut b);
         let fetches = || git::LOG.lock().unwrap().iter().filter(|l| l.cwd == dir && l.args.iter().any(|x| x == "fetch")).count();
-        for user in [fetch_op(), Op::new("Prune origin", &[crate::repo::tools::SHELL, "git remote prune origin"])] {
+        for user in [fetch_op(a.data.as_ref().unwrap()), Op::new("Prune origin", &[crate::repo::tools::SHELL, "git remote prune origin"])] {
             let _ = std::fs::remove_file(&gate);
             b.last_fetch = f64::NEG_INFINITY;
             b.auto_fetch(&ctx, 10, false);
             wait_for("the background fetch", || gate.exists());
             let n = fetches();
             a.last_fetch = f64::NEG_INFINITY;
+            a.fetch_failed = Some("an earlier fetch failed".into());
             a.auto_fetch(&ctx, 10, false);
             wait_for("a background fetch that skips", || {
                 a.auto_fetch(&ctx, 0, false);
                 a.bg_fetch.is_none()
             });
             assert_eq!(fetches(), n, "two fetches at once");
+            assert!(a.fetch_failed.is_some(), "a skipped fetch fetched nothing: the failure stays");
             let start = std::time::Instant::now();
             a.apply(&ctx, Action::Git(user));
             let msgs = settle(&ctx, &mut a);
@@ -94,6 +96,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wt);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    #[test]
+    fn fetches_prune_remote_tracking_refs_only() {
+        use crate::repo::{data::load_all, op::exec};
+        let (up, dir) = (scratch("prune-only-up"), scratch("prune-only"));
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a", "1");
+        sh(&up, &["branch", "gone"]);
+        sh(&dir, &["clone", "-q", up.to_str().unwrap(), "."]);
+        identity(&dir);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(fetch_op(&d).cmds, [["fetch", "--all", "--prune", "--progress"]]);
+        sh(&dir, &["config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]);
+        sh(&dir, &["config", "--add", "remote.origin.fetch", "+refs/notes/*:refs/notes/*"]);
+        sh(&dir, &["tag", "mine"]);
+        sh(&dir, &["notes", "add", "-m", "unpushed", "HEAD"]);
+        sh(&up, &["branch", "-D", "gone"]);
+        commit(&up, "a", "2");
+        sh(&up, &["tag", "v2"]);
+        let refs = || sh(&dir, &["for-each-ref", "--format=%(refname)"]);
+        git::fetch_quiet(&dir).unwrap();
+        let r = refs();
+        assert!(r.contains("refs/tags/mine\n") && r.contains("refs/notes/commits\n") && !r.contains("v2") && !r.contains("origin/gone"), "{r}");
+        assert_eq!(sh(&dir, &["rev-parse", "origin/main"]), sh(&up, &["rev-parse", "main"]));
+        sh(&dir, &["update-ref", "refs/remotes/origin/stale", "HEAD"]);
+        exec(&dir, &fetch_op(&load_all(&dir, 100, View::default()).unwrap())).unwrap();
+        let r = refs();
+        assert!(r.contains("refs/tags/mine\n") && r.contains("refs/notes/commits\n") && r.contains("refs/tags/v2\n") && !r.contains("origin/stale"), "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
     }
 }
 
@@ -124,7 +158,7 @@ impl RepoTab {
             self.last_fetch = now;
             let (dir, common, cancel) = (self.dir.clone(), self.common.clone(), git::Cancel::default());
             self.bg_fetch = Some(Task::spawn(ctx, move || {
-                let Some(_turn) = Fetching::background(common, &cancel) else { return Ok(false) };
+                let Some(_turn) = Fetching::background(common, &cancel) else { return Err(git::CANCELLED.into()) };
                 cancel.scope(|| {
                     let refs = || git::run(&dir, &["for-each-ref", "--format=%(objectname) %(refname)", "refs/remotes"]);
                     let before = refs()?;

@@ -277,18 +277,23 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         }
         if !worktree || (change.code != '?' && change.code != 'A') {
             // A commit's file is blamed at that commit (a working-tree compare's in the working
-            // tree); a deleted one isn't there to blame.
+            // tree); a deleted one isn't there to blame. A deleted working-tree file: at HEAD.
             let rev = match &src {
                 DiffSrc::Commit { id, .. } => (change.code != 'D').then(|| (!wt_compare).then(|| id.clone())),
-                DiffSrc::Worktree { .. } => Some(None),
+                DiffSrc::Worktree { .. } => Some((change.code == 'D').then(|| "HEAD".into())),
             };
             if let Some(rev) = rev
-                && theme::pill(ui, icon::USER_LIST).on_hover_text(if rev.is_some() { "Blame at this commit" } else { "Blame" }).clicked()
+                && theme::pill(ui, icon::USER_LIST).on_hover_text(match &rev {
+                    Some(_) if worktree => "Blame at HEAD",
+                    Some(_) => "Blame at this commit",
+                    None => "Blame",
+                }).clicked()
             {
                 acts.push(Action::FileView(change.path.clone(), Mode::Blame(rev)));
             }
             if theme::pill(ui, icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("File history").clicked() {
-                acts.push(Action::FileView(change.path.clone(), Mode::History));
+                let path = if worktree { change.old_path.as_ref().unwrap_or(&change.path) } else { &change.path };
+                acts.push(Action::FileView(path.clone(), Mode::History));
             }
         }
         if worktree {
@@ -306,6 +311,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         } else if let (true, Some(f)) = (worktree, file.filter(|f| f.whole_only || f.lossy)) {
             let (note, why) = match f.whole_only {
                 true => ("git converts it on add", "git add converts this file (CRLF line endings, an LFS or other filter), so the lines shown aren't the ones staged: stage the whole file."),
+                false if change.code == 'T' => ("typechange", "This file became a symlink (or a symlink a file), which can't be staged in parts: stage the whole file."),
                 false => ("not UTF-8", "This file isn't valid UTF-8, so its lines are shown approximately and can't be staged one by one: stage the whole file."),
             };
             ui.label(RichText::new(if narrow { icon::INFO.to_string() } else { format!("{}  Line staging off: {note}", icon::INFO) }).small().color(theme::changed())).on_hover_text(why);
@@ -476,8 +482,8 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     };
     let mono = FontId::monospace(12.5);
     let rev = match &src {
-        DiffSrc::Commit { id, .. } => id.as_str(),
-        DiffSrc::Worktree { .. } => "",
+        DiffSrc::Commit { id, parent, .. } => (id.as_str(), parent.as_deref()),
+        DiffSrc::Worktree { .. } => ("", None),
     };
     let (seen, shown) = (mem.with("src"), egui::Id::new((&change.path, rev, staged)));
     let fresh = ui.data(|m| m.get_temp::<egui::Id>(seen)) != Some(shown);

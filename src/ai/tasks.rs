@@ -3,11 +3,15 @@
 
 use super::client::{Config, Ev, Provider, complete, need_token};
 use crate::git::{self, Res};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 
 /// Diffs above this many bytes are refused with a message rather than truncated.
 pub const MAX_CONTEXT: usize = 1_500_000;
+
+/// Untracked files named in a prompt; the rest are counted.
+const MAX_UNTRACKED: usize = 200;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Purpose {
@@ -33,7 +37,7 @@ impl Purpose {
             Purpose::ExplainWip => "Working changes".into(),
             Purpose::Compose => "Compose commits".into(),
             Purpose::Explain(id) => format!("Explain {}", &id[..id.len().min(7)]),
-            Purpose::PullRequest { branch, .. } => format!("Pull request for {branch}"),
+            Purpose::PullRequest { branch, .. } => format!("Pull request for {}", crate::git::short_ref(branch)),
             Purpose::StashMessage => "Stash".into(),
             Purpose::Resolve(p) => format!("Resolve {p}"),
             Purpose::ExplainRange { from, to } => format!("Changes in {} since {}", crate::git::short_ref(to), crate::git::short_ref(from)),
@@ -92,12 +96,12 @@ pub fn secret(path: &str) -> bool {
 }
 
 fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
-    let mut stat = vec!["diff", "--no-color", "--no-ext-diff", "--stat=200"];
+    let mut stat = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=200"];
     stat.extend_from_slice(range);
     let mut added = vec!["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A"];
     added.extend_from_slice(range);
     let hidden: Vec<String> = git::run(dir, &added)?.split('\0').filter(|p| secret(p)).map(|p| format!(":(exclude,literal){p}")).collect();
-    let mut patch = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
+    let mut patch = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"];
     patch.extend_from_slice(range);
     patch.push("--");
     patch.push(".");
@@ -136,7 +140,12 @@ fn recent_subjects(dir: &Path) -> String {
 
 fn uncommitted_changes(dir: &Path) -> Res<(String, String)> {
     let diff = diff_with_stat(dir, &[&head_or_empty(dir)?])?;
-    let untracked = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+    let all = git::run(dir, &["ls-files", "--others", "--exclude-standard"]).unwrap_or_default();
+    let names: Vec<&str> = all.lines().collect();
+    let mut untracked = names[..names.len().min(MAX_UNTRACKED)].join("\n");
+    if names.len() > MAX_UNTRACKED {
+        untracked += &format!("\n…and {} more", names.len() - MAX_UNTRACKED);
+    }
     Ok((diff, untracked))
 }
 
@@ -183,7 +192,9 @@ fn repo_instructions(dir: &Path) -> String {
     let trusted = git::run(dir, &["config", "--bool", "--get", "glasir.aiFile"]).is_ok_and(|v| v.trim() == "true");
     let (folder, file) = (dir.join(".glasir"), dir.join(".glasir/ai.md"));
     let real = trusted && std::fs::symlink_metadata(&folder).is_ok_and(|m| m.is_dir()) && std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file());
-    let text = real.then(|| std::fs::read_to_string(&file).ok()).flatten().filter(|t| !t.trim().is_empty());
+    let mut buf = vec![];
+    let read = real && std::fs::File::open(&file).and_then(|f| f.take(MAX_INSTRUCTIONS as u64 * 4).read_to_end(&mut buf)).is_ok();
+    let text = read.then(|| String::from_utf8_lossy(&buf).into_owned()).filter(|t| !t.trim().is_empty());
     text.unwrap_or_else(|| git::run(dir, &["config", "--get", "glasir.aiInstructions"]).unwrap_or_default())
 }
 
@@ -321,14 +332,14 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             )
         }
         Purpose::Resolve(path) => {
-            if !std::fs::symlink_metadata(dir.join(path)).is_ok_and(|m| m.is_file()) {
+            let Some(file) = std::fs::symlink_metadata(dir.join(path)).ok().filter(|m| m.is_file()) else {
                 return Err(format!("{path} is not a regular file; resolve it manually."));
-            }
+            };
             // `draft`: the merge editor's output, partly resolved by the user.
-            let content = if draft.is_empty() { std::fs::read_to_string(dir.join(path)).map_err(|e| format!("{path}: {e}"))? } else { draft.to_owned() };
-            if content.len() > MAX_CONTEXT / 3 {
+            if (if draft.is_empty() { file.len() } else { draft.len() as u64 }) > (MAX_CONTEXT / 3) as u64 {
                 return Err(format!("{path} is too large to resolve with AI."));
             }
+            let content = if draft.is_empty() { std::fs::read_to_string(dir.join(path)).map_err(|e| format!("{path}: {e}"))? } else { draft.to_owned() };
             let side = |n: &str| git::run(dir, &["log", "-n", "5", "--format=- %s", n, "--", path]).unwrap_or_default();
             let theirs = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"]
                 .into_iter()
@@ -430,6 +441,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A textconv driver (git-crypt, sops) would hand the AI the decrypted text.
+    #[test]
+    fn diffs_skip_textconv_and_untracked_names_are_capped() {
+        let dir = std::env::temp_dir().join(format!("glasir-ai-textconv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git::run(&dir, &["init", "-q"]).unwrap();
+        git::run(&dir, &["config", "diff.crypt.textconv", "echo plaintext-password"]).unwrap();
+        std::fs::write(dir.join(".git/info/attributes"), "vault diff=crypt\n").unwrap();
+        std::fs::write(dir.join("vault"), "ciphertext\n").unwrap();
+        git::run(&dir, &["add", "vault"]).unwrap();
+        for i in 0..MAX_UNTRACKED + 5 {
+            std::fs::write(dir.join(format!("u{i:03}")), "").unwrap();
+        }
+        for p in [Purpose::CommitMessage { amend: false }, Purpose::ExplainWip, Purpose::StashMessage] {
+            let (prompt, ..) = build(&dir, &p, "").unwrap();
+            assert!(prompt.contains("ciphertext") && !prompt.contains("plaintext-password"), "{p:?}: {prompt}");
+        }
+        let (prompt, ..) = build(&dir, &Purpose::ExplainWip, "").unwrap();
+        assert!(prompt.contains("u000\n") && !prompt.contains("u204") && prompt.contains("…and 5 more"), "{prompt}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_refuses_a_huge_file_before_reading_it() {
+        let dir = std::env::temp_dir().join(format!("glasir-ai-huge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Not UTF-8: reading it first fails with another error.
+        std::fs::write(dir.join("big"), vec![0xff; MAX_CONTEXT / 3 + 1]).unwrap();
+        let err = build(&dir, &Purpose::Resolve("big".into()), "").unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn system_prompt_appends_global_then_repo_instructions() {
         assert_eq!(system_with("  ", ""), SYSTEM);
@@ -456,6 +502,9 @@ mod tests {
         // A cloned repo's file only counts once the user opted in (local config a clone can't set).
         git::run(&dir, &["config", "glasir.aiFile", "true"]).unwrap();
         assert_eq!(repo_instructions(&dir).trim(), "from a checked-out commit");
+        std::fs::write(dir.join(".glasir/ai.md"), "€".repeat(MAX_INSTRUCTIONS * 10)).unwrap();
+        let big = repo_instructions(&dir);
+        assert!(big.starts_with('€') && big.len() <= MAX_INSTRUCTIONS * 4 + 3, "{}", big.len());
         std::fs::write(dir.join(".glasir/ai.md"), "  \n").unwrap();
         assert_eq!(repo_instructions(&dir).trim(), "from config");
         #[cfg(unix)]

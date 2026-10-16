@@ -225,7 +225,7 @@ impl Search {
             // A reload: re-run only if a ref moved (new commits), not for every refresh.
             self.log = log;
             let mut h = DefaultHasher::new();
-            (d.view.revs(), d.refs.iter().map(|r| (&r.full, &r.target)).collect::<Vec<_>>(), &d.status.head).hash(&mut h);
+            (d.view.revs(d.refs.iter().map(|r| r.full.as_str())), d.refs.iter().map(|r| (&r.full, &r.target)).collect::<Vec<_>>(), &d.status.head).hash(&mut h);
             self.refs_fp = h.finish();
         }
         let key = (self.query.trim().to_owned(), self.case, self.refs_fp);
@@ -304,7 +304,8 @@ impl Search {
         let fmt = format!("{}%x1f%B", git::LOG_FORMAT);
         let mut args: Vec<String> = ["--literal-pathspecs", "log", "--date-order", "-z", git::DATE_FORMAT, &fmt].map(String::from).into();
         args.extend(q.args.iter().cloned());
-        args.extend(d.view.revs());
+        let (revs, shown) = d.view.revs(d.refs.iter().map(|r| r.full.as_str()));
+        args.extend(revs);
         args.push("--".into());
         args.extend(q.paths.iter().cloned());
         let (tx, rx) = channel();
@@ -314,7 +315,7 @@ impl Search {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
             let mut n = 0;
             let r = cancel.scope(|| {
-                git::stream(&dir, &a, |rec| {
+                git::stream(&dir, &a, &shown, |rec| {
                     let Some((c, body)) = record(rec) else { return true };
                     if !q.matches(&c, body, case) {
                         return true;

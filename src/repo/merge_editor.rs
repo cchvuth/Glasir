@@ -168,6 +168,7 @@ pub(crate) enum Row {
 pub(crate) struct Loaded {
     /// The file as read: saving refuses to overwrite edits made elsewhere meanwhile.
     pub(crate) original: Vec<u8>,
+    pub(crate) text: String,
     /// Why only a whole side can be taken (binary, symlink, deleted, no markers).
     pub(crate) whole: Option<&'static str>,
     /// A regular file in the working tree, or none: what a backup can cover.
@@ -280,7 +281,8 @@ fn load(dir: &Path, path: &str) -> Loaded {
         _ => vec![],
     };
     // git's own binary test; other encodings are text (see `decode`).
-    let text = Some(decode(&original)).filter(|_| !original[..original.len().min(8000)].contains(&0));
+    let decoded = decode(&original);
+    let text = Some(decoded.as_str()).filter(|_| !original[..original.len().min(8000)].contains(&0));
     // Unmerged index entries: stage 2 = current, 3 = incoming. Not unmerged (or no repo): assume both.
     let unmerged = git::run(dir, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", path]).unwrap_or_default();
     let has = |n: &str| unmerged.is_empty() || unmerged.split('\0').any(|e| e.split_once('\t').is_some_and(|(m, _)| m.ends_with(n)));
@@ -295,7 +297,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
         _ => None,
     };
     let (mut orig, mut sides, mut width) = (vec![], [vec![], vec![]], [0, 0]);
-    for c in parse(text.as_deref().unwrap_or(""), size) {
+    for c in parse(text.unwrap_or(""), size) {
         let k = orig.len();
         let texts = match &c {
             Chunk::Text(t) => [(t, None), (t, None)],
@@ -320,7 +322,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
         whole = Some("No conflict markers found in this file.");
     }
     let file = meta.as_ref().map_or(true, |m| m.is_file());
-    Loaded { original, whole, stages, file, size, labels: labels(dir), orig, sides, width }
+    Loaded { original, text: decoded, whole, stages, file, size, labels: labels(dir), orig, sides, width }
 }
 
 /// Writes the resolved file, refusing symlinks and files changed since they were loaded.
@@ -493,7 +495,7 @@ impl Editor {
     }
 
     pub fn edited(&self) -> bool {
-        self.data.as_ref().is_some_and(|d| decode(&d.original) != self.output)
+        self.data.as_ref().is_some_and(|d| d.text != self.output)
     }
 
     /// Replace the output (e.g. with Claude's resolution).

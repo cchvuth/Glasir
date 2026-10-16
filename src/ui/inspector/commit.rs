@@ -342,7 +342,7 @@ impl RepoTab {
                     if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
-                    file_items(ui, &c.path, blame_rev.as_deref(), acts);
+                    file_items(ui, &c.path, &c.path, blame_rev.as_deref(), acts);
                     if let Some(d) = self.data.as_ref().filter(|_| !wt) {
                         open_items(ui, d, &info.id, &c.path, c.code == 'D', acts);
                     }

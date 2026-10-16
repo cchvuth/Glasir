@@ -367,7 +367,7 @@ impl RepoTab {
             identity_row(ui, d, &self.email_rules, acts);
             let next = ui.horizontal(|ui| {
                 let n = self.summary.chars().count();
-                let r = ui.add(TextEdit::singleline(&mut self.summary).id(sum_id).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
+                let r = ui.add(TextEdit::singleline(&mut self.summary).id(sum_id).interactive(!generating).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
                 if std::mem::take(&mut self.focus_summary) {
                     r.request_focus();
                 }
@@ -375,7 +375,7 @@ impl RepoTab {
                 r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
             })
             .inner;
-            theme::description(ui, &mut self.body, body_id, true);
+            theme::description(ui, &mut self.body, body_id, !generating);
             if next {
                 ui.memory_mut(|m| m.request_focus(body_id));
             }
@@ -650,10 +650,10 @@ impl RepoTab {
                         }
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != '?' {
-                            file_items(ui, &c.path, None, acts);
+                            file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), (c.code == 'D').then_some("HEAD"), acts);
                         }
                         if let Some(h) = d.status.head.as_deref().filter(|_| !matches!(c.code, '?' | 'A')) {
-                            permalink_items(ui, d, h, &c.path, acts);
+                            permalink_items(ui, d, h, c.old_path.as_deref().unwrap_or(&c.path), acts);
                         }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));
@@ -730,10 +730,10 @@ impl RepoTab {
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {
-                            file_items(ui, &c.path, None, acts);
+                            file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), (c.code == 'D').then_some("HEAD"), acts);
                         }
                         if let Some(h) = d.status.head.as_deref().filter(|_| c.code != 'A') {
-                            permalink_items(ui, d, h, &c.path, acts);
+                            permalink_items(ui, d, h, c.old_path.as_deref().unwrap_or(&c.path), acts);
                         }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));
@@ -782,5 +782,32 @@ mod tests {
             sim.frame(vec![], |ui| draw(ui, &d));
         }
         assert!(sim.text(|t| t == "bob <bob@x>").is_some() && sim.text(|t| t == "ann <ann@x>").is_none(), "the people of the log now loaded");
+    }
+
+    #[test]
+    fn a_renamed_files_history_and_a_deleted_files_blame_look_at_head() {
+        use crate::repo::history::Mode;
+        let mut sim = Sim::new(420.0, 900.0);
+        let mut t = tab(&sim.ctx, "wip-renamed-deleted", &["x"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        std::fs::write(dir.join("gone.txt"), "g\n").unwrap();
+        git(&["add", "gone.txt"]);
+        git(&["commit", "-q", "-m", "gone"]);
+        git(&["mv", "f", "renamed.txt"]);
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        t.reload(&sim.ctx, true);
+        crate::ui::testkit::load(&mut t, &sim.ctx);
+        let mut opened = vec![];
+        for (row, item) in [("renamed.txt", "File history"), ("gone.txt", "Blame")] {
+            let mut acts = vec![];
+            let mut draw = |ui: &mut Ui| t.wip_panel(ui, &mut false, &mut acts);
+            sim.open_menu(row, &mut draw);
+            sim.frame(vec![], &mut draw);
+            let at = sim.text(|s| s.contains(item)).unwrap_or_else(|| panic!("{item} is not in {row}'s menu"));
+            sim.click(at, egui::PointerButton::Primary, draw);
+            opened.extend(acts.into_iter().filter_map(|a| if let Action::FileView(p, m) = a { Some((p, m)) } else { None }));
+        }
+        assert_eq!(opened, [("f".into(), Mode::History), ("gone.txt".into(), Mode::Blame(Some("HEAD".into())))]);
     }
 }

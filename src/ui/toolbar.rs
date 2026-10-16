@@ -90,7 +90,7 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                 let chip = RichText::new(format!("{}  {}", icon::CLOUD_WARNING, git::fetch_failure(e))).color(theme::changed());
                 let r = theme::group(ui, |ui| theme::pill(ui, chip)).on_hover_text(format!("Background fetch failed:\n{}\n\nClick to fetch now (asks for credentials if needed).", e.trim()));
                 if r.clicked() && !busy {
-                    acts.push(Action::Git(fetch_op()));
+                    acts.extend(t.data.as_ref().map(|d| Action::Git(fetch_op(d))));
                 }
                 if e.to_lowercase().contains("permission denied (publickey")
                     && let Some(remote) = t.data.as_ref().and_then(|d| d.remotes.iter().find(|r| r.0 == "origin").or(d.remotes.first())).map(|r| r.0.clone())
@@ -198,7 +198,7 @@ fn toolbar_remote(ui: &mut Ui, t: &RepoTab, s: &mut Settings, compact: bool, act
     {
         {
             if theme::pill(ui, label(compact, icon::CLOUD_ARROW_DOWN, "Fetch")).on_hover_text("Fetch all remotes and prune").clicked() {
-                acts.push(Action::Git(fetch_op()));
+                acts.extend(t.data.as_ref().map(|d| Action::Git(fetch_op(d))));
             }
             if theme::pill(ui, label(compact, icon::ARROW_LINE_DOWN, "Pull")).on_hover_text(format!("{} (with autostash)", pull_hint(s.pull))).clicked() {
                 acts.push(Action::Git(pull_op(s.pull)));

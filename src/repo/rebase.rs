@@ -98,15 +98,14 @@ impl Editor {
             let verb = match it.act {
                 Act::Pick | Act::Reword => "pick",
                 Act::Edit => "edit",
-                Act::Squash => "squash",
-                Act::Fixup => "fixup",
+                Act::Squash | Act::Fixup => "fixup",
                 Act::Drop => "drop",
             };
             // Settings → "(cherry picked from commit …)": `pick` has no -x, so the trailer is
             // added by amending the fresh pick (or written into a reword's message).
             let x = self.cherry && super::merge_opts::pick_x();
             let note = format!("(cherry picked from commit {})", it.id);
-            if it.act != Act::Reword && !(x && it.act == Act::Pick) {
+            if !matches!(it.act, Act::Reword | Act::Squash) && !(x && it.act == Act::Pick) {
                 todo += &format!("{verb} {}\n", it.id);
                 continue;
             }
@@ -118,12 +117,17 @@ impl Editor {
             if reword {
                 std::fs::write(&msg, text).map_err(|e| e.to_string())?;
             }
+            let add = git_dir.join(format!("glasir-squash-{n}"));
+            if it.act == Act::Squash {
+                std::fs::write(&add, format!("\n{}\n", it.message.trim())).map_err(|e| e.to_string())?;
+            }
             // Amend only if the pick made a commit: one that became empty and was
             // skipped would leave the amend to reword the commit before it.
-            let (msg, pre) = (sh_quote(&msg), sh_quote(&pre));
-            let amend = match reword {
-                true => format!("git commit --amend --allow-empty -F {msg}"),
-                false => format!("git log -1 --format=%B > {msg} && printf '\\n%s\\n' '{note}' >> {msg} && git commit --amend --allow-empty -F {msg}"),
+            let (msg, pre, add) = (sh_quote(&msg), sh_quote(&pre), sh_quote(&add));
+            let amend = match it.act {
+                Act::Reword => format!("git commit --amend --allow-empty -F {msg}"),
+                Act::Squash => format!("git log -1 --format=%B > {msg} && cat {add} >> {msg} && git commit --amend --allow-empty -F {msg}"),
+                _ => format!("git log -1 --format=%B > {msg} && printf '\\n%s\\n' '{note}' >> {msg} && git commit --amend --allow-empty -F {msg}"),
             };
             todo += &format!("exec git rev-parse HEAD > {pre}\n{verb} {}\n", it.id);
             todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then {amend}; fi\n");
@@ -242,13 +246,17 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
 /// Asks first when rewriting `commit` up to `tip` (HEAD or `refs/heads/<branch>`) reaches
 /// commits already on the upstream (`HEAD@{u}` or `<branch>@{u}`), or else on any remote branch
 /// (no upstream or a gone one, a fork's branch, one pushed without -u).
-fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: Op) -> Op {
-    // The commits the rewrite replaces (`commit` and its descendants up to HEAD) that the upstream
-    // has: those up to the merge bases (an extra `^@{u}` would cut the ancestry path short).
-    let (ancestry, parents) = (format!("--ancestry-path={commit}"), format!("^{commit}^@"));
+fn confirm_pushed(dir: &Path, commit: &str, ends: (&str, &str), op: Op) -> Op {
+    confirm_revs(dir, &[&format!("--ancestry-path={commit}"), &format!("^{commit}^@")], ends, op)
+}
+
+/// [`confirm_pushed`] for the commits `tip` `limit` selects (`commit` and its descendants, or a whole range).
+fn confirm_revs(dir: &Path, limit: &[&str], (tip, upstream): (&str, &str), op: Op) -> Op {
+    // The commits the rewrite replaces that the upstream has: those up to the merge bases (an
+    // extra `^@{u}` would cut the ancestry path short).
     if let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", upstream]) {
         let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
-        let mut args = vec!["rev-list", "--count", &ancestry, &parents];
+        let mut args = [&["rev-list", "--count"][..], limit].concat();
         args.extend(bases.lines());
         let n = match bases.trim().is_empty() {
             true => 0,
@@ -258,8 +266,8 @@ fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: O
             return op.confirm(rewrites_pushed(n, Some(up.trim())));
         }
     }
-    let all = git::run(dir, &["rev-list", &ancestry, tip, &parents]).unwrap_or_default();
-    let local = git::run(dir, &["rev-list", tip, &parents, "--not", "--remotes"]).unwrap_or_default();
+    let all = git::run(dir, &[&["rev-list", tip][..], limit].concat()).unwrap_or_default();
+    let local = git::run(dir, &[&["rev-list", tip][..], limit, &["--not", "--remotes"]].concat()).unwrap_or_default();
     let local: std::collections::HashSet<&str> = local.lines().collect();
     match all.lines().filter(|c| !local.contains(c)).count() {
         0 => op,
@@ -283,14 +291,11 @@ pub fn confirm_rebase(dir: &Path, onto: &str, branch: Option<&str>, first: Optio
     let range = format!("{onto}..{tip}");
     let on_top = git::run(dir, &["merge-base", "--is-ancestor", onto, &tip]).is_ok();
     let linear = || git::run(dir, &["rev-list", "-n1", "--min-parents=2", &range]).is_ok_and(|m| m.trim().is_empty());
-    let first = match first {
-        Some(c) if on_top => Some(c.to_owned()),
-        _ if on_top && linear() => None,
-        _ => git::run(dir, &["rev-list", "--topo-order", "--reverse", &range]).ok().and_then(|r| r.lines().next().map(String::from)),
-    };
     match first {
-        Some(c) => confirm_pushed(dir, &c, (&tip, &up), op),
-        None => op,
+        Some(c) if on_top => confirm_pushed(dir, c, (&tip, &up), op),
+        _ if on_top && linear() => op,
+        // A plain rebase drops the merges and replays the commits they brought in too.
+        _ => confirm_revs(dir, &[&format!("^{onto}")], (&tip, &up), op),
     }
 }
 
@@ -479,7 +484,9 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
 pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     let short = &commit[..commit.len().min(7)];
     if is_head {
-        return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), Op::new(format!("Split {short}"), &["reset", "-q", "HEAD^"]).undo(Undo::Mixed)));
+        let sym = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();
+        let op = Op::new(format!("Split {short}"), &[HEAD_IS, &format!("{} {commit}", sym.trim())]).then(&["reset", "-q", "HEAD^"]).undo(Undo::Mixed);
+        return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op));
     }
     on_branch(dir, commit)?;
     let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}^")]).map_err(|_| "The root commit can't be split.".to_string())?;
@@ -855,6 +862,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A plain rebase of a branch that merged the remote's main onto a stale local main also
+    /// replays the merged-in commits: it asks first.
+    #[test]
+    fn rebase_over_a_merge_of_pushed_commits_asks_first() {
+        use crate::repo::testutil::*;
+        let dir = scratch("rebase-merged-remote");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "m", "m0");
+        sh(&dir, &["checkout", "-q", "-b", "up"]);
+        commit(&dir, "o1", "o1");
+        commit(&dir, "o2", "o2");
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "up"]);
+        sh(&dir, &["checkout", "-q", "-b", "feature", "main"]);
+        sh(&dir, &["branch", "-D", "up"]);
+        commit(&dir, "f1", "f1");
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge", "origin/main"]);
+        commit(&dir, "f2", "f2");
+        let ask = confirm_rebase(&dir, "main", None, None, Op::new("Rebase", &["rebase", "main"])).confirm;
+        assert!(ask.as_deref().is_some_and(|c| c.contains("2 commits already on a remote branch")), "{ask:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reword_head_refuses_once_head_moved() {
         let (dir, g) = repo("reword-head-moved");
@@ -868,6 +898,20 @@ mod tests {
         let stale = reword(&dir, &gd, &head, true, None, "c3 better".into()).unwrap();
         assert!(crate::repo::op::exec(&dir, &stale).is_err());
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["new work", "c3", "c2", "c1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_head_refuses_once_head_moved() {
+        let (dir, g) = repo("split-head-moved");
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        let op = split(&dir, &git::git_dir(&dir).unwrap(), &head, true).unwrap();
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "d"]);
+        g(&["commit", "-q", "-m", "new work"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        assert!(crate::repo::op::exec(&dir, &op).is_err());
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -949,6 +993,22 @@ mod tests {
         assert_eq!(g2(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c1"]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    /// A squash keeps the messages' `#` lines, and never commits git's template (`core.commentChar=auto`).
+    #[test]
+    fn squash_keeps_hash_lines_and_no_template() {
+        for auto in [false, true] {
+            let (dir, g) = repo(if auto { "squash-auto" } else { "squash-hash" });
+            g(&["commit", "-q", "--amend", "-m", "c3\n\n#123 reported by Ann"]);
+            if auto {
+                g(&["config", "core.commentChar", "auto"]);
+            }
+            let ids: Vec<String> = g(&["rev-list", "HEAD"]).lines().map(String::from).collect();
+            run_op(&dir, &multi(&dir, &git::git_dir(&dir).unwrap(), &ids[..2], Act::Squash).unwrap());
+            assert_eq!(g(&["log", "-1", "--format=%B"]).trim(), "c2\n\nc3\n\n#123 reported by Ann", "auto={auto}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Foreign commits picked onto HEAD reordered, reworded and dropped in one rebase.

@@ -39,12 +39,13 @@ impl RepoTab {
 }
 
 /// History/Blame entries shared by every file context menu; `rev` blames that
-/// revision (`None` = the working tree).
-pub fn file_items(ui: &mut Ui, path: &str, rev: Option<&str>, acts: &mut Vec<Action>) {
+/// revision (`None` = the working tree). `history`: the path the history is looked up by
+/// (an uncommitted rename's old one: the new path has none yet).
+pub fn file_items(ui: &mut Ui, path: &str, history: &str, rev: Option<&str>, acts: &mut Vec<Action>) {
     if ui.button(format!("{}  File history", icon::CLOCK_COUNTER_CLOCKWISE)).clicked() {
-        acts.push(Action::FileView(path.into(), Mode::History));
+        acts.push(Action::FileView(history.into(), Mode::History));
     }
-    if let Some((dir, _)) = path.rsplit_once('/')
+    if let Some((dir, _)) = history.rsplit_once('/')
         && ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {dir}/")).clicked()
     {
         acts.push(Action::FileView(format!("{dir}/"), Mode::History));

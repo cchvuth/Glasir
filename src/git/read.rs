@@ -25,13 +25,13 @@ pub fn parse_log(out: &str) -> Vec<Commit> {
         .collect()
 }
 
-/// All branches, remotes, tags (and HEAD), newest first, children before parents.
-pub fn log(dir: &Path, limit: usize, extra: &[&str]) -> Res<Vec<Commit>> {
+/// The history of the revisions in `extra` (and in `input`, for `--stdin`), newest first, children before parents.
+pub fn log(dir: &Path, limit: usize, extra: &[&str], input: &str) -> Res<Vec<Commit>> {
     let n = format!("-n{limit}");
     let mut args = vec!["log", "--date-order", &n, "-z", DATE_FORMAT, LOG_FORMAT];
     args.extend_from_slice(extra);
     args.push("--");
-    Ok(parse_log(&run(dir, &args)?))
+    Ok(parse_log(&super::run_input(dir, &args, (!input.is_empty()).then(|| input.as_bytes()))?))
 }
 
 pub fn refs(dir: &Path) -> Res<Vec<Ref>> {
@@ -205,7 +205,7 @@ pub fn remotes(dir: &Path) -> Res<Vec<(String, String)>> {
         .lines()
         .filter_map(|l| {
             let (name, rest) = l.split_once('\t')?;
-            let url = rest.strip_suffix(" (fetch)")?;
+            let url = rest.split_once(" (fetch)")?.0;
             Some((name.to_owned(), url.to_owned()))
         })
         .collect())
@@ -451,6 +451,23 @@ mod tests {
         assert_eq!(c[0], ("remote.origin.url".into(), "git@ghe:o/r.git".into()));
         assert_eq!(c[2], ("user.email".into(), "a@b\nc".into()));
         assert_eq!(c[3], ("remote.x.mirror".into(), String::new()));
+    }
+
+    #[test]
+    fn partial_clone_keeps_its_remote() {
+        let root = std::env::temp_dir().join(format!("glasir-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let up = root.join("up.git");
+        run(&root, &["init", "-q", "--bare", "-b", "main", &up.to_string_lossy()]).unwrap();
+        run(&up, &["config", "uploadpack.allowFilter", "true"]).unwrap();
+        let tree = super::super::run_input(&up, &["mktree"], Some(b"")).unwrap();
+        let id = run(&up, &["-c", "user.email=t@t", "-c", "user.name=T", "commit-tree", "-m", "x", tree.trim()]).unwrap();
+        run(&up, &["update-ref", "refs/heads/main", id.trim()]).unwrap();
+        let url = format!("file://{}{}", if cfg!(windows) { "/" } else { "" }, up.to_string_lossy().replace('\\', "/"));
+        run(&root, &["clone", "-q", "--filter=blob:none", &url, "pc"]).unwrap();
+        assert_eq!(remotes(&root.join("pc")).unwrap(), [("origin".to_owned(), url)]);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -143,7 +143,8 @@ pub fn members(d: &RepoData, b: &str) -> Vec<String> {
 /// Children checked out in another worktree are left alone (git can't rebase them here).
 /// `follow`: restack where this op moves a parent, else where the parent moved on since.
 /// Pinned (put back if a `--update-refs` rebase moves them, and not restacked after it): the
-/// trunk branches and any other branch at HEAD's commit, a copy rather than a stack member.
+/// trunk branches and any other branch at HEAD's commit (a stopped rebase's original tip), a copy
+/// rather than a stack member.
 fn restack_cmd(d: &RepoData, only: Option<&[String]>, follow: bool) -> Vec<String> {
     let depth = |c: &str| (0..64).scan(c, |c, _| parent(d, c).map(|p| *c = p)).count();
     let mut edges: Vec<(&String, &(String, String))> = d
@@ -153,7 +154,8 @@ fn restack_cmd(d: &RepoData, only: Option<&[String]>, follow: bool) -> Vec<Strin
         .collect();
     edges.sort_by_key(|(c, _)| (depth(c), c.as_str()));
     let mut cmd: Vec<String> = vec![RESTACK.into(), if follow { "follow" } else { "own" }.into()];
-    let head = d.refs.iter().find(|r| r.kind == RefKind::Local && r.head).map(|r| r.target.as_str());
+    let orig = ["rebase-merge", "rebase-apply"].iter().find_map(|s| std::fs::read_to_string(d.git_dir.join(s).join("orig-head")).ok()).filter(|_| d.state == git::State::Rebasing);
+    let head = d.refs.iter().find(|r| r.kind == RefKind::Local && r.head).map(|r| r.target.as_str()).or(orig.as_deref().map(str::trim));
     let pin = |r: &&git::Ref| r.kind == RefKind::Local && (trunk(d, r) || (!r.head && Some(r.target.as_str()) == head));
     cmd.extend(d.refs.iter().filter(pin).flat_map(|r| [r.name.clone(), r.target.clone()]));
     cmd.push("--".into());
@@ -180,12 +182,13 @@ fn subcommand(args: &[String]) -> Option<&str> {
     None
 }
 
-/// A commit or rebase in a repo with stacks: rebases move the stacked branches below
+/// A commit, rebase or reword ([`super::rebase::REWRITE`]) in a repo with stacks: rebases move the stacked branches below
 /// along (`--update-refs`), and then the branches stacked on a moved one are restacked.
 /// Once: an op that has its restack already (a retry of a followed op) is left as it is.
 pub(super) fn follow(mut op: Op, d: Option<&RepoData>) -> Op {
     let Some(d) = d.filter(|d| follows() && !d.stack.is_empty() && !op.custom && op.undo != Undo::No) else { return op };
-    if !op.cmds.iter().any(|c| matches!(subcommand(c), Some("commit" | "rebase"))) || op.cmds.iter().any(|c| c.first().is_some_and(|a| a == RESTACK)) {
+    let moves = |c: &Vec<String>| matches!(subcommand(c), Some("commit" | "rebase" | super::rebase::REWRITE));
+    if !op.cmds.iter().any(moves) || op.cmds.iter().any(|c| c.first().is_some_and(|a| a == RESTACK)) {
         return op;
     }
     let ctl = ["--continue", "--abort", "--skip", "--quit", "--edit-todo", "--update-refs", "--no-update-refs"];
@@ -194,7 +197,7 @@ pub(super) fn follow(mut op: Op, d: Option<&RepoData>) -> Op {
         c.insert(i + 1, "--update-refs".into());
     }
     // Right after the commit / rebase: a push after it may fail.
-    let at = op.cmds.iter().rposition(|c| matches!(subcommand(c), Some("commit" | "rebase"))).map_or(op.cmds.len(), |i| i + 1);
+    let at = op.cmds.iter().rposition(moves).map_or(op.cmds.len(), |i| i + 1);
     op.cmds.insert(at, restack_cmd(d, None, true));
     op
 }
@@ -654,6 +657,67 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "release/2.0"]), release);
         assert_eq!(subjects(&dir, "feat2"), "feat2 feat release/2.0 m2 m");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A reword that writes the commits again (`REWRITE`: through a merge, or on a branch that
+    /// isn't checked out) restacks the branches stacked on top, like one that rebases.
+    #[test]
+    fn rewrite_reword_restacks_branches_on_top() {
+        let dir = stack_repo("stack-rewrite");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let b = sh(&dir, &["rev-parse", "b"]).trim().to_owned();
+        t.apply(&ctx, Action::Reword { commit: b, message: "b reworded".into() });
+        settle(&ctx, &mut t);
+        assert_eq!(subjects(&dir, "c"), "c b reworded a base m0");
+        assert_eq!(sh(&dir, &["symbolic-ref", "--short", "HEAD"]), "main\n");
+        // Through a merge on HEAD's branch: `a` ends in a merge, `b` and `c` are on top of it.
+        sh(&dir, &["checkout", "-q", "-b", "side", "main"]);
+        commit(&dir, "s", "s\n");
+        sh(&dir, &["checkout", "-q", "a"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        for x in ["b", "c"] {
+            sh(&dir, &["checkout", "-q", "-B", x]);
+            commit(&dir, x, &format!("{x}2\n"));
+        }
+        sh(&dir, &["checkout", "-q", "a"]);
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        let a1 = sh(&dir, &["rev-parse", "a^1"]).trim().to_owned();
+        t.apply(&ctx, Action::Reword { commit: a1, message: "a reworded".into() });
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["log", "--first-parent", "--format=%s", "c"]), "c2\nb2\nmerge side\na reworded\nbase\nm0\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A conflicted rebase continued from the app: the backup branch at its old tip stays put,
+    /// as without the conflict.
+    #[test]
+    fn continued_rebase_keeps_backup_at_old_tip() {
+        let dir = stack_repo("stack-continue");
+        sh(&dir, &["checkout", "-q", "c"]);
+        sh(&dir, &["branch", "c-backup"]);
+        let backup = sh(&dir, &["rev-parse", "c-backup"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a", "main's a\n");
+        sh(&dir, &["checkout", "-q", "c"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Rebase", &["rebase", "-q", "main"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        assert_eq!(t.data.as_ref().unwrap().state, git::State::Rebasing);
+        std::fs::write(dir.join("a"), "both\n").unwrap();
+        sh(&dir, &["add", "a"]);
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(Op::new("Continue rebase", &["-c", "core.editor=true", "rebase", "--continue"]).undo(Undo::Keep)));
+        settle(&ctx, &mut t);
+        assert_eq!(subjects(&dir, "c"), "c b a main's a base m0");
+        assert_eq!(sh(&dir, &["rev-parse", "c-backup"]), backup);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -218,7 +218,7 @@ pub fn difftool_op(src: &DiffSrc) -> Option<Op> {
 pub struct Open {
     pub kind: &'static str,
     pub path: String,
-    cancel: git::Cancel,
+    pub cancel: git::Cancel,
     task: Task<(Op, Res<String>, Result<Option<Files>, String>)>,
 }
 
@@ -336,9 +336,31 @@ fn which(prog: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).flat_map(|d| exts.iter().map(move |e| d.join(format!("{prog}{e}")))).find(file)
 }
 
+/// `s` split at whitespace outside "…" (dropped), so a program or argument can hold spaces.
+fn words(s: &str) -> Vec<String> {
+    let (mut out, mut cur, mut quoted, mut any) = (vec![], String::new(), false, false);
+    for c in s.chars() {
+        match c {
+            '"' => (quoted, any) = (!quoted, true),
+            c if c.is_whitespace() && !quoted => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            c => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// Editors that need a terminal: useless when launched from a GUI.
 fn gui_editor(cmd: &str) -> bool {
-    let prog = cmd.split_whitespace().next().unwrap_or("");
+    let prog = words(cmd).into_iter().next().unwrap_or_default();
+    let prog = prog.as_str();
     let name = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
     !cmd.trim().is_empty() && !["vi", "vim", "nvim", "nano", "pico", "micro", "hx", "helix", "kak", "ed", "emacs", "mg", "joe", "ne"].contains(&name)
 }
@@ -346,7 +368,7 @@ fn gui_editor(cmd: &str) -> bool {
 /// $VISUAL / $EDITOR when it is a GUI editor, else VS Code, Cursor, Zed or Sublime Text on PATH.
 pub fn default_editor() -> String {
     let env = ["VISUAL", "EDITOR"].into_iter().filter_map(|v| std::env::var(v).ok()).filter(|v| gui_editor(v));
-    let found = env.chain(["code", "cursor", "zed", "subl"].map(String::from)).find(|c| which(c.split_whitespace().next().unwrap_or("")).is_some());
+    let found = env.chain(["code", "cursor", "zed", "subl"].map(String::from)).find(|c| words(c).first().is_some_and(|p| which(p).is_some()));
     match found {
         Some(c) => c,
         // No `code` shell command installed: the app itself, else the default text editor.
@@ -379,22 +401,36 @@ fn launch_path(p: &str, wt: bool, cmd: bool) -> String {
     }
 }
 
-/// Starts `template` (split on whitespace; `{path}` replaced, else `path` appended) in `cwd`, the
-/// path escaped for `wt` (it splits at every `;` but `\;`) and for the `cmd /c start` a console shell
-/// goes through: quoted (`& | ^ ( )` are literal there; `%%cd:~,%` is a lone `%`; a trailing `\`
-/// doubled before the quote), with the template's own quotes dropped so they can't end ours.
+/// The words `launch` runs: `template` split at whitespace outside "…" ([`words`]), `{path}`
+/// replaced, else `path` appended. The path is escaped for `wt` (it splits at every `;` but `\;`);
+/// for the `cmd /c start` a console shell goes through, a word holding the path or a space is
+/// quoted (`& | ^ ( )` are literal there; `%%cd:~,%` is a lone `%`; a trailing `\` doubled before
+/// the quote). The template's own quotes are gone by then, so none can end ours.
+fn launch_words(template: &str, path: &str, append: bool, wt: bool, console: bool) -> Vec<String> {
+    let p = launch_path(path, wt, false);
+    let mut out: Vec<String> = words(template)
+        .into_iter()
+        .map(|w| {
+            let quote = console && (w.contains("{path}") || w.contains(char::is_whitespace));
+            let w = w.replace("{path}", &p);
+            if quote { launch_path(&w, false, true) } else { w }
+        })
+        .collect();
+    if append && !template.contains("{path}") {
+        out.push(launch_path(path, wt, console));
+    }
+    out
+}
+
+/// Starts `template` ([`launch_words`]) in `cwd`.
 fn launch(template: &str, path: &Path, cwd: &Path, append: bool) -> std::io::Result<()> {
-    let exe = template.split_whitespace().next().unwrap_or_default();
-    let name = exe.rsplit(['/', '\\']).next().unwrap_or(exe).to_lowercase();
+    let exe = words(template).into_iter().next().unwrap_or_default();
+    let name = exe.rsplit(['/', '\\']).next().unwrap_or(&exe).to_lowercase();
     let name = name.trim_end_matches(".exe");
     // A console shell given our null stdio would read NUL and exit: `start` gives it a
     // new console window with its own handles (cmd itself stays windowless).
     let console = cfg!(windows) && matches!(name, "powershell" | "pwsh");
-    let p = launch_path(&path.to_string_lossy(), cfg!(windows) && name == "wt", console);
-    let mut words: Vec<String> = template.split_whitespace().map(|w| if console { w.replace('"', "") } else { w.into() }).map(|w| w.replace("{path}", &p)).collect();
-    if append && !template.contains("{path}") {
-        words.push(p);
-    }
+    let words = launch_words(template, &path.to_string_lossy(), append, cfg!(windows) && name == "wt", console);
     let Some(first) = words.first() else { return Err(std::io::Error::other("no command set")) };
     let prog = if console { "cmd" } else { first.as_str() };
     let mut c = Command::new(which(prog).unwrap_or_else(|| prog.into()));
@@ -532,6 +568,21 @@ mod tests {
         assert_eq!(launch_path(r"C:\R&D (1)\100%x%", false, true), r#""C:\R&D (1)\100%%cd:~,%x%%cd:~,%""#);
         assert_eq!(launch_path(r"C:\", false, true), r#""C:\\""#);
         assert_eq!(launch_path("/home/a;b&c", false, false), "/home/a;b&c");
+    }
+
+    #[test]
+    fn launch_templates_keep_quoted_words_whole() {
+        let w = |t: &str, path: &str, append: bool, wt: bool, console: bool| launch_words(t, path, append, wt, console);
+        assert_eq!(w(r#"open -a "Visual Studio Code""#, "/r/a b.txt", true, false, false), ["open", "-a", "Visual Studio Code", "/r/a b.txt"]);
+        assert_eq!(w(r#""C:\Program Files\Notepad++\notepad++.exe" -n1 {path}"#, r"C:\R&D\x", true, false, false), [r"C:\Program Files\Notepad++\notepad++.exe", "-n1", r"C:\R&D\x"]);
+        assert_eq!(w(r#"x "" --a="b c"  "#, "p", false, false, false), ["x", "", "--a=b c"]);
+        assert_eq!(w(r#"wt -p "Windows PowerShell" -d"#, r"C:\a;b", true, true, false), ["wt", "-p", "Windows PowerShell", "-d", r"C:\a\;b"]);
+        // Through `cmd /c start`: a word with the path or a space is quoted whole, the rest stays as written.
+        let console = w(r#""C:\Program Files\PowerShell\7\pwsh.exe" -NoExit -Command "cd {path}""#, r"C:\R&D 100%\", false, false, true);
+        assert_eq!(console, [r#""C:\Program Files\PowerShell\7\pwsh.exe""#, "-NoExit", "-Command", r#""cd C:\R&D 100%%cd:~,%\\""#]);
+        assert_eq!(w("powershell", r"C:\R&D", true, false, true), ["powershell", r#""C:\R&D""#]);
+        assert_eq!(words(r#"code --wait"#), ["code", "--wait"]);
+        assert!(gui_editor(r#""/Applications/Sublime Text.app/Contents/SharedSupport/bin/subl" -w"#) && !gui_editor(r#""/usr/local/bin/vim""#));
     }
 
     /// A custom command's free-text name must not trigger the label-keyed follow-ups.

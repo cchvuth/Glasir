@@ -126,7 +126,7 @@ pub fn pr_checkout(remote: &str) -> Op {
     let n = super::Prompt::VALUE;
     // Via `-B`: running it again updates pr/<n>, even checked out or force-pushed.
     // `seen` remembers the head last checked out, so a force-push isn't taken for local work.
-    // Into a ref of its own, not FETCH_HEAD: a background fetch may rewrite that meanwhile.
+    // Into a ref of its own, not FETCH_HEAD: another fetch (a terminal's) may rewrite that meanwhile.
     let (seen, pr) = (format!("refs/glasir/pr/{remote}/{n}"), format!("pr/{n}"));
     let fetched = format!("{seen}-fetched");
     Op::new("Check out pull request", &["fetch", "--progress", remote, &format!("+refs/pull/{n}/head:{fetched}")])
@@ -184,11 +184,12 @@ fn pr_head<'a>(r: &'a crate::git::Ref, remote: &str) -> Option<&'a str> {
     r.full.strip_prefix(&format!("refs/remotes/{remote}/pr/")).filter(|n| !n.is_empty())
 }
 
-/// A real branch `pr/<n>` or `pr/<n>/…` on `remote` that pull request heads would collide
+/// A real branch `pr`, `pr/<n>` or `pr/<n>/…` on `remote` that pull request heads would collide
 /// with, making every fetch fail: then fetching them can't be turned on.
 pub fn pr_refs_clash<'a>(d: &'a RepoData, remote: &str) -> Option<&'a str> {
     let numbered = |n: &str| n.split('/').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
-    (!pr_refs_on(d, remote)).then(|| d.refs.iter().find(|r| pr_head(r, remote).is_some_and(numbered)).map(|r| r.name.as_str())).flatten()
+    let pr = format!("refs/remotes/{remote}/pr");
+    (!pr_refs_on(d, remote)).then(|| d.refs.iter().find(|r| r.full == pr || pr_head(r, remote).is_some_and(numbered)).map(|r| r.name.as_str())).flatten()
 }
 
 /// Toggle fetching pull request heads; turning it off deletes the fetched `pr/<n>` refs
@@ -392,6 +393,10 @@ mod tests {
         sh(&dir, &["fetch", "-q", "origin"]);
         assert_eq!(pr_refs_clash(&load(), "origin"), Some("origin/pr/7"));
         assert_eq!(d.cfg_all("remote.origin.fetch").collect::<Vec<_>>(), ["+refs/heads/*:refs/remotes/origin/*"]);
+        sh(&up, &["branch", "-D", "pr/7", "pr/feature"]);
+        sh(&up, &["branch", "pr"]);
+        sh(&dir, &["fetch", "-q", "--prune", "origin"]);
+        assert_eq!(pr_refs_clash(&load(), "origin"), Some("origin/pr"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }
@@ -514,7 +519,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&up);
     }
 
-    /// The background fetch rewrites FETCH_HEAD; one finishing mid-checkout must not
+    /// Another fetch (a terminal's) rewrites FETCH_HEAD; one finishing mid-checkout must not
     /// reset pr/<n> to some other branch.
     #[test]
     fn pr_checkout_survives_a_concurrent_fetch() {
@@ -536,7 +541,7 @@ mod tests {
         first.cmds.truncate(1);
         op.cmds.remove(0);
         exec(&dir, &first).unwrap();
-        git::fetch_quiet(&dir).unwrap();
+        sh(&dir, &["fetch", "-q", "origin"]);
         exec(&dir, &op).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "pr/7"]), pr);
         assert_eq!(sh(&dir, &["rev-parse", "refs/glasir/pr/origin/7"]), pr);

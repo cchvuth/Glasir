@@ -198,6 +198,7 @@ pub struct RepoTab {
     pub edit_msg: Option<MsgEdit>,
     /// Commit Composer plan; its dialog shows once Claude's commits are in.
     pub compose: Option<compose::Plan>,
+    parked_compose: Option<compose::Plan>,
     compose_task: Option<Task<Res<(compose::Plan, String)>>>,
     pub remote_form: Option<remotes::Form>,
     /// The connection doctor window for one remote.
@@ -293,6 +294,7 @@ impl RepoTab {
             split: None,
             edit_msg: None,
             compose: None,
+            parked_compose: None,
             compose_task: None,
             remote_form: None,
             doctor: None,
@@ -317,8 +319,11 @@ impl RepoTab {
     }
 
     /// Builds a history rewrite (its git calls read the range and the upstream) off the UI thread;
-    /// [`Self::busy`] shows it meanwhile.
+    /// [`Self::busy`] shows it meanwhile; refused while another is being prepared.
     pub(super) fn prepare(&mut self, ctx: &egui::Context, f: impl FnOnce(&std::path::Path) -> op::Dropped + Send + 'static) {
+        if self.drop_task.is_some() {
+            return self.notes.push(Msg { text: "Wait for the rewrite being prepared, then try again.".into(), error: true });
+        }
         self.parked_rebase = None;
         let dir = self.dir.clone();
         self.drop_task = Some(Task::spawn(ctx, move || f(&dir)));
@@ -597,13 +602,14 @@ impl RepoTab {
 
     /// Finds how deep in the (date-ordered) log `id` is, to load enough pages to show it.
     fn locate(&mut self, ctx: &egui::Context, id: String) {
-        let (dir, revs) = (self.dir.clone(), self.view.revs());
+        let refs = self.data.iter().flat_map(|d| d.refs.iter().map(|r| r.full.as_str()));
+        let (dir, (revs, shown)) = (self.dir.clone(), self.view.revs(refs));
         self.locate = Some(Task::spawn(ctx, move || {
             let mut args = vec!["log", "--date-order", "-z", "--format=%H"];
             args.extend(revs.iter().map(String::as_str));
             args.push("--");
             let (mut n, mut found) = (0, false);
-            let _ = git::stream(&dir, &args, |h| {
+            let _ = git::stream(&dir, &args, &shown, |h| {
                 found = h == id;
                 n += !found as usize;
                 !found
@@ -626,13 +632,26 @@ impl RepoTab {
         if let Some(m) = self.merge.as_ref().filter(|m| m.edited()) {
             return Some(format!("Save or discard your resolution of {}", m.path));
         }
-        if let Some(r) = self.rebase.as_ref().filter(|r| r.edited()) {
+        if let Some(r) = self.rebase.as_ref().or(self.parked_rebase.as_ref()).filter(|r| r.edited()) {
             return Some(format!("Start or cancel your {} plan", if r.cherry { "cherry-pick" } else { "rebase" }));
         }
-        self.compose.as_ref().filter(|p| !p.commits.is_empty()).map(|_| "Create or cancel the Commit Composer's commits".into())
+        if self.compose.as_ref().is_some_and(|p| !p.commits.is_empty()) {
+            return Some("Create or cancel the Commit Composer's commits".into());
+        }
+        self.split.as_ref().filter(|sp| !sp.replaying).map(|sp| format!("Continue or abort the split of {}", &sp.id[..7.min(sp.id.len())]))
     }
 
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
+        let merge = self.merge.as_ref().filter(|m| m.edited());
+        let replaces = match &a {
+            Action::MergeEditor(p) if merge.is_some_and(|m| m.path == *p) => return,
+            Action::Diff(_) | Action::FileView(..) => merge.is_some(),
+            Action::MergeEditor(_) | Action::Reflog | Action::Rebase { .. } | Action::MultiOp(MultiOp::CherryPickEdit, _) => merge.is_some() || self.rebase.as_ref().is_some_and(|r| r.edited()),
+            _ => false,
+        };
+        if replaces && let Some(w) = self.unsaved() {
+            return self.notes.push(Msg { text: format!("{w} first."), error: true });
+        }
         // Anything that replaces the center pane ends the file editor; unsaved edits ask first.
         if let Some(ed) = &mut self.edit
             && matches!(a, Action::Select(_) | Action::Diff(_) | Action::CloseDiff | Action::FileView(..) | Action::MergeEditor(_) | Action::Rebase { .. } | Action::Reflog | Action::Jump(_))
@@ -645,7 +664,7 @@ impl RepoTab {
         }
         match a {
             Action::EditFile(path) => match file_edit::FileEdit::load(&self.dir, &path) {
-                Ok(ed) => self.edit = Some(ed),
+                Ok(ed) => (self.edit, self.file_view) = (Some(ed), None),
                 Err(e) => self.notes.push(Msg { text: e, error: true }),
             },
             Action::EditSave => {
@@ -768,7 +787,10 @@ impl RepoTab {
                 }
             }
             Action::CommitPlan => {
-                let (Some(p), Some(git_dir)) = (self.compose.take(), self.data.as_ref().map(|d| d.git_dir.clone())) else { return };
+                let (Some(p), Some(git_dir)) = (self.compose.clone(), self.data.as_ref().map(|d| d.git_dir.clone())) else { return };
+                if self.drop_task.is_none() {
+                    self.parked_compose = self.compose.take();
+                }
                 self.prepare(ctx, move |dir| op::Dropped::from(p.op(dir, &git_dir)));
             }
             Action::SplitEnd { abort } => self.end_split(ctx, abort),
@@ -813,9 +835,9 @@ impl RepoTab {
                 });
             }
             Action::RunRebase { op, onto, branch, first } => {
-                let ed = self.rebase.take();
+                let ed = self.rebase.take_if(|_| self.drop_task.is_none());
                 self.prepare(ctx, move |dir| op::Dropped::Run(Op { parked: true, ..crate::repo::rebase::confirm_rebase(dir, &onto, branch.as_deref(), first.as_deref(), op) }));
-                self.parked_rebase = ed;
+                self.parked_rebase = ed.or(self.parked_rebase.take());
             }
             Action::Reflog => {
                 (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, None);
@@ -911,6 +933,123 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Clicking another file, its own row, File history, the reflog or a new rebase keeps an
+    /// edited resolution or rebase plan (with a note); an untouched one is replaced as before.
+    #[test]
+    fn navigation_keeps_an_edited_resolution_or_plan() {
+        let dir = scratch("nav-keeps-edits");
+        conflicted_merge(&dir);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut m = merge_editor::Editor::open(&ctx, &dir, "f");
+        crate::repo::testutil::wait_for("the merge editor", || {
+            if let Some(d) = Task::poll(&mut m.task) {
+                (m.output, m.data) = (d.text.clone(), Some(d));
+            }
+            m.data.is_some()
+        });
+        m.output.push('x');
+        t.merge = Some(m);
+        let change = git::Change { path: "other".into(), old_path: None, code: 'M' };
+        let interactive = || Action::Rebase { base: "HEAD~1".into(), label: "x".into() };
+        for a in [Action::Diff(DiffSrc::Worktree { change: change.clone(), staged: false }), Action::FileView("f".into(), history::Mode::History), Action::Reflog, Action::MergeEditor("other".into()), interactive()] {
+            t.apply(&ctx, a);
+            assert!(t.merge.as_ref().is_some_and(|m| m.output.ends_with('x')) && t.drop_task.is_none() && t.reflog.is_none() && t.file_view.is_none());
+            assert!(t.notes.pop().is_some_and(|n| n.text.contains("resolution of f")));
+        }
+        t.apply(&ctx, Action::MergeEditor("f".into()));
+        assert!(t.merge.as_ref().is_some_and(|m| m.output.ends_with('x')) && t.notes.is_empty(), "its own row: nothing happens");
+        t.merge = None;
+        let mut ed = rebase::Editor::load(&dir, "HEAD~1", "x").unwrap();
+        ed.items[0].act = rebase::Act::Drop;
+        t.rebase = Some(ed);
+        for a in [Action::Reflog, Action::MergeEditor("f".into()), interactive()] {
+            t.apply(&ctx, a);
+            assert!(t.rebase.is_some() && t.merge.is_none() && t.drop_task.is_none() && t.reflog.is_none());
+            assert!(t.notes.pop().is_some_and(|n| n.text.contains("rebase plan")));
+        }
+        t.rebase.as_mut().unwrap().items[0].act = rebase::Act::Pick;
+        t.apply(&ctx, Action::MergeEditor("f".into()));
+        assert!(t.rebase.is_none() && t.merge.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A rebase plan parked behind its pushed-commits confirm and a split in progress keep the tab open.
+    #[test]
+    fn a_parked_plan_or_a_split_is_unsaved_work() {
+        let dir = scratch("unsaved-parked");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a", "b", "c"] {
+            commit(&dir, f, f);
+        }
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut ed = rebase::Editor::load(&dir, "HEAD~2", "a").unwrap();
+        ed.items[0].act = rebase::Act::Drop;
+        let start = ed.start(&t.data.as_ref().unwrap().git_dir).unwrap();
+        t.rebase = Some(ed);
+        t.apply(&ctx, start);
+        settle(&ctx, &mut t);
+        assert!(t.confirm.is_some() && t.rebase.is_none());
+        assert!(t.unsaved().is_some_and(|w| w.contains("rebase plan")));
+        t.confirm = None;
+        t.parked_rebase = None;
+        sh(&dir, &["update-ref", "-d", "refs/remotes/origin/main"]);
+        t.apply(&ctx, Action::Split(sh(&dir, &["rev-parse", "HEAD"]).trim().into()));
+        settle(&ctx, &mut t);
+        assert!(t.split.is_some());
+        assert!(t.unsaved().is_some_and(|w| w.contains("split")));
+        t.split.as_mut().unwrap().replaying = true;
+        assert_eq!(t.unsaved(), None, "a replaying split ends with its rebase");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A second rewrite asked for while one is being prepared is refused; the first and the plan stay.
+    #[test]
+    fn a_pending_prepare_is_not_replaced() {
+        let dir = scratch("prepare-twice");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a");
+        commit(&dir, "b", "b");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.drop_task = Some(Task(rx));
+        let mut ed = rebase::Editor::load(&dir, "HEAD~1", "a").unwrap();
+        ed.items[0].act = rebase::Act::Reword;
+        let start = ed.start(&t.data.as_ref().unwrap().git_dir).unwrap();
+        t.rebase = Some(ed);
+        t.apply(&ctx, start);
+        assert!(t.rebase.is_some() && t.parked_rebase.is_none(), "the plan stays open");
+        assert!(t.notes.pop().is_some_and(|n| n.text.contains("being prepared")));
+        tx.send(op::Dropped::Note("first".into())).unwrap();
+        t.poll(&ctx, &mut vec![]);
+        assert_eq!(t.notes.pop().map(|n| n.text).as_deref(), Some("first"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Edit from a diff beside a File history shows the editor.
+    #[test]
+    fn editing_from_a_history_diff_closes_the_history() {
+        let dir = scratch("edit-from-history");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::FileView("f".into(), history::Mode::History));
+        t.apply(&ctx, Action::EditFile("f".into()));
+        assert!(t.edit.is_some() && t.file_view.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

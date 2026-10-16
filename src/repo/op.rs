@@ -275,8 +275,16 @@ pub fn pull_op(mode: PullMode) -> Op {
     Op::new(label, &["pull", flag, "--autostash", "--progress"]).undo(Undo::Keep)
 }
 
-pub fn fetch_op() -> Op {
-    Op::new("Fetch", &["fetch", "--all", "--prune", "--progress"])
+pub fn fetch_op(d: &RepoData) -> Op {
+    let (remotes, elsewhere) = git::tracking(&d.config);
+    if !elsewhere {
+        return Op::new("Fetch", &["fetch", "--all", "--prune", "--progress"]);
+    }
+    let mut op = Op::new("Fetch", &["fetch", "--all", "--no-prune", "--progress"]);
+    for (remote, specs) in remotes {
+        op.cmds.push(["fetch", "--prune", "--no-tags", "--no-write-fetch-head", "--refmap=", &remote].map(String::from).into_iter().chain(specs).collect());
+    }
+    op
 }
 
 /// Stage every unstaged and untracked change, but never a conflicted file: `add -A`
@@ -567,7 +575,7 @@ const STASH_DROP: &str = "!stash-drop";
 const STASH_HAS: &str = "!stash-has";
 pub(super) const STASH_POP: &str = "!stash-pop";
 pub(super) const STASH_APPLY: &str = "!stash-apply";
-const STASH_RENAME: &str = "!stash-rename";
+pub(super) const STASH_RENAME: &str = "!stash-rename";
 pub(super) const STASH_UNPOP: &str = "!stash-unpop";
 
 fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
@@ -746,7 +754,10 @@ fn amend_rewrites_pushed(d: &RepoData) -> Option<String> {
     }
     let row = d.row_of.get(head);
     let on = |r: &Ref| r.target == head || row.zip(d.row_of.get(&r.target)).is_some_and(|(&h, &t)| t <= h && d.reachable(t)[h]);
-    d.refs.iter().any(|r| r.kind == RefKind::Remote && on(r)).then(|| super::rebase::rewrites_pushed(1, None))
+    let remotes: Vec<&Ref> = d.refs.iter().filter(|r| r.kind == RefKind::Remote).collect();
+    let unsure = !remotes.is_empty() && (row.is_none() || d.view.first_parent || d.view.filtered());
+    let pushed = remotes.iter().any(|r| on(r)) || (unsure && git::run(&d.git_dir, &["rev-list", "-n1", head, "--not", "--remotes", "--"]).is_ok_and(|o| o.trim().is_empty()));
+    pushed.then(|| super::rebase::rewrites_pushed(1, None))
 }
 
 /// Check out a ref: local branch, remote branch (the local branch tracking it, else its local
@@ -790,7 +801,7 @@ impl RepoTab {
             && cmd == "__reword__"
         {
             let old = git::run(&self.dir, &["log", "-1", "--format=%B", commit]).unwrap_or_default();
-            let body = old.trim_end().split_once('\n').map(|(_, b)| b.trim_start_matches('\n').to_owned()).unwrap_or_default();
+            let body = message::split(&old).1;
             let message = if body.is_empty() { msg.clone() } else { format!("{msg}\n\n{body}") };
             return self.apply(ctx, Action::Reword { commit: commit.clone(), message });
         }
@@ -933,9 +944,10 @@ impl RepoTab {
                 // `keep_deleted` left a failed branch delete's revert only if it deleted some.
                 let partial = op.revert.as_ref().is_some_and(|u| u.cmds.first().is_some_and(|c| c[0] == BRANCH_RESTORE));
                 // Its revert's own revert is its redo (a pop's: drop the stash again), else the op
-                // itself, refreshed for a stash save (`exec_stash`).
+                // itself, refreshed for a stash save (`exec_stash`), bar its remote deletes: undo doesn't bring those back.
                 let ops = op.revert.clone().filter(|_| res.is_ok() || partial).map(|mut u| {
-                    let redo = u.revert.take().unwrap_or_else(|| Box::new(Op { confirm: None, ..op.clone() }));
+                    let mut redo = u.revert.take().unwrap_or_else(|| Box::new(Op { confirm: None, ..op.clone() }));
+                    redo.cmds.retain(|c| c[0] != super::cleanup::REMOTE_DELETE);
                     (u, redo)
                 });
                 // Light ops toast nothing, but a discard deserves a visible way back.
@@ -1077,8 +1089,8 @@ impl RepoTab {
         let (title, to) = (short(&src), dst.as_deref().map(short).unwrap_or_default());
         let branch = branch.and_then(|b| d.refs.iter().find(|r| r.full == b && r.kind == RefKind::Local)).map(|b| (b.name.clone(), b.head));
         let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or_default();
-        let (dir, git_dir) = (self.dir.clone(), d.git_dir.clone());
-        self.drop_task = Some(Task::spawn(ctx, move || Self::drop_menu(&dir, &git_dir, src, dst, branch, squash, (title, to, at))));
+        let git_dir = d.git_dir.clone();
+        self.prepare(ctx, move |dir| Self::drop_menu(dir, &git_dir, src, dst, branch, squash, (title, to, at)));
     }
 
     /// [`Self::drop_commit`]'s git work. `labels`: the dropped commit's, the target's, where.
@@ -1220,9 +1232,11 @@ impl RepoData {
         let branch = self.status.branch.as_deref()?;
         let src = format!("refs/heads/{branch}");
         let fork = self.cfg(&format!("branch.{branch}.pushremote")).or(self.cfg("remote.pushdefault"));
-        let Some((up_remote, up_rb)) = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up)) else {
-            let remote = fork.or(self.default_remote())?;
-            return Some(Op::new("Push", &["push", "--progress", "-u", remote, &src]));
+        let dest = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up));
+        let (up_remote, up_rb) = match dest {
+            Some(dest) => dest,
+            None if force => (fork.or(self.default_remote())?, branch),
+            None => return Some(Op::new("Push", &["push", "--progress", "-u", fork.or(self.default_remote())?, &src])),
         };
         // Triangular: push.default simple/current push to the same name on the fork.
         let (remote, rb) = match fork {
@@ -1245,7 +1259,10 @@ impl RepoData {
         }
         let sha = self.refs.iter().find(|r| r.kind == RefKind::Remote && r.name == up).map_or("", |r| r.target.as_str());
         let (lease, spec) = (format!("--force-with-lease=refs/heads/{rb}:{sha}"), format!("{src}:refs/heads/{rb}"));
-        let args = ["push", "--progress", &lease, "--force-if-includes", remote, &spec];
+        let mut args = vec!["push", "--progress", &lease, "--force-if-includes", remote, &spec];
+        if dest.is_none() {
+            args.insert(2, "-u");
+        }
         let at = if sha.is_empty() { "doesn't exist".into() } else { format!("is still at {}", &sha[..7.min(sha.len())]) };
         let text = format!(
             "Replace {up} with your {branch}? Commits on {up} that aren't in your branch will be lost. Only goes through if {up} {at}.\n$ git {}",
@@ -1323,6 +1340,36 @@ mod tests {
         assert!(ask().is_some_and(|c| c.contains("1 commit already on a remote branch")));
         sh(&dir, &["branch", "--unset-upstream"]);
         assert!(ask().is_some_and(|c| c.contains("1 commit already on a remote branch")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Where the graph can't tell (a first-parent view drops the merge edge, HEAD past the page),
+    /// git does: a HEAD merged into a remote branch asks, an unpushed one doesn't.
+    #[test]
+    fn amend_asks_for_a_pushed_head_the_graph_cannot_see() {
+        let dir = scratch("amend-unsure");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "feat");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a", "two");
+        sh(&dir, &["merge", "-q", "--no-ff", "--no-edit", "feat"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "feat"]);
+        let ctx = egui::Context::default();
+        let first_parent = View { first_parent: true, ..View::default() };
+        let ask = |limit: usize, view: View| {
+            let mut t = RepoTab::new(&ctx, dir.clone(), limit, view);
+            settle(&ctx, &mut t);
+            (t.amend, t.summary) = (true, "better".into());
+            t.commit_op().confirm
+        };
+        assert!(ask(100, first_parent.clone()).is_some_and(|c| c.contains("1 commit already on a remote branch")));
+        assert!(ask(1, View::default()).is_some_and(|c| c.contains("1 commit already on a remote branch")));
+        commit(&dir, "f", "more");
+        assert!(ask(100, first_parent).is_none(), "an unpushed HEAD is amended at once");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1811,6 +1858,40 @@ mod tests {
         let skip = t.choice.take().unwrap().ops.remove(1).1;
         let msgs = run(&ctx, &mut t, Action::Git(skip));
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: bottom\nOn main: top\n", "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⌘Z of a rename on top drops the stash before it stores it again: when the store fails,
+    /// Skip lists the stash again instead of leaving it dangling for gc.
+    #[cfg(unix)]
+    #[test]
+    fn skipping_a_failed_stash_rename_undo_keeps_the_stash() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("rename-stash-fail");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        std::fs::write(dir.join("a"), "wip").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "old"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let s = t.data.as_ref().unwrap().stashes[0].clone();
+        run(&ctx, &mut t, Action::Git(fill(super::super::action::prompt("", "", super::rename_stash(&s)), "renamed")));
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "renamed\n");
+        let hooks = dir.join(".git/test-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        sh(&dir, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+        let hook = hooks.join("reference-transaction");
+        std::fs::write(&hook, format!("#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n! grep -q ' {} '\n", s.id)).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        run(&ctx, &mut t, Action::Undo);
+        assert!(t.choice.as_ref().is_some_and(|c| c.title == "Undo failed"));
+        assert_eq!(sh(&dir, &["stash", "list"]), "");
+        sh(&dir, &["config", "--unset", "core.hooksPath"]);
+        let skip = t.choice.take().unwrap().ops.remove(1).1;
+        run(&ctx, &mut t, Action::Git(skip));
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%H %gs"]), format!("{} On main: old\n", s.id));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

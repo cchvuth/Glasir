@@ -204,8 +204,9 @@ fn blame_view(ui: &mut Ui, b: &Blame, data_gen: u64, wrap: bool, acts: &mut Vec<
         let id = egui::Id::new("blame_tops");
         let cached = ui.data(|d| d.get_temp::<std::sync::Arc<((u64, usize), Vec<f32>, f32)>>(id)).filter(|c| c.0 == key);
         let cached = cached.unwrap_or_else(|| {
-            let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
-            let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6;
+            let chars = |s: &str| s.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum::<usize>();
+            let tops = tops(H, b.lines.iter().map(|l| wrapped(|| chars(&l.2), cols)));
+            let width = b.lines.iter().map(|l| chars(&l.2)).max().unwrap_or(0) as f32 * cw;
             let c = std::sync::Arc::new((key, tops, width));
             ui.data_mut(|d| d.insert_temp(id, c.clone()));
             c

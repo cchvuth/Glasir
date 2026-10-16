@@ -70,14 +70,15 @@ fn patch_items(ui: &mut Ui, ids: &[String], acts: &mut Vec<Action>) {
 
 /// "Move tag here": every tag not already on this commit, newest first.
 fn move_tag_menu(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) {
-    let mut tags: Vec<&Ref> = d.refs.iter().filter(|r| r.kind == RefKind::Tag && r.target != id).collect();
-    if tags.is_empty() {
+    let movable = |r: &&Ref| r.kind == RefKind::Tag && r.target != id;
+    if !d.refs.iter().any(|r| movable(&r)) {
         return;
     }
-    tags.sort_by_key(|r| std::cmp::Reverse(r.date));
     ui.menu_button(format!("{}  Move tag here", icon::TAG), |ui| {
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for r in tags {
+        let mut tags: Vec<&Ref> = d.refs.iter().filter(movable).collect();
+        tags.sort_by_key(|r| std::cmp::Reverse(r.date));
+        egui::ScrollArea::vertical().max_height(320.0).show_rows(ui, ui.spacing().interact_size.y, tags.len(), |ui, rows| {
+            for &r in &tags[rows] {
                 let b = ui.button(&r.name);
                 let b = if r.message.is_empty() { b } else { b.on_hover_text(&r.message) };
                 if b.clicked() {
@@ -387,5 +388,23 @@ mod tests {
         load(&mut t, &sim.ctx);
         assert!(t.confirm.is_none());
         assert_eq!(git(&["rev-parse", "HEAD"]), tip);
+    }
+
+    #[test]
+    fn move_tag_lays_out_only_the_tags_in_view() {
+        use crate::git::{Ref, RefKind};
+        use crate::repo::Action;
+        let mut sim = Sim::new(800.0, 600.0);
+        let mut t = tab(&sim.ctx, "move-tag-rows", &["x"]);
+        let mut d = t.data.take().unwrap();
+        let tag = |i: i64| Ref { kind: RefKind::Tag, full: format!("refs/tags/t{i:03}"), target: "old".into(), date: i, ..crate::ui::testkit::local_ref(&format!("t{i:03}")) };
+        d.refs = std::sync::Arc::new((0..300).map(tag).collect());
+        let mut acts = vec![];
+        click(&mut sim, "Move tag here", |ui| super::move_tag_menu(ui, &d, "new", &mut acts));
+        assert!(sim.text(|s| s == "t299").is_some(), "the newest tag comes first");
+        let laid_out = sim.ctx.fonts(|f| f.num_galleys_in_cache());
+        assert!(laid_out < 60, "{laid_out} texts laid out for 300 tags");
+        click(&mut sim, "t298", |ui| super::move_tag_menu(ui, &d, "new", &mut acts));
+        assert!(matches!(&acts[..], [Action::Git(op)] if op.label == "Move tag t298"));
     }
 }

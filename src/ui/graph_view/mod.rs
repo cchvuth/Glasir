@@ -143,10 +143,9 @@ pub fn show(
     let v = &d.view;
     if v.filtered() || v.first_parent {
         ui.horizontal(|ui| {
-            let shown = d.refs.iter().filter(|r| v.shows(&r.full)).count();
             let mut what = vec![];
             if v.filtered() {
-                what.push(format!("Viewing {shown} of {} refs", d.refs.len()));
+                what.push(format!("Viewing {} of {} refs", d.shown_refs, d.refs.len()));
             }
             if v.first_parent {
                 what.push("first-parent only".to_owned());

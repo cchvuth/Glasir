@@ -10,7 +10,8 @@ use std::path::PathBuf;
 pub(super) struct Toast {
     text: String,
     error: bool,
-    until: f64,
+    /// Set by the first frame that shows it: one made while the window is hidden waits for it.
+    until: Option<f64>,
     /// (tab dir, undo step id): an Undo button while that step is still the newest.
     undo: Option<(PathBuf, u64)>,
 }
@@ -20,15 +21,13 @@ impl App {
         self.toast_undo(ctx, text, error, None);
     }
 
-    pub(super) fn toast_undo(&mut self, ctx: &egui::Context, text: String, error: bool, undo: Option<(PathBuf, u64)>) {
-        let now = ctx.input(|i| i.time);
-        let secs = if error { 12.0 } else if undo.is_some() { 8.0 } else { 4.0 };
-        self.toasts.push(Toast { text: text, error, until: now + secs, undo });
+    pub(super) fn toast_undo(&mut self, _: &egui::Context, text: String, error: bool, undo: Option<(PathBuf, u64)>) {
+        self.toasts.push(Toast { text, error, until: None, undo });
     }
 
     pub(super) fn show_toasts(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
-        self.toasts.retain(|t| t.until > now);
+        self.toasts.retain_mut(|t| *t.until.get_or_insert(now + if t.error { 12.0 } else if t.undo.is_some() { 8.0 } else { 4.0 }) > now);
         if self.toasts.is_empty() {
             return;
         }

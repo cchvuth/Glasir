@@ -15,6 +15,7 @@ use crate::theme::{self, icon};
 use crate::ui::graph_view::dnd::branch_dnd;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use ref_menus::ref_menu;
+use std::collections::HashSet;
 
 fn matches(filter: &str, name: &str) -> bool {
     filter.is_empty() || name.to_lowercase().contains(&filter.to_lowercase())
@@ -24,7 +25,7 @@ fn matches(filter: &str, name: &str) -> bool {
 fn view_style(ui: &Ui, d: &RepoData, r: &crate::git::Ref, text: RichText) -> RichText {
     if d.view.solo.contains(&r.full) {
         text.color(theme::changed())
-    } else if !d.view.shows(&r.full) {
+    } else if !d.shows(&r.full) {
         text.color(theme::dim(ui).gamma_multiply(0.7))
     } else {
         text
@@ -39,7 +40,7 @@ pub(super) fn eye(ui: &mut Ui, row: egui::Rect, d: &RepoData, refs: &[&crate::gi
     if refs.is_empty() || !d.view.solo.is_empty() || !ui.rect_contains_pointer(row) {
         return;
     }
-    let hidden = refs.iter().all(|f| d.view.hidden.iter().any(|h| h == f));
+    let hidden = refs.iter().all(|f| !d.shows(f));
     let at = egui::Rect::from_center_size(egui::pos2(row.right() - 14.0, row.center().y), egui::vec2(26.0, 22.0));
     let resp = ui.interact(at, egui::Id::new(("eye", &refs, row.top() as i32)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
     if resp.hovered() {
@@ -89,21 +90,22 @@ pub(super) fn head_row(ui: &Ui, text: RichText, styled: bool) -> egui::Button<'s
 
 /// Stacked branches right under their parent, with their depth (`repo::stack`).
 fn stacked<'a>(d: &'a RepoData, locals: &[&'a crate::git::Ref]) -> Vec<(&'a crate::git::Ref, usize)> {
-    fn add<'a>(d: &'a RepoData, r: &'a crate::git::Ref, depth: usize, out: &mut Vec<(&'a crate::git::Ref, usize)>) {
+    fn add<'a>(d: &'a RepoData, r: &'a crate::git::Ref, depth: usize, out: &mut Vec<(&'a crate::git::Ref, usize)>, seen: &mut HashSet<&'a str>) {
+        seen.insert(&r.name);
         out.push((r, depth));
         for c in stack::children(d, &r.name).into_iter().filter_map(|c| d.local(c)) {
-            if depth < 16 && !out.iter().any(|o| o.0.name == c.name) {
-                add(d, c, depth + 1, out);
+            if depth < 16 && !seen.contains(c.name.as_str()) {
+                add(d, c, depth + 1, out, seen);
             }
         }
     }
-    let mut out = vec![];
+    let (mut out, mut seen) = (vec![], HashSet::new());
     for r in locals.iter().filter(|r| stack::parent(d, &r.name).is_none_or(|p| d.local(p).is_none())) {
-        add(d, r, 0, &mut out);
+        add(d, r, 0, &mut out, &mut seen);
     }
     // A loop of stale edges has no root: never lose a branch from the list.
     for r in locals {
-        if !out.iter().any(|o| o.0.name == r.name) {
+        if !seen.contains(r.name.as_str()) {
             out.push((r, 0));
         }
     }
@@ -132,7 +134,7 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
     if r.head {
         rt = rt.strong();
     }
-    let styled = d.view.solo.contains(&r.full) || !d.view.shows(&r.full);
+    let styled = d.view.solo.contains(&r.full) || !d.shows(&r.full);
     let rt = view_style(ui, d, r, rt);
     let resp = theme::keyed(ui, ("local", &r.full, depth), |ui| ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) }));
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
@@ -233,9 +235,14 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     acts.push(Action::Jump(h.clone()));
                 }
             }
+            let mut step = 0.0;
             for (i, (r, depth)) in rows.iter().copied().enumerate() {
                 pinned_separator(ui, d, i, &names);
-                local_row(ui, d, r, &r.name, depth, acts);
+                if r.head {
+                    local_row(ui, d, r, &r.name, depth, acts);
+                } else {
+                    in_view(ui, &mut step, |ui| local_row(ui, d, r, &r.name, depth, acts));
+                }
             }
             let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name)).collect();
             let seed = d.refs.iter().find(|r| r.head && r.kind == RefKind::Local).map(|r| r.name.as_str());
@@ -378,16 +385,45 @@ mod tests {
     }
 
     #[test]
-    fn menu_stays_with_its_tag_or_remote_branch_when_the_list_scrolls() {
+    fn local_rows_in_view_sit_where_all_rows_would() {
         let (mut sim, mut tall) = (Sim::new(300.0, 400.0), Sim::new(300.0, 12000.0));
-        let (t, d) = tags_and_remote_branches(&sim, "sidebar-row-menus");
+        let mut t = tab(&sim.ctx, "sidebar-local-rows", &["x"]);
+        let mut d = t.data.take().unwrap();
+        let names: Vec<String> = ["develop".to_owned()].into_iter().chain((0..150).map(|i| format!("b{i:03}"))).chain(["TAGS  0".into()]).collect();
+        d.refs = Arc::new(names[..151].iter().map(|n| Ref { head: n == "b040", ..local_ref(n) }).collect());
+        let y_of = |sim: &mut Sim, off: f32| {
+            sim.frame(vec![], |ui| scrolled_to(ui, &d, &t.dir, off, &mut vec![]));
+            names.iter().filter_map(|n| Some((n.as_str(), sim.text(|s| s.ends_with(n.as_str()))?.y + off))).collect::<HashMap<_, _>>()
+        };
+        let all = y_of(&mut tall, 0.0);
+        assert_eq!(all.len(), names.len());
+        let everything = tall.ctx.fonts(|f| f.num_galleys_in_cache());
+        for (row, above) in [("b000", 100.0), ("b041", 100.0), ("b100", 200.0), ("TAGS  0", 300.0)] {
+            let off = all[row] - above;
+            let seen = y_of(&mut sim, off);
+            let laid_out = sim.ctx.fonts(|f| f.num_galleys_in_cache());
+            assert!(seen.contains_key(row) && laid_out * 4 < everything, "{row}: {laid_out} of {everything} texts laid out");
+            for (n, y) in seen {
+                assert!((y - all[n]).abs() < 1.0, "offset {off}: {n} at {y}, not {}", all[n]);
+            }
+        }
+    }
+
+    #[test]
+    fn menu_stays_with_its_tag_or_remote_branch_when_the_list_scrolls() {
+        let mut tall = Sim::new(300.0, 12000.0);
+        let (t, d) = tags_and_remote_branches(&tall, "sidebar-row-menus");
         tall.frame(vec![], |ui| scrolled_to(ui, &d, &t.dir, 0.0, &mut vec![]));
-        let mut acts = vec![];
         for (row, item) in [("b075", "Checkout origin/b075"), ("v075", "Checkout v075")] {
             let base = tall.text(|s| s.ends_with(row)).unwrap().y - 200.0;
-            sim.menu_survives(row, item, |ui, scrolled| scrolled_to(ui, &d, &t.dir, base + if scrolled { 60.0 } else { 0.0 }, &mut acts));
+            let mut sim = Sim::new(300.0, 400.0);
+            let draw = |ui: &mut Ui, scrolled: bool| scrolled_to(ui, &d, &t.dir, base + if scrolled { 60.0 } else { 0.0 }, &mut vec![]);
+            sim.open_menu(row, |ui| draw(ui, false));
+            for _ in 0..2 {
+                sim.frame(vec![], |ui| draw(ui, true));
+            }
+            assert!(egui::Popup::is_any_open(&sim.ctx), "{row}: the menu closed");
+            assert!(sim.text(|s| s.starts_with(item)).is_some(), "{row}: the open menu is another row's");
         }
-        let picked: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { Some(op.label.as_str()) } else { None }).collect();
-        assert_eq!(picked, ["Checkout origin/b075", "Checkout v075"]);
     }
 }

@@ -107,7 +107,7 @@ pub const IN_FILE: &str = "a private file (no system keychain available)";
 
 /// The environment variable the token comes from, if one is set.
 pub fn env_source(p: Provider) -> Option<&'static str> {
-    env_token(p).map(|_| match p {
+    env_token(p, |k| std::env::var(k).ok()).map(|_| match p {
         Provider::Claude => "the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN environment variable",
         Provider::OpenAi => "the OPENAI_API_KEY environment variable",
     })
@@ -134,12 +134,15 @@ pub fn find_saved(p: Provider) -> Option<&'static str> {
     saved(p).map(|(_, at)| at)
 }
 
-fn env_token(p: Provider) -> Option<(String, bool)> {
-    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-    match p {
+/// `(token, bearer, API base URL)` from the environment (`var`): a gateway key goes to the
+/// `*_BASE_URL` set beside it, not to the Settings URL.
+fn env_token(p: Provider, var: impl Fn(&str) -> Option<String>) -> Option<(String, bool, Option<String>)> {
+    let get = |k: &str| var(k).filter(|v| !v.trim().is_empty());
+    let (t, bearer) = match p {
         Provider::Claude => get("ANTHROPIC_API_KEY").map(|t| (t, false)).or_else(|| get("ANTHROPIC_AUTH_TOKEN").map(|t| (t, true))),
         Provider::OpenAi => get("OPENAI_API_KEY").map(|t| (t, true)),
-    }
+    }?;
+    Some((t, bearer, get(if p == Provider::Claude { "ANTHROPIC_BASE_URL" } else { "OPENAI_BASE_URL" })))
 }
 
 fn keychain_token(p: Provider) -> Option<String> {
@@ -218,12 +221,12 @@ mod keychain {
     }
 }
 
-/// `(token, bearer)`: OAuth tokens (`sk-ant-oat…`) authenticate with
-/// `Authorization: Bearer`, as do all OpenAI keys.
-fn token(p: Provider) -> Option<(String, bool)> {
-    env_token(p).or_else(|| saved(p).map(|(t, _)| {
+/// `(token, bearer, base URL)`: OAuth tokens (`sk-ant-oat…`) authenticate with
+/// `Authorization: Bearer`, as do all OpenAI keys; a saved token goes to the Settings URL (`None`).
+fn token(p: Provider) -> Option<(String, bool, Option<String>)> {
+    env_token(p, |k| std::env::var(k).ok()).or_else(|| saved(p).map(|(t, _)| {
         let bearer = p == Provider::OpenAi || t.starts_with("sk-ant-oat");
-        (t, bearer)
+        (t, bearer, None)
     }))
 }
 
@@ -289,7 +292,7 @@ pub(super) enum Ev {
     Done(Res<()>),
 }
 
-pub(super) fn need_token(p: Provider) -> Res<(String, bool)> {
+pub(super) fn need_token(p: Provider) -> Res<(String, bool, Option<String>)> {
     token(p).ok_or_else(|| match p {
         Provider::Claude => "No Claude token. Add one in Settings → AI, or set ANTHROPIC_API_KEY.".into(),
         Provider::OpenAi => "No OpenAI API key. Add one in Settings → AI, or set OPENAI_API_KEY.".into(),
@@ -348,9 +351,10 @@ pub(super) fn post(url: &str, headers: &[(&str, String)], payload: &str, api: &s
 
 /// Streams one completion from the selected provider; `on_text` returns false
 /// to cancel. `schema`: the reply is JSON matching this JSON Schema (structured output).
+/// `base`: the token's own API base URL (an environment gateway), else the Settings one.
 pub(super) fn complete(
     cfg: &Config,
-    (token, bearer): (String, bool),
+    (token, bearer, base): (String, bool, Option<String>),
     system: &str,
     prompt: &str,
     effort: &str,
@@ -358,9 +362,11 @@ pub(super) fn complete(
     on_text: &mut dyn FnMut(String) -> bool,
 ) -> Res<()> {
     if cfg.provider == Provider::OpenAi {
-        return openai::complete(&cfg.openai, &token, system, prompt, effort, schema, on_text);
+        let ep = Endpoint { base_url: base.unwrap_or_else(|| cfg.openai.base_url.clone()), ..cfg.openai.clone() };
+        return openai::complete(&ep, &token, system, prompt, effort, schema, on_text);
     }
-    let first_party = cfg.base_url.trim_end_matches('/') == DEFAULT_URL;
+    let base = base.as_deref().unwrap_or(&cfg.base_url).trim_end_matches('/');
+    let first_party = base == DEFAULT_URL;
     let model = cfg.model.trim();
     let mut body = serde_json::json!({
         "model": model,
@@ -388,7 +394,7 @@ pub(super) fn complete(
     if bearer {
         betas.push("oauth-2025-04-20");
     }
-    let url = format!("{}/v1/messages", cfg.base_url.trim_end_matches('/'));
+    let url = format!("{base}/v1/messages");
     let mut headers = vec![("anthropic-version", "2023-06-01".to_owned())];
     headers.push(if bearer { ("authorization", format!("Bearer {token}")) } else { ("x-api-key", token) });
     if !betas.is_empty() {
@@ -484,7 +490,7 @@ pub(crate) mod tests {
     fn run(url: String, tok: (&str, bool)) -> (Res<()>, String) {
         let cfg = Config { base_url: url, ..Default::default() };
         let mut out = String::new();
-        let r = complete(&cfg, (tok.0.into(), tok.1), "sys", "hi", "low", None, &mut |t| {
+        let r = complete(&cfg, (tok.0.into(), tok.1, None), "sys", "hi", "low", None, &mut |t| {
             out += &t;
             true
         });
@@ -512,10 +518,26 @@ pub(crate) mod tests {
         let (url, h) = serve(sse(&[DELTA, r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#]));
         let cfg = Config { base_url: url, ..Default::default() };
         let schema = serde_json::json!({"type": "object", "additionalProperties": false});
-        assert!(complete(&cfg, ("k".into(), false), "sys", "hi", "medium", Some(&schema), &mut |_| true).is_ok());
+        assert!(complete(&cfg, ("k".into(), false, None), "sys", "hi", "medium", Some(&schema), &mut |_| true).is_ok());
         let req = h.join().unwrap();
         let body: serde_json::Value = serde_json::from_str(&req[req.find("\r\n\r\n").unwrap() + 4..]).unwrap();
         assert_eq!(body["output_config"], serde_json::json!({"effort": "medium", "format": {"type": "json_schema", "schema": schema}}));
+    }
+
+    #[test]
+    fn env_tokens_go_to_the_env_base_url() {
+        let env = |vars: &'static [(&str, &str)]| move |k: &str| vars.iter().find(|v| v.0 == k).map(|v| v.1.to_owned());
+        let claude = &[("ANTHROPIC_AUTH_TOKEN", "t"), ("ANTHROPIC_BASE_URL", "https://gw"), ("OPENAI_BASE_URL", "https://o")];
+        assert_eq!(env_token(Provider::Claude, env(claude)),Some(("t".into(), true, Some("https://gw".into()))));
+        assert_eq!(env_token(Provider::Claude, env(&[("ANTHROPIC_API_KEY", "k"), ("OPENAI_BASE_URL", "https://o")])), Some(("k".into(), false, None)));
+        assert_eq!(env_token(Provider::OpenAi, env(&[("OPENAI_API_KEY", "k"), ("OPENAI_BASE_URL", "http://local/v1")])), Some(("k".into(), true, Some("http://local/v1".into()))));
+        assert_eq!(env_token(Provider::OpenAi, env(&[("OPENAI_BASE_URL", "http://local/v1")])), None);
+        // The Settings URL (here a closed port) is not where the env token goes.
+        let closed = format!("http://{}", std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap());
+        let (url, h) = serve(sse(&[DELTA, r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#]));
+        let cfg = Config { base_url: closed, ..Default::default() };
+        assert_eq!(complete(&cfg, ("k".into(), false, Some(url)), "sys", "hi", "low", None, &mut |_| true), Ok(()));
+        assert!(h.join().unwrap().starts_with("POST /v1/messages "));
     }
 
     #[test]

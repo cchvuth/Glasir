@@ -26,14 +26,18 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
     let (own, common) = (git("--git-dir")?, git("--git-common-dir")?);
     let gits = [own, common.clone()];
     // `ignored` verdicts: a build dir's churn must not trigger status reloads.
-    let mut ignored = std::collections::HashMap::new();
+    let (mut ignored, mut tree_at) = (std::collections::HashMap::new(), None);
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(e) = res else { return };
         if matches!(e.kind, notify::EventKind::Access(_)) {
             return; // our own git reads (inotify IN_OPEN/CLOSE) are not changes
         }
+        if e.need_rescan() {
+            let _ = tx.send(Change::Refs);
+            return ctx.request_repaint_after(std::time::Duration::from_millis(450));
+        }
         for p in &e.paths {
-            if let Some(c) = classify(p, &gits, &root, &mut ignored) {
+            if let Some(c) = classify(p, &gits, &root, &mut ignored, &mut tree_at) {
                 let _ = tx.send(c);
                 ctx.request_repaint_after(std::time::Duration::from_millis(450));
             }
@@ -47,7 +51,7 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
     Some((w, rx))
 }
 
-fn classify(p: &Path, gits: &[std::path::PathBuf; 2], root: &Path, ignored: &mut std::collections::HashMap<String, bool>) -> Option<Change> {
+fn classify(p: &Path, gits: &[std::path::PathBuf; 2], root: &Path, ignored: &mut std::collections::HashMap<String, bool>, tree_at: &mut Option<std::time::Instant>) -> Option<Change> {
     let Some((i, rel)) = gits.iter().enumerate().find_map(|(i, g)| Some((i, p.strip_prefix(g).ok()?))) else {
         let rel = p.strip_prefix(root).ok()?;
         if rel.components().next()?.as_os_str() == ".git" {
@@ -56,40 +60,51 @@ fn classify(p: &Path, gits: &[std::path::PathBuf; 2], root: &Path, ignored: &mut
         if rel.file_name().is_some_and(|n| n == ".gitignore") {
             ignored.clear();
         }
-        return (!is_ignored(root, rel, ignored)).then_some(Change::Tree);
+        let due = tree_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(400));
+        if is_ignored(root, rel, ignored, !due) {
+            return None;
+        }
+        if !due {
+            *tree_at = Some(std::time::Instant::now());
+        }
+        return Some(Change::Tree);
     };
-    match rel.components().next().map(|c| c.as_os_str().to_string_lossy()).as_deref() {
-        Some("refs" | "packed-refs" | "reftable") => Some(Change::Refs),
-        // Per-worktree files count only in our own git dir, not the main worktree's.
-        Some("HEAD" | "MERGE_HEAD" | "rebase-merge" | "rebase-apply" | "CHERRY_PICK_HEAD") if i == 0 => Some(Change::Refs),
-        Some("index") if i == 0 => {
+    let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+    match parts.iter().map(|c| c.as_ref()).collect::<Vec<&str>>()[..] {
+        ["refs" | "packed-refs" | "reftable" | "config", ..] | ["HEAD"] | ["worktrees", _, "HEAD"] => Some(Change::Refs),
+        // Other per-worktree files count only in our own git dir, not the main worktree's (any HEAD does).
+        ["MERGE_HEAD" | "rebase-merge" | "rebase-apply" | "CHERRY_PICK_HEAD" | "config.worktree", ..] if i == 0 => Some(Change::Refs),
+        ["index", ..] if i == 0 => {
             ignored.clear(); // a file was tracked or untracked: verdicts may flip
             Some(Change::Index)
         }
-        _ => None, // objects, logs, locks, other worktrees: noise
+        _ => None, // objects, logs, locks, other worktrees' state: noise
     }
 }
 
 /// `rel` (under `root`) is gitignored, as `git check-ignore` sees it: a tracked file, or a
 /// directory holding one, is not. Ancestors are checked first (an ignored `target/` answers for
-/// everything under it); verdicts are cached in `cache`, except for a path that is gone, which
-/// may have been a file or a directory (`rm -rf target`): it is checked both ways.
-fn is_ignored(root: &Path, rel: &Path, cache: &mut std::collections::HashMap<String, bool>) -> bool {
-    let check = |arg: &str| crate::git::run(root, &["check-ignore", "-q", "--", arg]).is_ok();
+/// everything under it; with `leaf` false only they are). Verdicts are cached in `cache`; a path
+/// that is gone may have been a file or a directory (`rm -rf target`): it is checked both ways.
+fn is_ignored(root: &Path, rel: &Path, cache: &mut std::collections::HashMap<String, bool>, leaf: bool) -> bool {
+    let mut ignored = |key: String| *cache.entry(key).or_insert_with_key(|k| crate::git::run(root, &["check-ignore", "-q", "--", k]).is_ok());
     let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
-    let Some((leaf, dirs)) = parts.split_last() else { return false };
+    let Some((name, dirs)) = parts.split_last() else { return false };
     let mut key = String::new();
     for d in dirs {
         key = key + d + "/";
-        if *cache.entry(key.clone()).or_insert_with(|| check(&key)) {
+        if ignored(key.clone()) {
             return true;
         }
     }
-    key += leaf;
+    if !leaf {
+        return false;
+    }
+    key += name;
     match std::fs::symlink_metadata(root.join(rel)) {
-        Ok(m) if m.is_dir() => *cache.entry(key.clone() + "/").or_insert_with(|| check(&(key.clone() + "/"))),
-        Ok(_) => *cache.entry(key.clone()).or_insert_with(|| check(&key)),
-        Err(_) => check(&key) || check(&(key + "/")),
+        Ok(m) if m.is_dir() => ignored(key + "/"),
+        Ok(_) => ignored(key),
+        Err(_) => ignored(key.clone()) || ignored(key + "/"),
     }
 }
 
@@ -123,7 +138,7 @@ mod tests {
         use std::path::{Path, PathBuf};
         let (own, common) = (PathBuf::from("/r/.git/worktrees/wt"), PathBuf::from("/r/.git"));
         let gits = [own.clone(), common.clone()];
-        let c = |p: PathBuf| super::classify(&p, &gits, Path::new("/wt"), &mut Default::default());
+        let c = |p: PathBuf| super::classify(&p, &gits, Path::new("/wt"), &mut Default::default(), &mut None);
         assert_eq!(c(own.join("reftable/tables.list")), Some(super::Change::Refs));
         assert_eq!(c(common.join("reftable/0x000000000001-0x000000000002-1d179f9d.ref")), Some(super::Change::Refs));
         assert_eq!(c(common.join("worktrees/other/reftable/tables.list")), None);
@@ -141,6 +156,43 @@ mod tests {
         sh(&dir, &["branch", "x"]);
         let full = (0..40).any(|_| rx.recv_timeout(std::time::Duration::from_millis(250)) == Ok(super::Change::Refs));
         assert!(full, "no full reload for a branch made in a reftable repo");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Config (remotes, author) and any worktree's HEAD are ref changes; another worktree's sequencer state is not.
+    #[test]
+    fn config_and_every_worktrees_head_are_ref_changes() {
+        use std::path::{Path, PathBuf};
+        let (own, common) = (PathBuf::from("/r/.git/worktrees/wt"), PathBuf::from("/r/.git"));
+        let gits = [own.clone(), common.clone()];
+        let c = |p: PathBuf| super::classify(&p, &gits, Path::new("/wt"), &mut Default::default(), &mut None);
+        for p in [common.join("config"), own.join("config.worktree"), common.join("HEAD"), common.join("worktrees/other/HEAD"), own.join("HEAD")] {
+            assert_eq!(c(p.clone()), Some(super::Change::Refs), "{p:?}");
+        }
+        for p in [common.join("config.worktree"), common.join("MERGE_HEAD"), common.join("worktrees/other/index"), common.join("FETCH_HEAD")] {
+            assert_eq!(c(p.clone()), None, "{p:?}");
+        }
+    }
+
+    /// A checkout writing many files: once one counted, the rest within the debounce run no
+    /// `check-ignore` of their own (an ignored dir still answers for what's under it).
+    #[test]
+    fn a_burst_of_new_files_runs_few_ignore_checks() {
+        let dir = scratch("watch-burst");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join(".gitignore"), "target/\n").unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("target")).unwrap();
+        let gits = [dir.join(".git"), dir.join(".git")];
+        let (mut cache, mut at) = (Default::default(), None);
+        let checks = || crate::git::LOG.lock().unwrap().iter().filter(|l| l.cwd == dir && l.args.iter().any(|a| a == "check-ignore")).count();
+        let before = checks();
+        for i in 0..30 {
+            std::fs::write(dir.join(format!("src/f{i}")), "x").unwrap();
+            assert_eq!(super::classify(&dir.join(format!("src/f{i}")), &gits, &dir, &mut cache, &mut at), Some(super::Change::Tree));
+        }
+        assert_eq!(super::classify(&dir.join("target/out.o"), &gits, &dir, &mut cache, &mut at), None);
+        assert!(checks() - before <= 3, "{} checks", checks() - before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -182,7 +234,7 @@ mod tests {
         }
         sh(&dir, &["add", "-f", "vendor/kept.c"]);
         let mut cache = Default::default();
-        let mut ign = |p: &str| super::is_ignored(&dir, std::path::Path::new(p), &mut cache);
+        let mut ign = |p: &str| super::is_ignored(&dir, std::path::Path::new(p), &mut cache, true);
         assert!(!ign("src.rs") && ign("x.log") && ign("target/a/x.o"));
         assert!(!ign("vendor/kept.c"), "tracked under an ignored dir");
         assert!(ign("vendor/junk.c"));

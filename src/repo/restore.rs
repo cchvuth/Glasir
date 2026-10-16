@@ -18,14 +18,15 @@ pub fn apply_stash_file(d: &RepoData, label: String, stash: &str, path: &str) ->
 }
 
 pub(super) fn apply_stash(dir: &Path, stash: &str, path: &str) -> Res<String> {
-    let patch = git::run_raw(dir, &["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--binary", &format!("{stash}^1"), stash, "--", path], None)?;
+    let patch = git::run_raw(dir, &["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--binary", &format!("{stash}^1"), stash, "--", path], None)?;
     let has = |l: &str| patch.split(|&b| b == b'\n').any(|x| x.starts_with(l.as_bytes()));
     let (deletes, adds) = (has("deleted file mode"), has("new file mode"));
     let blob = |rev: &str| git::run_raw(dir, &["cat-file", "--filters", &format!("{rev}:{path}")], None);
     let base = if adds && !deletes { vec![] } else { blob(&format!("{stash}^1"))? };
     let file = dir.join(path);
     let linked = git::ancestors(path).any(|a| std::fs::symlink_metadata(dir.join(a)).is_ok_and(|m| m.is_symlink()));
-    let edited = !linked && has("@@ ") && std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) && std::fs::read(&file).is_ok_and(|now| now != base);
+    let oid = |args: &[&str]| git::run(dir, args).ok();
+    let edited = !linked && has("@@ ") && std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) && oid(&["hash-object", "--", path]) != oid(&["rev-parse", "-q", "--verify", &format!("{stash}^1:{path}")]);
     if !edited {
         let Err(e) = git::run_input(dir, &["apply", "--whitespace=nowarn"], Some(&patch)) else { return Ok(String::new()) };
         match std::fs::symlink_metadata(&file) {
@@ -54,11 +55,14 @@ pub(super) fn apply_stash(dir: &Path, stash: &str, path: &str) -> Res<String> {
             git::run(dir, &["merge-file", "-L", "working tree", "-L", "stash base", "-L", &name, "--", path, &b.to_string_lossy(), &t.to_string_lossy()])
         })
     });
+    let wrote = merged.is_ok() || std::fs::read(&file).is_ok_and(|now| now != ours);
+    let modes: Vec<u8> = patch.split_inclusive(|&b| b == b'\n').filter(|l| [&b"diff --git "[..], b"old mode ", b"new mode "].iter().any(|p| l.starts_with(p))).flatten().copied().collect();
+    let moded = if wrote && has("new mode ") { git::run_input(dir, &["apply"], Some(&modes)) } else { Ok(String::new()) };
     match merged {
-        Err(_) if std::fs::read(&file).is_ok_and(|now| now != ours) => {
+        Err(_) if wrote => {
             Err(format!("{path} changed since the stash, so its change was merged in with conflict markers (<<<<<<< working tree … >>>>>>> {name}): resolve them in the file."))
         }
-        r => r,
+        r => r.and(moded),
     }
 }
 
@@ -212,6 +216,63 @@ mod tests {
         let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
         super::apply_stash(&dir, &id, "f").unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), file(block("B", "D")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stash_file_is_its_real_content_past_textconv() {
+        let dir = scratch("stashfile-textconv");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "diff.redact.textconv", "sed 's/=.*/=***/'"]);
+        std::fs::write(dir.join(".gitattributes"), "*.env diff=redact\n").unwrap();
+        std::fs::write(dir.join("b.env"), "\0x=1\n").unwrap();
+        sh(&dir, &["add", "b.env"]);
+        commit(&dir, "a", "a\n");
+        std::fs::write(dir.join("b.env"), "\0x=2\n").unwrap();
+        std::fs::write(dir.join("n.env"), "secret=42\n").unwrap();
+        sh(&dir, &["add", "n.env"]);
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        for (p, want) in [("n.env", "secret=42\n"), ("b.env", "\0x=2\n")] {
+            super::apply_stash(&dir, &id, p).unwrap();
+            assert_eq!(std::fs::read_to_string(dir.join(p)).unwrap(), want);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stash_file_differing_only_in_line_endings_is_unchanged() {
+        let dir = scratch("stashfile-eol");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "core.autocrlf", "false"]);
+        commit(&dir, "a", "1\n2\n3\n");
+        std::fs::write(dir.join("a"), "1\n2 stash\n3\n").unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        sh(&dir, &["config", "core.autocrlf", "true"]);
+        super::apply_stash(&dir, &id, "a").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "1\r\n2 stash\r\n3\r\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_merged_stash_file_gets_the_stash_mode_change() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("stashfile-mode");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "s", "1\n2\n3\n4\n5\n");
+        std::fs::write(dir.join("s"), "1 stash\n2\n3\n4\n5\n").unwrap();
+        std::fs::set_permissions(dir.join("s"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        std::fs::write(dir.join("s"), "1\n2\n3\n4\n5 mine\n").unwrap();
+        super::apply_stash(&dir, &id, "s").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("s")).unwrap(), "1 stash\n2\n3\n4\n5 mine\n");
+        assert_ne!(std::fs::metadata(dir.join("s")).unwrap().permissions().mode() & 0o100, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

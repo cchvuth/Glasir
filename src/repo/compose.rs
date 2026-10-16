@@ -9,6 +9,7 @@ use crate::ai;
 use crate::git::{self, FileDiff, Res};
 use std::path::Path;
 
+#[derive(Clone)]
 pub struct Unit {
     pub path: String,
     /// "modified, hunk 2/3" or "new file, whole file".
@@ -24,6 +25,7 @@ pub struct Commit {
     pub units: Vec<usize>,
 }
 
+#[derive(Clone)]
 pub struct Plan {
     pub id: u64,
     pub units: Vec<Unit>,
@@ -265,7 +267,7 @@ impl Plan {
             if !patch.is_empty() {
                 let file = git_dir.join(format!("glasir-compose-{k}.patch"));
                 std::fs::write(&file, patch).map_err(|e| e.to_string())?;
-                op = op.then(&["apply", "--cached", &file.to_string_lossy()]);
+                op = op.then(&["apply", "--cached", "--whitespace=nowarn", &file.to_string_lossy()]);
             }
             if !self.wip {
                 // Both from the original HEAD's tree: `reset <tree> -- path` also unstages a deletion.
@@ -349,6 +351,13 @@ impl RepoTab {
             }
             Some(Err(e)) => self.notes.push(Msg { text: format!("Compose commits: {e}"), error: true }),
             None => {}
+        }
+        if self.running.is_none()
+            && self.drop_task.is_none()
+            && let Some(p) = self.parked_compose.take()
+            && git::head(&self.dir).as_deref() == Some(p.head.as_str())
+        {
+            self.compose = Some(p);
         }
     }
 
@@ -537,18 +546,18 @@ mod tests {
         // Undo (the op's `Undo::Soft`): the old commits, with nothing else changed.
         crate::repo::testutil::move_back(&dir, &snap, Undo::Soft).unwrap();
         assert_eq!((rev("HEAD"), wip()), (c3.clone(), before.clone()));
-        // A failed step (apply refuses trailing whitespace) rolls everything back.
-        g(&["config", "apply.whitespace", "error"]);
+        // A failed step (a hook refuses the second commit) rolls everything back.
         std::fs::write(dir.join("w"), "w \n").unwrap();
         g(&["add", "w"]);
         g(&["commit", "-q", "-m", "w", "--", "w"]); // `s` stays staged
+        refuse(&dir, "two");
         let (mut plan, _) = Plan::load(&dir, Some(&r(&c1, &[], false))).unwrap();
         plan.fill(r#"{"commits":[{"message":"one","units":[1]},{"message":"two","units":[2,3,4,5]}]}"#).unwrap();
         let (head, staged) = (rev("HEAD"), g(&["diff", "--cached"]));
         assert!(super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).is_err_and(|e| e.contains("Rolled back")));
         assert_eq!((rev("HEAD"), g(&["diff", "--cached"]), g(&["log", "-1", "--format=%s"])), (head, staged, "w\n".into()));
         assert!(g(&["diff", "--cached"]).contains("+staged"));
-        g(&["config", "--unset", "apply.whitespace"]);
+        std::fs::remove_file(git::git_dir(&dir).unwrap().join("hooks/commit-msg")).unwrap();
         let (mut plan, _) = Plan::load(&dir, Some(&r(&c1, &[], true))).unwrap();
         assert!(plan.units.iter().any(|u| u.path == "s"));
         plan.fill(r#"{"commits":[{"message":"All of it","units":[]}]}"#).unwrap();
@@ -556,6 +565,31 @@ mod tests {
         assert_eq!((g(&["log", "--format=%s", "origin/main..HEAD"]), g(&["status", "--porcelain"])), ("Remaining changes\n".into(), String::new()));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A `commit-msg` hook that refuses the commit whose message is `msg`.
+    fn refuse(dir: &Path, msg: &str) {
+        let hook = git::git_dir(dir).unwrap().join("hooks/commit-msg");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, format!("#!/bin/sh\n! grep -qx '{msg}' \"$1\"\n")).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    }
+
+    /// `apply.whitespace=fix` changes nothing the plan commits: trailing whitespace stays.
+    #[test]
+    fn compose_keeps_trailing_whitespace() {
+        let dir = scratch("compose-ws");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "f1\n");
+        sh(&dir, &["config", "apply.whitespace", "fix"]);
+        std::fs::write(dir.join("f"), "f1\nf2 \n").unwrap();
+        let (mut plan, _) = Plan::load(&dir, None).unwrap();
+        plan.fill(r#"{"commits":[{"message":"f2","units":[1]}]}"#).unwrap();
+        super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
+        assert_eq!(sh(&dir, &["show", "HEAD:f"]), "f1\nf2 \n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A submodule with only local edits is no unit; content only in the index is refused.
@@ -642,6 +676,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Create with a pre-commit hook refusing the first commit: HEAD stays, so the plan comes back.
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_first_commit_keeps_the_plan() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("compose-refused");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "one\n");
+        std::fs::write(dir.join("f"), "two\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, super::super::View::default());
+        crate::repo::testutil::settle(&ctx, &mut t);
+        let (mut plan, _) = Plan::load(&dir, None).unwrap();
+        plan.fill(r#"{"commits":[{"message":"Two","units":[1]}]}"#).unwrap();
+        t.compose = Some(plan);
+        let hook = dir.join(".git/hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        sh(&dir, &["config", "core.hooksPath", &hook.parent().unwrap().to_string_lossy()]);
+        t.apply(&ctx, super::super::Action::CommitPlan);
+        assert!(t.compose.is_none());
+        crate::repo::testutil::wait_for("the plan back", || {
+            t.poll(&ctx, &mut vec![]);
+            t.compose.is_some()
+        });
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "one\n");
+        std::fs::remove_file(&hook).unwrap();
+        crate::repo::testutil::settle(&ctx, &mut t);
+        t.apply(&ctx, super::super::Action::CommitPlan);
+        crate::repo::testutil::settle(&ctx, &mut t);
+        t.poll(&ctx, &mut vec![]);
+        assert!(t.compose.is_none() && t.parked_compose.is_none());
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "Two\none\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A typechange is one whole-file unit; a failed step leaves the rest unstaged, not reverted.
     #[cfg(unix)]
     #[test]
@@ -656,8 +728,8 @@ mod tests {
         std::fs::remove_file(dir.join("l")).unwrap();
         std::os::unix::fs::symlink("m", dir.join("l")).unwrap();
         std::fs::write(dir.join("f"), "f2\n").unwrap();
-        std::fs::write(dir.join("g"), "g2 \n").unwrap(); // trailing whitespace: apply refuses it
-        g(&["config", "apply.whitespace", "error"]);
+        std::fs::write(dir.join("g"), "g2\n").unwrap();
+        refuse(&dir, "g");
         let (mut plan, _) = Plan::load(&dir, None).unwrap();
         let what: Vec<String> = plan.units.iter().map(|u| format!("{} {}", u.path, u.what)).collect();
         assert_eq!(what, ["f modified, hunk 1/1", "g modified, hunk 1/1", "l type changed, whole file"]);

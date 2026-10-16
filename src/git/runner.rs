@@ -12,10 +12,11 @@ use std::time::Instant;
 
 pub fn cmd(dir: &Path) -> Command {
     let mut c = base("git", dir);
-    // Neutralize user config and translations that would change the output we parse.
+    // Neutralize user config and translations that would change the output we parse, or label the UTF-8 we write as another encoding.
     c.args(["-c", "log.showSignature=false", "-c", "log.showRoot=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
         .args(["-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/"])
         .args(["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "color.diff=never"])
+        .args(["-c", "i18n.logOutputEncoding=UTF-8", "-c", "i18n.commitEncoding=UTF-8"])
         .env("LANGUAGE", "en");
     c
 }
@@ -67,10 +68,13 @@ fn base(prog: &str, dir: &Path) -> Command {
         use std::os::windows::process::CommandExt;
         c.creation_flags(0x0800_0000);
     }
-    // Own process group, so Cancel also stops the git subcommands it runs (pull -> fetch).
-    // Nothing in it reads the TTY: stdin is null/piped and prompts go through askpass.
+    // Own session, so own process group: Cancel also stops the git subcommands it runs (pull -> fetch).
+    // No controlling terminal either: a hook or ssh reading /dev/tty fails at once instead of
+    // stopping on SIGTTIN when Glasir runs from a terminal. setsid is async-signal-safe.
     #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut c, 0);
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut c, || if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+    }
     c
 }
 
@@ -271,8 +275,8 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
 
 /// Runs git, handing each NUL-terminated stdout record to `each` as it arrives (a long
 /// history search shows its first hits at once); `each` returning false stops git.
-/// Cancellable through [`Cancel::scope`] like [`run`].
-pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> Res<()> {
+/// `input` (if not empty) is its stdin. Cancellable through [`Cancel::scope`] like [`run`].
+pub fn stream(dir: &Path, args: &[&str], input: &str, mut each: impl FnMut(&str) -> bool) -> Res<()> {
     let cancel = Cancel::active();
     if cancel.is_cancelled() {
         return Err(CANCELLED.into());
@@ -280,7 +284,14 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     let start = Instant::now();
     let mut c = cmd(dir);
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if !input.is_empty() {
+        c.stdin(Stdio::piped());
+    }
     let mut child = c.spawn().map_err(|e| format!("could not run git: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let data = input.as_bytes().to_vec();
+        std::thread::spawn(move || stdin.write_all(&data));
+    }
     let (done, ended) = std::sync::mpsc::channel();
     let err = read_all(child.stderr.take().unwrap(), None, done);
     let mut out = child.stdout.take().unwrap();
@@ -318,8 +329,8 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
 
 /// `taskkill /F` skips git's cleanup: remove the lock files the killed git created in the git dir,
 /// its refs and object store (`index.lock`, `packed-refs.lock`, `refs/**/*.lock`,
-/// `objects/maintenance.lock`, commit-graph and multi-pack-index locks...), never older ones,
-/// which another git may hold.
+/// `objects/maintenance.lock`, commit-graph and multi-pack-index locks...) and in the submodules'
+/// git dirs (`modules/**`, a recursive fetch's), never older ones, which another git may hold.
 #[cfg(any(windows, test))]
 fn drop_locks(dir: &Path, since: std::time::SystemTime) {
     use std::path::PathBuf;
@@ -329,7 +340,7 @@ fn drop_locks(dir: &Path, since: std::time::SystemTime) {
     while let Some((d, refs)) = dirs.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
             let (p, Ok(t)) = (e.path(), e.file_type()) else { continue };
-            let deep = refs || matches!(e.file_name().to_str(), Some("refs" | "reftable"));
+            let deep = refs || matches!(e.file_name().to_str(), Some("refs" | "reftable" | "modules"));
             if t.is_dir() && (deep || matches!(e.file_name().to_str(), Some("objects" | "info" | "pack" | "commit-graphs"))) {
                 dirs.push((p, deep));
             } else if t.is_file() && p.extension().is_some_and(|x| x == "lock") && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m >= since) {
@@ -415,7 +426,7 @@ mod tests {
             std::fs::File::create(&p).unwrap().set_modified(t).unwrap();
             p
         };
-        let old = ["index.lock", "refs/heads/old.lock"].map(|p| file(p, since - Duration::from_secs(5)));
+        let old = ["index.lock", "refs/heads/old.lock", "modules/sub/refs/heads/old.lock"].map(|p| file(p, since - Duration::from_secs(5)));
         let new = [
             "packed-refs.lock",
             "shallow.lock",
@@ -425,12 +436,49 @@ mod tests {
             "objects/info/commit-graph.lock",
             "objects/info/commit-graphs/commit-graph-chain.lock",
             "objects/pack/multi-pack-index.lock",
+            "modules/sub/index.lock",
+            "modules/sub/refs/remotes/origin/main.lock",
+            "modules/a/b/shallow.lock",
+            "modules/sub/modules/nested/objects/maintenance.lock",
         ]
         .map(|p| file(p, since + Duration::from_secs(1)));
         let fetched = file("FETCH_HEAD", since + Duration::from_secs(1));
         drop_locks(&dir, since);
         assert!(old.iter().all(|p| p.exists()) && fetched.exists() && !new.iter().any(|p| p.exists()));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn messages_are_utf8_whatever_the_i18n_config() {
+        let dir = std::env::temp_dir().join(format!("glasir-encoding-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| run(&dir, args).unwrap();
+        g(&["init", "-q"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false"), ("i18n.logOutputEncoding", "ISO-8859-1")] {
+            g(&["config", k, v]);
+        }
+        let msg = "Ünïcødé façade";
+        run_input(&dir, &["commit", "-q", "--allow-empty", "-F", "-"], Some(msg.as_bytes())).unwrap();
+        assert_eq!(g(&["log", "-1", "--format=%s"]).trim(), msg);
+        g(&["config", "i18n.commitEncoding", "ISO-8859-1"]);
+        run_input(&dir, &["commit", "-q", "--allow-empty", "-F", "-"], Some(msg.as_bytes())).unwrap();
+        assert!(!g(&["cat-file", "commit", "HEAD"]).contains("\nencoding "));
+        assert_eq!(g(&["log", "-1", "--format=%B"]).trim(), msg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn children_run_in_a_session_of_their_own() {
+        let mut c = base("sleep", &std::env::temp_dir()).arg("5").spawn().unwrap();
+        let pid = c.id() as i32;
+        let ids = unsafe { (libc::getsid(pid), libc::getpgid(pid)) };
+        let _ = (c.kill(), c.wait());
+        assert_eq!(ids, (pid, pid));
+        let t = Instant::now();
+        assert!(run_shell(&std::env::temp_dir(), "read x < /dev/tty").is_err());
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[cfg(unix)]

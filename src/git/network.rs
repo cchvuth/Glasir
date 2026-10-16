@@ -38,11 +38,46 @@ fn quiet(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<String> {
     exec(c, dir, &all, input).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-/// `fetch --all --prune --no-tags` for background refreshes; never prompts.
+/// The remotes `fetch --all` visits, each with its fetch refspecs that write under `refs/remotes/`
+/// (and its negative ones), from [`config`](super::config)'s pairs; and whether one also maps refs
+/// elsewhere (tags, notes), which `fetch --prune` would delete when that remote lacks them.
+pub fn tracking(config: &[(String, String)]) -> (Vec<(String, Vec<String>)>, bool) {
+    let mut all: Vec<(&str, Vec<String>, bool, bool)> = vec![];
+    for (k, v) in config {
+        let Some((name, key)) = k.strip_prefix("remote.").and_then(|r| r.rsplit_once('.')) else { continue };
+        let i = all.iter().position(|r| r.0 == name).unwrap_or_else(|| {
+            all.push((name, vec![], false, false));
+            all.len() - 1
+        });
+        match (key, v.split_once(':')) {
+            ("fetch", _) if v.starts_with('^') => all[i].1.push(v.clone()),
+            ("fetch", Some((_, dst))) if dst.starts_with("refs/remotes/") => all[i].1.push(v.clone()),
+            ("fetch", Some((_, dst))) if !dst.is_empty() => all[i].2 = true,
+            ("skipfetchall" | "skipdefaultupdate", _) => all[i].3 = !matches!(v.to_ascii_lowercase().as_str(), "false" | "no" | "off" | "0"),
+            _ => {}
+        }
+    }
+    all.retain(|r| !r.3);
+    let elsewhere = all.iter().any(|r| r.2);
+    (all.into_iter().filter(|r| r.1.iter().any(|s| !s.starts_with('^'))).map(|r| (r.0.to_owned(), r.1)).collect(), elsewhere)
+}
+
+/// `fetch --prune --no-tags` of every remote's remote-tracking refs ([`tracking`]) for background
+/// refreshes; never prompts. A remote that fails doesn't keep the others from being fetched.
 pub fn fetch_quiet(dir: &Path) -> Res<String> {
     // Remote-tracking refs only: tags are local refs that undo snapshots, so a background
     // fetch adding or pruning one would invalidate the undo history. A manual Fetch gets them.
-    quiet(dir, &["fetch", "--all", "--prune", "--no-tags", "--no-prune-tags", "--quiet"], None)
+    let mut errs = vec![];
+    for (remote, specs) in tracking(&super::config(dir)).0 {
+        let mut a = vec!["fetch", "--prune", "--no-tags", "--no-prune-tags", "--no-write-fetch-head", "--quiet", "--refmap=", &remote];
+        a.extend(specs.iter().map(String::as_str));
+        match quiet(dir, &a, None) {
+            Err(e) if e == super::CANCELLED => return Err(e),
+            Err(e) => errs.push(e),
+            Ok(_) => {}
+        }
+    }
+    if errs.is_empty() { Ok(String::new()) } else { Err(errs.join("\n")) }
 }
 
 pub fn fetch_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
@@ -165,6 +200,28 @@ mod tests {
         assert_eq!(fetch_failure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "Sign in required");
         assert_eq!(fetch_failure("git@github.com: Permission denied (publickey)."), "Sign in required");
         assert_eq!(fetch_failure("ssh: Could not resolve hostname x: nodename nor servname provided"), "Fetch failed");
+    }
+
+    #[test]
+    fn remote_tracking_refspecs() {
+        let cfg = |kv: &[(&str, &str)]| kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        let (remotes, elsewhere) = tracking(&cfg(&[
+            ("remote.origin.url", "git@h:o/r.git"),
+            ("remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"),
+            ("remote.origin.fetch", "+refs/tags/*:refs/tags/*"),
+            ("remote.origin.fetch", "^refs/heads/huge"),
+            ("remote.my.fork.fetch", "refs/heads/main:refs/remotes/my.fork/main"),
+            ("remote.mirror.fetch", "+refs/*:refs/*"),
+            ("remote.only.fetch", "refs/heads/x"),
+            ("remote.slow.fetch", "+refs/heads/*:refs/remotes/slow/*"),
+            ("remote.slow.skipfetchall", ""),
+            ("remote.pushdefault", "origin"),
+        ]));
+        let specs = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(remotes, [("origin".into(), specs(&["+refs/heads/*:refs/remotes/origin/*", "^refs/heads/huge"])), ("my.fork".into(), specs(&["refs/heads/main:refs/remotes/my.fork/main"]))]);
+        assert!(elsewhere);
+        let (remotes, elsewhere) = tracking(&cfg(&[("remote.o.fetch", "+refs/heads/*:refs/remotes/o/*"), ("remote.t.fetch", "+refs/tags/*:refs/tags/*"), ("remote.t.skipfetchall", "true")]));
+        assert_eq!((remotes.len(), elsewhere), (1, false));
     }
 
     #[test]

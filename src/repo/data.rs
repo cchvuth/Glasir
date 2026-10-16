@@ -3,7 +3,7 @@
 
 use crate::git::{self, Commit, Ref, RefKind, Res, Status};
 use crate::graph::{Graph, NONE};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -54,6 +54,8 @@ pub struct RepoData {
     pub stash_at: HashMap<String, Vec<usize>>,
     /// The filter this history was loaded with.
     pub view: View,
+    hidden: HashSet<String>,
+    pub shown_refs: usize,
     /// Stacked local branches (`stack`): child -> (parent, the parent tip it's built on).
     pub stack: Arc<super::stack::Stacks>,
     /// Unique per `build`: tells a reload apart even when it keeps the log.
@@ -78,29 +80,28 @@ impl View {
         !self.hidden.is_empty() || !self.solo.is_empty()
     }
 
-    pub fn shows(&self, full: &str) -> bool {
-        if self.solo.is_empty() { !self.hidden.iter().any(|h| h == full) } else { self.solo.iter().any(|s| s == full) }
-    }
-
     /// `git log` revisions: the soloed refs, or every branch/remote/tag minus the hidden ones, plus HEAD.
-    pub(crate) fn revs(&self) -> Vec<String> {
+    /// With refs hidden, the shown ones of `refs` (full names, no symrefs) go to `--stdin` (`.1`):
+    /// an `--exclude` per hidden ref overflows Windows' command line once hundreds are hidden.
+    pub(crate) fn revs<'a>(&self, refs: impl IntoIterator<Item = &'a str>) -> (Vec<String>, String) {
         let mut a: Vec<String> = self.first_parent.then(|| "--first-parent".to_owned()).into_iter().collect();
         if !self.solo.is_empty() {
             a.push("--ignore-missing".into());
             a.extend(self.solo.iter().cloned());
-            return a;
-        }
-        for (prefix, all) in [("refs/heads/", "--branches"), ("refs/remotes/", "--remotes"), ("refs/tags/", "--tags")] {
-            a.extend(self.hidden.iter().filter_map(|h| h.strip_prefix(prefix)).map(|h| format!("--exclude={h}")));
-            if all == "--remotes" {
-                // origin/HEAD would bring a hidden origin/main back; remote HEADs are never shown anyway.
-                a.push("--exclude=*/HEAD".into());
-            }
-            a.push(all.into());
+            return (a, String::new());
         }
         // An unborn HEAD (orphan branch) is skipped instead of failing the walk.
-        a.extend(["--ignore-missing".into(), "HEAD".into()]);
-        a
+        a.push("--ignore-missing".into());
+        let shown = if self.hidden.is_empty() {
+            a.extend(["--branches", "--remotes", "--tags"].map(String::from));
+            String::new()
+        } else {
+            a.push("--stdin".into());
+            let hidden: std::collections::HashSet<&str> = self.hidden.iter().map(String::as_str).collect();
+            refs.into_iter().filter(|r| !hidden.contains(r)).map(|r| format!("{r}\n")).collect()
+        };
+        a.push("HEAD".into());
+        (a, shown)
     }
 }
 
@@ -135,6 +136,10 @@ impl RepoData {
     /// gives the full ref (`worktree add <path> refs/heads/x` detaches HEAD; `x` checks out the branch).
     pub fn worktree_rev<'a>(&self, r: &'a Ref) -> &'a str {
         if r.kind == RefKind::Local { &r.name } else { self.rev(r) }
+    }
+
+    pub fn shows(&self, full: &str) -> bool {
+        if self.view.solo.is_empty() { !self.hidden.contains(full) } else { self.view.solo.iter().any(|s| s == full) }
     }
 
     pub fn local(&self, name: &str) -> Option<&Ref> {
@@ -374,7 +379,8 @@ impl RepoData {
             })
             .unwrap_or_else(|| "main".into());
         let local_at = refs.iter().enumerate().filter(|(_, r)| r.kind == RefKind::Local).map(|(i, r)| (r.name.clone(), i)).collect();
-        Self {
+        let hidden = view.hidden.iter().cloned().collect();
+        let mut d = Self {
             default_branch,
             tips,
             log,
@@ -404,6 +410,8 @@ impl RepoData {
             local_at,
             stash_at,
             view,
+            hidden,
+            shown_refs: 0,
             stack: Default::default(),
             generation: {
                 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -411,7 +419,9 @@ impl RepoData {
             },
             reach: Default::default(),
             asked: Default::default(),
-        }
+        };
+        d.shown_refs = d.refs.iter().filter(|r| d.shows(&r.full)).count();
+        d
     }
 }
 
@@ -437,21 +447,24 @@ fn split_remote<'a>(remotes: &[(String, String)], name: &'a str) -> Option<(&'a 
 
 pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     let git_dir = git::git_dir(dir)?;
-    let revs = view.revs();
+    let walk = |refs: &[Ref]| {
+        let (revs, shown) = view.revs(refs.iter().map(|r| r.full.as_str()));
+        git::log(dir, limit + 1, &revs.iter().map(String::as_str).collect::<Vec<_>>(), &shown)
+    };
     let (status, refs, log, stashes, remotes) = std::thread::scope(|s| {
         let st = s.spawn(|| git::status(dir));
         let rf = s.spawn(|| git::refs(dir));
-        let lg = s.spawn(|| {
-            let r: Vec<&str> = revs.iter().map(String::as_str).collect();
-            git::log(dir, limit + 1, &r)
-        });
+        let lg = view.hidden.is_empty().then(|| s.spawn(|| walk(&[])));
         let sh = s.spawn(|| (git::stashes(dir).unwrap_or_default(), git::worktrees(dir).unwrap_or_default()));
         let rm = s.spawn(|| (git::remotes(dir).unwrap_or_default(), git::submodules(dir).unwrap_or_default(), git::lfs(dir), git::config(dir), git::author(dir), super::maintenance::health(dir)));
-        (st.join().unwrap(), rf.join().unwrap(), lg.join().unwrap(), sh.join().unwrap(), rm.join().unwrap())
+        let refs = rf.join().unwrap();
+        let log = lg.map_or_else(|| walk(refs.as_deref().unwrap_or_default()), |t| t.join().unwrap());
+        (st.join().unwrap(), refs, log, sh.join().unwrap(), rm.join().unwrap())
     });
     let (remotes, submodules, lfs, config, author, health) = remotes;
-    let origin_head = git::run(dir, &["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
-        .map(|s| s.trim().trim_start_matches("origin/").to_owned())
+    let origin_head = git::run(dir, &["symbolic-ref", "-q", "refs/remotes/origin/HEAD"])
+        .ok()
+        .and_then(|s| s.trim().strip_prefix("refs/remotes/origin/").map(str::to_owned))
         .unwrap_or_default();
     let (stashes, worktrees) = stashes;
     let mut log = log?;
@@ -506,6 +519,9 @@ mod tests {
         let hide = |h: &[&str]| View { hidden: h.iter().map(|s| s.to_string()).collect(), ..Default::default() };
         assert!(msgs(hide(&["refs/heads/spike"])).contains(&"spike work".to_owned()), "tag v1 still shows it");
         let hidden = msgs(hide(&["refs/heads/spike", "refs/tags/v1", "refs/heads/main"]));
+        let shown = |v: View| load_all(&dir, 100, v).unwrap().shown_refs;
+        assert_eq!((shown(View::default()), shown(hide(&["refs/heads/spike", "refs/tags/v1"]))), (4, 2));
+        assert_eq!(shown(View { solo: vec!["refs/heads/feat".into(), "refs/heads/gone".into()], ..Default::default() }), 1);
         assert!(!hidden.contains(&"spike work".to_owned()) && hidden.contains(&"main work".to_owned()));
 
         // Solo: only that ref's history; a deleted soloed ref is ignored.
@@ -526,6 +542,37 @@ mod tests {
         let only = "only on origin".to_owned();
         assert!(msgs(View::default()).contains(&only));
         assert!(!msgs(hide(&["refs/remotes/origin/main"])).contains(&only));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn many_hidden_refs_keep_the_command_line_short() {
+        let dir = scratch("many-hidden");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        commit(&dir, "a", "only on origin");
+        let names: Vec<String> = (0..2000).map(|i| format!("refs/remotes/origin/a-long-feature-branch-name-{i}")).collect();
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let create: String = names.iter().map(|n| format!("create {n} {}", tip)).collect();
+        git::run_input(&dir, &["update-ref", "--stdin"], Some(create.as_bytes())).unwrap();
+        sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        let view = View { hidden: names, ..Default::default() };
+        let refs = git::refs(&dir).unwrap();
+        let (args, shown) = view.revs(refs.iter().map(|r| r.full.as_str()));
+        assert!(args.concat().len() < 100, "{args:?}");
+        let d = load_all(&dir, 100, view).unwrap();
+        assert_eq!(d.log.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(), ["base"]);
+        let mut a = vec!["log", "-z", "--format=%s"];
+        a.extend(args.iter().map(String::as_str));
+        a.push("--");
+        let mut found = vec![];
+        git::stream(&dir, &a, &shown, |s| {
+            found.push(s.to_owned());
+            true
+        })
+        .unwrap();
+        assert_eq!(found, ["base"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -691,6 +738,20 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         let full = |n: &str| d.local(n).map(|r| r.full.as_str());
         assert_eq!([full("main"), full("origin/x"), full("origin/main"), full("x")], [Some("refs/heads/main"), Some("refs/heads/origin/x"), None, None]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A local branch named like origin's default (`origin/main`) must not hide that default.
+    #[test]
+    fn origin_head_beside_a_local_origin_branch() {
+        let dir = scratch("origin-head");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        sh(&dir, &["branch", "origin/main"]);
+        assert_eq!(load_all(&dir, 100, View::default()).unwrap().origin_head, "main");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

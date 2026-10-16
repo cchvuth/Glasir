@@ -20,7 +20,7 @@ fn tint(c: Color32, strong: bool) -> Color32 {
 pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     let out_id = egui::Id::new(("merge_out", &ed.dir, &ed.path));
     if let Some(d) = Task::poll(&mut ed.task) {
-        ed.output = crate::repo::merge_editor::decode(&d.original);
+        ed.output = d.text.clone();
         ed.data = Some(d);
         ed.reparse();
         ui.data_mut(|m| m.remove::<egui::text_edit::TextEditState>(out_id));

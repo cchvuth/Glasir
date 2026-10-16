@@ -18,6 +18,9 @@ pub struct Split {
     pub(super) undo_len: usize,
     /// `symbolic-ref HEAD` at the start (empty when detached): Abort resets only this branch.
     branch: String,
+    /// A HEAD split's other branches on the commit (full name, tip) at the start: restacked onto
+    /// a part when one is committed, Abort puts them back.
+    stacked: Vec<(String, String)>,
     /// Continue stopped on a conflict in a later commit: no banner, the split ends with the rebase.
     pub replaying: bool,
 }
@@ -48,8 +51,10 @@ impl RepoTab {
                     return super::op::Dropped::Note("A commit that changes no files can't be split.".into());
                 }
                 let branch = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default().trim().to_owned();
+                let on = if is_head { git::run(dir, &["for-each-ref", "--contains", &commit, "--format=%(refname) %(objectname)", "refs/heads"]).unwrap_or_default() } else { String::new() };
+                let stacked = on.lines().filter_map(|l| l.split_once(' ')).filter(|(r, _)| *r != branch).map(|(r, o)| (r.to_owned(), o.to_owned())).collect();
                 // `undo_len` is set when it starts.
-                super::op::Dropped::Split(op, Box::new(Split { id: commit, rebase: !is_head, files, message, undo_len: 0, branch, replaying: false }))
+                super::op::Dropped::Split(op, Box::new(Split { id: commit, rebase: !is_head, files, message, undo_len: 0, branch, stacked, replaying: false }))
             }
             Err(e) => super::op::Dropped::Note(e),
         });
@@ -67,8 +72,8 @@ impl RepoTab {
         if self.busy() != Some(label.as_str()) {
             return;
         }
-        let (summary, body) = sp.message.split_once('\n').unwrap_or((&sp.message, ""));
-        (self.summary, self.body, self.amend) = (summary.into(), body.trim().into(), false);
+        (self.summary, self.body) = super::message::split(&sp.message);
+        self.amend = false;
         sp.undo_len = self.undo.len();
         self.split = Some(sp);
     }
@@ -95,7 +100,12 @@ impl RepoTab {
                 // Track the commit's files again first: `rebase --abort` won't overwrite its now-untracked added files.
                 true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).undo(Undo::Keep),
                 // Undoable: it also drops whatever was committed on top since, in the app or not.
-                false => Op::new(ABORT, &["reset", "-q", &sp.id, "--"]).backup(Backup::Tree { revs: vec![], untracked: false }).undo(Undo::Mixed),
+                false => {
+                    let mut op = Op::new(ABORT, &["reset", "-q", &sp.id, "--"]).backup(Backup::Tree { revs: vec![], untracked: false }).undo(Undo::Mixed);
+                    let moved = sp.stacked.iter().filter_map(|(r, was)| d.refs.iter().find(|x| x.full == *r && x.target != *was).map(|x| ["update-ref", r, was, &x.target].map(String::from).to_vec()));
+                    op.cmds.splice(0..0, moved);
+                    op
+                }
             };
             return self.run(ctx, op);
         }
@@ -1706,6 +1716,32 @@ mod tests {
         let m = step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
         assert!(t.split.is_none(), "{m:?}");
         assert_eq!(sh(&dir, &["log", "--format=%s"]), "3\nabcx\nx\nbase\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A HEAD split of `a`'s tip with `b` stacked on it: a part's commit restacks `b` onto the
+    /// part, Abort puts `b` back on the whole commit. The box gets the message's first paragraph.
+    #[test]
+    fn head_split_abort_puts_stacked_branches_back() {
+        let (dir, ctx) = new_repo("split-stacked");
+        commit(&dir, "m", "m");
+        sh(&dir, &["checkout", "-q", "-b", "a"]);
+        for f in ["x", "y"] {
+            std::fs::write(dir.join(f), f).unwrap();
+        }
+        sh(&dir, &["add", "x", "y"]);
+        sh(&dir, &["commit", "-q", "-m", "x and\ny\n\nwhy"]);
+        sh(&dir, &["checkout", "-q", "-b", "b"]);
+        commit(&dir, "b", "b");
+        sh(&dir, &["checkout", "-q", "a"]);
+        let (x, b) = (sh(&dir, &["rev-parse", "a"]), sh(&dir, &["rev-parse", "b"]));
+        let mut t = open(&ctx, &dir);
+        step(&ctx, &mut t, Action::Split(x.trim().into()));
+        assert_eq!((t.summary.as_str(), t.body.as_str()), ("x and y", "why"));
+        commit_part(&ctx, &mut t, "x");
+        assert_ne!(sh(&dir, &["rev-parse", "b"]), b, "restacked onto the part");
+        let msgs = step(&ctx, &mut t, Action::SplitEnd { abort: true });
+        assert_eq!((sh(&dir, &["rev-parse", "a"]), sh(&dir, &["rev-parse", "b"])), (x, b), "{msgs:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

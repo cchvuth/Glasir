@@ -11,7 +11,7 @@ pub struct FileDiff {
     pub header: Vec<String>,
     pub hunks: Vec<Hunk>,
     pub binary: bool,
-    /// Not valid UTF-8: shown lossily, so it must not be patched line by line.
+    /// Not valid UTF-8 (shown lossily), or a typechange's two patches: it must not be patched line by line.
     pub lossy: bool,
     /// An untracked file `git add` would convert (CRLF, a clean filter): its lines aren't the
     /// blob's, so only all of it can be staged.
@@ -184,12 +184,19 @@ pub fn file_paths<'a>(files: &[FileDiff], names: &'a str) -> Vec<Option<(&'a str
         .collect()
 }
 
-/// One file's diff; submodules come as `--submodule=log` summaries.
+/// One file's diff; submodules come as `--submodule=log` summaries. A typechange (file <->
+/// symlink) is two patches, a deletion then a creation: both hunks are shown, and no patch is made.
 fn parse_one(text: &str) -> FileDiff {
     if text.starts_with("Submodule ") {
         return FileDiff { submodule: super::submodule::parse_submodule_diff(text), ..Default::default() };
     }
-    let mut f = parse_diff(text).into_iter().next().unwrap_or_default();
+    let mut files = parse_diff(text).into_iter();
+    let mut f = files.next().unwrap_or_default();
+    for g in files {
+        f.hunks.extend(g.hunks);
+        f.binary |= g.binary;
+        f.lossy = true;
+    }
     f.lfs = super::lfs::pointer_diff(&f);
     f
 }
@@ -269,7 +276,7 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<F
         return Ok(f);
     }
     let mut f = parse_one(&String::from_utf8_lossy(&raw));
-    f.lossy = std::str::from_utf8(&raw).is_err();
+    f.lossy |= std::str::from_utf8(&raw).is_err();
     if f.binary {
         let old = c.old_path.as_deref().unwrap_or(&c.path);
         f.sizes = Some(match staged {
@@ -299,7 +306,7 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
         return Ok(f);
     }
     let mut f = parse_one(&String::from_utf8_lossy(&raw));
-    f.lossy = std::str::from_utf8(&raw).is_err();
+    f.lossy |= std::str::from_utf8(&raw).is_err();
     if f.binary {
         let old = c.old_path.as_deref().unwrap_or(&c.path);
         let new = if id == super::WORKTREE { file_size(dir, &c.path) } else { blob_size(dir, &format!("{id}:{}", c.path)) };
@@ -554,6 +561,30 @@ mod tests {
         let c = Change { path: "f".into(), old_path: None, code: 'M' };
         let f = commit_diff(&dir, "HEAD", Some("HEAD~"), &c, DiffOpts::default()).unwrap();
         assert!(f.lossy && partial_patch(&f, |_, _| true, true).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn typechange_shows_both_patches_and_patches_neither() {
+        let dir = std::env::temp_dir().join(format!("glasir-typechange-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        let commit = |m: &str| g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", m]);
+        g(&["init", "-q"]);
+        std::fs::write(dir.join("f"), "one\ntwo\n").unwrap();
+        g(&["add", "f"]);
+        commit("file");
+        let link = String::from_utf8(run_raw(&dir, &["hash-object", "-w", "--stdin"], Some(b"target")).unwrap()).unwrap();
+        g(&["update-index", "--cacheinfo", &format!("120000,{},f", link.trim())]);
+        let c = Change { path: "f".into(), old_path: None, code: 'T' };
+        let staged = worktree_diff(&dir, &c, true, DiffOpts::default()).unwrap();
+        commit("link");
+        for f in [staged, commit_diff(&dir, "HEAD", Some("HEAD~"), &c, DiffOpts::default()).unwrap()] {
+            let lines: Vec<String> = f.hunks.iter().flat_map(|h| &h.lines).map(|l| format!("{}{}", l.kind as char, l.text)).collect();
+            assert_eq!(lines, ["-one", "-two", "+target", "\\ No newline at end of file"]);
+            assert!(f.lossy && partial_patch(&f, |_, _| true, false).is_none() && partial_patch(&f, |h, _| h == 0, true).is_none());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

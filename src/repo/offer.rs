@@ -42,7 +42,7 @@ fn push_rejected(err: &str, d: Option<&RepoData>) -> Choice {
     let mut ops = pull_choices();
     // A force push leases on the remote commits we've seen: only possible once they're fetched.
     let text = if err.contains("(fetch first)") {
-        ops.push(("Fetch".to_owned(), super::op::fetch_op()));
+        ops.extend(d.map(|d| ("Fetch".to_owned(), super::op::fetch_op(d))));
         "The remote branch has commits you haven't fetched. Pull them in first, then push again — or fetch to see them, and push again to get the option to replace them."
     } else {
         ops.extend(d.and_then(|d| d.push_op(true)).map(|o| ("Force push…".to_owned(), o)));
@@ -167,6 +167,35 @@ mod tests {
         let force = load_all(&a, 100, View::default()).unwrap().push_op(true).unwrap();
         exec(&a, &force).unwrap();
         assert_eq!(sh(&root.join("remote.git"), &["rev-parse", "main"]), sh(&a, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn force_push_of_a_branch_without_upstream_replaces_the_remote_one() {
+        let root = scratch("net-first-push");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        sh(&root, &["clone", "-q", "remote.git", "b"]);
+        let b = root.join("b");
+        identity(&b);
+        commit(&b, "b.txt", "theirs\n");
+        sh(&b, &["push", "-q", "origin", "main:feat"]);
+        sh(&a, &["switch", "-q", "-c", "feat"]);
+        commit(&a, "a.txt", "mine\n");
+        let load = || load_all(&a, 100, View::default()).unwrap();
+        assert!(exec(&a, &load().push_op(true).unwrap()).unwrap_err().contains("stale info"));
+        sh(&a, &["fetch", "-q", "origin"]);
+        let d = load();
+        let err = exec(&a, &d.push_op(false).unwrap()).unwrap_err();
+        let c = offer(&d.push_op(false).unwrap(), &err, Some(&d)).expect("rejected push offers a way out");
+        let force = c.ops.into_iter().find(|o| o.0 == "Force push…").expect("a force push").1;
+        exec(&a, &force).unwrap();
+        assert_eq!(sh(&root.join("remote.git"), &["rev-parse", "feat"]), sh(&a, &["rev-parse", "HEAD"]));
+        assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "feat@{u}"]), "origin/feat\n");
         let _ = std::fs::remove_dir_all(&root);
     }
 

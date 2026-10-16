@@ -411,9 +411,12 @@ impl RepoTab {
         let target_branch = d.split_remote(&target).map_or(target.as_str(), |(_, b)| b);
         let kept = |n: &str| protected(&self.keep_branches, n) || n == def || n == target || n == target_branch;
         // A branch being rebased or bisected has no HEAD marker, but git refuses to delete it.
-        let busy: Vec<String> = ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"]
-            .iter()
-            .filter_map(|f| std::fs::read_to_string(d.git_dir.join(f)).ok())
+        let linked = std::fs::read_dir(self.common.join("worktrees")).into_iter().flatten().flatten().map(|e| e.path());
+        let busy: Vec<String> = [d.git_dir.clone(), self.common.clone()]
+            .into_iter()
+            .chain(linked)
+            .flat_map(|g| ["rebase-merge/head-name", "rebase-apply/head-name", "BISECT_START"].map(|f| std::fs::read_to_string(g.join(f)).ok()))
+            .flatten()
             .map(|s| s.trim().trim_start_matches("refs/heads/").to_owned())
             .collect();
         let rows: Vec<(Cand, bool)> = d
@@ -507,6 +510,26 @@ mod tests {
         let f = &t.cleanup.as_ref().unwrap().rows.as_ref().unwrap().as_ref().unwrap()[1];
         assert_eq!((f.name.as_str(), f.ahead, f.behind, f.note.as_str()), ("feature", 1, 0, "1 commit not on any remote"));
         assert_eq!(shown(&t, NOW)[1], ("feature".to_owned(), Why::Stale, "1 commit not on any remote".to_owned(), false));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_branch_rebasing_in_another_worktree_is_not_offered() {
+        let root = scratch("cleanup-busy");
+        let (a, wt) = (root.join("a"), root.join("wt"));
+        std::fs::create_dir_all(&a).unwrap();
+        sh(&a, &["init", "-q", "-b", "main"]);
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        commit(&a, "f.txt", "two\n");
+        sh(&a, &["branch", "done"]);
+        sh(&a, &["worktree", "add", "-q", "-b", "busy", &wt.to_string_lossy()]);
+        assert!(git::run(&wt, &["rebase", "-x", "false", "HEAD~"]).is_err());
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        scanned(&ctx, &mut t);
+        assert_eq!(shown(&t, now()), [("done".to_owned(), Why::Merged, String::new(), true)]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -652,6 +675,18 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!(refs(), "refs/heads/feat\nrefs/heads/main\nrefs/remotes/origin/HEAD\nrefs/remotes/origin/main\nrefs/remotes/origin/old\n");
         assert_eq!(sh(&a, &["config", "branch.feat.remote"]), "origin\n");
+        let heads = || sh(&a, &["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+        let there = || sh(&root.join("remote.git"), &["branch", "--format=%(refname:short)"]);
+        for (act, local) in [(Action::Redo, "main\n"), (Action::Undo, "feat\nmain\n")] {
+            t.apply(&ctx, act);
+            settle(&ctx, &mut t);
+            assert!(t.choice.is_none());
+            assert_eq!((heads(), there()), (local.to_owned(), "main\n".to_owned()));
+        }
+        sh(&a, &["push", "-q", "origin", "feat"]);
+        t.apply(&ctx, Action::Redo);
+        settle(&ctx, &mut t);
+        assert_eq!((heads(), there()), ("main\n".to_owned(), "feat\nmain\n".to_owned()));
         let _ = std::fs::remove_dir_all(&root);
     }
 

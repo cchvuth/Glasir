@@ -76,7 +76,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
     if let Some(t) = tab
         && let Some(d) = &t.data
     {
-        v.push(item(icon::CLOUD_ARROW_DOWN, "Fetch all remotes", "git fetch --all --prune", Cmd::Tab(Action::Git(crate::repo::fetch_op()))));
+        v.push(item(icon::CLOUD_ARROW_DOWN, "Fetch all remotes", "git fetch --all --prune", Cmd::Tab(Action::Git(crate::repo::fetch_op(d)))));
         for m in [PullMode::Merge, PullMode::FfOnly, PullMode::Rebase] {
             let o = pull_op(m);
             let detail = if m == pull { "default" } else { "" };

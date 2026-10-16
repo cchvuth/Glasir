@@ -149,7 +149,7 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         if ok {
             op.confirm = None;
             acts.push(Action::Git(op));
-        } else {
+        } else if op.parked {
             t.unpark_rebase();
         }
     }
@@ -194,16 +194,10 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             match &job.purpose {
                 ai::Purpose::PullRequest { branch, base } => {
                     let (title, body) = job.text.trim().split_once('\n').unwrap_or((job.text.trim(), ""));
-                    if let Some(web) = t.data.as_ref().and_then(|d| d.web())
+                    if let Some(page) = t.data.as_ref().and_then(|d| super::sidebar::ref_menus::pull_request_url(d, branch, base))
                         && ui.add_enabled(ready, Button::new(format!("{}  Open pull request page", icon::GIT_PULL_REQUEST))).clicked()
                     {
-                        let strip = |b: &str| b.split_once('/').filter(|(r, _)| *r == "origin").map_or(b.to_owned(), |(_, n)| n.to_owned());
-                        let mut url = format!(
-                            "{web}/compare/{}...{}?expand=1&title={}",
-                            git::url_path(&strip(base)),
-                            git::url_path(&strip(branch)),
-                            git::url_encode(title.trim())
-                        );
+                        let mut url = format!("{page}&title={}", git::url_encode(title.trim()));
                         let body = git::url_encode(body.trim());
                         if body.len() < 6000 {
                             url += &format!("&body={body}");

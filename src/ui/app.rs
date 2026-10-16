@@ -154,7 +154,7 @@ impl App {
         t
     }
 
-    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, an amend, a commit message Claude is writing). A typed commit message and the undo / redo steps go with the worktree they belong to: they are back when that worktree is shown again.
+    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, an amend, an open external tool, a commit message Claude is writing). A typed commit message and the undo / redo steps go with the worktree they belong to: they are back when that worktree is shown again.
     fn switch(&mut self, ctx: &egui::Context, i: usize, path: &Path) {
         let top = match git::run(path, &["rev-parse", "--show-toplevel"]) {
             Ok(top) => PathBuf::from(top.trim()),
@@ -244,8 +244,8 @@ impl App {
         if pressed(Key::F5) || (cmd && pressed(Key::R)) {
             act = Some(Action::Reload);
         }
-        if fetch {
-            act = Some(Action::Git(fetch_op()));
+        if let (true, Some(d)) = (fetch, &t.data) {
+            act = Some(Action::Git(fetch_op(d)));
         }
         if !typing && cmd && pressed(Key::Z) {
             act = Some(if shift { Action::Redo } else { Action::Undo });
@@ -290,6 +290,9 @@ impl App {
         }
         if self.tabs.get(i).is_some_and(|t| t.term.busy()) {
             return self.toast(ctx, "A command is still running in this tab's terminal: let it finish or stop it there, then close the tab.".into(), true);
+        }
+        if let Some(o) = self.tabs.get(i).and_then(|t| t.ext_tools.first()) {
+            return self.toast(ctx, format!("The external {} tool is still open on {}: close it, then close the tab.", o.kind, o.path), true);
         }
         drop_data_off_thread(&mut self.tabs[i]);
         self.tabs.remove(i);
@@ -339,20 +342,20 @@ impl App {
         }
     }
 
-    fn guard_close(&mut self, ctx: &egui::Context, op_running: bool) {
-        if ctx.input(|i| i.viewport().close_requested())
-            && let Some((i, w)) = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|w| (i, w)))
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    /// `unsaved`: the first tab with work only it holds, and what to do about it.
+    fn guard_close(&mut self, ctx: &egui::Context, op_running: bool, unsaved: Option<(usize, String)>) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if let Some((i, w)) = unsaved {
+            refuse_close(ctx);
             (self.active, self.quit_pending) = (i, false);
             return self.toast(ctx, format!("{w} before quitting."), true);
         }
-        if !op_running && ctx.input(|i| i.viewport().close_requested()) {
-            let n: usize = self.tabs.iter().map(|t| t.term.running()).sum();
-            if n > 0 {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                self.quit_ask = Some(n);
-            }
+        let n: usize = self.tabs.iter().map(|t| t.term.running() + t.ext_tools.len()).sum();
+        if !op_running && n > 0 {
+            refuse_close(ctx);
+            self.quit_ask = Some(n);
         }
     }
 
@@ -362,7 +365,7 @@ impl App {
         egui::Modal::new(egui::Id::new("quit_terminal")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.heading("Quit Glasir?");
-            ui.label(if n == 1 { "A command is still running in the terminal. Quitting stops it.".into() } else { format!("{n} commands are still running in the terminal. Quitting stops them.") });
+            ui.label(if n == 1 { "A terminal command or external tool is still running. Quitting stops it.".into() } else { format!("{n} terminal commands or external tools are still running. Quitting stops them.") });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui.add(egui::Button::new(RichText::new("Quit anyway").strong()).fill(theme::del().gamma_multiply(0.6))).clicked() {
@@ -378,6 +381,7 @@ impl App {
             if quit {
                 for t in &mut self.tabs {
                     t.term = Default::default();
+                    t.ext_tools.drain(..).for_each(|o| o.cancel.cancel());
                 }
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -460,6 +464,22 @@ impl eframe::App for App {
             super::screenshot::shot_input(ctx, raw);
         }
     }
+    /// Runs before every `ui`, and alone while the window is hidden (minimized, occluded,
+    /// another Space): ops finish and the quit guards hold there too.
+    fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        self.poll_tabs(ctx);
+        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
+        let unsaved = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|w| (i, w)));
+        #[cfg(target_os = "macos")]
+        mac_quit::BUSY.store(
+            busy.is_some() || unsaved.is_some() || self.tabs.iter().any(|t| t.term.busy() || !t.ext_tools.is_empty()),
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        if hold_close(ctx, busy.as_deref().filter(|_| unsaved.is_none()), &mut self.quit_pending) {
+            self.toast(ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.as_deref().unwrap_or_default()), false);
+        }
+        self.guard_close(ctx, busy.is_some(), unsaved);
+    }
     fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.report_perf(frame);
@@ -472,7 +492,6 @@ impl eframe::App for App {
             self.tabs.iter_mut().for_each(|t| t.reload(&ctx, true));
         }
         self.s.zoom = ctx.zoom_factor(); // ⌘+ / ⌘- / ⌘0 are egui's own; persisted here
-        self.poll_tabs(&ctx);
         for p in ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect::<Vec<_>>()) {
             self.open(&ctx, &p);
         }
@@ -491,12 +510,6 @@ impl eframe::App for App {
             }
         }
         self.focused = focused;
-        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
-        let unsaved = self.tabs.iter().any(|t| t.unsaved().is_some());
-        if hold_close(&ctx, busy.as_deref().filter(|_| !unsaved), &mut self.quit_pending) {
-            self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.as_deref().unwrap_or_default()), false);
-        }
-        self.guard_close(&ctx, busy.is_some());
         let menu = self.tabs.get_mut(self.active).filter(|t| t.drop_menu.is_some() || t.commit_drop.is_some());
         if (menu.is_some() || egui::Popup::is_any_open(&ctx)) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             egui::Popup::close_all(&ctx);
@@ -549,8 +562,6 @@ impl eframe::App for App {
         if self.shortcuts {
             self.shortcuts = super::shortcuts::show(&ctx);
         }
-        #[cfg(target_os = "macos")]
-        mac_quit::BUSY.store(self.tabs.iter().any(|t| t.busy().is_some() || t.term.busy() || t.unsaved().is_some()), std::sync::atomic::Ordering::SeqCst);
         drop_hint(&ctx, self.drop_hint_shot);
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
@@ -571,6 +582,7 @@ impl eframe::App for App {
 
 fn replaceable(t: &RepoTab) -> bool {
     t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.split.is_none() && t.rebase.is_none() && t.merge.is_none() && t.compose.is_none() && !t.amend
+        && t.ext_tools.is_empty()
         && !t.ai_busy().is_some_and(|p| matches!(p, crate::ai::Purpose::CommitMessage { .. }))
 }
 
@@ -590,7 +602,7 @@ fn drop_data_off_thread(t: &mut RepoTab) {
 /// open until `busy` is None, then closes it. True when the close was first held.
 fn hold_close(ctx: &egui::Context, busy: Option<&str>, pending: &mut bool) -> bool {
     if busy.is_some() && ctx.input(|i| i.viewport().close_requested()) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        refuse_close(ctx);
         return !std::mem::replace(pending, true);
     }
     if busy.is_none() && std::mem::take(pending) {
@@ -599,8 +611,17 @@ fn hold_close(ctx: &egui::Context, busy: Option<&str>, pending: &mut bool) -> bo
     false
 }
 
+/// Keeps the window open; a hidden one comes back, so its toast or dialog says why.
+fn refuse_close(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    if ctx.input(|i| i.viewport().visible() == Some(false)) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    }
+}
+
 /// ⌘Q and the Dock's Quit send `terminate:`, which winit turns into an exit with no close request,
-/// so `hold_close` never sees it: while an op or terminal command runs, request a close instead.
+/// so `hold_close` never sees it: while an op, terminal command or external tool runs, or work is unsaved, request a close instead.
 #[cfg(target_os = "macos")]
 mod mac_quit {
     use objc2::runtime::{AnyObject, Sel};
@@ -653,8 +674,71 @@ mod mac_quit {
 }
 
 #[cfg(test)]
+impl App {
+    /// One shown frame, as eframe runs it.
+    fn pass(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
+        use eframe::App as _;
+        self.logic(ui.ctx(), frame);
+        self.ui(ui, frame);
+    }
+}
+
+#[cfg(test)]
 mod close_tests {
     use egui::{RawInput, ViewportCommand, ViewportEvent, ViewportId};
+
+    /// Minimized, occluded or on another Space, eframe runs only `logic`: the quit guards hold
+    /// there too and bring the window back, and the toast lasts until it can be seen.
+    #[test]
+    fn closing_a_hidden_window_still_keeps_unsaved_work() {
+        use eframe::App as _;
+        let dir = std::env::temp_dir().join(format!("glasir-quit-hidden-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let mut ed = crate::repo::file_edit::FileEdit::load(&dir, "a.txt").unwrap();
+        ed.text.push_str("two\n");
+        app.tabs[0].edit = Some(ed);
+        let n = app.toasts.len();
+        let mut raw = RawInput::default();
+        let vp = raw.viewports.entry(ViewportId::ROOT).or_default();
+        (vp.minimized, vp.occluded) = (Some(true), Some(true));
+        vp.events.push(ViewportEvent::Close);
+        let out = ctx.run_logic(&raw, |ctx| app.logic(ctx, &mut eframe::Frame::_new_kittest()));
+        let cmds = &out.viewport_commands[&ViewportId::ROOT];
+        for c in [ViewportCommand::CancelClose, ViewportCommand::Minimized(false), ViewportCommand::Focus] {
+            assert!(cmds.contains(&c), "{c:?} missing from {cmds:?}");
+        }
+        assert_eq!(app.toasts.len(), n + 1);
+        let shown = RawInput { time: Some(1000.0), ..Default::default() };
+        ctx.run_ui(shown, |ui| app.show_toasts(ui.ctx())).textures_delta.clear();
+        assert_eq!(app.toasts.len(), n + 1, "shown again long after: the toast says why");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_open_external_tool_keeps_its_tab_and_is_asked_about_on_quit() {
+        use crate::repo::{Action, Op};
+        let dir = std::env::temp_dir().join(format!("glasir-quit-tool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let tool = crate::repo::tools::mergetool_op("f").label;
+        app.tabs[0].apply(&ctx, Action::Git(Op::new(&tool, &["-c", "alias.slow=!sleep 30", "slow"])));
+        assert!(app.tabs[0].busy().is_none() && app.tabs[0].ext_tools.len() == 1);
+        let n = app.toasts.len();
+        app.close_tab(&ctx, 0);
+        assert_eq!((app.tabs.len(), app.toasts.len()), (1, n + 1), "the tab stays, saying why");
+        assert!(close(&ctx, &mut app).contains(&ViewportCommand::CancelClose));
+        assert_eq!(app.quit_ask, Some(1));
+        app.tabs[0].ext_tools.drain(..).for_each(|o| o.cancel.cancel());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn close_waits_for_the_running_op() {
@@ -684,7 +768,6 @@ mod close_tests {
     #[cfg(unix)]
     #[test]
     fn quit_with_a_terminal_command_asks_instead_of_waiting() {
-        use eframe::App as _;
         let dir = std::env::temp_dir().join(format!("glasir-quit-terminal-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -697,7 +780,7 @@ mod close_tests {
             if close {
                 raw.viewports.entry(ViewportId::ROOT).or_default().events.push(ViewportEvent::Close);
             }
-            let mut out = ctx.run_ui(raw, |ui| app.ui(ui, &mut frame));
+            let mut out = ctx.run_ui(raw, |ui| app.pass(ui, &mut frame));
             out.textures_delta.clear();
             out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
         };
@@ -730,7 +813,6 @@ mod close_tests {
     #[cfg(unix)]
     #[test]
     fn the_terminal_gets_its_focus_back_after_a_modal() {
-        use eframe::App as _;
         let dir = std::env::temp_dir().join(format!("glasir-terminal-focus-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -740,7 +822,7 @@ mod close_tests {
         let mut frame = eframe::Frame::_new_kittest();
         let mut step = |app: &mut super::App| {
             let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(Default::default(), egui::vec2(1200.0, 800.0))), ..Default::default() };
-            ctx.run_ui(raw, |ui| app.ui(ui, &mut frame)).textures_delta.clear();
+            ctx.run_ui(raw, |ui| app.pass(ui, &mut frame)).textures_delta.clear();
         };
         let t = std::time::Instant::now();
         while app.tabs[0].data.is_none() || app.tabs[0].loading() {
@@ -783,10 +865,9 @@ mod close_tests {
     }
 
     fn close(ctx: &egui::Context, app: &mut super::App) -> Vec<ViewportCommand> {
-        use eframe::App as _;
         let mut raw = RawInput::default();
         raw.viewports.entry(ViewportId::ROOT).or_default().events.push(ViewportEvent::Close);
-        let mut out = ctx.run_ui(raw, |ui| app.ui(ui, &mut eframe::Frame::_new_kittest()));
+        let mut out = ctx.run_ui(raw, |ui| app.pass(ui, &mut eframe::Frame::_new_kittest()));
         out.textures_delta.clear();
         out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
     }
@@ -971,7 +1052,6 @@ mod shell_tests {
     #[cfg(unix)]
     #[test]
     fn escape_in_the_terminal_stays_in_the_shell() {
-        use eframe::App as _;
         let dir = repo("term-esc");
         let ctx = egui::Context::default();
         let mut app = app(&ctx, &dir);
@@ -979,7 +1059,7 @@ mod shell_tests {
         let mut step = |app: &mut App, keys: &[Key]| {
             let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
             let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(Default::default(), egui::vec2(1200.0, 800.0))), events, ..Default::default() };
-            ctx.run_ui(raw, |ui| app.ui(ui, &mut frame)).textures_delta.clear();
+            ctx.run_ui(raw, |ui| app.pass(ui, &mut frame)).textures_delta.clear();
         };
         let t = std::time::Instant::now();
         while app.tabs[0].data.is_none() || app.tabs[0].loading() {
@@ -1004,7 +1084,6 @@ mod shell_tests {
 
     #[test]
     fn escape_cancels_a_message_edit_when_nothing_has_the_keyboard() {
-        use eframe::App as _;
         let dir = repo("esc-msg");
         crate::git::run(&dir, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "one"]).unwrap();
         let ctx = egui::Context::default();
@@ -1013,8 +1092,11 @@ mod shell_tests {
         let mut step = |app: &mut App, keys: &[Key]| {
             let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
             let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(Default::default(), egui::vec2(1200.0, 800.0))), events, ..Default::default() };
-            ctx.run_ui(raw, |ui| app.ui(ui, &mut frame)).textures_delta.clear();
+            ctx.run_ui(raw, |ui| app.pass(ui, &mut frame)).textures_delta.clear();
         };
+        crate::ui::testkit::load(&mut app.tabs[0], &ctx);
+        let head = crate::git::run(&dir, &["rev-parse", "HEAD"]).unwrap().trim().to_owned();
+        app.tabs[0].apply(&ctx, Action::Select(crate::repo::Sel::Commit(head)));
         let t = std::time::Instant::now();
         let id = loop {
             if let Some(Ok(info)) = &app.tabs[0].info {
@@ -1287,7 +1369,6 @@ mod shell_tests {
     #[test]
     fn escape_closes_a_menu_and_not_the_view_under_it() {
         use crate::ui::testkit::{Sim, load};
-        use eframe::App as _;
         let dir = repo("esc-menu");
         commit(&dir, "menu target");
         let mut sim = Sim::new(1200.0, 800.0);
@@ -1299,15 +1380,21 @@ mod shell_tests {
             r.poll();
             r.entries.is_some()
         }));
-        sim.open_menu("menu target", |ui| app.ui(ui, &mut frame));
+        app.tabs[0].apply(&sim.ctx, Action::Select(crate::repo::Sel::Wip));
+        let quiet = std::time::Instant::now();
+        while quiet.elapsed() < std::time::Duration::from_millis(600) || app.tabs[0].loading() {
+            sim.frame(vec![], |ui| app.pass(ui, &mut frame));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        sim.open_menu("menu target", |ui| app.pass(ui, &mut frame));
         assert!(egui::Popup::is_any_open(&sim.ctx));
-        sim.frame(esc(), |ui| app.ui(ui, &mut frame));
+        sim.frame(esc(), |ui| app.pass(ui, &mut frame));
         assert!(!egui::Popup::is_any_open(&sim.ctx) && app.tabs[0].reflog.is_some(), "Esc closes the menu, not the reflog under it");
         app.tabs[0].commit_drop = Some(("Drop".into(), vec![], egui::pos2(20.0, 20.0)));
-        sim.frame(vec![], |ui| app.ui(ui, &mut frame));
-        sim.frame(esc(), |ui| app.ui(ui, &mut frame));
+        sim.frame(vec![], |ui| app.pass(ui, &mut frame));
+        sim.frame(esc(), |ui| app.pass(ui, &mut frame));
         assert!(app.tabs[0].commit_drop.is_none() && app.tabs[0].reflog.is_some(), "a drop menu takes Esc the same way");
-        sim.frame(esc(), |ui| app.ui(ui, &mut frame));
+        sim.frame(esc(), |ui| app.pass(ui, &mut frame));
         assert!(app.tabs[0].reflog.is_none(), "the next Esc is the reflog's");
         let _ = std::fs::remove_dir_all(&dir);
     }
