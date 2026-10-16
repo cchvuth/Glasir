@@ -7,10 +7,14 @@ use super::toasts::Toast;
 use super::welcome::CloneDlg;
 use super::{command_log, graph_view, palette, repo_view};
 use crate::git;
+use crate::repo::message::Template;
 use crate::repo::{Action, Msg, RepoTab, Search, Sel, Task, fetch_op, unstage_all_op};
 use crate::theme::{self, icon};
 use egui::{Frame, Key, Margin, Modifiers, RichText, Ui};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+type Draft = (String, String, Option<Template>, Vec<(String, String)>);
 
 pub struct App {
     /// `GLASIR_SCREENSHOT=out.bmp`: save a screenshot once loaded, then exit (UI checks/CI).
@@ -24,6 +28,7 @@ pub struct App {
     /// Screenshot view `scroll-bench`: scroll the graph a page per frame.
     pub(super) bench: Option<usize>,
     pub(super) tabs: Vec<RepoTab>,
+    drafts: HashMap<PathBuf, Draft>,
     /// `== tabs.len()` shows the welcome page.
     pub(super) active: usize,
     pub(super) s: Settings,
@@ -76,6 +81,7 @@ impl App {
             perf: std::env::var_os("GLASIR_PERF").map(|_| (std::time::Instant::now(), vec![])),
             bench: None,
             tabs: vec![],
+            drafts: HashMap::new(),
             active: 0,
             toasts: vec![],
             clone: None,
@@ -128,13 +134,22 @@ impl App {
         self.active = match self.tabs.iter().position(|t| t.dir == top) {
             Some(i) => i,
             None => {
-                self.tabs.push(RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default()));
+                let t = self.new_tab(ctx, top);
+                self.tabs.push(t);
                 self.tabs.len() - 1
             }
         };
     }
 
-    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, a message draft).
+    fn new_tab(&mut self, ctx: &egui::Context, top: PathBuf) -> RepoTab {
+        let mut t = RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default());
+        if let Some(draft) = self.drafts.remove(&top) {
+            (t.summary, t.body, t.template, t.coauthors) = draft;
+        }
+        t
+    }
+
+    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, an amend). A typed commit message goes with the worktree it was typed for: it is back when that worktree is shown again.
     fn switch(&mut self, ctx: &egui::Context, i: usize, path: &Path) {
         let top = match git::run(path, &["rev-parse", "--show-toplevel"]) {
             Ok(top) => PathBuf::from(top.trim()),
@@ -144,8 +159,11 @@ impl App {
             self.add_tab(ctx, top.clone());
             return self.remember(top);
         }
+        if let Some(draft) = draft(&self.tabs[i]) {
+            self.drafts.insert(self.tabs[i].dir.clone(), draft);
+        }
         drop_data_off_thread(&mut self.tabs[i]);
-        self.tabs[i] = RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default());
+        self.tabs[i] = self.new_tab(ctx, top.clone());
         self.active = i;
         self.remember(top);
     }
@@ -343,7 +361,7 @@ impl App {
                 if ui.add(egui::Button::new(RichText::new("Quit anyway").strong()).fill(theme::del().gamma_multiply(0.6))).clicked() {
                     done = Some(true);
                 }
-                if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if super::format::dismissed(ui, "Cancel") {
                     done = Some(false);
                 }
             });
@@ -522,6 +540,7 @@ impl eframe::App for App {
         self.show_toasts(&ctx);
         self.screenshot(&ctx);
         graph_view::dnd::preview(&ctx);
+        super::format::note_focus(&ctx);
     }
 
     fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
@@ -536,8 +555,12 @@ impl eframe::App for App {
 }
 
 fn replaceable(t: &RepoTab) -> bool {
-    let draft = !(t.summary.is_empty() && t.body.is_empty()) && !t.template.as_ref().is_some_and(|m| (&m.summary, &m.body) == (&t.summary, &t.body));
-    t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.split.is_none() && t.rebase.is_none() && t.merge.is_none() && t.compose.is_none() && !draft
+    t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.split.is_none() && t.rebase.is_none() && t.merge.is_none() && t.compose.is_none() && !t.amend
+}
+
+fn draft(t: &RepoTab) -> Option<Draft> {
+    let untouched = t.template.as_ref().is_some_and(|m| (&m.summary, &m.body) == (&t.summary, &t.body));
+    ((!t.summary.is_empty() || !t.body.is_empty()) && !untouched).then(|| (t.summary.clone(), t.body.clone(), t.template.clone(), t.coauthors.clone()))
 }
 
 fn drop_data_off_thread(t: &mut RepoTab) {
@@ -746,7 +769,7 @@ mod close_tests {
 
 #[cfg(test)]
 mod shell_tests {
-    use super::{App, replaceable};
+    use super::{App, draft, replaceable};
     use crate::repo::{Action, RepoTab};
     use egui::{Event, Key, Modifiers, RawInput};
     use std::path::{Path, PathBuf};
@@ -843,6 +866,203 @@ mod shell_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn escape_in_the_terminal_stays_in_the_shell() {
+        use eframe::App as _;
+        let dir = repo("term-esc");
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &dir);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut step = |app: &mut App, keys: &[Key]| {
+            let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
+            let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(Default::default(), egui::vec2(1200.0, 800.0))), events, ..Default::default() };
+            ctx.run_ui(raw, |ui| app.ui(ui, &mut frame)).textures_delta.clear();
+        };
+        let t = std::time::Instant::now();
+        while app.tabs[0].data.is_none() || app.tabs[0].loading() {
+            assert!(t.elapsed().as_secs() < 120, "timed out loading the repo");
+            step(&mut app, &[]);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        app.tabs[0].apply(&ctx, Action::ToggleTerminal);
+        app.tabs[0].apply(&ctx, Action::Reflog);
+        for _ in 0..3 {
+            step(&mut app, &[]);
+        }
+        let focused = || ctx.memory(|m| m.has_focus(super::super::terminal::id()));
+        assert!(focused());
+        step(&mut app, &[Key::Escape]);
+        assert!(focused() && app.tabs[0].reflog.is_some(), "Esc typed in the terminal does not close the view behind it");
+        ctx.memory_mut(|m| m.surrender_focus(super::super::terminal::id()));
+        step(&mut app, &[Key::Escape]);
+        assert!(app.tabs[0].reflog.is_none(), "with the keyboard elsewhere it does");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn escape_cancels_a_message_edit_when_nothing_has_the_keyboard() {
+        use eframe::App as _;
+        let dir = repo("esc-msg");
+        crate::git::run(&dir, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "one"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &dir);
+        let mut frame = eframe::Frame::_new_kittest();
+        let mut step = |app: &mut App, keys: &[Key]| {
+            let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
+            let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(Default::default(), egui::vec2(1200.0, 800.0))), events, ..Default::default() };
+            ctx.run_ui(raw, |ui| app.ui(ui, &mut frame)).textures_delta.clear();
+        };
+        let t = std::time::Instant::now();
+        let id = loop {
+            if let Some(Ok(info)) = &app.tabs[0].info {
+                break info.id.clone();
+            }
+            assert!(t.elapsed().as_secs() < 120, "timed out loading the commit");
+            step(&mut app, &[]);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        app.tabs[0].edit_msg = Some(crate::repo::MsgEdit::new(&id, "one", (None, vec![])));
+        for _ in 0..3 {
+            step(&mut app, &[]);
+        }
+        assert!(ctx.memory(|m| m.focused().is_some()), "the editor takes the keyboard");
+        ctx.memory_mut(|m| m.stop_text_input());
+        step(&mut app, &[]);
+        step(&mut app, &[]);
+        app.shortcuts = true;
+        for _ in 0..3 {
+            step(&mut app, &[]);
+        }
+        step(&mut app, &[Key::Escape]);
+        assert!(!app.shortcuts && app.tabs[0].edit_msg.is_some(), "the dialog takes the Esc, the edit stays");
+        step(&mut app, &[]);
+        step(&mut app, &[]);
+        step(&mut app, &[Key::Escape]);
+        assert!(app.tabs[0].edit_msg.is_none(), "with the keyboard free, Esc cancels the edit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn only_the_top_dialog_takes_escape<S>(sim: &mut crate::ui::testkit::Sim, state: &mut S, mut draw: impl FnMut(&mut S, &egui::Context), is_open: impl Fn(&S) -> bool) {
+        let mut frame = |sim: &mut crate::ui::testkit::Sim, state: &mut S, upper: bool, esc: bool| {
+            let events = if esc { vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }] } else { vec![] };
+            let mut took = false;
+            sim.frame(events, |ui| {
+                draw(state, ui.ctx());
+                if upper {
+                    egui::Modal::new(egui::Id::new("upper")).show(ui.ctx(), |ui| took |= super::super::format::dismissed(ui, "Cancel"));
+                }
+            });
+            took
+        };
+        frame(sim, state, false, false);
+        frame(sim, state, true, false);
+        frame(sim, state, true, false);
+        assert!(frame(sim, state, true, true), "the dialog on top takes Esc");
+        assert!(is_open(state), "the one below it stays");
+        frame(sim, state, false, false);
+        frame(sim, state, false, false);
+        frame(sim, state, false, true);
+        assert!(!is_open(state), "alone, it takes Esc itself");
+    }
+
+    #[test]
+    fn escape_closes_only_the_dialog_on_top() {
+        use super::super::palette::{Cmd, Item, Palette};
+        use crate::ui::testkit::{Sim, tab};
+        let dir = repo("esc-top");
+        let mut sim = Sim::new(1200.0, 800.0);
+        let mut a = app(&sim.ctx, &dir);
+        a.quit_ask = Some(1);
+        only_the_top_dialog_takes_escape(&mut sim, &mut a, |a, ctx| a.quit_dialog(ctx), |a| a.quit_ask.is_some());
+        let mut sim = Sim::new(1200.0, 800.0);
+        a.shortcuts = true;
+        only_the_top_dialog_takes_escape(&mut sim, &mut a, |a, ctx| a.shortcuts = a.shortcuts && super::super::shortcuts::show(ctx), |a| a.shortcuts);
+        let mut sim = Sim::new(1200.0, 800.0);
+        a.palette = Some(Palette { items: vec![Item { icon: "", label: "Go".into(), detail: String::new(), cmd: Cmd::PickOpen }], ..Default::default() });
+        only_the_top_dialog_takes_escape(&mut sim, &mut a, |a, ctx| a.command_palette(ctx), |a| a.palette.is_some());
+        let mut sim = Sim::new(1200.0, 800.0);
+        let mut t = tab(&sim.ctx, "esc-top-form", &["one"]);
+        t.remote_form = Some(crate::repo::remotes::Form::add(t.data.as_ref().unwrap()));
+        only_the_top_dialog_takes_escape(&mut sim, &mut t, |t, ctx| super::super::sidebar::remotes::form_dialog(t, ctx, &mut vec![]), |t| t.remote_form.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn f7_waits_for_a_dialog() {
+        use crate::repo::DiffSrc;
+        use crate::ui::testkit::{Sim, load};
+        let dir = repo("f7-keys");
+        let lines = |changed: &[usize]| (1..=120).map(|n| if changed.contains(&n) { format!("changed {n}\n") } else { format!("line {n}\n") }).collect::<String>();
+        std::fs::write(dir.join("big.txt"), lines(&[])).unwrap();
+        crate::git::run(&dir, &["add", "big.txt"]).unwrap();
+        crate::git::run(&dir, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base"]).unwrap();
+        std::fs::write(dir.join("big.txt"), lines(&[10, 40, 70, 100])).unwrap();
+        let mut sim = Sim::new(900.0, 420.0);
+        let mut t = RepoTab::new(&sim.ctx, dir.clone(), 100, Default::default());
+        load(&mut t, &sim.ctx);
+        t.apply(&sim.ctx, Action::Diff(DiffSrc::Worktree { change: crate::git::Change { path: "big.txt".into(), old_path: None, code: 'M' }, staged: false }));
+        let (start, mut msgs) = (std::time::Instant::now(), vec![]);
+        while t.diff.as_ref().is_none_or(|d| d.file.is_none() || d.loading()) {
+            assert!(start.elapsed().as_secs() < 120, "timed out loading the diff");
+            t.poll(&sim.ctx, &mut msgs);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let (mut split, mut wrap) = (false, false);
+        let mut frame = |sim: &mut Sim, f7: bool, dialog: bool| {
+            let events = if f7 { vec![Event::Key { key: Key::F7, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }] } else { vec![] };
+            sim.frame(events, |ui| {
+                super::super::diff_view::show(ui, t.diff.as_mut().unwrap(), t.data.as_ref(), &mut split, &mut wrap, &mut vec![]);
+                if dialog {
+                    egui::Modal::new(egui::Id::new("dialog")).show(ui.ctx(), |ui| ui.label("Confirm"));
+                }
+            });
+            sim.text(|s| s.contains("changed 100")).is_some()
+        };
+        for _ in 0..3 {
+            assert!(!frame(&mut sim, false, true), "the last change starts below the view");
+        }
+        for _ in 0..8 {
+            frame(&mut sim, true, true);
+            assert!(!frame(&mut sim, false, true), "F7 belongs to the dialog");
+        }
+        frame(&mut sim, false, false);
+        frame(&mut sim, false, false);
+        let seen = (0..8).any(|_| {
+            frame(&mut sim, true, false);
+            frame(&mut sim, false, false)
+        });
+        assert!(seen, "F7 walks to the last change once the dialog is gone");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn history_back_and_forward_wait_for_a_dialog() {
+        use crate::repo::history::{FileView, Mode};
+        use crate::ui::testkit::{Sim, tab};
+        let mut sim = Sim::new(900.0, 500.0);
+        let t = tab(&sim.ctx, "hist-keys", &["one"]);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        let mut nav = |sim: &mut Sim, key: Option<Key>, dialog: bool| {
+            let mods = if key.is_some() { Modifiers::COMMAND } else { Modifiers::NONE };
+            let events = [Event::ModifiersChanged(mods)].into_iter().chain(key.map(|key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods })).collect();
+            let (mut acts, mut wrap) = (vec![], false);
+            sim.frame(events, |ui| {
+                super::super::history::show(ui, &mut fv, &mut wrap, &mut acts);
+                if dialog {
+                    egui::Modal::new(egui::Id::new("dialog")).show(ui.ctx(), |ui| ui.label("Confirm"));
+                }
+            });
+            acts.iter().any(|a| matches!(a, Action::CloseDiff))
+        };
+        nav(&mut sim, None, true);
+        nav(&mut sim, None, true);
+        assert!(!nav(&mut sim, Some(Key::OpenBracket), true) && !nav(&mut sim, Some(Key::CloseBracket), true), "⌘[ and ⌘] belong to the dialog");
+        nav(&mut sim, None, false);
+        nav(&mut sim, None, false);
+        assert!(nav(&mut sim, Some(Key::OpenBracket), false) && nav(&mut sim, Some(Key::CloseBracket), false));
+    }
+
     #[test]
     fn the_palette_runs_its_command_on_the_tab_it_was_built_for() {
         use super::super::palette::{Cmd, Item, Palette};
@@ -878,17 +1098,19 @@ mod shell_tests {
         app.switch(&ctx, 0, &b);
         assert_eq!(app.tabs.len(), 1, "a free tab is replaced in place");
         assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()));
-        app.tabs[0].summary = "half typed".into();
+        app.tabs[0].amend = true;
         app.switch(&ctx, 0, &a);
-        assert_eq!((app.tabs.len(), app.active), (2, 1), "a message draft gets a new tab");
-        assert_eq!(app.tabs[0].summary, "half typed");
+        assert_eq!((app.tabs.len(), app.active), (2, 1), "an amend belongs to the old HEAD: a new tab");
         let mut t = RepoTab::new(&ctx, c.clone(), 1000, Default::default());
-        assert!(replaceable(&t));
+        assert!(replaceable(&t) && draft(&t).is_none());
         t.template = Some(Template { prefix: "#".into(), summary: "feat:".into(), body: "# hint".into() });
         (t.summary, t.body) = ("feat:".into(), "# hint".into());
-        assert!(replaceable(&t), "a template nobody edited is no draft");
+        assert!(replaceable(&t) && draft(&t).is_none(), "a template nobody edited is no draft");
         t.summary.push_str(" add");
-        assert!(!replaceable(&t));
+        assert!(replaceable(&t) && draft(&t).is_some(), "a typed message travels with the switch");
+        t.amend = true;
+        assert!(!replaceable(&t), "an amend's text belongs to the old HEAD");
+        t.amend = false;
         (t.summary, t.body) = Default::default();
         for m in ["one", "two"] {
             crate::git::run(&c, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", m]).unwrap();
@@ -896,6 +1118,37 @@ mod shell_tests {
         t.rebase = Some(crate::repo::rebase::Editor::load(&c, "HEAD~1", "one").unwrap());
         assert!(!replaceable(&t), "an edited rebase plan");
         for d in [a, b, c] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn a_message_draft_comes_back_with_its_worktree() {
+        use crate::ui::testkit::load;
+        let (a, b) = (repo("draft-a"), repo("draft-b"));
+        std::fs::write(a.join(".git/tpl"), "feat: \n\n# explain\n").unwrap();
+        crate::git::run(&a, &["config", "commit.template", ".git/tpl"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        load(&mut app.tabs[0], &ctx);
+        assert_eq!((app.tabs[0].summary.as_str(), app.tabs[0].body.as_str()), ("feat:", "# explain"));
+        app.switch(&ctx, 0, &b);
+        app.switch(&ctx, 0, &a);
+        assert!(app.tabs[0].summary.is_empty(), "an untouched template is no draft to keep");
+        load(&mut app.tabs[0], &ctx);
+        app.tabs[0].summary = "feat: add".into();
+        app.tabs[0].coauthors = vec![("Ann".into(), "ann@x.io".into())];
+        app.switch(&ctx, 0, &b);
+        assert_eq!((app.tabs.len(), app.active), (1, 0), "the tab is replaced in place");
+        assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()) && app.tabs[0].summary.is_empty());
+        app.switch(&ctx, 0, &a);
+        assert_eq!((app.tabs.len(), app.active), (1, 0));
+        assert_eq!(app.tabs[0].summary, "feat: add");
+        load(&mut app.tabs[0], &ctx);
+        let t = &app.tabs[0];
+        assert_eq!((t.summary.as_str(), t.body.as_str(), t.coauthors.len()), ("feat: add", "# explain", 1), "loading leaves the draft alone");
+        assert_eq!(String::from_utf8(t.commit_op().input.unwrap()).unwrap(), "feat: add\n\nCo-authored-by: Ann <ann@x.io>", "the template's comment lines are still stripped");
+        for d in [a, b] {
             let _ = std::fs::remove_dir_all(d);
         }
     }

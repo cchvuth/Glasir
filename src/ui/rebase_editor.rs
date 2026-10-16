@@ -16,12 +16,16 @@ const ACTS: [(Act, &str, Key, &str); 5] = [
     (Act::Drop, "Drop", Key::D, "remove the commit"),
 ];
 
+fn field(commit: &str) -> egui::Id {
+    egui::Id::new(("rebase_msg", commit))
+}
+
 /// Returns true when the editor should close.
 pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>) -> bool {
     let mut close = false;
     let n = ed.items.len();
     // Keyboard: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D set the action.
-    if !ui.ctx().memory(|m| m.focused().is_some() || m.top_modal_layer().is_some()) {
+    if !ui.ctx().memory(|m| m.focused().is_some() || m.top_modal_layer().is_some() || ed.items.iter().any(|it| it.act == Act::Reword && m.had_focus_last_frame(field(&it.id)))) {
         ui.input(|i| {
             let alt = i.modifiers.alt;
             if i.key_pressed(Key::ArrowUp) && ed.sel > 0 {
@@ -117,7 +121,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                     });
                 });
                 if it.act == Act::Reword {
-                    ui.add(TextEdit::multiline(&mut it.message).margin(crate::theme::INPUT_MARGIN).desired_rows(3).desired_width(f32::INFINITY));
+                    ui.add(TextEdit::multiline(&mut it.message).id(field(&it.id)).margin(crate::theme::INPUT_MARGIN).desired_rows(3).desired_width(f32::INFINITY));
                 }
             });
             if ed.items[i].act != Act::Reword {
@@ -142,10 +146,10 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     ui.horizontal(|ui| {
         let start = if ed.cherry { "Start cherry-pick" } else { "Start rebase" };
         if theme::primary(ui, problem.is_none(), &format!("{}  {start}", icon::PLAY), 170.0).clicked() {
-            match ed.op(git_dir) {
-                Ok(op) => {
-                    acts.push(Action::Git(op));
-                    close = true;
+            match ed.start(git_dir) {
+                Ok(a) => {
+                    close = !matches!(a, Action::RunRebase { .. });
+                    acts.push(a);
                 }
                 Err(e) => acts.push(Action::Error(e)),
             }
@@ -160,41 +164,146 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
 #[cfg(test)]
 mod tests {
     use crate::repo::rebase::{Act, Editor};
-    use egui::{Event, Key, Modifiers, RawInput};
+    use crate::ui::testkit::Sim;
+    use egui::{Event, Key, Modifiers};
+    use std::path::{Path, PathBuf};
 
-    #[test]
-    fn a_dialog_over_the_editor_keeps_the_keys_and_the_plan() {
-        let dir = std::env::temp_dir().join(format!("glasir-rebase-keys-{}", std::process::id()));
+    fn editor(name: &str) -> (PathBuf, Editor) {
+        let dir = std::env::temp_dir().join(format!("glasir-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         crate::git::run(&dir, &["init", "-q"]).unwrap();
         for m in ["one", "two"] {
             crate::git::run(&dir, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", m]).unwrap();
         }
-        let mut ed = Editor::load(&dir, "HEAD~1", "one").unwrap();
-        let ctx = egui::Context::default();
-        let frame = |ed: &mut Editor, keys: &[Key], dialog: bool| {
-            let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
-            let raw = RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))), events, ..Default::default() };
-            let mut close = false;
-            ctx.run_ui(raw, |ui| {
-                close |= super::show(ui, ed, &dir.join(".git"), &mut vec![]);
-                if dialog {
-                    egui::Modal::new(egui::Id::new("sheet")).show(ui.ctx(), |ui| ui.label("Keyboard shortcuts"));
-                }
-            })
-            .textures_delta
-            .clear();
-            close
-        };
-        frame(&mut ed, &[], true);
-        frame(&mut ed, &[], true);
-        assert!(!frame(&mut ed, &[Key::D, Key::Escape], true), "Esc closes the dialog, not the editor");
+        let ed = Editor::load(&dir, "HEAD~1", "one").unwrap();
+        (dir, ed)
+    }
+
+    fn frame(sim: &mut Sim, ed: &mut Editor, dir: &Path, keys: &[Key], dialog: bool) -> bool {
+        let events = keys.iter().map(|&key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }).collect();
+        let mut close = false;
+        sim.frame(events, |ui| {
+            close |= super::show(ui, ed, &dir.join(".git"), &mut vec![]);
+            if dialog {
+                egui::Modal::new(egui::Id::new("sheet")).show(ui.ctx(), |ui| ui.label("Keyboard shortcuts"));
+            }
+        });
+        close
+    }
+
+    #[test]
+    fn a_dialog_over_the_editor_keeps_the_keys_and_the_plan() {
+        let (dir, mut ed) = editor("rebase-keys");
+        let mut sim = Sim::new(800.0, 600.0);
+        frame(&mut sim, &mut ed, &dir, &[], true);
+        frame(&mut sim, &mut ed, &dir, &[], true);
+        assert!(!frame(&mut sim, &mut ed, &dir, &[Key::D, Key::Escape], true), "Esc closes the dialog, not the editor");
         assert_eq!(ed.items[0].act, Act::Pick, "D belongs to the dialog too");
-        frame(&mut ed, &[], false);
-        frame(&mut ed, &[], false);
-        assert!(frame(&mut ed, &[Key::D, Key::Escape], false));
+        frame(&mut sim, &mut ed, &dir, &[], false);
+        frame(&mut sim, &mut ed, &dir, &[], false);
+        assert!(frame(&mut sim, &mut ed, &dir, &[Key::D, Key::Escape], false));
         assert_eq!(ed.items[0].act, Act::Drop);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn start(sim: &mut Sim, t: &mut crate::repo::RepoTab, plan: impl FnOnce(&mut Editor)) -> Option<String> {
+        let mut ed = Editor::load(&t.dir, "HEAD~3", "one").unwrap();
+        plan(&mut ed);
+        let (git_dir, mut acts) = (t.dir.join(".git"), vec![]);
+        let mut draw = |ui: &mut egui::Ui| {
+            super::show(ui, &mut ed, &git_dir, &mut acts);
+        };
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s.ends_with("Start rebase")).expect("the Start button");
+        sim.click(at, egui::PointerButton::Primary, &mut draw);
+        for a in acts {
+            t.apply(&sim.ctx, a);
+        }
+        crate::ui::testkit::load(t, &sim.ctx);
+        t.confirm.take().and_then(|o| o.confirm)
+    }
+
+    #[test]
+    fn cancelling_the_pushed_confirm_brings_the_plan_back() {
+        use crate::repo::{Action, Op, RepoTab};
+        let mut sim = Sim::new(800.0, 600.0);
+        let mut t = crate::ui::testkit::tab(&sim.ctx, "rebase-park", &["one"]);
+        let git = |t: &RepoTab, args: &[&str]| crate::git::run(&t.dir, args).unwrap();
+        for f in ["two", "three", "four"] {
+            std::fs::write(t.dir.join(f), f).unwrap();
+            git(&t, &["add", f]);
+            git(&t, &["commit", "-q", "-m", f]);
+        }
+        git(&t, &["update-ref", "refs/remotes/origin/main", "HEAD~2"]);
+        let mut ed = Editor::load(&t.dir, "HEAD~3", "one").unwrap();
+        ed.items[1].act = Act::Squash;
+        t.rebase = Some(ed);
+        let git_dir = t.dir.join(".git");
+        let click = |sim: &mut Sim, t: &mut RepoTab, label: &str| {
+            let mut acts = vec![];
+            let mut draw = |ui: &mut egui::Ui| {
+                if let Some(ed) = &mut t.rebase {
+                    super::show(ui, ed, &git_dir, &mut acts);
+                }
+                crate::ui::dialogs::confirm_dialog(t, ui.ctx(), &mut acts);
+            };
+            sim.frame(vec![], &mut draw);
+            sim.frame(vec![], &mut draw);
+            let at = sim.text(|s| s.ends_with(label)).unwrap_or_else(|| panic!("no {label}"));
+            sim.click(at, egui::PointerButton::Primary, &mut draw);
+            for a in acts {
+                t.apply(&sim.ctx, a);
+            }
+            crate::ui::testkit::load(t, &sim.ctx);
+        };
+        click(&mut sim, &mut t, "Start rebase");
+        assert!(t.confirm.is_some() && t.rebase.is_none(), "the plan waits behind the confirm");
+        click(&mut sim, &mut t, "Cancel");
+        assert!(t.confirm.is_none() && t.rebase.as_ref().is_some_and(|ed| ed.items[1].act == Act::Squash), "Cancel brings the plan back");
+        assert_eq!(git(&t, &["log", "--format=%s"]), "four\nthree\ntwo\none\n");
+        click(&mut sim, &mut t, "Start rebase");
+        let go = t.confirm.take().expect("it asks again");
+        t.apply(&sim.ctx, Action::Git(Op { confirm: None, ..go }));
+        crate::ui::testkit::load(&mut t, &sim.ctx);
+        assert!(t.rebase.is_none());
+        assert_eq!(git(&t, &["log", "--format=%s"]).lines().count(), 3, "the squash ran");
+    }
+
+    #[test]
+    fn start_asks_only_when_the_plan_rewrites_pushed_commits() {
+        let mut sim = Sim::new(800.0, 600.0);
+        let mut t = crate::ui::testkit::tab(&sim.ctx, "rebase-start-pushed", &["one"]);
+        let git = |t: &crate::repo::RepoTab, args: &[&str]| crate::git::run(&t.dir, args).unwrap();
+        for f in ["two", "three", "four"] {
+            std::fs::write(t.dir.join(f), f).unwrap();
+            git(&t, &["add", f]);
+            git(&t, &["commit", "-q", "-m", f]);
+        }
+        git(&t, &["update-ref", "refs/remotes/origin/main", "HEAD~2"]);
+        let two = git(&t, &["rev-parse", "HEAD~2"]);
+        let ask = start(&mut sim, &mut t, |ed| ed.items[1].act = Act::Squash);
+        assert!(ask.as_deref().is_some_and(|c| c.contains("1 commit already on a remote branch")), "{ask:?}");
+        assert_eq!(git(&t, &["log", "--format=%s"]), "four\nthree\ntwo\none\n");
+        assert_eq!(start(&mut sim, &mut t, |ed| ed.items.swap(0, 1)), None);
+        assert_eq!((git(&t, &["log", "--format=%s"]), git(&t, &["rev-parse", "HEAD~2"])), ("three\nfour\ntwo\none\n".into(), two));
+    }
+
+    #[test]
+    fn escape_from_a_message_field_only_leaves_the_field() {
+        let (dir, mut ed) = editor("rebase-field");
+        ed.items[0].act = Act::Reword;
+        let field = super::field(&ed.items[0].id);
+        let mut sim = Sim::new(800.0, 600.0);
+        frame(&mut sim, &mut ed, &dir, &[], false);
+        sim.ctx.memory_mut(|m| m.request_focus(field));
+        frame(&mut sim, &mut ed, &dir, &[], false);
+        assert!(sim.ctx.memory(|m| m.has_focus(field)), "the message field has the keyboard");
+        assert!(!frame(&mut sim, &mut ed, &dir, &[Key::D, Key::Escape], false), "Esc from the field only leaves it");
+        assert!(sim.ctx.memory(|m| m.focused().is_none()));
+        assert_eq!(ed.items[0].act, Act::Reword, "the plan keeps its reword");
+        assert!(!frame(&mut sim, &mut ed, &dir, &[], false));
+        assert!(frame(&mut sim, &mut ed, &dir, &[Key::Escape], false), "the next Esc closes the editor");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -76,11 +76,8 @@ pub(super) fn load(dir: &Path, d: &RepoData) -> Stacks {
         return Stacks::new();
     }
     // ponytail: capped walk; a stack further than 20000 commits off the trunk goes undetected.
-    let mut args = vec!["rev-list", "--parents", "--max-count=20000"];
-    args.extend(tips.iter().map(|t| t.1.as_str()));
-    args.push("--not");
-    args.extend(d.refs.iter().filter(|r| trunk(d, r)).map(|r| r.full.as_str()));
-    git::run(dir, &args).map(|o| parse(&o, &tips)).unwrap_or_default()
+    let input: String = tips.iter().map(|t| format!("{}\n", t.1)).chain(d.refs.iter().filter(|r| trunk(d, r)).map(|r| format!("^{}\n", r.full))).collect();
+    git::run_input(dir, &["rev-list", "--parents", "--max-count=20000", "--stdin"], Some(input.as_bytes())).map(|o| parse(&o, &tips)).unwrap_or_default()
 }
 
 fn trunk(d: &RepoData, r: &git::Ref) -> bool {
@@ -291,7 +288,8 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
 
 /// Push every branch of `b`'s stack, bottom first: a new one sets its upstream, one behind
 /// its remote branch is skipped, and one rewritten since its last push is force-pushed with
-/// a lease, only if the remote commit is one it had (`--force-if-includes`).
+/// a lease, only if the remote commit is one it had (`--force-if-includes`). Behind and
+/// rewritten come from the loaded graph, or from git for a commit the graph lacks.
 pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
     let first = d.remotes.iter().find(|r| r.0 == "origin").or(d.remotes.first())?.0.as_str();
     // Pushes what is shown: a branch moved since refuses the whole push.
@@ -306,9 +304,9 @@ pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
             None => (fork.unwrap_or(first), name.as_str()),
         };
         let tracking = d.refs.iter().find(|x| x.kind == RefKind::Remote && x.name == format!("{remote}/{rb}")).filter(|x| x.target != r.target);
-        let reaches = |from: &str, to: &str| {
-            let (Some(&f), Some(&t)) = (d.row_of.get(from), d.row_of.get(to)) else { return false };
-            d.reachable(f)[t]
+        let reaches = |from: &str, to: &str| match (d.row_of.get(from), d.row_of.get(to)) {
+            (Some(&f), Some(&t)) if !d.view.first_parent => d.reachable(f)[t],
+            _ => git::run(&d.git_dir, &["merge-base", "--is-ancestor", to, from]).is_ok(),
         };
         if tracking.is_some_and(|t| reaches(&t.target, &r.target)) {
             continue; // behind: nothing to push, and forcing would drop the remote's commits
@@ -494,7 +492,9 @@ mod tests {
         // Reword the bottom: everything above is rewritten, so the push needs a lease.
         t.summary = "a v2".into();
         t.amend = true;
-        t.apply(&ctx, Action::Git(t.commit_op()));
+        let amend = t.commit_op();
+        assert!(amend.confirm.is_some(), "amending the pushed a asks first");
+        t.apply(&ctx, Action::Git(Op { confirm: None, ..amend }));
         settle(&ctx, &mut t);
         let op = push_op(t.data.as_ref().unwrap(), "a").unwrap();
         assert!(op.confirm.as_deref().is_some_and(|c| c.contains("a, b, c will be force-pushed")));
@@ -540,6 +540,41 @@ mod tests {
         for d in [&dir, &remote, &mate] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// With the stack's commits outside the loaded graph (main soloed): a branch behind its
+    /// remote is still skipped and one ahead is a plain push, nothing force-pushed.
+    #[test]
+    fn push_stack_without_its_rows_asks_git() {
+        let dir = stack_repo("stack-push-rows");
+        let remote = scratch("stack-push-rows-remote");
+        sh(&remote, &["init", "-q", "--bare"]);
+        sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        sh(&dir, &["push", "-q", "-u", "origin", "main", "a", "b", "c"]);
+        sh(&dir, &["push", "-q", "origin", "c:b"]);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        sh(&dir, &["checkout", "-q", "c"]);
+        commit(&dir, "c2", "c2\n");
+        let d = crate::repo::data::load_all(&dir, 100, View { solo: vec!["refs/heads/main".into()], ..View::default() }).unwrap();
+        assert!(!d.row_of.contains_key(sh(&dir, &["rev-parse", "c"]).trim()));
+        let op = push_op(&d, "a").unwrap();
+        assert!(op.confirm.is_none() && !op.cmds.iter().flatten().any(|a| a.starts_with("--force")), "{:?}", op.cmds);
+        let pushed: Vec<&str> = op.cmds.iter().filter_map(|c| c.last().filter(|_| c[0] == "push")).map(String::as_str).collect();
+        assert_eq!(pushed, ["a:refs/heads/a", "c:refs/heads/c"]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// A thousand more branches (past Windows' 32K-char command line for their tips): the stack is still found.
+    #[test]
+    fn stacks_among_a_thousand_branches() {
+        let dir = stack_repo("stack-many");
+        let a = sh(&dir, &["rev-parse", "a"]);
+        let refs: String = (0..1000).map(|i| format!("create refs/heads/z{i:04} {a}")).collect();
+        git::run_input(&dir, &["update-ref", "--stdin"], Some(refs.as_bytes())).unwrap();
+        let d = crate::repo::data::load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!((parent(&d, "b"), parent(&d, "c")), (Some("a"), Some("b")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// History edits move only the stacked branches below HEAD: a backup at HEAD's tip stays.

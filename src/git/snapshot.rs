@@ -118,8 +118,9 @@ fn on_index(dir: &Path, idx: &Path, args: &[&str], input: &str) -> Res<String> {
     super::exec(c, dir, args, Some(input.as_bytes())).map(|o| String::from_utf8_lossy(&o).into_owned())
 }
 
-/// Runs `f` on a scratch index of its own (no shared lock; a missing file is an empty index).
-fn scratch<T>(dir: &Path, f: impl FnOnce(&Path) -> Res<T>) -> Res<T> {
+/// Runs `f` on a scratch file of its own in the git dir, removed afterwards; as an index: no
+/// shared lock, and a missing file is an empty index.
+pub(crate) fn scratch<T>(dir: &Path, f: impl FnOnce(&Path) -> Res<T>) -> Res<T> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let idx = super::git_dir(dir)?.join(format!("glasir-{}-{}.index", std::process::id(), SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let res = f(&idx);

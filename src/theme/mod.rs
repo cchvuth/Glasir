@@ -11,7 +11,7 @@ mod glass;
 /// (egui's default of 4 px puts the text against a capsule's edge).
 pub const INPUT_MARGIN: egui::Margin = egui::Margin::symmetric(12, 6);
 
-pub use glass::{bar, bar_h, canvas, canvas_in, card, context_menu, description, empty_state, glass_shapes, group, photo, pill, primary, progress, rest, set_transparency, slider, small};
+pub use glass::{bar, bar_h, canvas, canvas_in, card, context_menu, description, empty_state, glass_shapes, group, keyed, photo, pill, primary, progress, rest, set_transparency, slider, small};
 
 use egui::epaint::Shadow;
 use egui::{Color32, CornerRadius, FontData, FontFamily, FontId, Stroke, TextStyle, Ui, Visuals, vec2};
@@ -315,13 +315,12 @@ impl Flavor {
 static FLAVOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn flavor() -> Flavor {
-    let i = FLAVOR.load(std::sync::atomic::Ordering::Relaxed);
-    *[Flavor::DARK, Flavor::LIGHT].concat().get(i as usize).unwrap_or(&Flavor::Midnight)
+    Flavor::DARK.iter().chain(&Flavor::LIGHT).nth(FLAVOR.load(std::sync::atomic::Ordering::Relaxed) as usize).copied().unwrap_or(Flavor::Midnight)
 }
 
 /// The current flavour's accent colour.
 pub fn accent() -> Color32 {
-    flavor().palette().accent
+    flavor().raw_palette().accent
 }
 /// Added, deleted, modified (also warnings) and renamed: bright on dark glass, deep on light.
 fn change_colors(dark: bool) -> [Color32; 4] {
@@ -603,5 +602,12 @@ mod tests {
             failures.extend(lowest.iter().filter(|(_, min, r)| r < min).map(|(n, min, r)| format!("{} {n}: {r:.2} < {min}", f.name())));
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn the_accent_is_never_toned() {
+        for f in [Flavor::DARK, Flavor::LIGHT].concat() {
+            assert_eq!(f.raw_palette().accent, f.palette().accent, "{}", f.name());
+        }
     }
 }

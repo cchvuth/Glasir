@@ -19,10 +19,13 @@ fn heat_color(t: f32) -> Color32 {
 pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     fv.poll();
     let mut close = super::format::esc_pressed(ui);
-    let mut nav = ui.input_mut(|i| {
-        let cmd = egui::Modifiers::COMMAND;
-        (i.consume_key(cmd, egui::Key::OpenBracket).then_some(false)).or(i.consume_key(cmd, egui::Key::CloseBracket).then_some(true))
-    });
+    let mut nav = None;
+    if !super::format::modal_open(ui.ctx()) {
+        nav = ui.input_mut(|i| {
+            let cmd = egui::Modifiers::COMMAND;
+            (i.consume_key(cmd, egui::Key::OpenBracket).then_some(false)).or(i.consume_key(cmd, egui::Key::CloseBracket).then_some(true))
+        });
+    }
     let folder = fv.path.ends_with('/');
     ui.horizontal(|ui| {
         if theme::pill(ui, icon::X).on_hover_text("Close (Esc)").clicked() {
@@ -81,8 +84,8 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
         Data::History(entries) => {
             const ROW: f32 = 46.0;
             // Rows as tall as their entry (a line-range entry carries its diff).
-            let (id, key) = (egui::Id::new("history_tops"), (entries.as_ptr() as usize, entries.len()));
-            let tops = match ui.data(|d| d.get_temp::<std::sync::Arc<((usize, usize), Vec<f32>)>>(id)).filter(|c| c.0 == key) {
+            let (id, key) = (egui::Id::new("history_tops"), fv.data_gen);
+            let tops = match ui.data(|d| d.get_temp::<std::sync::Arc<(u64, Vec<f32>)>>(id)).filter(|c| c.0 == key) {
                 Some(c) => c,
                 None => {
                     let c = std::sync::Arc::new((key, tops(1.0, entries.iter().map(|e| hunk_height(&e.hunks) as usize + ROW as usize))));
@@ -100,7 +103,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     let e = &entries[i];
                     let at = top + tops[i];
                     let rect = Rect::from_min_size(pos2(left, at), vec2(width, ROW));
-                    let r = ui.interact(rect, ui.id().with(("entry", i)), Sense::click());
+                    let r = ui.interact(rect, ui.id().with(("entry", &e.id)), Sense::click());
                     if fv.sel == Some(i) {
                         ui.painter().rect_filled(rect, 10.0, theme::selection(ui));
                     } else if r.hovered() {
@@ -144,7 +147,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                 fv.more(ui.ctx());
             }
         }
-        Data::Blame(b) => blame_view(ui, b, *wrap, acts),
+        Data::Blame(b) => blame_view(ui, b, fv.data_gen, *wrap, acts),
     }
     close
 }
@@ -186,7 +189,7 @@ fn hunks(ui: &mut Ui, hunks: &[crate::git::Hunk], rect: Rect) {
     }
 }
 
-fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
+fn blame_view(ui: &mut Ui, b: &Blame, data_gen: u64, wrap: bool, acts: &mut Vec<Action>) {
     const H: f32 = 18.0;
     let mono = FontId::monospace(12.5);
     let cw = ui.fonts_mut(|f| f.glyph_width(&mono, 'M'));
@@ -196,9 +199,9 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
         // Wrapped: rows as tall as their lines (the scrollbar's width is left out).
         let cols = if wrap { (((ui.available_width() - g - 14.0) / cw) as usize).max(1) } else { usize::MAX };
         // Measuring every line is O(file): once per file and column count, not per frame.
-        let key = (b.lines.as_ptr() as usize, b.lines.len(), cols);
+        let key = (data_gen, cols);
         let id = egui::Id::new("blame_tops");
-        let cached = ui.data(|d| d.get_temp::<std::sync::Arc<((usize, usize, usize), Vec<f32>, f32)>>(id)).filter(|c| c.0 == key);
+        let cached = ui.data(|d| d.get_temp::<std::sync::Arc<((u64, usize), Vec<f32>, f32)>>(id)).filter(|c| c.0 == key);
         let cached = cached.unwrap_or_else(|| {
             let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
             let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + g + 28.0;
@@ -232,7 +235,7 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
                     let when = if c.time > 0 && g > 200.0 { ago(c.time) } else { String::new() };
                     p.text(pos2(left + g - 62.0, y), Align2::RIGHT_CENTER, when, FontId::proportional(11.0), theme::dim(ui));
                 }
-                let resp = ui.interact(Rect::from_min_size(rect.min, vec2(g - 52.0, H)), ui.id().with(("blame", r)), Sense::click());
+                let resp = ui.interact(Rect::from_min_size(rect.min, vec2(g - 52.0, H)), ui.id().with(("blame", r, &c.id)), Sense::click());
                 let uncommitted = c.id.bytes().all(|x| x == b'0');
                 if resp.clicked() && !uncommitted {
                     acts.push(Action::Jump(c.id.clone()));
@@ -259,4 +262,58 @@ fn blame_view(ui: &mut Ui, b: &Blame, wrap: bool, acts: &mut Vec<Action>) {
             }
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::Change;
+    use crate::repo::history::{BlameCommit, Entry};
+    use crate::ui::testkit::{Sim, tab};
+
+    #[test]
+    fn a_blame_menu_closes_when_its_line_now_belongs_to_another_commit() {
+        let mut sim = Sim::new(520.0, 500.0);
+        let t = tab(&sim.ctx, "blame-menu", &["x"]);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::Blame(None));
+        crate::repo::testutil::wait_for("the blame", || {
+            fv.poll();
+            fv.data.is_some()
+        });
+        let blame = |ids: [&str; 2]| {
+            let commits = ids.map(|i| BlameCommit { id: i.repeat(40), author: format!("author{i}"), time: 0, summary: String::new(), file: "f".into(), previous: None }).into();
+            Some(Ok(Data::Blame(Blame { commits, lines: vec![(0, 1, "a".into()), (0, 2, "b".into()), (1, 3, "c".into())], heat: vec![0.0, 1.0] })))
+        };
+        (fv.data, fv.data_gen) = (blame(["1", "2"]), 1);
+        let (mut wrap, mut acts) = (false, vec![]);
+        sim.open_menu("author2", |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        assert!(egui::Popup::is_any_open(&sim.ctx));
+        (fv.data, fv.data_gen) = (blame(["1", "3"]), 2);
+        for _ in 0..2 {
+            sim.frame(vec![], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        }
+        assert!(!egui::Popup::is_any_open(&sim.ctx), "the menu doesn't turn into the other commit's");
+    }
+
+    #[test]
+    fn a_menu_stays_with_its_entry_when_newer_ones_arrive() {
+        let mut sim = Sim::new(520.0, 500.0);
+        let t = tab(&sim.ctx, "history-menu", &["x"]);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        crate::repo::testutil::wait_for("the history", || {
+            fv.poll();
+            fv.data.is_some()
+        });
+        let entries = |n: i64| {
+            let entry = |i: i64| Entry { id: format!("{i:07x}{}", "0".repeat(33)), parent: None, author: "T".into(), email: "t@t".into(), time: i, date: String::new(), summary: format!("summary {i}"), change: Change { path: "f".into(), old_path: None, code: 'M' }, hunks: vec![] };
+            Some(Ok(Data::History((0..n).rev().map(entry).collect())))
+        };
+        (fv.data, fv.data_gen) = (entries(10), 1);
+        let (mut wrap, mut acts) = (false, vec![]);
+        sim.open_menu("summary 4", |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        (fv.data, fv.data_gen) = (entries(11), 2);
+        sim.pick(&format!("{}  Blame at this commit", icon::USER_LIST), |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        let blamed: Vec<_> = acts.iter().filter_map(|a| if let Action::FileView(_, Mode::Blame(Some(id))) = a { Some(id.as_str()) } else { None }).collect();
+        assert_eq!(blamed, [format!("0000004{}", "0".repeat(33))]);
+    }
 }

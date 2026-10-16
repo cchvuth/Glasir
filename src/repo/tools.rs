@@ -705,6 +705,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_tool_window_gets_the_users_askpass_not_ours() {
+        use crate::repo::testutil::{settle, wait_for};
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("tool-env");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        let out = dir.join(".git/tool-env");
+        sh(&dir, &["config", "diff.tool", "fake"]);
+        sh(&dir, &["config", "difftool.fake.cmd", &format!("env > '{}'", out.display())]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let change = t.data.as_ref().unwrap().status.unstaged[0].clone();
+        t.apply(&ctx, Action::Git(difftool_op(&DiffSrc::Worktree { change, staged: false }).unwrap()));
+        assert_eq!(t.ext_tools.len(), 1);
+        wait_for("the diff tool", || {
+            t.poll(&ctx, &mut vec![]);
+            t.ext_tools.is_empty()
+        });
+        let env = std::fs::read_to_string(&out).unwrap();
+        for k in ["GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GLASIR_ASKPASS"] {
+            let seen = env.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('='));
+            assert_eq!(seen, std::env::var(k).ok().as_deref(), "{k}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn conflict_kinds_bulk_resolve_and_external_tools() {
         use crate::repo::data::load_all;
         use crate::repo::op::exec;

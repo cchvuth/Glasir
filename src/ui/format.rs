@@ -22,8 +22,21 @@ pub fn modal_open(ctx: &egui::Context) -> bool {
     ctx.memory(|m| m.top_modal_layer().is_some())
 }
 
+pub fn note_focus(ctx: &egui::Context) {
+    let focused = ctx.memory(|m| m.focused().is_some());
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("focus_last_frame"), focused));
+}
+
+pub fn nothing_was_focused(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(egui::Id::new("focus_last_frame"))) == Some(false)
+}
+
+pub fn view_key(ui: &egui::Ui, key: egui::Key) -> bool {
+    !modal_open(ui.ctx()) && ui.input(|i| i.key_pressed(key))
+}
+
 pub fn esc_pressed(ui: &egui::Ui) -> bool {
-    !modal_open(ui.ctx()) && ui.input(|i| i.key_pressed(egui::Key::Escape))
+    view_key(ui, egui::Key::Escape)
 }
 
 fn age(t: i64) -> i64 {

@@ -5,6 +5,7 @@ use super::Task;
 use crate::git::{self, Change, Hunk, Res};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Mode {
@@ -58,6 +59,7 @@ pub struct FileView {
     pub path: String,
     pub mode: Mode,
     pub data: Option<Res<Data>>,
+    pub data_gen: u64,
     task: Option<Task<Res<Data>>>,
     cancel: git::Cancel,
     pub sel: Option<usize>,
@@ -71,7 +73,7 @@ pub struct FileView {
 
 impl FileView {
     pub fn open(ctx: &egui::Context, dir: &Path, path: &str, mode: Mode) -> Self {
-        let mut fv = FileView { path: path.into(), mode, data: None, task: None, cancel: Default::default(), sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
+        let mut fv = FileView { path: path.into(), mode, data: None, data_gen: 0, task: None, cancel: Default::default(), sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
         fv.load(ctx, false);
         fv
     }
@@ -127,7 +129,8 @@ impl FileView {
 
     pub fn poll(&mut self) {
         if let Some(d) = Task::poll(&mut self.task) {
-            (self.data, self.sel) = (Some(d), None);
+            static LOADS: AtomicU64 = AtomicU64::new(1);
+            (self.data, self.sel, self.data_gen) = (Some(d), None, LOADS.fetch_add(1, Ordering::Relaxed));
         }
     }
 }
@@ -505,6 +508,28 @@ mod tests {
         fv.step(&ctx, false);
         settle(&mut fv);
         assert_eq!((listed().as_deref(), fv.limit), (Some("-n1000"), PAGE));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_delivered_load_has_a_generation_of_its_own() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-gen");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "f.txt", "one\n");
+        let ctx = egui::Context::default();
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History);
+        let mut gens = vec![];
+        for _ in 0..3 {
+            wait_for("the history", || {
+                fv.poll();
+                fv.task.is_none()
+            });
+            gens.push(fv.data_gen);
+            fv.more(&ctx);
+        }
+        assert!(gens[0] > 0 && gens.windows(2).all(|w| w[0] < w[1]), "{gens:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -397,14 +397,13 @@ impl RepoTab {
     /// Retry / Skip of a failed undo (`undo`) or redo, if the step `id` is still on top.
     pub(super) fn retry_or_skip(&mut self, ctx: &egui::Context, skip: bool, undo: bool, id: &str) {
         let stack = if undo { &mut self.undo } else { &mut self.redo };
-        if !stack.last().is_some_and(|e| e.id.to_string() == id) {
-            return;
+        let Some(top) = stack.last().filter(|e| e.id.to_string() == id) else { return };
+        if let Some((busy, _)) = &self.running {
+            let what = if skip { "Skip" } else if undo { "Undo" } else { "Redo" };
+            return self.notes.push(Msg { text: format!("'{what} {}' skipped: '{busy}' is still running.", top.label), error: true });
         }
         if !skip {
             return self.undo_redo(ctx, undo, true);
-        }
-        if self.running.is_some() {
-            return;
         }
         let Some(e) = stack.pop() else { return };
         let msg = format!("Glasir: {} {}", if undo { "Undo" } else { "Redo" }, e.label);
@@ -906,6 +905,13 @@ mod tests {
         // Retry while still blocked: the same choice; Skip: one stash entry, the step gone.
         step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
         let c = t.choice.take().expect("still blocked");
+        let (_busy, rx) = std::sync::mpsc::channel();
+        t.running = Some(("Fetch".into(), Task(rx)));
+        for (op, what) in [(&c.ops[0].1, "Undo"), (&c.ops[1].1, "Skip")] {
+            t.apply(&ctx, Action::Git(op.clone()));
+            assert_eq!(t.notes.pop().map(|n| n.text), Some(format!("'{what} Move x and discard' skipped: 'Fetch' is still running.")));
+        }
+        t.running = None;
         t.apply(&ctx, Action::Git(c.ops[1].1.clone()));
         assert!(t.running.is_some());
         let msgs: Vec<String> = settle(&ctx, &mut t).into_iter().map(|m| m.text).collect();

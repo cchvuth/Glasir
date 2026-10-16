@@ -185,7 +185,81 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option
 
 #[cfg(test)]
 mod tests {
+    use crate::git::{Change, CommitInfo};
+    use crate::repo::{Action, Sel};
+    use crate::ui::testkit::{Sim, load, tab};
     use egui::{Event, PointerButton, RawInput, pos2, vec2};
+
+    #[test]
+    fn a_menu_stays_with_its_commit_file_when_the_list_changes() {
+        let mut sim = Sim::new(420.0, 600.0);
+        let mut t = tab(&sim.ctx, "commit-menu", &["x"]);
+        let id = "1".repeat(40);
+        let info = |names: &[&str]| Some(Ok(CommitInfo { id: id.clone(), author: "T".into(), files: names.iter().map(|n| Change { path: n.to_string(), old_path: None, code: 'M' }).collect(), ..Default::default() }));
+        t.sel = Some(Sel::Commit(id.clone()));
+        for as_tree in [false, true] {
+            let (mut tree, mut acts) = (as_tree, vec![]);
+            sim.menu_survives("c.txt", "Copy path", |ui, changed| {
+                t.info = info(if changed { &["a.txt", "b.txt", "c.txt", "d.txt"] } else { &["b.txt", "c.txt", "d.txt"] });
+                t.details(ui, &mut tree, &mut acts);
+            });
+            let copied: Vec<_> = acts.iter().filter_map(|a| if let Action::Copy(p) = a { Some(p.as_str()) } else { None }).collect();
+            assert_eq!(copied, ["c.txt"], "as a tree: {as_tree}");
+        }
+    }
+
+    #[test]
+    fn a_co_author_menu_closes_when_another_commit_is_selected() {
+        let mut sim = Sim::new(420.0, 600.0);
+        let mut t = tab(&sim.ctx, "coauthor-menu", &["x"]);
+        let info = |id: &str, who: [&str; 2]| {
+            let message = format!("m\n\nCo-authored-by: {0} <{0}@x>\nCo-authored-by: {1} <{1}@x>", who[0], who[1]);
+            Some(Ok(CommitInfo { id: id.repeat(40), author: "T".into(), message, coauthors: who.map(|w| (w.to_owned(), format!("{w}@x"))).to_vec(), ..Default::default() }))
+        };
+        (t.sel, t.info) = (Some(Sel::Commit("1".repeat(40))), info("1", ["Bo", "Cy"]));
+        let (mut tree, mut acts) = (false, vec![]);
+        sim.open_menu("co-authored by Cy", |ui| t.details(ui, &mut tree, &mut acts));
+        assert!(egui::Popup::is_any_open(&sim.ctx));
+        (t.sel, t.info) = (Some(Sel::Commit("2".repeat(40))), info("2", ["Di", "Ed"]));
+        for _ in 0..2 {
+            sim.frame(vec![], |ui| t.details(ui, &mut tree, &mut acts));
+        }
+        assert!(!egui::Popup::is_any_open(&sim.ctx), "the menu doesn't move to the other commit's co-author");
+    }
+
+    #[test]
+    fn a_status_reload_keeps_a_menu_on_its_file_or_folder() {
+        for as_tree in [false, true] {
+            let mut sim = Sim::new(420.0, 700.0);
+            let mut t = tab(&sim.ctx, "wip-menu", &["x"]);
+            std::fs::create_dir(t.dir.join("src")).unwrap();
+            for name in ["b.txt", "c.txt", "d.txt"] {
+                std::fs::write(t.dir.join("src").join(name), name).unwrap();
+            }
+            t.reload(&sim.ctx, false);
+            load(&mut t, &sim.ctx);
+            t.sel = Some(Sel::Wip);
+            let (mut tree, mut acts) = (as_tree, vec![]);
+            sim.open_menu("c.txt", |ui| t.details(ui, &mut tree, &mut acts));
+            std::fs::write(t.dir.join("src").join("a.txt"), "a").unwrap();
+            t.reload(&sim.ctx, false);
+            load(&mut t, &sim.ctx);
+            sim.pick("Discard changes", |ui| t.details(ui, &mut tree, &mut acts));
+            let discarded: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { op.cmds.first().and_then(|c| c.last()) } else { None }).collect();
+            assert_eq!(discarded, ["src/c.txt"], "as a tree: {as_tree}");
+            if as_tree {
+                acts.clear();
+                sim.open_menu("src", |ui| t.details(ui, &mut tree, &mut acts));
+                std::fs::create_dir(t.dir.join("lib")).unwrap();
+                std::fs::write(t.dir.join("lib").join("x.txt"), "x").unwrap();
+                t.reload(&sim.ctx, false);
+                load(&mut t, &sim.ctx);
+                sim.pick("Discard changes in folder", |ui| t.details(ui, &mut tree, &mut acts));
+                let discarded: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { Some(op.cmds.iter().flatten().filter(|p| p.contains(".txt")).cloned().collect::<Vec<_>>()) } else { None }).collect();
+                assert_eq!(discarded, [["src/a.txt", "src/b.txt", "src/c.txt", "src/d.txt"]], "the folder, not the one that took its row");
+            }
+        }
+    }
 
     /// Double- or triple-clicking the Stage button stages once: the second click may land on the next file.
     #[test]

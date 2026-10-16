@@ -1,7 +1,7 @@
 //! Inspector for a commit, stash or compare range: message, author, AI
 //! explanation and the changed files.
 
-use crate::ui::format::keys;
+use crate::ui::format::{keys, nothing_was_focused};
 use super::tree::{self, Item};
 use super::{file_items, file_row, open_items, permalink_items};
 use crate::ai::Purpose;
@@ -256,7 +256,7 @@ impl RepoTab {
                         sig_badge(ui, info);
                     });
                 });
-                for (name, email) in &info.coauthors {
+                for (k, (name, email)) in info.coauthors.iter().enumerate() {
                     let without = crate::repo::message::remove_coauthor(&info.message, name, email);
                     let hover_id = ui.id().with(("coauthor", &info.id, email));
                     let hot = ui.data(|d| d.get_temp::<bool>(hover_id)).unwrap_or(false);
@@ -270,7 +270,7 @@ impl RepoTab {
                         }
                     };
                     let mut remove = false;
-                    let row = ui.horizontal(|ui| {
+                    let row = theme::keyed(ui, ("coauthor", &info.id, k), |ui| ui.horizontal(|ui| {
                         avatar(ui, &self.avatars, name, email, 9.0);
                         let label = ui.add(Label::new(RichText::new(format!("co-authored by {name}")).small().color(theme::dim(ui))).sense(Sense::click())).on_hover_text(email);
                         if without.is_none() {
@@ -291,7 +291,7 @@ impl RepoTab {
                                 ui.close();
                             }
                         });
-                    });
+                    }));
                     let over = ui.rect_contains_pointer(row.response.rect);
                     ui.data_mut(|d| d.insert_temp(hover_id, over));
                     if let Some(message) = without.filter(|_| remove) {
@@ -327,7 +327,7 @@ impl RepoTab {
                 // A deleted file is blamed as it was just before.
                 let blame_rev = if c.code == 'D' { parent.clone() } else { Some(id.clone()) };
                 let src = DiffSrc::Commit { id: id.clone(), parent, change: c.clone() };
-                let resp = file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)), info.stats.get(&c.path).copied(), depth);
+                let resp = theme::keyed(ui, ("commit-file", id, &c.path), |ui| file_row(ui, c, open.as_ref() == Some(&src), self.data.as_ref().is_some_and(|d| d.lfs.files.contains(&c.path)), info.stats.get(&c.path).copied(), depth));
                 if resp.clicked() {
                     acts.push(Action::Diff(src));
                 }
@@ -412,7 +412,7 @@ fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Ve
     });
     // Not while a dialog is open: Esc and ⌘↩ there belong to the dialog.
     let (free, focus, held) = ui.ctx().memory(|m| (m.top_modal_layer().is_none(), m.focused(), m.had_focus_last_frame(sum_id) || m.had_focus_last_frame(body_id)));
-    if free && held {
+    if free && (held || nothing_was_focused(ui.ctx())) {
         cancel |= ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     }
     if free && focus.is_none_or(|f| f == sum_id || f == body_id) {
@@ -434,13 +434,13 @@ mod tests {
     use super::*;
     use egui::{Event, Id, Key, Modifiers, RawInput};
 
-    /// Esc cancels the edit while one of its fields has the keyboard, ⌘↩ saves it then or with nothing
-    /// focused: another field (the graph search, the terminal) keeps both keys.
+    /// Esc cancels the edit while one of its fields or none has the keyboard, ⌘↩ saves it then too:
+    /// another field (the graph search, the terminal) keeps both keys, and a dialog keeps them from both.
     #[test]
     fn esc_and_enter_belong_to_the_focused_field() {
         let ctx = egui::Context::default();
         let other = Id::new("other_field");
-        let mut n = 0.0;
+        let (mut n, dialog) = (0.0, std::cell::Cell::new(false));
         let mut frame = |edit: &mut Option<MsgEdit>, key: Option<(Key, Modifiers)>, focus_other: bool| {
             n += 0.05;
             let mods = key.map_or(Modifiers::NONE, |k| k.1);
@@ -454,6 +454,10 @@ mod tests {
                 if focus_other {
                     field.request_focus();
                 }
+                if dialog.get() {
+                    egui::Modal::new(Id::new("dialog")).show(ui.ctx(), |ui| ui.label("Confirm"));
+                }
+                crate::ui::format::note_focus(ui.ctx());
             });
             out.textures_delta.clear();
             acts
@@ -477,6 +481,21 @@ mod tests {
         frame(&mut edit, esc, true);
         assert!(edit.is_some(), "Esc that leaves another field isn't the editor's");
         assert!(frame(&mut edit, save, true).is_empty(), "⌘↩ in another field isn't either");
+
+        let mut edit = fresh();
+        frame(&mut edit, None, false);
+        ctx.memory_mut(|m| m.stop_text_input());
+        dialog.set(true);
+        for _ in 0..3 {
+            frame(&mut edit, None, false);
+        }
+        frame(&mut edit, esc, false);
+        assert!(edit.is_some(), "Esc with nothing focused belongs to a dialog that is open");
+        dialog.set(false);
+        frame(&mut edit, None, false);
+        frame(&mut edit, None, false);
+        frame(&mut edit, esc, false);
+        assert!(edit.is_none(), "Esc with nothing focused cancels the edit");
 
         let mut edit = fresh();
         frame(&mut edit, None, false);

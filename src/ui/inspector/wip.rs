@@ -10,7 +10,7 @@ use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, discard_files_op
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 /// "Stash this file" (or the selected files): their staged and unstaged changes (a rename
 /// with its old path), ⌘Z pops them back. True when clicked.
@@ -97,19 +97,21 @@ fn coauthors_menu(ui: &mut Ui, d: &RepoData, coauthors: &mut Vec<(String, String
         let keep_open = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
         let button = egui::containers::menu::MenuButton::new(if n == 0 { "Co-authors".to_owned() } else { format!("Co-authors ({n})") }).config(keep_open);
         button.ui(ui, |ui| {
-            let q = ui.id().with(("coauthor-filter", Arc::as_ptr(&d.log) as usize));
+            let q = ui.id().with(("coauthor-filter", &d.git_dir));
             // Most active first, cached per loaded log: the scan is too slow for every frame.
+            let log = Arc::downgrade(&d.log);
             let people: Arc<Vec<(String, String)>> = ui.data_mut(|m| {
-                m.get_temp_mut_or_insert_with(q.with("people"), || {
+                let cached = m.get_temp_mut_or_insert_with(q.with("people"), || (Weak::new(), Arc::default()));
+                if !cached.0.ptr_eq(&log) {
                     let mut by: HashMap<&str, (&str, usize)> = HashMap::new();
                     for c in d.log.iter() {
                         by.entry(c.email.as_str()).or_insert((c.author.as_str(), 0)).1 += 1;
                     }
                     let mut v: Vec<_> = by.into_iter().filter(|(e, _)| !e.is_empty() && *e != d.author.1).collect();
                     v.sort_by(|a, b| b.1.1.cmp(&a.1.1).then(a.0.cmp(b.0)));
-                    Arc::new(v.into_iter().map(|(e, (n, _))| (n.to_owned(), e.to_owned())).collect::<Vec<_>>())
-                })
-                .clone()
+                    *cached = (log, Arc::new(v.into_iter().map(|(e, (n, _))| (n.to_owned(), e.to_owned())).collect::<Vec<_>>()));
+                }
+                cached.1.clone()
             });
             let mut filter: String = ui.data_mut(|m| m.get_temp(q).unwrap_or_default());
             ui.add(TextEdit::singleline(&mut filter).hint_text("Find a person, or type Name <email>").desired_width(260.0));
@@ -562,7 +564,7 @@ impl RepoTab {
                                 clear = true;
                             }
                             if theme::small(ui, true, format!("Discard {n}")).on_hover_text(keys("Discard changes to the selected files (one confirmation, one ⌘Z)")).clicked() {
-                                acts.extend(discard_files_op(&sel_un).map(Action::Git));
+                                acts.extend(discard_files_op(&sel_un, &s.submodules).map(Action::Git));
                                 clear = true;
                             }
                         } else if !s.unstaged.is_empty() && theme::small(ui, true, "Stage all").clicked() {
@@ -589,7 +591,7 @@ impl RepoTab {
                                     clear = true;
                                 }
                                 if ui.button("Discard changes in folder").clicked() {
-                                    acts.extend(discard_files_op(files).map(Action::Git));
+                                    acts.extend(discard_files_op(files, &s.submodules).map(Action::Git));
                                     clear = true;
                                 }
                                 clear |= dir_items(ui, &self.dir, path, files, false, acts);
@@ -621,7 +623,7 @@ impl RepoTab {
                                 clear = true;
                             }
                             if ui.button(format!("Discard {n} files")).clicked() {
-                                acts.extend(discard_files_op(&sel_un).map(Action::Git));
+                                acts.extend(discard_files_op(&sel_un, &s.submodules).map(Action::Git));
                                 clear = true;
                             }
                             clear |= stash_files_item(ui, &sel_un, false, acts);
@@ -631,7 +633,7 @@ impl RepoTab {
                             acts.extend(stage_one());
                         }
                         if ui.button("Discard changes").clicked() {
-                            acts.push(Action::Git(crate::repo::discard_op(c)));
+                            acts.extend(discard_files_op(std::slice::from_ref(c), &s.submodules).map(Action::Git));
                         }
                         stash_files_item(ui, std::slice::from_ref(c), false, acts);
                         lfs_track_item(ui, d, &c.path, acts);
@@ -739,5 +741,41 @@ impl RepoTab {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::Commit;
+    use crate::ui::testkit::{Sim, tab};
+
+    #[test]
+    fn co_author_suggestions_follow_the_loaded_log() {
+        let mut sim = Sim::new(420.0, 500.0);
+        let mut t = tab(&sim.ctx, "coauthors", &["x"]);
+        let mut d = t.data.take().unwrap();
+        let by = |who: &str| vec![Commit { id: "0".repeat(40), parents: vec![], author: who.into(), email: format!("{who}@x"), time: 0, date: String::new(), summary: String::new() }];
+        d.log = Arc::new(by("ann"));
+        let mut coauthors = vec![];
+        let mut draw = |ui: &mut Ui, d: &RepoData| coauthors_menu(ui, d, &mut coauthors);
+        sim.frame(vec![], |ui| draw(ui, &d));
+        let button = sim.text(|t| t.starts_with("Co-authors")).unwrap();
+        sim.click(button, egui::PointerButton::Primary, |ui| draw(ui, &d));
+        assert!(sim.text(|t| t == "ann <ann@x>").is_some(), "the menu lists the log's people");
+        let (stale, mut spare) = (Arc::as_ptr(&d.log), vec![]);
+        d.log = Arc::new(vec![]);
+        d.log = loop {
+            let newer = Arc::new(vec![]);
+            if Arc::as_ptr(&newer) == stale || spare.len() == 5000 {
+                break newer;
+            }
+            spare.push(newer);
+        };
+        Arc::get_mut(&mut d.log).unwrap().extend(by("bob"));
+        for _ in 0..2 {
+            sim.frame(vec![], |ui| draw(ui, &d));
+        }
+        assert!(sim.text(|t| t == "bob <bob@x>").is_some() && sim.text(|t| t == "ann <ann@x>").is_none(), "the people of the log now loaded");
     }
 }

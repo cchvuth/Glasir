@@ -103,7 +103,7 @@ fn ssh_key_section(ui: &mut egui::Ui, t: &RepoTab, doc: &Doctor, url: &str, acts
     match &active {
         Active::Default => ui.label(RichText::new("Active: default (ssh-agent / ~/.ssh/config)").small().color(theme::dim(ui))),
         Active::Ours(p) => ui.label(RichText::new(format!("Active: {p}")).small().color(theme::accent())),
-        Active::Custom(c) => ui.label(RichText::new(format!("Active: custom core.sshCommand = {c}")).small().color(theme::changed())),
+        Active::Custom(c) => ui.label(RichText::new(format!("Active: custom core.sshCommand = {}", sshkey::redact_command(c))).small().color(theme::changed())),
     };
     ui.horizontal(|ui| {
         if ui.button(format!("{}  Browse…", icon::FOLDER_OPEN)).clicked()

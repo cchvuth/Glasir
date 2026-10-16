@@ -216,16 +216,13 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::rebase::REWRITE, commit, tip @ ..] => super::rebase::rewrite(dir, commit, tip.first().copied().unwrap_or("HEAD"), op.input.as_deref().unwrap_or_default()),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
             [_, "add", "-A", "--pathspec-from-file=-", ..] => git::run_input(dir, &a, Some(&without_vanished(dir, op.input.as_deref().unwrap_or_default()))),
-            ["--literal-pathspecs", "checkout", "--", paths @ ..] => {
-                let out = git::run(dir, &a)?;
-                submodule_reset(dir, paths)?;
-                Ok(out)
-            }
+            ["--literal-pathspecs", "checkout", "--", paths @ ..] => discard_checkout(dir, &a, paths),
             ["tag", "--sign", "-a", name, ..] => signed_tag(dir, &a, name, op.input.as_deref()),
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
                 git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
                 _ => Ok(String::new()),
             },
+            ["--literal-pathspecs", "mergetool" | "difftool", ..] | ["mergetool" | "difftool", ..] => git::run_tool(dir, &a),
             _ => git::run_input(dir, &a, op.input.as_deref()),
         }
     };
@@ -307,12 +304,21 @@ pub fn unstage_all_op() -> Op {
 }
 
 /// Discard several unstaged changes as one op: a single confirmation and one backup, so one ⌘Z
-/// brings them all back. One `rm` / `checkout` / `clean` per kind (and per ~16 KB of paths:
-/// Windows caps a command line at 32K chars), not one git run per file.
-pub fn discard_files_op(cs: &[git::Change]) -> Option<Op> {
-    if cs.len() <= 1 {
-        return cs.first().map(discard_op);
-    }
+/// brings them all back, except the submodules among them (`subs`: the status's), which go back
+/// to the commit recorded here and no backup holds.
+pub fn discard_files_op(cs: &[git::Change], subs: &std::collections::HashMap<String, String>) -> Option<Op> {
+    let o = if cs.len() <= 1 { discard_op(cs.first()?) } else { discard_many(cs) };
+    let sm: Vec<&str> = cs.iter().map(|c| c.path.as_str()).filter(|p| subs.contains_key(*p)).collect();
+    Some(match sm[..] {
+        [] => o,
+        [p] if cs.len() == 1 => o.confirm(format!("Discard changes to {p}? The submodule goes back to the commit recorded here, which ⌘Z can't undo.")),
+        _ => o.confirm(format!("Discard changes to {} files? ⌘Z brings them back, except {}: a submodule goes back to the commit recorded here for good.", cs.len(), sm.join(", "))),
+    })
+}
+
+/// [`discard_files_op`] of two or more: one `rm` / `checkout` / `clean` per kind (and per ~16 KB
+/// of paths: Windows caps a command line at 32K chars), not one git run per file.
+fn discard_many(cs: &[git::Change]) -> Op {
     let (mut rm, mut checkout, mut clean) = (vec![], vec![], vec![]);
     for c in cs {
         match c.code {
@@ -340,25 +346,37 @@ pub fn discard_files_op(cs: &[git::Change]) -> Option<Op> {
         }
     }
     let paths = cs.iter().flat_map(|c| c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path])).cloned().collect();
-    Some(o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {} files? (Undo with ⌘Z.)", cs.len())))
+    o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {} files? (Undo with ⌘Z.)", cs.len()))
 }
 
-/// `checkout` never moves a submodule: after a discard, check out the commit the index records in
-/// those of the paths that are submodules.
-fn submodule_reset(dir: &Path, paths: &[&str]) -> Res<String> {
+/// A discard's `checkout` (`a`), which never moves a submodule: then those of `paths` that are
+/// submodules check out the commit the index records. Refused first when one is at a commit
+/// none of its branches, remote branches or tags holds, which that would orphan.
+fn discard_checkout(dir: &Path, a: &[&str], paths: &[&str]) -> Res<String> {
     let mut ls = vec!["--literal-pathspecs", "ls-files", "-s", "-z", "--"];
     ls.extend(paths);
     let out = git::run(dir, &ls)?;
-    let subs: Vec<&str> = out.split('\0').filter(|e| e.starts_with("160000 ")).filter_map(|e| e.split_once('\t').map(|(_, p)| p)).collect();
-    if subs.is_empty() {
-        return Ok(String::new());
+    let subs: Vec<(&str, &str)> = out.split('\0').filter_map(|e| e.strip_prefix("160000 ")?.split_once('\t')).map(|(m, p)| (m.split(' ').next().unwrap_or(""), p)).collect();
+    for (oid, p) in &subs {
+        let sm = dir.join(p);
+        if !sm.join(".git").exists() || git::run(&sm, &["rev-parse", "HEAD"]).is_ok_and(|h| h.trim() == *oid) {
+            continue;
+        }
+        let held = git::run(&sm, &["for-each-ref", "--count=1", "--contains", "HEAD", "--format=x", "refs/heads", "refs/remotes", "refs/tags"]);
+        if held.is_ok_and(|o| o.trim().is_empty()) {
+            return Err(format!("Submodule {p} is at a commit none of its branches or tags holds: going back to the recorded commit would lose it. Create a branch for it in {p} first."));
+        }
     }
-    let mut up = vec!["--literal-pathspecs", "submodule", "update", "--init", "--"];
-    up.extend(subs);
-    git::run(dir, &up)
+    let out = git::run(dir, a)?;
+    if !subs.is_empty() {
+        let mut up = vec!["--literal-pathspecs", "submodule", "update", "--init", "--"];
+        up.extend(subs.iter().map(|s| s.1));
+        git::run(dir, &up)?;
+    }
+    Ok(out)
 }
 
-/// Discard one unstaged change (WIP list), backed up so ⌘Z brings the bytes back.
+/// Discard one unstaged change, backed up so ⌘Z brings the bytes back.
 pub fn discard_op(c: &git::Change) -> Op {
     let o = match (c.code, &c.old_path) {
         ('?', _) => Op::new("Discard", &["--literal-pathspecs", "clean", "-fq", "--", &c.path]),
@@ -525,9 +543,13 @@ fn keep_deleted(dir: &Path, op: &mut Op) {
 }
 
 /// Remove a worktree (`remove`: the `worktree remove` command), then force-delete its branch
-/// `b`; ⌘Z restores the branch with its config (not the folder).
+/// `b`; ⌘Z restores the branch with its config (not the folder), and redo deletes it again.
 pub fn remove_worktree_and_branch(d: &RepoData, remove: &[&str], b: &str) -> Op {
     let mut op = delete_branches(d, "Remove worktree".into(), &[b], true);
+    let redo = Box::new(Op { revert: None, ..op.clone() });
+    if let Some(back) = &mut op.revert {
+        back.revert = Some(redo);
+    }
     op.cmds.insert(0, remove.iter().map(|s| s.to_string()).collect());
     let Some(r) = d.local(b) else { return op };
     // Check the tip before removing the worktree, not only before the delete.
@@ -680,7 +702,8 @@ pub fn stash_branch(s: &git::Stash) -> Op {
 }
 
 /// Drops these stashes (by `stash@{n}`) in one op, each at its position, after checking the list is unchanged.
-/// `git stash store` only pushes on top, so ⌘Z pops the survivors above the deepest drop and re-stores all oldest first.
+/// `git stash store` only pushes on top, so ⌘Z re-stores all down to the deepest drop on top, oldest first, then
+/// drops the old entries of the survivors among them: a store that fails part-way leaves every stash listed.
 pub fn drop_stashes(all: &[git::Stash], names: &[String]) -> Op {
     let picked = |s: &git::Stash| names.contains(&s.name);
     let dropped: Vec<&git::Stash> = all.iter().filter(|s| picked(s)).collect();
@@ -695,22 +718,32 @@ pub fn drop_stashes(all: &[git::Stash], names: &[String]) -> Op {
     op.cmds = vec![check(all.len() + 1, &all.iter().collect::<Vec<_>>())];
     // Deepest first, so each position is still where the list showed it.
     op.cmds.extend(all.iter().enumerate().rev().filter(|(_, s)| picked(s)).map(|(i, s)| vec![STASH_DROP.to_owned(), s.id.clone(), i.to_string()]));
-    // Check everything before popping: the survivors above the deepest drop and the one
+    // Check everything first: the survivors above the deepest drop and the one
     // below it must be where the drop left them, and every dropped commit must still exist.
     let survivors: Vec<&git::Stash> = all.iter().filter(|s| !picked(s)).collect();
     let above = deepest + 1 - n;
     let mut back = Op::new(format!("Restore {n} stashes"), &[]);
     back.cmds = vec![[STASH_HAS.to_owned()].into_iter().chain(dropped.iter().map(|s| s.id.clone())).collect()];
     back.cmds.push(check(above + 1, &survivors[..(above + 1).min(survivors.len())]));
-    // Each is the top entry when its turn comes.
-    back.cmds.extend(survivors[..above].iter().map(|s| vec![STASH_DROP.to_owned(), s.id.clone(), "0".to_owned()]));
+    // A survivor on top holding the deepest drop's commit goes first: storing the top commit adds no entry.
+    let lead = survivors[..above].iter().take_while(|s| s.id == all[deepest].id).count();
+    back.cmds.extend(survivors[..lead].iter().map(|s| vec![STASH_DROP.to_owned(), s.id.clone(), "0".to_owned()]));
     back.cmds.extend(all[..=deepest].iter().rev().map(|s| ["stash", "store", "-m", &s.message, &s.id].map(String::from).to_vec()));
+    back.cmds.extend(survivors[lead..above].iter().enumerate().rev().map(|(i, s)| vec![STASH_DROP.to_owned(), s.id.clone(), (deepest + 1 + i).to_string()]));
     op.revert(back)
 }
 
-/// Check out a ref: local branch, remote branch (its local twin or a new
-/// tracking branch), or a tag (detached). A branch checked out in another
-/// worktree opens that worktree instead.
+fn amend_rewrites_pushed(d: &RepoData) -> Option<String> {
+    let (s, head) = (&d.status, d.status.head.as_deref()?);
+    match &s.upstream {
+        Some(up) => (s.ahead == 0).then(|| super::rebase::rewrites_pushed(1, Some(up))),
+        None => d.refs.iter().any(|r| r.kind == RefKind::Remote && r.target == head).then(|| super::rebase::rewrites_pushed(1, None)),
+    }
+}
+
+/// Check out a ref: local branch, remote branch (its local twin fast-forwarded, a new
+/// tracking branch, or, when the twin tracks something else, a new branch named in a prompt),
+/// or a tag (detached). A branch checked out in another worktree opens that worktree instead.
 pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
     match r.kind {
         RefKind::Local if r.head => None,
@@ -718,7 +751,13 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
         RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::Switch),
         RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
-            let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1);
+            let split = d.split_remote(&r.name);
+            let local = split.map_or(r.name.as_str(), |s| s.1);
+            if d.local(local).is_some_and(|l| !l.upstream.is_empty() && l.upstream != r.name) {
+                let name = split.map_or_else(|| r.name.replace('/', "-"), |(rem, b)| format!("{rem}-{b}"));
+                let op = Op::new(format!("Checkout {}", r.name), &["checkout", "-b", "{}", "--track", &r.full, "--"]).undo(Undo::Keep);
+                return Some(super::action::prompt(format!("New branch for {} (your {local} doesn't track it)", r.name), name, op));
+            }
             if let Some(p) = d.local(local).and_then(|l| l.worktree.clone().filter(|_| !l.head)) {
                 return Some(Action::Switch(p));
             }
@@ -754,7 +793,7 @@ impl RepoTab {
             return self.retry_or_skip(ctx, cmd == UNDO_SKIP, undo == "1", id);
         }
         if self.tool_blocks(&op.label, |p| super::tools::touches(&op, p)) {
-            return;
+            return self.unpark_rebase();
         }
         if op.confirm.is_some() {
             self.confirm = Some(op);
@@ -762,14 +801,15 @@ impl RepoTab {
         }
         if let Some((busy, _)) = &self.running {
             self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
-            return;
+            return self.unpark_rebase();
         }
-        if self.bg_fetch.is_some() && matches!(op.cmds[0][0].as_str(), "fetch" | "pull" | "push") {
-            self.after_bg_fetch = Some(op);
-            return;
-        }
+        self.parked_rebase = None;
         if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
             return self.open_tool(ctx, op, kind);
+        }
+        let bg = self.bg_fetch.take_if(|_| op.cmds.iter().any(|c| matches!(c[0].as_str(), "fetch" | "pull" | "push" | super::cleanup::REMOTE_DELETE)));
+        if bg.is_some() {
+            self.bg_cancel.cancel();
         }
         let op = super::stack::follow(op, self.data.as_ref());
         let dir = self.dir.clone();
@@ -779,6 +819,9 @@ impl RepoTab {
         self.running = Some((
             label,
             Task::spawn(ctx, move || {
+                if let Some(t) = bg {
+                    let _ = t.0.recv();
+                }
                 // Durable before anything runs: Err refuses the op. One that moves HEAD (checkout,
                 // merge, rebase, continue, abort...) backs up what git may overwrite there: ignored
                 // files where its commits put one, and a stopped merge's resolutions.
@@ -1079,7 +1122,11 @@ impl RepoTab {
         }
         // Not after an amend: that push would need a force. `poll_op` pushes once it's committed.
         let push = self.push_after && !self.amend && self.push_op(false).is_some();
-        Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft)
+        let op = Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
+        match self.data.as_ref().filter(|_| self.amend).and_then(amend_rewrites_pushed) {
+            Some(text) => op.confirm(text),
+            None => op,
+        }
     }
 
     /// Empties the message fields for the next commit (and prefills the template again).
@@ -1126,7 +1173,6 @@ impl RepoTab {
 
     /// Fills an empty commit box from `commit.template`.
     pub(super) fn prefill_template(&mut self) {
-        self.template = None;
         if self.summary.is_empty() && self.body.is_empty() {
             self.template = self.data.as_ref().and_then(|d| message::template(d, &self.dir));
             if let Some(t) = &self.template {
@@ -1191,6 +1237,38 @@ mod tests {
     use crate::git;
 
     #[test]
+    fn amending_a_pushed_head_asks_first() {
+        let (dir, remote) = (scratch("amend-pushed"), scratch("amend-pushed-remote"));
+        sh(&remote, &["init", "-q", "--bare", "-b", "main"]);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        sh(&dir, &["push", "-q", "-u", "origin", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        (t.amend, t.summary) = (true, "one, better".into());
+        assert!(t.commit_op().confirm.is_some_and(|c| c.contains("1 commit already pushed to origin/main")));
+        commit(&dir, "b", "two");
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        assert!(t.commit_op().confirm.is_none(), "an unpushed HEAD is amended at once");
+        sh(&dir, &["checkout", "-q", "-b", "side"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/side", "HEAD"]);
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        assert!(t.commit_op().confirm.is_some_and(|c| c.contains("1 commit already on a remote branch")));
+        t.amend = false;
+        assert!(t.commit_op().confirm.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
+    /// Double-clicking R/x fast-forwards the local x that tracks it (or nothing). One tracking something else
+    /// (fork workflow: feat tracks origin/feat, mate/feat is a teammate's) is never moved: the
+    /// prompt asks for a new branch tracking R/x.
+    #[test]
     fn remote_double_click_fast_forwards_its_local() {
         let dir = scratch("remote-ff");
         sh(&dir, &["init", "-q", "-b", "main"]);
@@ -1200,6 +1278,7 @@ mod tests {
         commit(&dir, "a", "2\n");
         sh(&dir, &["remote", "add", "origin", "."]);
         sh(&dir, &["fetch", "-q", "origin"]);
+        sh(&dir, &["branch", "-u", "origin/main", "main"]);
         sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "origin/main").unwrap();
@@ -1211,6 +1290,19 @@ mod tests {
         let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
         assert_eq!(op.cmds[0], ["checkout", "feat", "--"]);
+
+        sh(&dir, &["branch", "-u", "origin/feat", "feat"]);
+        sh(&dir, &["remote", "add", "mate", "."]);
+        sh(&dir, &["fetch", "-q", "mate"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
+        let Some(Action::Prompt(p)) = super::branch_checkout(&d, r) else { panic!("asks for a new branch") };
+        assert_eq!(p.value, "mate-feat");
+        let feat = sh(&dir, &["rev-parse", "feat"]);
+        exec(&dir, &fill(Action::Prompt(p), "mate-feat")).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "mate-feat@{u}"]), "mate/feat\n");
+        assert_eq!((sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["rev-parse", "--abbrev-ref", "feat@{u}"])), (feat, "origin/feat\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1224,6 +1316,7 @@ mod tests {
         sh(&dir, &["branch", "feat"]);
         sh(&dir, &["remote", "add", "origin", "."]);
         sh(&dir, &["fetch", "-q", "origin"]);
+        sh(&dir, &["branch", "-u", "origin/feat", "feat"]);
         sh(&dir, &["worktree", "add", "-q", &wt.to_string_lossy(), "feat"]);
         std::fs::write(wt.join("new"), "x").unwrap();
         std::fs::write(dir.join("a"), "2\n").unwrap();
@@ -1277,7 +1370,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `checkout --` never moves a submodule: discarding its pointer change must.
+    /// `checkout --` never moves a submodule: discarding its pointer change must. No backup holds
+    /// a submodule, so no ⌘Z is promised; a commit made on its detached HEAD (as `submodule
+    /// update` leaves it) is on no branch, so the discard refuses instead of orphaning it.
     #[test]
     fn discard_resets_a_changed_submodule() {
         let (dir, sm) = (scratch("discard-sub"), scratch("discard-sub-src"));
@@ -1298,6 +1393,17 @@ mod tests {
         let c = git::status(&dir).unwrap().unstaged.into_iter().find(|c| c.path == "a").unwrap();
         exec(&dir, &super::discard_op(&c)).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "a\n");
+        let sub = dir.join("sm");
+        sh(&sub, &["checkout", "-q", "--detach"]);
+        commit(&sub, "f", "3\n");
+        let head = sh(&sub, &["rev-parse", "HEAD"]);
+        let s = git::status(&dir).unwrap();
+        let c = s.unstaged.iter().find(|c| c.path == "sm").unwrap();
+        let op = super::discard_files_op(std::slice::from_ref(c), &s.submodules).unwrap();
+        assert!(op.confirm.as_deref().is_some_and(|t| t.contains("can't undo") && !t.contains("Undo with")));
+        let err = exec(&dir, &op).unwrap_err();
+        assert!(err.contains("none of its branches or tags holds"), "{err}");
+        assert_eq!(sh(&sub, &["rev-parse", "HEAD"]), head);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&sm);
     }
@@ -1321,7 +1427,7 @@ mod tests {
         let pick = |list: Vec<git::Change>, names: &[&str]| -> Vec<git::Change> { list.into_iter().filter(|c| names.contains(&c.path.as_str())).collect() };
         let unstaged = |names: &[&str]| pick(git::status(&dir).unwrap().unstaged, names);
         let staged = |names: &[&str]| pick(git::status(&dir).unwrap().staged, names);
-        assert!(super::stage_files_op("Stage", &[]).is_none() && super::unstage_files_op(&[]).is_none() && super::discard_files_op(&[]).is_none());
+        assert!(super::stage_files_op("Stage", &[]).is_none() && super::unstage_files_op(&[]).is_none() && super::discard_files_op(&[], &Default::default()).is_none());
 
         exec(&dir, &super::stage_files_op("Stage", &unstaged(&["weird[A].txt", "-dash.txt", "new.txt"])).unwrap()).unwrap();
         let s = git::status(&dir).unwrap();
@@ -1336,7 +1442,7 @@ mod tests {
         assert_eq!(s.staged.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["-dash.txt"]);
 
         let both = unstaged(&["weirdA.txt", "untracked u.txt"]);
-        let op = super::discard_files_op(&both).unwrap();
+        let op = super::discard_files_op(&both, &Default::default()).unwrap();
         assert_eq!((op.label.as_str(), op.confirm.is_some()), ("Discard 2 files", true));
         assert!(matches!(&op.backup, Some(super::Backup::Paths(p)) if p.len() == 2));
         exec(&dir, &op).unwrap();
@@ -1350,7 +1456,7 @@ mod tests {
             std::fs::write(dir.join(format!("u{i}.txt")), "u\n").unwrap();
         }
         let rest = git::status(&dir).unwrap().unstaged;
-        let op = super::discard_files_op(&rest).unwrap();
+        let op = super::discard_files_op(&rest, &Default::default()).unwrap();
         assert!(op.cmds.len() <= 3, "{:?}", op.cmds);
         exec(&dir, &op).unwrap();
         let s = git::status(&dir).unwrap();
@@ -1358,7 +1464,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("old.txt")).unwrap(), "base\n");
         // A long list is split into command lines of at most ~16 KB, every path once.
         let many: Vec<git::Change> = (0..2000).map(|i| git::Change { path: format!("some/deep/folder/file{i:05}.txt"), old_path: None, code: 'M' }).collect();
-        let op = super::discard_files_op(&many).unwrap();
+        let op = super::discard_files_op(&many, &Default::default()).unwrap();
         assert!(op.cmds.len() > 1 && op.cmds.iter().all(|c| c.iter().map(|a| a.len() + 1).sum::<usize>() < 16_100));
         assert_eq!(op.cmds.iter().map(|c| c.len() - 3).sum::<usize>(), 2000);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1510,6 +1616,41 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "second\nOn main: other\nOn main: first\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⌘Z of a drop whose `stash store` fails (a hook refuses the dropped stash's commit): the
+    /// survivor above it is still listed, not left dangling for gc.
+    #[cfg(unix)]
+    #[test]
+    fn drop_stashes_undo_that_fails_keeps_the_survivors() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("drop-stashes-fail");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        for m in ["bottom", "top"] {
+            std::fs::write(dir.join("a"), m).unwrap();
+            sh(&dir, &["stash", "push", "-q", "-m", m]);
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let all = t.data.as_ref().unwrap().stashes.clone();
+        let mut op = super::drop_stashes(&all, &[all[1].name.clone()]);
+        op.confirm = None;
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        let hooks = dir.join(".git/test-hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        sh(&dir, &["config", "core.hooksPath", &hooks.to_string_lossy()]);
+        let hook = hooks.join("reference-transaction");
+        std::fs::write(&hook, format!("#!/bin/sh\n[ \"$1\" = prepared ] || exit 0\n! grep -q {}\n", all[1].id)).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert!(t.choice.as_ref().is_some_and(|c| c.title == "Undo failed"));
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: top\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1994,6 +2135,31 @@ mod tests {
         assert!(crate::git::run(&a, &["rev-parse", "--verify", "-q", "refs/heads/b"]).is_err());
         super::exec(&a, op.revert.as_ref().expect("undo restores the branch config")).unwrap();
         assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "b@{u}"]).trim(), "origin/b");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// ⌘Z of "Remove worktree and delete b" brings back only the branch: redo deletes it again
+    /// instead of removing the folder that is already gone (which failed on every retry).
+    #[test]
+    fn remove_worktree_and_branch_redo_deletes_the_branch_again() {
+        let root = scratch("wt-redo");
+        let a = root.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        sh(&a, &["init", "-q", "-b", "main"]);
+        identity(&a);
+        commit(&a, "f", "one");
+        let wt = root.join("wt").to_string_lossy().into_owned();
+        sh(&a, &["worktree", "add", "-q", "-b", "b", &wt]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let gone = || git::run(&a, &["rev-parse", "--verify", "-q", "refs/heads/b"]).is_err();
+        let op = super::remove_worktree_and_branch(t.data.as_ref().unwrap(), &["worktree", "remove", &wt], "b");
+        for (act, deleted) in [(Action::Git(op), true), (Action::Undo, false), (Action::Redo, true)] {
+            t.apply(&ctx, act);
+            settle(&ctx, &mut t);
+            assert_eq!((gone(), t.choice.is_none()), (deleted, true));
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

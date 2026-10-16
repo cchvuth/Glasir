@@ -134,7 +134,7 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
     }
     let styled = d.view.solo.contains(&r.full) || !d.view.shows(&r.full);
     let rt = view_style(ui, d, r, rt);
-    let resp = ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) });
+    let resp = theme::keyed(ui, ("local", &r.full, depth), |ui| ui.add(if r.head { head_row(ui, rt, styled) } else { row(ui, false, rt) }));
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
     eye(ui, resp.rect, d, &[r], acts);
     let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
@@ -159,7 +159,7 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
 
 fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
     let text = view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::CLOUD)));
-    let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(&r.name);
+    let resp = theme::keyed(ui, ("remote", &r.full), |ui| ui.add(egui::Button::selectable(false, text).frame_when_inactive(false))).on_hover_text(&r.name);
     branch_dnd(ui, &resp, &r.name, &r.full, acts);
     eye(ui, resp.rect, d, &[r], acts);
     if resp.clicked() {
@@ -172,7 +172,7 @@ fn remote_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: 
 }
 
 fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mut Vec<Action>) {
-    let resp = ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::TAG)))).frame_when_inactive(false));
+    let resp = theme::keyed(ui, ("tag", &r.full), |ui| ui.add(egui::Button::selectable(false, view_style(ui, d, r, RichText::new(format!("{}  {name}", icon::TAG)))).frame_when_inactive(false)));
     eye(ui, resp.rect, d, &[r], acts);
     let resp = resp.on_hover_text(if r.message.is_empty() { r.name.clone() } else { format!("{}\n\n{}", r.name, r.message) });
     if resp.clicked() {
@@ -282,4 +282,41 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
         submodules::list(ui, d, f, acts);
         stashes::list(ui, d, sel, f, acts);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{Submodule, Worktree};
+    use crate::ui::testkit::{Sim, local_ref, tab};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_reload_keeps_a_menu_on_its_row() {
+        let mut sim = Sim::new(300.0, 900.0);
+        let mut t = tab(&sim.ctx, "sidebar-menu", &["x"]);
+        let mut d = t.data.take().unwrap();
+        let worktree = |n: &str| Worktree { path: format!("/wt/{n}"), branch: Some(n.into()), ..Default::default() };
+        let submodule = |n: &str| Submodule { path: n.into(), head: "1".repeat(40), recorded: "1".repeat(40), flag: ' ' };
+        let (before, after) = (["b1", "b2", "b3"], ["a0", "b1", "b2", "b3"]);
+        let mut acts = vec![];
+        let (dir, mut filter) = (t.dir.clone(), String::new());
+        let mut draw = |ui: &mut Ui, d: &RepoData| sidebar(ui, d, &dir, &None, &mut filter, &mut acts);
+        for (row, item) in [("b3", "Checkout b3"), ("w3", "Open in new tab"), ("s3", "Update (recursive)")] {
+            d.refs = Arc::new(before.map(local_ref).to_vec());
+            d.worktrees = Arc::new(before.map(|n| worktree(&n.replace('b', "w"))).to_vec());
+            d.submodules = Arc::new(before.map(|n| submodule(&n.replace('b', "s"))).to_vec());
+            sim.open_menu(row, |ui| draw(ui, &d));
+            d.refs = Arc::new(after.map(local_ref).to_vec());
+            d.worktrees = Arc::new(after.map(|n| worktree(&n.replace('b', "w"))).to_vec());
+            d.submodules = Arc::new(after.map(|n| submodule(&n.replace('b', "s"))).to_vec());
+            sim.pick(item, |ui| draw(ui, &d));
+        }
+        let picked: Vec<_> = acts.iter().filter_map(|a| match a {
+            Action::Git(op) => Some(op.label.as_str()),
+            Action::OpenTab(p) => Some(p.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(picked, ["Checkout b3", "/wt/w3", "Update (recursive) s3"]);
+    }
 }

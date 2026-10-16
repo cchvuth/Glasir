@@ -179,7 +179,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         r.upstream.clone()
     };
     if ui.button("Set upstream…").clicked() {
-        acts.push(prompt(format!("Upstream for {name}"), default_up, Op::new("Set upstream", &["branch", "--set-upstream-to={}", name])));
+        acts.push(prompt(format!("Upstream for {name}"), default_up, Op::new("Set upstream", &["branch", "--set-upstream-to", "{}", name])));
     }
     if !r.upstream.is_empty() && ui.button(format!("Unset upstream ({})", r.upstream)).clicked() {
         acts.push(op("Unset upstream", &["branch", "--unset-upstream", name]));
@@ -223,7 +223,7 @@ fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, paired: bool, act
     if let Some((remote, branch)) = d.split_remote(&r.name)
         && ui.button(format!("Delete {branch} from {remote}")).clicked()
     {
-        acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch)));
+        acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch, &r.target)));
     }
     if !paired {
         web_items(ui, d, r, acts);

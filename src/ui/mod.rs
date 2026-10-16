@@ -26,6 +26,8 @@ mod settings;
 mod shortcuts;
 mod sidebar;
 mod terminal;
+#[cfg(test)]
+mod testkit;
 mod titlebar;
 mod toasts;
 mod toolbar;

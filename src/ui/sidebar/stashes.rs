@@ -4,6 +4,7 @@
 use crate::ui::format::keys;
 use super::{matches, section};
 use crate::repo::{Action, RepoData, Sel, apply_stash_op, drop_stashes, pop_stash, prompt, rename_stash, stash_branch};
+use crate::theme;
 use egui::{Id, Ui};
 
 /// The stashes ⌘/⇧-clicked together (egui memory: sidebar-only state).
@@ -28,12 +29,12 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, sel: &Option<Sel>, f: &str, acts: 
             if step > 0.0 {
                 let y = top + i as f32 * step;
                 if y + step < clip.top() || y > clip.bottom() {
-                    ui.add_space(step - gap);
+                    ui.add_space(step);
                     continue;
                 }
             }
             let picked = multi.len() > 1 && multi.contains(&s.id);
-            let resp = ui.add(super::row(ui, picked, egui::RichText::new(&s.message))).on_hover_text(&s.name);
+            let resp = theme::keyed(ui, ("stash", &s.id), |ui| ui.add(super::row(ui, picked, egui::RichText::new(&s.message)))).on_hover_text(&s.name);
             if i == 0 {
                 step = resp.rect.height() + gap;
             }
@@ -96,5 +97,54 @@ pub fn stash_menu(ui: &mut Ui, d: &RepoData, s: &crate::git::Stash, acts: &mut V
     }
     if ui.button("Delete stash").clicked() {
         acts.push(Action::Git(drop_stashes(&d.stashes, std::slice::from_ref(&s.name))));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::Stash;
+    use crate::ui::testkit::{Sim, Tab, tab};
+    use egui::ScrollArea;
+    use std::sync::Arc;
+
+    fn stashes(sim: &Sim, name: &str) -> (Tab, RepoData) {
+        let mut t = tab(&sim.ctx, name, &["x"]);
+        let mut d = t.data.take().unwrap();
+        d.stashes = Arc::new((0..40).map(|i| Stash { id: format!("{i:040}"), base: String::new(), name: format!("stash@{{{i}}}"), message: format!("stash {i}") }).collect());
+        (t, d)
+    }
+
+    #[test]
+    fn menu_stays_with_its_stash_when_the_list_scrolls() {
+        let mut sim = Sim::new(300.0, 400.0);
+        let (_t, d) = stashes(&sim, "stash-menu");
+        let mut acts = vec![];
+        sim.menu_survives("stash 7", "Apply stash", |ui, scrolled| {
+            ScrollArea::vertical().vertical_scroll_offset(if scrolled { 170.0 } else { 0.0 }).show(ui, |ui| list(ui, &d, &None, "", &mut acts));
+        });
+        let ops: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { op.cmds.first().and_then(|c| c.get(1)) } else { None }).collect();
+        assert_eq!(ops, [&d.stashes[7].id]);
+    }
+
+    #[test]
+    fn rows_in_view_sit_where_all_rows_would() {
+        let mut sim = Sim::new(300.0, 400.0);
+        let (_t, d) = stashes(&sim, "stash-rows");
+        let (mut y0, mut step, mut heights) = (0.0, 0.0, vec![]);
+        for off in [0.0, 100.0, 400.0, 900.0] {
+            let mut height = 0.0;
+            sim.frame(vec![], |ui| height = ScrollArea::vertical().vertical_scroll_offset(off).show(ui, |ui| list(ui, &d, &None, "", &mut vec![])).content_size.y);
+            heights.push(height);
+            let drawn: Vec<_> = (0..40).filter_map(|i| Some((i, sim.text(|t| t == format!("stash {i}"))?.y + off))).collect();
+            if off == 0.0 {
+                (y0, step) = (drawn[0].1, drawn[1].1 - drawn[0].1);
+            }
+            assert!(!drawn.is_empty() && drawn.len() < 20, "{off}: {} rows drawn", drawn.len());
+            for (i, y) in drawn {
+                assert!((y - (y0 + i as f32 * step)).abs() < 1.0, "offset {off}: stash {i} at {y}");
+            }
+        }
+        assert!(heights.windows(2).all(|w| w[0] == w[1]), "{heights:?}");
     }
 }

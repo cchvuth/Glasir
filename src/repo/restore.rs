@@ -8,16 +8,49 @@ use std::path::Path;
 pub const APPLY_STASH_FILE: &str = "!apply-stash-file";
 
 /// Apply only the stash's own change to a tracked `path` (its diff against the stash's base), so
-/// commits made since stay; like `git stash apply` for one file, but working tree only.
+/// commits made since stay; like `git stash apply` for one file, but working tree only. Where the
+/// lines around it changed since, a 3-way merge into the file (it may leave conflict markers); a
+/// file gone since gets the stash's version.
 pub fn apply_stash_file(d: &RepoData, label: String, stash: &str, path: &str) -> Op {
-    let mut o = restore_file(d, label, stash, path, "");
+    let mut o = restore_file(d, label, stash, path, "the stash's change");
     o.cmds = vec![vec![APPLY_STASH_FILE.into(), stash.into(), path.into()]];
     o
 }
 
 pub(super) fn apply_stash(dir: &Path, stash: &str, path: &str) -> Res<String> {
     let patch = git::run_raw(dir, &["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--binary", &format!("{stash}^1"), stash, "--", path], None)?;
-    git::run_input(dir, &["apply", "--whitespace=nowarn"], Some(&patch))
+    let Err(e) = git::run_input(dir, &["apply", "--whitespace=nowarn"], Some(&patch)) else { return Ok(String::new()) };
+    let has = |l: &str| patch.split(|&b| b == b'\n').take_while(|x| !x.starts_with(b"@@")).any(|x| x.starts_with(l.as_bytes()));
+    let file = dir.join(path);
+    match std::fs::symlink_metadata(&file) {
+        Err(_) if has("deleted file mode") => return Ok(String::new()),
+        Err(_) => return git::run(dir, &["--literal-pathspecs", "restore", "--source", stash, "--worktree", "--", path]),
+        Ok(m) if !m.is_file() => return Err(e),
+        Ok(_) => {}
+    }
+    if has("deleted file mode") {
+        return Err(format!("The stash deletes {path}, which changed since, so it was left as it is."));
+    }
+    if has("GIT binary patch") {
+        return Err(format!("{path} is binary and changed since the stash, so the stash's change can't be merged into it; it was left as it is."));
+    }
+    let ours = std::fs::read(&file).map_err(|e| format!("{path}: {e}"))?;
+    let blob = |rev: &str| git::run_raw(dir, &["cat-file", "--filters", &format!("{rev}:{path}")], None);
+    let base = if has("new file mode") { vec![] } else { blob(&format!("{stash}^1"))? };
+    let theirs = blob(stash)?;
+    let name = git::stashes(dir).ok().and_then(|ss| ss.into_iter().find(|s| s.id == stash)).map_or("stash".into(), |s| format!("{}: {}", s.name, s.message));
+    let merged = git::scratch(dir, |b| {
+        git::scratch(dir, |t| {
+            std::fs::write(b, &base).and_then(|()| std::fs::write(t, &theirs)).map_err(|e| e.to_string())?;
+            git::run(dir, &["merge-file", "-L", "working tree", "-L", "stash base", "-L", &name, "--", path, &b.to_string_lossy(), &t.to_string_lossy()])
+        })
+    });
+    match merged {
+        Err(_) if std::fs::read(&file).is_ok_and(|now| now != ours) => {
+            Err(format!("{path} changed since the stash, so its change was merged in with conflict markers (<<<<<<< working tree … >>>>>>> {name}): resolve them in the file."))
+        }
+        r => r,
+    }
 }
 
 /// Overwrite `path` in the working tree with its version in `source`; `what`
@@ -58,7 +91,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stash_file_lands_by_its_context_or_not_at_all() {
+    fn a_stash_file_lands_by_its_context_or_a_merge() {
         let dir = scratch("stashfile-moved");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
@@ -76,8 +109,83 @@ mod tests {
         let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
         super::apply_stash(&dir, &id, "a").unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), top.to_owned() + &lines(1..=5) + "STASHED\n" + &lines(6..=10));
-        assert!(super::apply_stash(&dir, &id, "b").is_err());
-        assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "n1\nn2\nx\ny\nx\n");
+        super::apply_stash(&dir, &id, "b").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("b")).unwrap(), "n1\nn2\nx\ny\nX\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stash_file_merges_over_edited_context() {
+        let dir = scratch("stashfile-merge");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n2\n3\n4\n5\n6\n7\n");
+        std::fs::write(dir.join("a"), "1\n2\n3\n4 stash\n5\n6\n7\n").unwrap();
+        std::fs::write(dir.join("n"), "new\n").unwrap();
+        sh(&dir, &["add", "n"]);
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap();
+        std::fs::write(dir.join("a"), "1\n2 mine\n3\n4\n5\n6 mine\n7\n").unwrap();
+        super::apply_stash(&dir, &id, "a").unwrap();
+        assert_eq!(read("a"), "1\n2 mine\n3\n4 stash\n5\n6 mine\n7\n");
+        std::fs::remove_file(dir.join("a")).unwrap();
+        let o = super::apply_stash_file(&load_all(&dir, 100, View::default()).unwrap(), "Apply".into(), &id, "a");
+        let saved = run_backed(&dir, &o).unwrap().unwrap();
+        assert_eq!(read("a"), "1\n2\n3\n4 stash\n5\n6\n7\n");
+        undo_files(&dir, &saved).unwrap();
+        assert!(!dir.join("a").exists());
+        std::fs::write(dir.join("n"), "new\n").unwrap();
+        super::apply_stash(&dir, &id, "n").unwrap();
+        assert_eq!(read("n"), "new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_conflicting_stash_file_gets_markers_and_undoes() {
+        use crate::repo::testutil::settle;
+        use crate::repo::{Action, RepoTab};
+        let dir = scratch("stashfile-conflict");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n2\n3\n");
+        std::fs::write(dir.join("a"), "1\n2 stash\n3\n").unwrap();
+        sh(&dir, &["stash", "push", "-q", "-m", "wip"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        std::fs::write(dir.join("a"), "1\n2 mine\n3\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let op = super::apply_stash_file(t.data.as_ref().unwrap(), "Apply a from stash".into(), &id, "a");
+        t.apply(&ctx, Action::Git(op));
+        let msgs = settle(&ctx, &mut t);
+        let read = || std::fs::read_to_string(dir.join("a")).unwrap();
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("conflict markers")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert!(read().starts_with("1\n<<<<<<< working tree\n2 mine\n") && read().ends_with("=======\n2 stash\n>>>>>>> stash@{0}: On main: wip\n3\n"), "{}", read());
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(read(), "1\n2 mine\n3\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_changed_binary_or_deleted_stash_file_is_left_alone() {
+        let dir = scratch("stashfile-refused");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        std::fs::write(dir.join("bin"), "\0one\n").unwrap();
+        sh(&dir, &["add", "bin"]);
+        commit(&dir, "d", "1\n");
+        std::fs::write(dir.join("bin"), "\0stash\n").unwrap();
+        std::fs::remove_file(dir.join("d")).unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        std::fs::write(dir.join("bin"), "\0mine\n").unwrap();
+        std::fs::write(dir.join("d"), "2\n").unwrap();
+        assert!(super::apply_stash(&dir, &id, "bin").is_err_and(|e| e.contains("binary")));
+        assert_eq!(std::fs::read(dir.join("bin")).unwrap(), b"\0mine\n");
+        assert!(super::apply_stash(&dir, &id, "d").is_err_and(|e| e.contains("deletes")));
+        assert_eq!(std::fs::read_to_string(dir.join("d")).unwrap(), "2\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -3,7 +3,7 @@
 
 use crate::theme::{self, icon};
 use super::format::keys;
-use egui::{Id, Key, RichText};
+use egui::{Id, RichText};
 
 /// (keys, what they do), in macOS notation; `format::keys` converts for Linux / Windows.
 pub const SHORTCUTS: &[(&str, &str)] = &[
@@ -64,7 +64,7 @@ pub(super) fn show(ctx: &egui::Context) -> bool {
         ui.label(RichText::new(format!("Interactive rebase: {}", keys(REBASE))).small().color(theme::dim(ui)));
         ui.label(RichText::new(keys("Everything else is in the command palette (⌘P) and the right-click menus.")).small().color(theme::dim(ui)));
     });
-    open && !r.should_close() && !ctx.input(|i| i.key_pressed(Key::Escape))
+    open && !r.should_close()
 }
 
 #[cfg(test)]

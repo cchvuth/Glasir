@@ -284,7 +284,7 @@ pub fn show(
             for r in range.clone() {
                 let rect = Rect::from_min_size(pos2(left, top + r as f32 * ROW), vec2(full.width(), ROW));
                 let commit = d.commit(r);
-                let resp = ui.interact(rect, ui.id().with(("row", r)), if commit.is_some() { Sense::click_and_drag() } else { Sense::click() });
+                let resp = ui.interact(rect, ui.id().with(("row", commit.map_or("wip", |c| c.id.as_str()))), if commit.is_some() { Sense::click_and_drag() } else { Sense::click() });
                 let pill = rect.shrink2(vec2(2.0, 1.5));
                 let in_multi = commit.is_some_and(|c| multi.contains(&c.id));
                 if Some(r) == sel_row || in_multi {
@@ -456,7 +456,7 @@ pub fn show(
                         })
                         .is_some()
                     };
-                    let resp = ui.interact(tip_rect, ui.id().with(("refs", r)), Sense::click_and_drag());
+                    let resp = ui.interact(tip_rect, ui.id().with(("refs", &rf.full)), Sense::click_and_drag());
                     if more == 0 {
                         tip_now(&resp, pill_tip(rf, up));
                         act(ui, &resp, pills[0]);
@@ -470,7 +470,7 @@ pub fn show(
                                 let (mut back, mut menu) = (pill, false);
                                 for (k, &p) in pills.iter().enumerate() {
                                     let rect = ref_pill(ui, pos2(pill.left(), back.bottom() + if k == 0 { -pill.height() } else { 4.0 }), f32::INFINITY, p.0, p.1.is_some(), col, faded);
-                                    let r = ui.interact(rect, ui.id().with(k), Sense::click_and_drag());
+                                    let r = ui.interact(rect, ui.id().with(&p.0.full), Sense::click_and_drag());
                                     tip_now(&r, pill_tip(p.0, p.1));
                                     menu |= act(ui, &r, p);
                                     back = back.union(rect);
@@ -509,7 +509,7 @@ pub fn show(
                         painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, if faded { theme::dim(ui).gamma_multiply(0.4) } else { theme::dim(ui) }), 3.0, 2.0));
                         painter.text(b.center(), Align2::CENTER_CENTER, format!("+{}", rest.len()), FontId::proportional(9.0), if faded { theme::dim(ui) } else { text });
                         let names: Vec<_> = rest.iter().map(|&j| format!("{}  {}", d.stashes[j].name, d.stashes[j].message)).collect();
-                        let resp = ui.interact(b, ui.id().with(("stash-more", r)), Sense::click()).on_hover_text(names.join("\n"));
+                        let resp = ui.interact(b, ui.id().with(("stash-more", &st.base)), Sense::click()).on_hover_text(names.join("\n"));
                         resp.context_menu(|ui| {
                             for &j in rest {
                                 ui.menu_button(&d.stashes[j].message, |ui| crate::ui::sidebar::stashes::stash_menu(ui, d, &d.stashes[j], acts));
@@ -521,7 +521,7 @@ pub fn show(
                     painter.rect_filled(b, 9.0, if on { theme::accent().gamma_multiply(0.45) } else { theme::bg(ui) });
                     painter.extend(Shape::dashed_line(&rounded(b, 9.0), Stroke::new(1.2, if faded { theme::dim(ui).gamma_multiply(0.4) } else { theme::dim(ui) }), 3.0, 2.0));
                     painter.text(b.center(), Align2::CENTER_CENTER, icon::ARCHIVE, FontId::proportional(12.0), if faded { theme::dim(ui) } else { text });
-                    let resp = ui.interact(b, ui.id().with(("stash", i)), Sense::click()).on_hover_text(format!("{}  ·  stash on this commit\n{}", st.name, st.message));
+                    let resp = ui.interact(b, ui.id().with(("stash", &st.id)), Sense::click()).on_hover_text(format!("{}  ·  stash on this commit\n{}", st.name, st.message));
                     if resp.clicked() {
                         acts.push(Action::Select(Sel::Commit(st.id.clone())));
                     }
@@ -723,6 +723,23 @@ fn keyboard_nav(ui: &Ui, d: &RepoData, sel_row: Option<usize>, scroll_to: &mut O
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::testkit::{Sim, load, tab};
+
+    #[test]
+    fn row_menu_stays_with_its_commit_when_rows_shift() {
+        let mut sim = Sim::new(1000.0, 600.0);
+        let mut t = tab(&sim.ctx, "graph-menu", &["c1", "c2", "c3"]);
+        let before = t.data.take().unwrap();
+        std::fs::write(t.dir.join("f"), "dirty").unwrap();
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let after = t.data.take().unwrap();
+        assert!(after.wip && !before.wip);
+        let (avatars, mut acts) = (crate::repo::avatars::Avatars::default(), vec![]);
+        sim.menu_survives("c2", "Checkout this commit", |ui, reloaded| show(ui, if reloaded { &after } else { &before }, &None, &[], &mut None, &mut None, &avatars, &mut acts));
+        let ops: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { op.cmds.first().and_then(|c| c.last()) } else { None }).collect();
+        assert_eq!(ops, [&before.log[1].id]);
+    }
 
     #[test]
     fn columns_give_way_in_order() {

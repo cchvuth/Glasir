@@ -201,7 +201,8 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
                     v.push(item(icon::GIT_MERGE, format!("Merge {} into {head}{how_label}", r.name), kind, Cmd::Tab(Action::Git(m))));
                 }
                 let rb = Op::new(format!("Rebase onto {}", r.name), &["rebase", &r.name]).undo(Undo::Keep);
-                v.push(item(icon::GIT_COMMIT, format!("Rebase {head} onto {}", r.name), kind, Cmd::Tab(Action::Git(rb))));
+                let rb = Action::RunRebase { op: rb, onto: r.name.clone(), branch: None, first: None };
+                v.push(item(icon::GIT_COMMIT, format!("Rebase {head} onto {}", r.name), kind, Cmd::Tab(rb)));
             }
         }
     }
@@ -251,9 +252,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
     }
     let ranked: Vec<&Item> = p.ranked.2.iter().map(|&i| &p.items[i]).collect();
     let n = ranked.len();
-    let (up, down, enter, esc) = ctx.input(|i| {
-        (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.key_pressed(Key::Enter), i.key_pressed(Key::Escape))
-    });
+    let (up, down, enter) = ctx.input(|i| (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.key_pressed(Key::Enter)));
     if down && n > 0 {
         p.sel = (p.sel + 1) % n;
     }
@@ -262,9 +261,6 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
     }
     p.sel = p.sel.min(n.saturating_sub(1));
     let mut out = None;
-    if esc {
-        out = Some(None);
-    }
     if enter && n > 0 {
         out = Some(Some(ranked[p.sel].cmd.clone()));
     }

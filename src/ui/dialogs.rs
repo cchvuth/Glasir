@@ -5,7 +5,7 @@
 use crate::ui::format::{dismissed, keys, plural};
 use crate::ai;
 use crate::git;
-use crate::repo::{Action, Op, RepoTab, Undo};
+use crate::repo::{Action, Op, Prompt, RepoTab, Undo};
 use crate::repo::merge_opts::{Merge, merge_op};
 use crate::theme::{self, icon};
 use egui::{Button, Frame, Id, Key, RichText, TextEdit, Ui, vec2};
@@ -49,10 +49,19 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             let v2 = p.second.as_ref().map(|s| s.1.trim().to_owned()).filter(|s| !s.is_empty()).unwrap_or_else(|| v.to_owned());
             let revert = op.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());
             for a in op.cmds.iter_mut().flatten().chain(op.then_open.as_mut()).chain(revert) {
-                *a = fill(a, v, &v2);
+                *a = fill_arg(a, v, &v2);
             }
             acts.push(Action::Git(op));
         }
+    }
+}
+
+/// One argument of a prompt's op: `{}` / `{2}` as the whole argument, or [`Prompt::VALUE`] inside
+/// one. Any other `{}` is data (a branch `x{}`, a path) and stays.
+fn fill_arg(arg: &str, v: &str, v2: &str) -> String {
+    match arg {
+        "{}" | "{2}" => fill(arg, v, v2),
+        _ => arg.replace(Prompt::VALUE, v),
     }
 }
 
@@ -68,6 +77,16 @@ mod fill_tests {
         assert_eq!(super::fill("{}", "Support {2} in {}", "x"), "Support {2} in {}");
         assert_eq!(super::fill("{}-{2}", "a", "b"), "a-b");
         assert_eq!(super::fill("a{}b{2}{x", "1", "2"), "a1b2{x");
+    }
+
+    /// "New branch from x{}", "Rename a{}b": the ref names baked into the op are data.
+    #[test]
+    fn ref_names_with_braces_are_kept() {
+        let op = crate::repo::Op::new("Create branch", &["checkout", "-b", "{}", "x{}"]).then(&["branch", "-m", "a{}b", "{}"]).then(&["tag", "-a", "{}", "-m", "{2}", "{2}x"]);
+        let filled: Vec<Vec<String>> = op.cmds.iter().map(|c| c.iter().map(|a| super::fill_arg(a, "new", "msg")).collect()).collect();
+        assert_eq!(filled, [vec!["checkout", "-b", "new", "x{}"], vec!["branch", "-m", "a{}b", "new"], vec!["tag", "-a", "new", "-m", "msg", "{2}x"]]);
+        let path = format!("/w/{{}}/repo.worktrees/{}", crate::repo::Prompt::VALUE);
+        assert_eq!(super::fill_arg(&path, "feat", ""), "/w/{}/repo.worktrees/feat");
     }
 }
 
@@ -113,6 +132,8 @@ pub(super) fn confirm_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         if ok {
             op.confirm = None;
             acts.push(Action::Git(op));
+        } else {
+            t.unpark_rebase();
         }
     }
 }
@@ -485,7 +506,8 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             // and move no branch; a short `<branch>` argument is looked up as a branch first.
             if local(s) {
                 let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", dst_rev, src]).undo(Undo::Keep);
-                pick(ui, format!("{}  Rebase {src} onto {dst}", icon::GIT_COMMIT), Action::Git(rebase));
+                let rebase = Action::RunRebase { op: rebase, onto: dst_rev.into(), branch: Some(src.clone()), first: None };
+                pick(ui, format!("{}  Rebase {src} onto {dst}", icon::GIT_COMMIT), rebase);
             }
             if local(s) && s.head {
                 pick(ui, format!("{}  Interactive rebase {src} onto {dst}…", icon::LIST), Action::Rebase { base: dst_rev.into(), label: dst.clone() });

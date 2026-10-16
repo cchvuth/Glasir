@@ -84,8 +84,9 @@ pub fn dir_row(ui: &mut Ui, depth: usize, name: &str, count: usize, closed: bool
 /// whenever the list may have (see `show`).
 #[allow(clippy::too_many_arguments)]
 pub fn list(ui: &mut Ui, list: &[Change], key: u64, tree: bool, name: &'static str, closed: &mut HashMap<&'static str, HashSet<String>>, all: bool, mut row: impl FnMut(&mut Ui, Item) -> bool) {
+    let id = ui.id().with(("filetree", name));
     if tree {
-        show(ui, list.iter(), key, ui.id().with(("filetree", name)), closed.entry(name).or_default(), all, row);
+        show(ui, list.iter(), key, id, closed.entry(name).or_default(), all, row);
     } else {
         // Flat rows are `ROW_H` high too: with `all` off only those in view are drawn.
         let step = ROW_H + ui.spacing().item_spacing.y;
@@ -94,7 +95,7 @@ pub fn list(ui: &mut Ui, list: &[Change], key: u64, tree: bool, name: &'static s
             ui.add_space(first as f32 * step);
         }
         for (i, c) in list.iter().enumerate().take(last).skip(first) {
-            row(ui, Item::File { c, depth: None, order: Order::List(list, i) });
+            theme::keyed(ui, ("file", id, &c.path), |ui| row(ui, Item::File { c, depth: None, order: Order::List(list, i) }));
         }
         if last < list.len() {
             ui.add_space((list.len() - last) as f32 * step);
@@ -139,10 +140,10 @@ pub fn show<'a>(ui: &mut Ui, changes: impl Iterator<Item = &'a Change>, key: u64
         match &tree.nodes[n] {
             Node::File { idx, depth } => {
                 let c = &tree.files[*idx];
-                row(ui, Item::File { c, depth: Some(*depth), order: Order::Tree(tree, closed) });
+                theme::keyed(ui, ("file", id, &c.path), |ui| row(ui, Item::File { c, depth: Some(*depth), order: Order::Tree(tree, closed) }));
             }
             Node::Dir { path, name, depth, files, .. } => {
-                let resp = dir_row(ui, *depth, name, files.len(), closed.contains(path));
+                let resp = theme::keyed(ui, ("dir", id, path), |ui| dir_row(ui, *depth, name, files.len(), closed.contains(path)));
                 let took = row(ui, Item::Dir { path, files: &tree.files[files.clone()], resp: &resp });
                 if resp.clicked() && !took {
                     toggled = Some(path.clone());
@@ -223,5 +224,29 @@ mod tests {
             }
         }
         assert!(heights.windows(2).all(|w| w[0] == w[1]), "{heights:?}");
+    }
+
+    #[test]
+    fn menu_stays_with_its_file_when_the_list_scrolls() {
+        let mut sim = crate::ui::testkit::Sim::new(300.0, 400.0);
+        let cs: Vec<Change> = (0..220).map(|i| Change { path: format!("f{i:03}"), old_path: None, code: 'M' }).collect();
+        for as_tree in [false, true] {
+            let (mut closed, mut picked) = (HashMap::new(), vec![]);
+            sim.menu_survives("f007", "Pick", |ui, scrolled| {
+                egui::ScrollArea::vertical().vertical_scroll_offset(if scrolled { 170.0 } else { 0.0 }).show(ui, |ui| {
+                    list(ui, &cs, 0, as_tree, "t", &mut closed, false, |ui, item| {
+                        if let Item::File { c, depth, .. } = item {
+                            super::super::file_row(ui, c, false, false, None, depth).context_menu(|ui| {
+                                if ui.button("Pick").clicked() {
+                                    picked.push(c.path.clone());
+                                }
+                            });
+                        }
+                        false
+                    });
+                });
+            });
+            assert_eq!(picked, ["f007"], "as a tree: {as_tree}");
+        }
     }
 }

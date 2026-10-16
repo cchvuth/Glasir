@@ -159,7 +159,8 @@ The name fits a Git client:
   a merge commit says it goes against parent 1. All undoable; the staged variants
   need a clean tree, and their undo keeps edits made since.
 - **Interactive rebase editor**: pick, reword, squash, fixup, drop and reorder,
-  with single-key shortcuts.
+  with single-key shortcuts. Start, like Rebase onto and amending a pushed commit,
+  asks before rewriting commits that are already pushed.
 - **One-click history edits**: reword, squash into parent, drop, or
   **amend staged changes into any older commit**, or click a commit's message
   in its details to **edit it inline**, on any local branch without checking it out, merges
@@ -201,10 +202,11 @@ The name fits a Git client:
 - Fetch, pull (merge, fast-forward only or rebase, with autostash) and push, with
   **live progress** and **Cancel**.
 - **Background auto-fetch** that never pops up a prompt; a toolbar chip when sign-in
-  is needed.
+  is needed. A fetch, pull or push you start stops it and runs at once.
 - **Stash, switch and reapply** when a checkout is blocked by local changes;
   rebase-or-merge choice when a pull has diverged.
-- **Safe force push** with an explicit lease on the commit you saw.
+- **Safe force push** with an explicit lease on the commit you saw; deleting a branch
+  on a remote is leased the same way, so commits pushed since your last fetch stay.
 - Clone (HTTPS or SSH) and init.
 - **Manage remotes** from the sidebar: add (name, URL, optional push URL, fetched
   right away), rename, edit URLs, fetch or prune one remote, remove (⌘Z restores
@@ -291,7 +293,7 @@ The name fits a Git client:
   Bad / Skip** and **Reset**, rows get good / bad / testing marks, the next
   candidate is selected for you and the first bad commit is named at the end.
 - **Patches**: copy or save commits as a patch (`git format-patch`); apply a patch
-  file as commits (`git am`, with Continue / Skip / Abort) or as working-tree changes.
+  file as commits (`git am`, with Continue / Skip / Abort) or as working-tree changes (⌘Z takes them back).
 - **Repository maintenance**: **Perform repo maintenance** (toolbar `…` menu and ⌘P)
   packs loose objects and refreshes the commit-graph (`git maintenance`, `gc --auto`
   on old git) with progress and Cancel, never during a merge, rebase or other
@@ -303,7 +305,7 @@ The name fits a Git client:
 - ✨ **Commit messages** from your staged changes (keeps your draft if it fails);
   when amending, the message covers the last commit's changes plus the staged ones.
 - ✨ **Commit Composer**: the AI splits all your uncommitted changes (hunk by hunk,
-  new files whole) into a series of focused commits; review the plan, edit messages,
+  new files whole; secret-looking ones such as `.env` or keys by name only) into a series of focused commits; review the plan, edit messages,
   move changes between commits, split / merge / reorder, then create them in one
   undoable step (⌘Z).
 - ✨ **Recompose commits**: "Recompose from here" on an unpushed commit (or on a

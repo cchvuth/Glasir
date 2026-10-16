@@ -2,7 +2,7 @@
 //! classified with a fix hint, and the credential / proxy settings git uses for the URL.
 
 use super::Task;
-use super::sshkey::{KeyInfo, is_ssh};
+use super::sshkey::{KeyInfo, is_ssh, redact_command};
 use crate::git;
 use std::path::Path;
 
@@ -59,9 +59,13 @@ pub fn check(dir: &Path, remote: &str) -> Report {
             settings.push((format!("${k}"), v.into()));
         }
     }
-    // Tokens in the URL or a proxy's password must not reach the screen or a pasted report.
+    // Tokens in the URL, a proxy's password or an ssh command's password must not reach the screen or a pasted report.
     for (k, v) in &mut settings {
-        *v = if k.to_ascii_lowercase().ends_with("proxy") { redact_proxy(v) } else { git::redact(v) };
+        *v = match k.as_str() {
+            "ssh command" => redact_command(v),
+            _ if k.to_ascii_lowercase().ends_with("proxy") => redact_proxy(v),
+            _ => git::redact(v),
+        };
     }
     let problem = res.as_ref().err().map(|e| git::diagnose(e, is_ssh(&url)));
     let output = res.unwrap_or_else(|e| e).trim().into();
@@ -127,6 +131,10 @@ mod tests {
         assert_eq!(redact_proxy("u:pw@proxy.corp:8080"), "***@proxy.corp:8080");
         assert_eq!(redact_proxy("http://u:pw@proxy.corp:8080"), "http://***@proxy.corp:8080");
         assert_eq!(redact_proxy("proxy.corp:3128"), "proxy.corp:3128");
+        sh(&dir, &["remote", "add", "ssh1", "git@127.0.0.1:o/r.git"]);
+        sh(&dir, &["config", "core.sshCommand", "echo sshpass -p hunter2"]);
+        let shown = check(&dir, "ssh1").settings.into_iter().find(|(k, _)| k == "ssh command").unwrap().1;
+        assert!(!shown.contains("hunter2"), "{shown}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

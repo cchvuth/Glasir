@@ -119,7 +119,8 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, rev: &str, acts:
         }
     });
     if ui.button(format!("Rebase {head} onto {target}")).clicked() {
-        acts.push(Action::Git(Op::new(format!("Rebase onto {target}"), &["rebase", rev]).undo(Undo::Keep)));
+        let op = Op::new(format!("Rebase onto {target}"), &["rebase", rev]).undo(Undo::Keep);
+        acts.push(Action::RunRebase { op, onto: rev.into(), branch: None, first: None });
     }
     if ui.button(format!("Interactive rebase {head} onto {target}…")).clicked() {
         acts.push(Action::Rebase { base: rev.into(), label: target.into() });
@@ -160,7 +161,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
         acts.push(prompt(
             format!("New branch and worktree at {short}"),
             "",
-            Op::new("Create worktree", &["worktree", "add", "-b", "{}", &d.worktree_path("{}"), &c.id]).then_open(d.worktree_path("{}")),
+            Op::new("Create worktree", &["worktree", "add", "-b", "{}", &d.worktree_path(Prompt::VALUE), &c.id]).then_open(d.worktree_path(Prompt::VALUE)),
         ));
     }
     if ui.button("Create tag here…").clicked() {
@@ -328,5 +329,63 @@ pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {
                 .backup(crate::repo::Backup::Tree { revs: vec![], untracked: true })
                 .confirm("Discard ALL uncommitted changes, including untracked files? (Undo with ⌘Z.)"),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ui::testkit::{Sim, load, tab};
+    use egui::{PointerButton, Ui};
+
+    fn click(sim: &mut Sim, item: &str, mut draw: impl FnMut(&mut Ui)) {
+        sim.frame(vec![], &mut draw);
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s.ends_with(item)).unwrap_or_else(|| panic!("{item} is not drawn"));
+        sim.click(at, PointerButton::Primary, draw);
+    }
+
+    #[test]
+    fn rebasing_pushed_commits_onto_a_branch_asks_first() {
+        let mut sim = Sim::new(800.0, 600.0);
+        let mut t = tab(&sim.ctx, "rebase-onto-pushed", &["base"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        git(&["branch", "-M", "main"]);
+        git(&["branch", "old"]);
+        git(&["checkout", "-q", "-b", "feature"]);
+        for f in ["f1", "f2"] {
+            std::fs::write(dir.join(f), f).unwrap();
+            git(&["add", f]);
+            git(&["commit", "-q", "-m", f]);
+        }
+        git(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "m1"]);
+        git(&["checkout", "-q", "feature"]);
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let mut acts = vec![];
+        let d = t.data.as_ref().unwrap();
+        click(&mut sim, "Rebase feature onto main", |ui| super::integrate_items(ui, d, "main", "main", &mut acts));
+        let palette = crate::ui::palette::items(Some(&t), &[], crate::repo::PullMode::Merge, false);
+        let pick = |label: &str| palette.iter().find_map(|i| match &i.cmd {
+            crate::ui::palette::Cmd::Tab(a) if i.label == label => Some(a.clone()),
+            _ => None,
+        });
+        acts.extend(pick("Rebase feature onto main"));
+        t.drop_menu = Some(("refs/heads/feature".into(), "refs/heads/main".into(), egui::pos2(20.0, 20.0)));
+        click(&mut sim, "Rebase feature onto main", |ui| crate::ui::dialogs::drop_menu(&mut t, ui.ctx(), &mut acts));
+        assert_eq!(acts.len(), 3);
+        for a in acts {
+            t.apply(&sim.ctx, a);
+            load(&mut t, &sim.ctx);
+            let ask = t.confirm.take().and_then(|o| o.confirm);
+            assert!(ask.as_deref().is_some_and(|c| c.contains("2 commits already on a remote branch")), "{ask:?}");
+        }
+        let tip = git(&["rev-parse", "HEAD"]);
+        t.apply(&sim.ctx, pick("Rebase feature onto old").unwrap());
+        load(&mut t, &sim.ctx);
+        assert!(t.confirm.is_none());
+        assert_eq!(git(&["rev-parse", "HEAD"]), tip);
     }
 }

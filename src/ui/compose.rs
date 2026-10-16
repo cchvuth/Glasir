@@ -66,7 +66,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                     for &u in &c.units[lo..hi] {
                         let unit = &p.units[u];
                         let row = egui::vec2(ui.available_width(), rh);
-                        ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        theme::keyed(ui, ("unit", u), |ui| ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
                             ui.menu_button(RichText::new(icon::ARROWS_DOWN_UP).small(), |ui| {
                                 for (j, name) in names.iter().enumerate().filter(|(j, _)| *j != k) {
                                     if ui.add(Button::new(format!("Move to {name}")).truncate()).clicked() {
@@ -81,7 +81,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                             .on_hover_text("Move this change to another commit");
                             ui.label(RichText::new(&unit.path).strong());
                             ui.label(RichText::new(&unit.what).small().color(theme::dim(ui)));
-                        });
+                        }));
                     }
                     ui.add_space((len - hi) as f32 * step);
                 });

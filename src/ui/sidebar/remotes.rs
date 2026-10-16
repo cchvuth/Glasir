@@ -5,6 +5,7 @@ use crate::git;
 use crate::repo::remotes::{self, Form};
 use crate::repo::{Action, RepoData, RepoTab, op, prompt};
 use crate::theme::{self, icon};
+use crate::ui::format::dismissed;
 use egui::{Id, Key, RichText, TextEdit};
 
 pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
@@ -88,7 +89,7 @@ pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mu
             if theme::primary(ui, problem.is_none(), label, 140.0).clicked() || (problem.is_none() && ui.input(|i| i.key_pressed(Key::Enter))) {
                 done = Some(true);
             }
-            if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+            if dismissed(ui, "Cancel") {
                 done = Some(false);
             }
         });

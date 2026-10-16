@@ -88,7 +88,7 @@ pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) 
     egui::ScrollArea::vertical().id_salt("reflog").auto_shrink(false).show_rows(ui, 46.0, v.len(), |ui, range| {
         for i in range {
             let e = &v[i];
-            let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+            let (rect, r) = theme::keyed(ui, ("reflog", &e.id, v.len() - 1 - i), |ui| ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click()));
             if rl.sel == Some(i) {
                 ui.painter().rect_filled(rect, 10.0, theme::selection(ui));
             } else if r.hovered() {
@@ -132,4 +132,30 @@ pub fn show(ui: &mut Ui, rl: &mut Reflog, d: &RepoData, acts: &mut Vec<Action>) 
         }
     });
     close
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::testkit::{Sim, tab};
+
+    #[test]
+    fn a_menu_stays_with_its_entry_when_newer_ones_arrive() {
+        let mut sim = Sim::new(520.0, 500.0);
+        let mut t = tab(&sim.ctx, "reflog-menu", &["x"]);
+        let d = t.data.take().unwrap();
+        let mut rl = Reflog::open(&sim.ctx, &t.dir);
+        crate::repo::testutil::wait_for("the reflog", || {
+            rl.poll();
+            rl.entries.is_some()
+        });
+        let entries = |n: i64| Some(Ok((0..n).rev().map(|i| ReflogEntry { id: format!("{i:07x}{}", "0".repeat(33)), time: i, action: "commit".into(), detail: String::new(), summary: format!("summary {i}"), lost: false }).collect()));
+        rl.entries = entries(10);
+        let mut acts = vec![];
+        sim.open_menu("summary 4", |ui| _ = show(ui, &mut rl, &d, &mut acts));
+        rl.entries = entries(11);
+        sim.pick(&format!("{}  Create branch here", icon::GIT_BRANCH), |ui| _ = show(ui, &mut rl, &d, &mut acts));
+        let titles: Vec<_> = acts.iter().filter_map(|a| if let Action::Prompt(p) = a { Some(p.title.as_str()) } else { None }).collect();
+        assert_eq!(titles, ["New branch at 0000004"]);
+    }
 }

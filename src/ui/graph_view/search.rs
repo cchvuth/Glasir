@@ -1,7 +1,7 @@
 //! The ⌘F search bar above the graph. The query, the git search and its hits live in
 //! `crate::repo::Search`.
 
-use crate::ui::format::{esc_pressed, keys};
+use crate::ui::format::{esc_pressed, keys, view_key};
 use crate::repo::{Action, RepoData, Search, Sel};
 use crate::theme::{self, icon};
 use egui::{Button, Key, Ui};
@@ -15,7 +15,7 @@ after:2024-01-01   before:\"2 weeks ago\"   merges   no-merges";
 pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &mut Option<usize>, acts: &mut Vec<Action>) -> bool {
     s.rows(d);
     let mut close = false;
-    let (f3, shift) = ui.input(|i| (i.key_pressed(Key::F3), i.modifiers.shift));
+    let (f3, shift) = (view_key(ui, Key::F3), ui.input(|i| i.modifiers.shift));
     let mut step = if f3 { if shift { -1 } else { 1 } } else { 0 };
     // Buttons and count first: a narrow graph pane shrinks the field, never the other way round.
     theme::bar(ui, |ui| {

@@ -138,7 +138,7 @@ pub(super) fn remote_delete(dir: &Path, a: &[&str]) -> Res<String> {
         let lease = format!("--force-with-lease=refs/heads/{b}:{o}");
         if let Err(e) = git::run(dir, &["push", &lease, r, &format!(":refs/heads/{b}")]) {
             failed.push(match e.contains("stale info") {
-                true => format!("{r}/{b} wasn't deleted: it changed on the remote since it was checked. Fetch and open Clean up branches again."),
+                true => format!("{r}/{b} wasn't deleted: it changed on the remote since it was last fetched. Fetch, check it and try again."),
                 false => format!("{r}/{b} wasn't deleted: {}", e.lines().find(|l| !l.trim().is_empty()).unwrap_or(&e)),
             });
         }
@@ -183,10 +183,14 @@ fn twins(dir: &Path, target: &str, tips: &[&str]) -> Option<HashMap<String, bool
     if tips.is_empty() || tips.len() > 5000 {
         return None;
     }
-    let base = git::run(dir, &[&["merge-base", "--octopus", target][..], tips].concat()).ok()?;
-    let mut ours = git::run(dir, &["rev-list", "--parents", target, "--not", base.trim()]).ok()?;
+    let mut base = target.to_owned();
+    for some in tips.chunks(500) {
+        base = git::run(dir, &[&["merge-base", "--octopus", base.as_str()][..], some].concat()).ok()?.trim().to_owned();
+    }
+    let mut ours = git::run(dir, &["rev-list", "--parents", target, "--not", &base]).ok()?;
     let nt = ours.lines().count();
-    ours += &git::run(dir, &[&["rev-list", "--parents"][..], tips, &["--not", target]].concat()).ok()?;
+    let revs: String = tips.iter().map(|t| format!("{t}\n")).chain([format!("^{target}\n")]).collect();
+    ours += &git::run_input(dir, &["rev-list", "--parents", "--stdin"], Some(revs.as_bytes())).ok()?;
     if nt > 20_000 || ours.lines().count() > 50_000 {
         return None;
     }
@@ -905,6 +909,8 @@ mod tests {
             assert_eq!((counts[*n], unpushed[*t]), ((lr[1], lr[0]), up), "{n}");
         }
         assert!(twins[tips[4]] && twins[tips[5]] && !twins[tips[3]], "reverted and collide have twins, picked doesn't");
+        let many: Vec<&str> = tips.iter().cycle().take(1200).copied().collect();
+        assert_eq!(super::twins(&dir, "main", &many).as_ref(), Some(&twins), "1200 tips: past Windows' 32K-char command line");
         let _ = std::fs::remove_dir_all(&root);
     }
 

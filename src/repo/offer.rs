@@ -349,6 +349,13 @@ mod tests {
         op_unsigned(&dir, &reword, "Commit without signing");
         assert_eq!(sh(&dir, &["log", "-1", "--format=%s"]).trim(), "reworded");
         assert!(!git::verify_tag(&dir, "refs/tags/v2").0);
+        let head = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::write(dir.join("a"), "c").unwrap();
+        sh(&dir, &["add", "a"]);
+        let amend = crate::repo::rebase::amend_into(&dir, &head, true).unwrap();
+        assert_eq!(amend.cmds[0][0], crate::repo::rebase::HEAD_IS);
+        op_unsigned(&dir, &amend, "Commit without signing");
+        assert_eq!((sh(&dir, &["show", "HEAD:a"]).as_str(), info().sig), ("c", 'N'));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

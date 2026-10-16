@@ -1,7 +1,7 @@
 //! The WORKTREES section of the sidebar: one row per worktree with its menu.
 
 use super::{matches, section};
-use crate::repo::{Action, Op, RepoData, op, prompt};
+use crate::repo::{Action, Op, Prompt, RepoData, op, prompt};
 use crate::theme::{self, icon};
 use egui::{RichText, Ui};
 
@@ -21,7 +21,7 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
                 acts.push(prompt(
                     "New branch and worktree from HEAD",
                     "",
-                    Op::new("Create worktree", &["worktree", "add", "-b", "{}", &d.worktree_path("{}"), "HEAD"]).then_open(d.worktree_path("{}")),
+                    Op::new("Create worktree", &["worktree", "add", "-b", "{}", &d.worktree_path(Prompt::VALUE), "HEAD"]).then_open(d.worktree_path(Prompt::VALUE)),
                 ));
             }
             if d.worktrees.iter().any(|w| w.prunable) && theme::small(ui, true, "Prune stale").clicked() {
@@ -50,7 +50,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         w.locked.as_ref().map_or(String::new(), |r| format!("\nLocked{}", if r.is_empty() { String::new() } else { format!(": {r}") })),
         if w.prunable { "\nMissing on disk (prune to clean up)" } else { "" }
     );
-    let resp = ui.add(if current { super::head_row(ui, text, false) } else { super::row(ui, false, text) }).on_hover_text(tip);
+    let resp = theme::keyed(ui, ("worktree", &w.path), |ui| ui.add(if current { super::head_row(ui, text, false) } else { super::row(ui, false, text) })).on_hover_text(tip);
     if (resp.double_clicked() || resp.clicked()) && !current && !w.prunable {
         acts.push(Action::Switch(w.path.clone()));
     }

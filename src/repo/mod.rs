@@ -40,7 +40,7 @@ mod task;
 pub mod terminal;
 pub mod tools;
 #[cfg(test)]
-mod testutil;
+pub(crate) mod testutil;
 mod undo;
 mod watch;
 
@@ -150,6 +150,7 @@ pub struct RepoTab {
     /// Collapsed folders of each file list in tree view ("unstaged", "staged", "conflicts", "commit"), kept while the app runs.
     pub tree_closed: HashMap<&'static str, std::collections::HashSet<String>>,
     pub rebase: Option<crate::repo::rebase::Editor>,
+    parked_rebase: Option<crate::repo::rebase::Editor>,
     pub merge: Option<merge_editor::Editor>,
     /// The open diff's working-tree file being edited in place (replaces the diff while open).
     pub edit: Option<file_edit::FileEdit>,
@@ -174,8 +175,8 @@ pub struct RepoTab {
     pub choice: Option<Choice>,
     /// Background fetch; Ok(true) when it moved a remote-tracking ref.
     bg_fetch: Option<Task<Res<bool>>>,
-    /// A fetch / pull / push asked for during the background fetch (two fetches race on ref locks): runs after it.
-    after_bg_fetch: Option<Op>,
+    /// Stops the background fetch: a fetch / pull / push asked for meanwhile (two fetches race on ref locks) runs once it has ended.
+    bg_cancel: git::Cancel,
     /// `ctx` time of the last background fetch.
     last_fetch: f64,
     /// Why the last background fetch failed.
@@ -265,6 +266,7 @@ impl RepoTab {
             file_sel_gen: 0,
             tree_closed: HashMap::new(),
             rebase: None,
+            parked_rebase: None,
             merge: None,
             edit: None,
             file_view: None,
@@ -278,7 +280,7 @@ impl RepoTab {
             verify_task: None,
             choice: None,
             bg_fetch: None,
-            after_bg_fetch: None,
+            bg_cancel: Default::default(),
             last_fetch: f64::NEG_INFINITY,
             fetch_failed: None,
             reflog: None,
@@ -314,8 +316,14 @@ impl RepoTab {
     /// Builds a history rewrite (its git calls read the range and the upstream) off the UI thread;
     /// [`Self::busy`] shows it meanwhile.
     pub(super) fn prepare(&mut self, ctx: &egui::Context, f: impl FnOnce(&std::path::Path) -> op::Dropped + Send + 'static) {
+        self.parked_rebase = None;
         let dir = self.dir.clone();
         self.drop_task = Some(Task::spawn(ctx, move || f(&dir)));
+    }
+    pub fn unpark_rebase(&mut self) {
+        if let Some(ed) = self.parked_rebase.take() {
+            (self.diff, self.merge, self.rebase) = (None, None, Some(ed));
+        }
     }
     pub fn cancellable(&self) -> bool {
         self.cancel.is_some()
@@ -779,6 +787,11 @@ impl RepoTab {
                     Ok(ed) => op::Dropped::Editor(Box::new(ed)),
                     Err(e) => op::Dropped::Note(e),
                 });
+            }
+            Action::RunRebase { op, onto, branch, first } => {
+                let ed = self.rebase.take();
+                self.prepare(ctx, move |dir| op::Dropped::Run(crate::repo::rebase::confirm_rebase(dir, &onto, branch.as_deref(), first.as_deref(), op)));
+                self.parked_rebase = ed;
             }
             Action::Reflog => {
                 (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, None);

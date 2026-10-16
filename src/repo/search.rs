@@ -6,7 +6,7 @@ use crate::git::{self, Commit, Res};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 
 /// More hits than this stop the search (each is a loaded commit).
@@ -139,10 +139,10 @@ pub struct Search {
     /// (query, case, refs fingerprint) of the current search, bumped `run` on change.
     key: (String, bool, u64),
     run: usize,
-    log_ptr: usize,
+    log: Weak<Vec<Commit>>,
     refs_fp: u64,
     /// (log, wip, run) the `hits` were computed for, and how many of `found` they cover.
-    rows_key: (usize, bool, usize),
+    rows_key: (Weak<Vec<Commit>>, bool, usize),
     rows_n: usize,
     /// The query parsed to something git can search (a half-typed `author:` does not).
     pub(crate) active: bool,
@@ -178,7 +178,7 @@ impl Search {
             cancel: Default::default(),
             key: Default::default(),
             run: 0,
-            log_ptr: 0,
+            log: Weak::new(),
             refs_fp: 0,
             rows_key: Default::default(),
             rows_n: 0,
@@ -220,10 +220,10 @@ impl Search {
     /// (Re)starts the git search when the query or the refs changed, takes in streamed hits
     /// and rebuilds the filtered graph. `d` is the full history.
     pub(crate) fn poll(&mut self, ctx: &egui::Context, d: &RepoData) {
-        let ptr = Arc::as_ptr(&d.log) as usize;
-        if ptr != self.log_ptr {
+        let log = Arc::downgrade(&d.log);
+        if !log.ptr_eq(&self.log) {
             // A reload: re-run only if a ref moved (new commits), not for every refresh.
-            self.log_ptr = ptr;
+            self.log = log;
             let mut h = DefaultHasher::new();
             (d.view.revs(), d.refs.iter().map(|r| (&r.full, &r.target)).collect::<Vec<_>>(), &d.status.head).hash(&mut h);
             self.refs_fp = h.finish();
@@ -352,9 +352,9 @@ impl Search {
 
     /// Recomputes `hits` for the graph being drawn (the full or the filtered history).
     pub(crate) fn rows(&mut self, d: &RepoData) {
-        let key = (Arc::as_ptr(&d.log) as usize, d.wip, self.run);
-        if key != self.rows_key || self.rows_n > self.found.len() {
-            (self.rows_key, self.rows_n) = (key, 0);
+        let log = Arc::downgrade(&d.log);
+        if !(log.ptr_eq(&self.rows_key.0) && (d.wip, self.run) == (self.rows_key.1, self.rows_key.2)) || self.rows_n > self.found.len() {
+            (self.rows_key, self.rows_n) = ((log, d.wip, self.run), 0);
             self.hits.clear();
         }
         // `found` only appends within a run: look up just the new hits.
@@ -725,6 +725,59 @@ mod tests {
         assert!(s.filtered.is_none() && s.building.is_some());
         settle(&mut s, &d);
         assert!(s.filtered.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `log` and `refs` as the history of `d`'s repo, built where `d`'s own log lived if the
+    /// allocator hands that memory out again (it can't while anything still points at it).
+    fn rebuilt_in_place(d: RepoData, log: Vec<Commit>, refs: Vec<git::Ref>, dir: &std::path::Path) -> RepoData {
+        let (stale, rest) = (Arc::as_ptr(&d.log), (d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), d.view.clone()));
+        drop(d);
+        let mut spare = vec![];
+        let mut fresh = loop {
+            let l = Arc::new(vec![]);
+            if Arc::as_ptr(&l) == stale || spare.len() == 5000 {
+                break l;
+            }
+            spare.push(l);
+        };
+        *Arc::get_mut(&mut fresh).unwrap() = log;
+        RepoData::build(fresh, Arc::new(refs), rest.0, rest.1, rest.2, rest.3, git::status(dir).unwrap(), rest.4)
+    }
+
+    fn three_commits(name: &str) -> (std::path::PathBuf, RepoData) {
+        let dir = scratch(name);
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for m in ["c1", "c2", "c3"] {
+            sh(&dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        (dir, d)
+    }
+
+    #[test]
+    fn hits_found_in_one_log_are_not_kept_for_another_built_in_its_place() {
+        let (dir, d) = three_commits("search-rows-alias");
+        let mut s = finished(&dir, &d, "c2", false);
+        s.rows(&d);
+        assert_eq!(s.hits, [1]);
+        let (refs, shorter) = (d.refs.to_vec(), d.log[1..].to_vec());
+        let d2 = rebuilt_in_place(d, shorter, refs, &dir);
+        s.rows(&d2);
+        assert_eq!(s.hits, [0], "c2 is the first row of the shorter history");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_built_in_the_place_of_the_polled_one_still_counts_as_a_reload() {
+        let (dir, d) = three_commits("search-poll-alias");
+        let mut s = finished(&dir, &d, "c2", false);
+        let (run, log, mut refs) = (s.run, d.log.to_vec(), d.refs.to_vec());
+        refs[0].target = "0".repeat(40);
+        let d2 = rebuilt_in_place(d, log, refs, &dir);
+        s.poll(&egui::Context::default(), &d2);
+        assert_ne!(s.run, run, "the moved ref restarts the search");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

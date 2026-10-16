@@ -235,7 +235,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let mem = ui.id().with("diff_pos");
     let (first, view_h) = ui.data(|m| m.get_temp::<(usize, f32)>(mem)).unwrap_or_default();
     let anchor = first + LEAD;
-    let mut nav = ui.input(|i| i.key_pressed(egui::Key::F7).then_some(!i.modifiers.shift));
+    let mut nav = super::format::view_key(ui, egui::Key::F7).then(|| !ui.input(|i| i.modifiers.shift));
 
     if super::format::esc_pressed(ui) {
         acts.push(Action::CloseDiff);

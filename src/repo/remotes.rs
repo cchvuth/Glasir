@@ -121,17 +121,18 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
         .revert(revert)
 }
 
-/// Fetch pull request `{}` (filled in by a prompt) from `remote` into `pr/{}` and check it
-/// out. Works on github.com and GitHub Enterprise, which publish `refs/pull/<n>/head`.
+/// Fetch pull request `n` (filled in by a prompt: `Prompt::VALUE`) from `remote` into `pr/<n>` and
+/// check it out. Works on github.com and GitHub Enterprise, which publish `refs/pull/<n>/head`.
 pub fn pr_checkout(remote: &str) -> Op {
+    let n = super::Prompt::VALUE;
     // Via `-B`: running it again updates pr/<n>, even checked out or force-pushed.
     // `seen` remembers the head last checked out, so a force-push isn't taken for local work.
     // Into a ref of its own, not FETCH_HEAD: a background fetch may rewrite that meanwhile.
-    let seen = format!("refs/glasir/pr/{remote}/{{}}");
+    let (seen, pr) = (format!("refs/glasir/pr/{remote}/{n}"), format!("pr/{n}"));
     let fetched = format!("{seen}-fetched");
-    Op::new("Check out pull request", &["fetch", "--progress", remote, &format!("+refs/pull/{{}}/head:{fetched}")])
-        .then(&[PR_GUARD, "pr/{}", &fetched, &seen])
-        .then(&["checkout", "-B", "pr/{}", &fetched, "--"])
+    Op::new("Check out pull request", &["fetch", "--progress", remote, &format!("+refs/pull/{n}/head:{fetched}")])
+        .then(&[PR_GUARD, &pr, &fetched, &seen])
+        .then(&["checkout", "-B", &pr, &fetched, "--"])
         .then(&["update-ref", &seen, &fetched])
         .undo(Undo::Keep)
 }
@@ -156,10 +157,11 @@ pub(super) fn pr_guard(dir: &std::path::Path, branch: &str, fetched: &str, seen:
     }
 }
 
-/// Delete `branch` on `remote`. Qualified: once the branch is gone there, a short name
-/// would delete a same-named tag instead.
-pub fn delete_branch(remote: &str, branch: &str) -> Op {
-    Op::new(format!("Delete {remote}/{branch}"), &["push", remote, "--delete", &format!("refs/heads/{branch}")])
+/// Delete `branch` on `remote`, only while it is still at `oid` (its remote-tracking ref): commits
+/// pushed there since the last fetch are never deleted unseen. Qualified: once the branch is gone
+/// there, a short name would delete a same-named tag instead.
+pub fn delete_branch(remote: &str, branch: &str, oid: &str) -> Op {
+    Op::new(format!("Delete {remote}/{branch}"), &[super::cleanup::REMOTE_DELETE, remote, branch, oid])
         .confirm(format!("Delete branch {branch} on remote {remote}?"))
 }
 
@@ -326,7 +328,7 @@ mod tests {
 
         let mut op = pr_checkout("origin");
         for a in op.cmds.iter_mut().flatten() {
-            *a = a.replace("{}", "7"); // what the prompt does
+            *a = a.replace(crate::repo::Prompt::VALUE, "7"); // what the prompt does
         }
         exec(&dir, &op).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), pr);
@@ -380,7 +382,9 @@ mod tests {
         sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
         sh(&dir, &["branch", "dev", "origin/dev"]);
         sh(&up, &["branch", "-D", "release-1"]);
-        exec(&dir, &delete_branch("origin", "release-1")).unwrap(); // (git only warns that it is gone)
+        let seen = sh(&dir, &["rev-parse", "refs/remotes/origin/release-1"]);
+        // (Gone since the fetch: the lease refuses.)
+        assert!(exec(&dir, &delete_branch("origin", "release-1", seen.trim())).is_err_and(|e| e.contains("changed on the remote")));
         assert_eq!(sh(&up, &["tag"]), "release-1\n");
 
         sh(&up, &["checkout", "-q", "dev"]);
@@ -446,12 +450,39 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         assert_eq!(d.push_dest("main", "a/b/main"), Some(("a/b", "main")));
         let (remote, branch) = d.split_remote("a/b/x").unwrap();
-        exec(&dir, &delete_branch(remote, branch)).unwrap();
+        let oid = &d.refs.iter().find(|r| r.name == "a/b/x").unwrap().target;
+        exec(&dir, &delete_branch(remote, branch, oid)).unwrap();
         assert_eq!(sh(&up2, &["branch", "--list", "b/x"]).trim(), "b/x");
         assert_eq!(sh(&up1, &["branch", "--list", "x"]), "");
         for p in [dir, up1, up2] {
             let _ = std::fs::remove_dir_all(p);
         }
+    }
+
+    /// "Delete x from origin" after a teammate pushed to x since the last fetch: refused, their
+    /// commit stays; once fetched (and seen), the delete goes through.
+    #[test]
+    fn remote_delete_keeps_commits_pushed_since_the_fetch() {
+        let up = scratch("rdel-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        sh(&up, &["branch", "x"]);
+        let dir = scratch("rdel");
+        sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
+        sh(&up, &["checkout", "-q", "x"]);
+        commit(&up, "a.txt", "teammate\n");
+        sh(&up, &["checkout", "-q", "main"]);
+        let theirs = sh(&up, &["rev-parse", "x"]);
+        let oid = |dir: &std::path::Path| load_all(dir, 100, View::default()).unwrap().refs.iter().find(|r| r.name == "origin/x").unwrap().target.clone();
+        let err = exec(&dir, &delete_branch("origin", "x", &oid(&dir))).unwrap_err();
+        assert!(err.contains("origin/x wasn't deleted: it changed on the remote"), "{err}");
+        assert_eq!(sh(&up, &["rev-parse", "x"]), theirs);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        exec(&dir, &delete_branch("origin", "x", &oid(&dir))).unwrap();
+        assert_eq!(sh(&up, &["branch", "--list", "x"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
     }
 
     /// The background fetch rewrites FETCH_HEAD; one finishing mid-checkout must not
@@ -470,7 +501,7 @@ mod tests {
         sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
         let mut op = pr_checkout("origin");
         for a in op.cmds.iter_mut().flatten() {
-            *a = a.replace("{}", "7");
+            *a = a.replace(crate::repo::Prompt::VALUE, "7");
         }
         let mut first = op.clone();
         first.cmds.truncate(1);
@@ -511,7 +542,7 @@ mod tests {
         settle(&ctx, &mut t);
         let mut op = pr_checkout("origin");
         for a in op.cmds.iter_mut().flatten() {
-            *a = a.replace("{}", "1");
+            *a = a.replace(crate::repo::Prompt::VALUE, "1");
         }
         t.apply(&ctx, Action::Git(op));
         settle(&ctx, &mut t);

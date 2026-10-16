@@ -287,6 +287,10 @@ pub fn context_menu<R>(resp: &egui::Response, add: impl FnOnce(&mut Ui) -> R) ->
         .map(|r| r.inner)
 }
 
+pub fn keyed<R>(ui: &mut Ui, key: impl egui::AsId, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope_builder(UiBuilder::new().id(egui::Id::new(key)), add).inner
+}
+
 pub fn empty_state(ui: &mut Ui, glyph: &str, title: &str, help: &str) {
     ui.label(RichText::new(glyph).size(34.0).color(accent().gamma_multiply(0.85)));
     ui.add_space(2.0);

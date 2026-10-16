@@ -45,7 +45,8 @@ pub struct Choice {
     pub ops: Vec<(String, Op)>,
 }
 
-/// Ask for a value, then run `op` with every `{}` in its args replaced.
+/// Ask for a value, then run `op` with every argument that is `{}` replaced by it (and every
+/// [`Prompt::VALUE`] inside a longer one); a `{}` in other arguments is data, like a branch `x{}`.
 #[derive(Clone, Debug)]
 pub struct Prompt {
     pub title: String,
@@ -55,6 +56,12 @@ pub struct Prompt {
     pub second: Option<(String, String)>,
     /// A "Sign tag" checkbox: adds `--sign` / `--no-sign` after the first command's verb.
     pub sign: Option<bool>,
+}
+
+impl Prompt {
+    /// The value inside a longer argument (`pr/<value>`): NUL can't occur in a ref name, a path
+    /// or any other argument, so the data around it never reads as a placeholder.
+    pub const VALUE: &str = "\0{}";
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +97,9 @@ pub enum Action {
     AiCancel,
     /// Open the interactive rebase editor for commits after `base`.
     Rebase { base: String, label: String },
+    /// Run `op`, a rebase of `branch` (None: the current one) onto `onto`, asking first when it
+    /// rewrites pushed commits (see `rebase::confirm_rebase`, worked out off the UI thread).
+    RunRebase { op: Op, onto: String, branch: Option<String>, first: Option<String> },
     /// Open the 3-way merge editor for a conflicted file.
     MergeEditor(String),
     FileView(String, super::history::Mode),

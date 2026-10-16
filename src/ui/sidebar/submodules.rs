@@ -60,7 +60,7 @@ fn row(ui: &mut Ui, d: &RepoData, s: &Submodule, acts: &mut Vec<Action>) {
         (true, true) => RichText::new(label).color(theme::changed()),
         _ => RichText::new(label),
     };
-    let resp = ui.add(egui::Button::selectable(false, text).frame_when_inactive(false)).on_hover_text(tip.join("\n"));
+    let resp = theme::keyed(ui, ("submodule", &s.path), |ui| ui.add(egui::Button::selectable(false, text).frame_when_inactive(false))).on_hover_text(tip.join("\n"));
     if resp.double_clicked() && init {
         acts.push(Action::OpenTab(s.path.clone()));
     }

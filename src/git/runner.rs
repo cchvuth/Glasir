@@ -30,6 +30,17 @@ pub fn run_shell(dir: &Path, line: &str) -> Res<String> {
     exec(base(prog, dir), dir, &args, None).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
+pub fn run_tool(dir: &Path, args: &[&str]) -> Res<String> {
+    let mut c = cmd(dir);
+    for k in ["GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GLASIR_ASKPASS"] {
+        match std::env::var_os(k) {
+            Some(v) => c.env(k, v),
+            None => c.env_remove(k),
+        };
+    }
+    exec(c, dir, args, None).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
 /// A `prog` command in `dir` that never blocks on a terminal.
 fn base(prog: &str, dir: &Path) -> Command {
     let mut c = Command::new(prog);
@@ -225,7 +236,7 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
         // Don't wait for the pipes: helpers git started may still hold them.
         record(dir, &prog, args, start, status.code(), "");
         #[cfg(windows)]
-        drop_index_lock(dir, started);
+        drop_locks(dir, started);
         return Err(CANCELLED.into());
     }
     // Background jobs (a shell line's `server &`, a hook's) inherit our pipes: don't wait for them to exit.
@@ -294,14 +305,24 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     }
 }
 
-/// `taskkill /F` skips git's cleanup: remove the index.lock the killed git created.
-#[cfg(windows)]
-fn drop_index_lock(dir: &Path, since: std::time::SystemTime) {
+/// `taskkill /F` skips git's cleanup: remove the lock files the killed git created in the git dir
+/// and its refs (`index.lock`, `packed-refs.lock`, `refs/**/*.lock`...), never older ones, which
+/// another git may hold.
+#[cfg(any(windows, test))]
+fn drop_locks(dir: &Path, since: std::time::SystemTime) {
     use std::path::PathBuf;
-    let Ok(o) = cmd(dir).args(["rev-parse", "--absolute-git-dir"]).output() else { return };
-    let lock = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()).join("index.lock");
-    if std::fs::metadata(&lock).and_then(|m| m.modified()).is_ok_and(|t| t >= since) {
-        let _ = std::fs::remove_file(lock);
+    let Ok(o) = cmd(dir).args(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]).output() else { return };
+    let mut dirs: Vec<(PathBuf, bool)> = String::from_utf8_lossy(&o.stdout).lines().map(|l| (PathBuf::from(l), false)).collect();
+    dirs.dedup();
+    while let Some((d, refs)) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let (p, Ok(t)) = (e.path(), e.file_type()) else { continue };
+            if t.is_dir() && (refs || matches!(e.file_name().to_str(), Some("refs" | "reftable"))) {
+                dirs.push((p, true));
+            } else if t.is_file() && p.extension().is_some_and(|x| x == "lock") && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m >= since) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
     }
 }
 
@@ -365,6 +386,28 @@ mod tests {
         // Later commands in a cancelled scope don't start.
         assert_eq!(cancel.scope(|| run(&dir, &["--version"])), Err(CANCELLED.to_owned()));
         assert!(run(&dir, &["--version"]).is_ok(), "the scope ends with the closure");
+    }
+
+    #[test]
+    fn only_lock_files_newer_than_the_cancelled_command_go() {
+        use std::time::{Duration, SystemTime};
+        let dir = std::env::temp_dir().join(format!("glasir-locks-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        run(&dir, &["init", "-q"]).unwrap();
+        let since = SystemTime::now();
+        let file = |p: &str, t: SystemTime| {
+            let p = dir.join(".git").join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::File::create(&p).unwrap().set_modified(t).unwrap();
+            p
+        };
+        let old = ["index.lock", "refs/heads/old.lock"].map(|p| file(p, since - Duration::from_secs(5)));
+        let new = ["packed-refs.lock", "shallow.lock", "refs/remotes/origin/main.lock", "reftable/tables.list.lock"].map(|p| file(p, since + Duration::from_secs(1)));
+        let fetched = file("FETCH_HEAD", since + Duration::from_secs(1));
+        drop_locks(&dir, since);
+        assert!(old.iter().all(|p| p.exists()) && fetched.exists() && !new.iter().any(|p| p.exists()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]

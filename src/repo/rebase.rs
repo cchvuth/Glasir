@@ -36,6 +36,7 @@ pub struct Editor {
     pub cherry: bool,
     /// HEAD (symbolic ref and commit) when loaded; the todo is only valid for it.
     head: String,
+    orig: Vec<String>,
     dir: std::path::PathBuf,
 }
 
@@ -46,7 +47,7 @@ impl Editor {
         if items.is_empty() {
             return Err(format!("No commits after {label} on this branch."));
         }
-        Ok(Editor { base: base.into(), label: label.into(), items, sel: 0, cherry: false, head: head_state(dir), dir: dir.into() })
+        Ok(Editor { base: base.into(), label: label.into(), orig: items.iter().map(|i| i.id.clone()).collect(), items, sel: 0, cherry: false, head: head_state(dir), dir: dir.into() })
     }
 
     /// Cherry-pick `ids` (newest first) onto HEAD with pick/reword/squash/drop and
@@ -57,7 +58,7 @@ impl Editor {
         let mut args = vec!["--no-walk=unsorted"];
         args.extend(ids.iter().map(String::as_str));
         let items = items(dir, &args)?;
-        Ok(Editor { base: head, label, items, sel: 0, cherry: true, head: head_state(dir), dir: dir.into() })
+        Ok(Editor { base: head, label, items, sel: 0, cherry: true, head: head_state(dir), orig: vec![], dir: dir.into() })
     }
 
     pub(crate) fn problem(&self) -> Option<&'static str> {
@@ -148,6 +149,18 @@ impl Editor {
         }
         Ok(op)
     }
+
+    /// What Start runs: [`Self::op`], a rebase asking first when it rewrites pushed commits: those from the
+    /// plan's first change up (git keeps the unchanged picks below it; a squash or fixup rewrites the one below).
+    pub fn start(&self, git_dir: &Path) -> Res<super::Action> {
+        let op = self.op(git_dir)?;
+        if self.cherry {
+            return Ok(super::Action::Git(op));
+        }
+        let changed = self.items.iter().zip(&self.orig).rposition(|(it, id)| it.id != *id || it.act != Act::Pick);
+        let first = changed.and_then(|j| self.orig.get(j + matches!(self.items[j].act, Act::Squash | Act::Fixup) as usize)).cloned();
+        Ok(super::Action::RunRebase { op, onto: self.base.clone(), branch: None, first })
+    }
 }
 
 /// Local branches (full name, commit) pointing at one of `items` below HEAD's commit `head`
@@ -230,10 +243,7 @@ fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: O
         let local: std::collections::HashSet<&str> = local.lines().collect();
         return match all.lines().filter(|c| !local.contains(c)).count() {
             0 => op,
-            n => op.confirm(format!(
-                "This rewrites {n} commit{} already on a remote branch. They get new hashes, so merging this branch later brings in duplicates of them.",
-                if n == 1 { "" } else { "s" }
-            )),
+            n => op.confirm(rewrites_pushed(n, None)),
         };
     };
     let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
@@ -244,13 +254,36 @@ fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: O
         false => git::run(dir, &args).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0),
     };
     if n > 0 {
-        return op.confirm(format!(
-            "This rewrites {n} commit{} already pushed to {}. They get new hashes, so the branch will need a force push, and anyone who has them will have to reconcile.",
-            if n == 1 { "" } else { "s" },
-            up.trim()
-        ));
+        return op.confirm(rewrites_pushed(n, Some(up.trim())));
     }
     op
+}
+
+pub(super) fn rewrites_pushed(n: usize, up: Option<&str>) -> String {
+    let s = if n == 1 { "" } else { "s" };
+    match up {
+        Some(up) => format!("This rewrites {n} commit{s} already pushed to {up}. They get new hashes, so the branch will need a force push, and anyone who has them will have to reconcile."),
+        None => format!("This rewrites {n} commit{s} already on a remote branch. They get new hashes, so merging this branch later brings in duplicates of them."),
+    }
+}
+
+/// [`confirm_pushed`] for `op`, a rebase of `branch` (None: HEAD's) onto `onto`: from `first` up when
+/// the branch is on top of `onto` already (a plain rebase there changes nothing without merges), else
+/// every commit since the merge base.
+pub fn confirm_rebase(dir: &Path, onto: &str, branch: Option<&str>, first: Option<&str>, op: Op) -> Op {
+    let (tip, up) = branch.map_or(("HEAD".to_owned(), "@{u}".to_owned()), |b| (format!("refs/heads/{b}"), format!("{b}@{{u}}")));
+    let range = format!("{onto}..{tip}");
+    let on_top = git::run(dir, &["merge-base", "--is-ancestor", onto, &tip]).is_ok();
+    let linear = || git::run(dir, &["rev-list", "-n1", "--min-parents=2", &range]).is_ok_and(|m| m.trim().is_empty());
+    let first = match first {
+        Some(c) if on_top => Some(c.to_owned()),
+        _ if on_top && linear() => None,
+        _ => git::run(dir, &["rev-list", "--topo-order", "--reverse", &range]).ok().and_then(|r| r.lines().next().map(String::from)),
+    };
+    match first {
+        Some(c) => confirm_pushed(dir, &c, (&tip, &up), op),
+        None => op,
+    }
 }
 
 /// Replace the message of `commit` (HEAD: amend, message only; older with no merge from its
@@ -408,7 +441,9 @@ pub fn drag(dir: &Path, git_dir: &Path, src: &str, dst: &str, act: Act) -> Res<O
 pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     let short = &commit[..commit.len().min(7)];
     if is_head {
-        return Ok(Op::new(format!("Amend {short}"), &["commit", "--amend", "--no-edit"]).undo(Undo::Soft));
+        let sym = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();
+        let op = Op::new(format!("Amend {short}"), &[HEAD_IS, &format!("{} {commit}", sym.trim())]).then(&["commit", "--amend", "--no-edit"]).undo(Undo::Soft);
+        return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op));
     }
     // Same safety checks as the editor: on this branch, with no merges after it.
     on_branch(dir, commit)?;
@@ -497,7 +532,7 @@ mod tests {
             .enumerate()
             .map(|(i, &act)| Item { id: format!("c{i}"), message: format!("msg {i}\n\nbody"), author: "a".into(), act })
             .collect();
-        Editor { base: "base".into(), label: "base".into(), items, sel: 0, cherry: false, head: String::new(), dir: Default::default() }
+        Editor { base: "base".into(), label: "base".into(), items, sel: 0, cherry: false, head: String::new(), orig: vec![], dir: Default::default() }
     }
 
     #[test]
@@ -733,11 +768,13 @@ mod tests {
         assert!(quick(&dir, &gd, &c2, Act::Drop, None).unwrap().confirm.is_some());
         let ids: Vec<String> = g(&["rev-list", "HEAD"]).lines().map(String::from).collect();
         assert!(multi(&dir, &gd, &ids[..2], Act::Drop).unwrap().confirm.is_some());
+        assert!(amend_into(&dir, &ids[0], true).unwrap().confirm.is_some());
         std::fs::write(dir.join("d"), "d\n").unwrap();
         g(&["add", "d"]);
         g(&["commit", "-q", "-m", "c4"]);
         let c4 = g(&["rev-parse", "HEAD"]).trim().to_owned();
         assert!(quick(&dir, &gd, &c4, Act::Reword, Some("c4 better".into())).unwrap().confirm.is_none());
+        assert!(amend_into(&dir, &c4, true).unwrap().confirm.is_none());
         for act in [Act::Squash, Act::Fixup] {
             let ask = quick(&dir, &gd, &c4, act, None).unwrap().confirm;
             assert!(ask.as_deref().is_some_and(|c| c.contains("1 commit already pushed to origin/main")), "{act:?}: {ask:?}");
@@ -775,6 +812,22 @@ mod tests {
         let stale = reword(&dir, &gd, &head, true, None, "c3 better".into()).unwrap();
         assert!(crate::repo::op::exec(&dir, &stale).is_err());
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["new work", "c3", "c2", "c1"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn amend_into_head_refuses_once_head_moved() {
+        let (dir, g) = repo("amend-head-moved");
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::write(dir.join("a"), "fixed\n").unwrap();
+        g(&["add", "a"]);
+        let op = amend_into(&dir, &head, true).unwrap();
+        g(&["commit", "-q", "-m", "new work"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        std::fs::write(dir.join("b"), "more\n").unwrap();
+        g(&["add", "b"]);
+        assert!(crate::repo::op::exec(&dir, &op).is_err());
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

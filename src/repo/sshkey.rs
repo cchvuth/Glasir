@@ -33,6 +33,62 @@ pub fn parse(cmd: Option<&str>) -> Active {
     }
 }
 
+pub fn redact_command(cmd: &str) -> String {
+    let cmd = crate::git::redact(cmd);
+    let secret = |key: &str| {
+        let key = key.to_ascii_lowercase();
+        ["pass", "password", "passwd", "pwd", "token", "secret"].iter().any(|s| key.ends_with(s))
+    };
+    let (mut words, mut hide) = (shell_words(&cmd).into_iter().peekable(), vec![]);
+    while let Some((start, end)) = words.next() {
+        let word = &cmd[start..end];
+        if let Some((key, _)) = word.split_once('=')
+            && secret(key)
+        {
+            hide.push((start + key.len() + 1, end));
+        }
+        if word == "-pw" {
+            hide.extend(words.next());
+        }
+        if word.rsplit('/').next() == Some("sshpass") {
+            while let Some((start, end)) = words.next_if(|&(start, _)| cmd[start..].starts_with('-')) {
+                let Some(at) = cmd[start + 1..end].find(['f', 'd', 'p', 'P']).map(|i| start + 1 + i) else { continue };
+                let arg = if at + 1 < end { Some((at + 1, end)) } else { words.next() };
+                if cmd[at..].starts_with('p') {
+                    hide.extend(arg);
+                }
+            }
+        }
+    }
+    let (mut out, mut from) = (String::new(), 0);
+    for (start, end) in hide {
+        out += &cmd[from..start];
+        out += "***";
+        from = end;
+    }
+    out + &cmd[from..]
+}
+
+fn shell_words(s: &str) -> Vec<(usize, usize)> {
+    let (mut words, mut start, mut quote, mut escaped) = (vec![], None, None, false);
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            _ if escaped => escaped = false,
+            (None | Some('"'), '\\') => escaped = true,
+            (Some(q), _) if c == q => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, _) if c.is_whitespace() => {
+                words.extend(start.take().map(|from| (from, i)));
+                continue;
+            }
+            _ => {}
+        }
+        start.get_or_insert(i);
+    }
+    words.extend(start.map(|from| (from, s.len())));
+    words
+}
+
 pub fn set_op(key: Option<&str>, previous: Option<&str>, custom: Option<&str>) -> Op {
     let restore = |cmd: Option<&str>| match cmd {
         Some(c) => Op::new("Restore SSH key setting", &["config", "core.sshCommand", c]),
@@ -47,7 +103,7 @@ pub fn set_op(key: Option<&str>, previous: Option<&str>, custom: Option<&str>) -
     };
     let op = op.revert(restore(previous));
     match custom {
-        Some(c) => op.confirm(format!("This repository already sets core.sshCommand to:\n\n{c}\n\nReplace it?")),
+        Some(c) => op.confirm(format!("This repository already sets core.sshCommand to:\n\n{}\n\nReplace it?", redact_command(c))),
         None => op,
     }
 }
@@ -148,6 +204,27 @@ mod tests {
     }
 
     #[test]
+    fn hides_passwords_in_an_ssh_command() {
+        for (cmd, shown) in [
+            ("sshpass -p secret ssh -p 2222 git@h", "sshpass -p *** ssh -p 2222 git@h"),
+            ("sshpass -psecret ssh -p 2222 git@h", "sshpass -p*** ssh -p 2222 git@h"),
+            ("/usr/bin/sshpass -v -p 'two words' ssh -p 22 h", "/usr/bin/sshpass -v -p *** ssh -p 22 h"),
+            ("sshpass -P pass -p \"a \\\" b\" ssh h", "sshpass -P pass -p *** ssh h"),
+            ("sshpass -vpsecret ssh h", "sshpass -vp*** ssh h"),
+            ("sshpass -p 'unclosed ssh h", "sshpass -p ***"),
+            ("SSHPASS=hunter2 sshpass -e ssh h", "SSHPASS=*** sshpass -e ssh h"),
+            ("env GH_TOKEN=ghp_x ssh --password='a b' h", "env GH_TOKEN=*** ssh --password=*** h"),
+            ("plink -batch -pw hunter2 -i k.ppk", "plink -batch -pw *** -i k.ppk"),
+            ("ssh -o ProxyCommand='nc -x http://u:pw@px:3128 %h %p' h", "ssh -o ProxyCommand='nc -x http://***@px:3128 %h %p' h"),
+        ] {
+            assert_eq!(redact_command(cmd), shown, "{cmd}");
+        }
+        for same in ["ssh -p 2222 -i '/k/id' -o IdentitiesOnly=yes -o PasswordAuthentication=no git@h", "sshpass -f /etc/pw -P assword -d 3 ssh -p 22 h", "sshpass -e ssh -p 22 h", "sshpass -p", "ssh (default)", ""] {
+            assert_eq!(redact_command(same), same);
+        }
+    }
+
+    #[test]
     fn finds_the_ssh_target() {
         assert_eq!(target("git@github.com:o/r.git"), Some(("git".into(), "github.com".into(), None)));
         assert_eq!(target("ssh://me@ghe.corp:2222/o/r"), Some(("me".into(), "ghe.corp".into(), Some(2222))));
@@ -164,5 +241,7 @@ mod tests {
         let op = set_op(None, None, Some("ssh -i x"));
         assert_eq!(op.cmds[0], ["config", "--unset-all", "core.sshCommand"]);
         assert!(op.confirm.unwrap().contains("ssh -i x"));
+        let asked = set_op(None, None, Some("sshpass -p hunter2 ssh -i x")).confirm.unwrap();
+        assert!(asked.contains("sshpass -p *** ssh -i x") && !asked.contains("hunter2"));
     }
 }
