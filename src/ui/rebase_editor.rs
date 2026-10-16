@@ -25,7 +25,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
     let mut close = false;
     let n = ed.items.len();
     // Keyboard: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D set the action.
-    if !ui.ctx().memory(|m| m.focused().is_some() || m.top_modal_layer().is_some() || ed.items.iter().any(|it| it.act == Act::Reword && m.had_focus_last_frame(field(&it.id)))) {
+    if crate::ui::format::nothing_was_focused(ui.ctx()) && !ui.ctx().memory(|m| m.focused().is_some() || m.top_modal_layer().is_some() || ed.items.iter().any(|it| it.act == Act::Reword && m.had_focus_last_frame(field(&it.id)))) {
         ui.input(|i| {
             let alt = i.modifiers.alt;
             if i.key_pressed(Key::ArrowUp) && ed.sel > 0 {
@@ -74,7 +74,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, git_dir: &Path, acts: &mut Vec<Action>
                 let top = ui.cursor().min.y;
                 let clip = ui.clip_rect();
                 if top + h < clip.min.y || top > clip.max.y {
-                    ui.add_space(h + 4.0);
+                    ui.add_space(h + 4.0 + ui.spacing().item_spacing.y);
                     continue;
                 }
             }

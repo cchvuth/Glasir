@@ -23,7 +23,8 @@ pub struct DiffState {
     task: Option<Task<Res<Loaded>>>,
     /// Picked change lines `(hunk, line)` for partial staging.
     pub picked: BTreeSet<(usize, usize)>,
-    /// Changes whenever `file` is replaced: keys the view's cached row layout.
+    /// Changes whenever `file`'s lines may have (another file, other hunks, an error): keys the
+    /// view's cached row layout and line drags.
     pub stamp: u64,
 }
 
@@ -74,11 +75,11 @@ impl RepoTab {
             let hl = crate::highlight::highlight(path, &f, dark);
             Ok((f, hl, image))
         });
-        let (keep, hl, image, opts, picked) = match self.diff.take().filter(|d| d.src == src) {
-            Some(d) => (d.file, d.hl, d.image, d.opts, d.picked),
-            None => (None, vec![], None, o, BTreeSet::new()),
+        let (keep, hl, image, opts, picked, stamp) = match self.diff.take().filter(|d| d.src == src) {
+            Some(d) => (d.file, d.hl, d.image, d.opts, d.picked, d.stamp),
+            None => (None, vec![], None, o, BTreeSet::new(), stamp()),
         };
-        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked, stamp: stamp() });
+        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked, stamp });
     }
 
     pub(super) fn poll_diff(&mut self) {
@@ -91,9 +92,9 @@ impl RepoTab {
                     // Picks are (hunk, line) indices: keep them only while they point at the same lines.
                     if !matches!(&d.file, Some(Ok(old)) if old.hunks == f.hunks) {
                         d.picked.clear();
+                        d.stamp = stamp();
                     }
                     d.file = Some(Ok(f));
-                    d.stamp = stamp();
                     d.hl = hl;
                     d.image = image;
                 }
@@ -179,8 +180,8 @@ fn hunk_op(label: &str, c: &git::Change, f: &FileDiff, mut patch: String, args: 
     Op::new(label, &a).input(patch).backup(Backup::Paths(paths))
 }
 
-/// `exec` pseudo-command: `APPLY_HUNK [apply args] -- paths`, the patch as input. If the lines
-/// around it changed since its commit, a 3-way merge, which may leave conflict markers.
+/// `exec` pseudo-command: `APPLY_HUNK [apply args] -- paths`, the patch as input: a 3-way merge,
+/// which may leave conflict markers; over local edits, applied only where its own lines still are.
 pub(super) const APPLY_HUNK: &str = "!apply-hunk";
 
 pub(super) fn apply_hunk(dir: &std::path::Path, a: &[&str], patch: &[u8]) -> Res<String> {
@@ -198,29 +199,30 @@ pub(super) fn apply_hunk(dir: &std::path::Path, a: &[&str], patch: &[u8]) -> Res
         }
         _ => patch,
     };
-    let apply = |more: Option<&str>| {
+    let apply = |more: &[&str]| {
         let mut cmd = vec!["apply", "--recount", "--whitespace=nowarn"];
         cmd.extend(args);
         cmd.extend(more);
         cmd.push("-");
-        git::run_input(dir, &cmd, Some(patch))
+        git::run_stderr(dir, &cmd, Some(patch))
     };
-    // Decided by exit status, not git's (possibly translated) messages.
-    if apply(Some("--check")).is_ok() {
-        return apply(None).map(|_| String::new());
-    }
+    let exact = apply(&["-v", "--check"]).is_ok_and(|e| !e.contains("(offset "));
     let with = |cmd: &[&'static str]| [cmd, paths].concat();
-    if !git::run(dir, &with(&["--literal-pathspecs", "status", "--porcelain", "--"]))?.is_empty() {
+    if !git::run(dir, &with(&["--literal-pathspecs", "status", "--porcelain", "--ignored", "--"]))?.is_empty() {
+        if exact {
+            return apply(&[]).map(|_| String::new());
+        }
         return Err(format!(
             "It doesn't apply cleanly: the lines around it changed since that commit. Commit or stash your changes to {} so Glasir can merge it in (3-way).",
             paths.join(", ")
         ));
     }
-    let merged = apply(Some("--3way"));
+    let merged = apply(&["--3way"]);
     let conflicts = merged.is_err() && !git::run(dir, &with(&["--literal-pathspecs", "diff", "--name-only", "--diff-filter=U", "--"]))?.is_empty();
     // `--3way` writes the index too; the files were clean, so HEAD has what it held.
     git::run(dir, &with(&["--literal-pathspecs", "reset", "-q", "--"]))?;
     match merged {
+        Ok(_) if exact => Ok(String::new()),
         Ok(_) => Ok("merged (3-way): the lines around it had changed".into()),
         Err(_) if conflicts => {
             Err("It doesn't apply cleanly, so it was merged in with conflict markers (<<<<<<<): resolve them in the file, or undo with ⌘Z.".into())
@@ -481,6 +483,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn a_reload_keeps_the_stamp_while_the_lines_stay() {
+        let dir = repo("diff-stamp");
+        commit(&dir, "a", "1\n");
+        std::fs::write(dir.join("a"), "1\n2\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let reload = |t: &mut RepoTab| {
+            t.reload(&ctx, false);
+            super::super::testutil::wait_for("the diff", || {
+                settle(&ctx, t);
+                !t.diff.as_ref().is_some_and(DiffState::loading)
+            });
+            t.diff.as_ref().unwrap().stamp
+        };
+        let change = t.data.as_ref().unwrap().status.unstaged[0].clone();
+        t.apply(&ctx, Action::Diff(DiffSrc::Worktree { change, staged: false }));
+        let first = reload(&mut t);
+        assert_eq!(reload(&mut t), first);
+        std::fs::write(dir.join("a"), "1\n2\n3\n").unwrap();
+        assert_ne!(reload(&mut t), first);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Revert / cherry-pick a commit's hunk or lines into the working tree, end to end: applied,
     /// undone with ⌘Z, 3-way merged when the context moved on, refused over local edits.
     #[test]
@@ -620,6 +647,40 @@ mod tests {
         assert!(std::fs::read_to_string(dir.join("old")).unwrap().contains("FIVE"));
         run(&mut t, Action::Undo);
         assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_hunk_never_lands_on_a_twin_block() {
+        let dir = repo("commit-hunk-twin");
+        let block = |b: &str, d: &str| format!("a\n{b}\nc\n{d}\ne\nf\ng\n");
+        let file = |first: String, end: &str| format!("top\n{first}{}{}{end}\n", "gap\n".repeat(10), block("b", "d"));
+        commit(&dir, "f", &file(block("b", "d"), "end"));
+        sh(&dir, &["checkout", "-q", "-b", "side"]);
+        commit(&dir, "f", &file(block("b", "D"), "end"));
+        let c = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["checkout", "-q", "main"]);
+        let (change, parent) = (git::Change { path: "f".into(), old_path: None, code: 'M' }, format!("{c}^"));
+        let f = git::commit_diff(&dir, &c, Some(&parent), &change, DiffOpts::default()).unwrap();
+        let p = git::partial_patch(&f, |_, _| true, false).unwrap();
+        let op = patch_op("Cherry-pick hunk", &DiffSrc::Commit { id: c.clone(), parent: Some(parent), change }, DiffOpts::default(), &f, p, &[]);
+        let read = || std::fs::read_to_string(dir.join("f")).unwrap();
+        std::fs::write(dir.join("f"), file(block("b", "d"), "END")).unwrap();
+        super::super::op::exec(&dir, &op).unwrap();
+        assert_eq!(read(), file(block("b", "D"), "END"));
+        commit(&dir, "f", &file(block("B", "d"), "end"));
+        std::fs::write(dir.join("f"), file(block("B", "d"), "END")).unwrap();
+        assert!(super::super::op::exec(&dir, &op).is_err_and(|e| e.contains("Commit or stash your changes to f")));
+        assert_eq!(read(), file(block("B", "d"), "END"));
+        sh(&dir, &["checkout", "-q", "--", "f"]);
+        super::super::op::exec(&dir, &op).unwrap();
+        assert_eq!(read(), file(block("B", "D"), "end"));
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M f\n");
+        sh(&dir, &["rm", "-q", "--cached", "f"]);
+        commit(&dir, ".gitignore", "f\n");
+        std::fs::write(dir.join("f"), file(block("b", "d"), "end")).unwrap();
+        super::super::op::exec(&dir, &op).unwrap();
+        assert_eq!(read(), file(block("b", "D"), "end"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

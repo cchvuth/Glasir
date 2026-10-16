@@ -182,9 +182,10 @@ fn subcommand(args: &[String]) -> Option<&str> {
 
 /// A commit or rebase in a repo with stacks: rebases move the stacked branches below
 /// along (`--update-refs`), and then the branches stacked on a moved one are restacked.
+/// Once: an op that has its restack already (a retry of a followed op) is left as it is.
 pub(super) fn follow(mut op: Op, d: Option<&RepoData>) -> Op {
     let Some(d) = d.filter(|d| follows() && !d.stack.is_empty() && !op.custom && op.undo != Undo::No) else { return op };
-    if !op.cmds.iter().any(|c| matches!(subcommand(c), Some("commit" | "rebase"))) {
+    if !op.cmds.iter().any(|c| matches!(subcommand(c), Some("commit" | "rebase"))) || op.cmds.iter().any(|c| c.first().is_some_and(|a| a == RESTACK)) {
         return op;
     }
     let ctl = ["--continue", "--abort", "--skip", "--quit", "--edit-todo", "--update-refs", "--no-update-refs"];
@@ -322,7 +323,7 @@ pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
             guard.extend([t.full.clone(), t.target.clone()]);
             forced.push(name.clone());
         }
-        c.extend([remote.to_owned(), format!("{name}:refs/heads/{rb}")]);
+        c.extend([remote.to_owned(), format!("{}:refs/heads/{rb}", r.full)]);
         guard.extend([r.full.clone(), r.target.clone()]);
         cmds.push(c);
     }
@@ -505,6 +506,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    #[test]
+    fn push_stack_with_a_tag_named_like_a_branch() {
+        let dir = stack_repo("stack-push-tag");
+        let remote = scratch("stack-push-tag-remote");
+        sh(&remote, &["init", "-q", "--bare"]);
+        sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        sh(&dir, &["tag", "b"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(push_op(t.data.as_ref().unwrap(), "b").unwrap()));
+        settle(&ctx, &mut t);
+        for b in ["a", "b", "c"] {
+            let branch = format!("refs/heads/{b}");
+            assert_eq!(sh(&remote, &["rev-parse", &branch]), sh(&dir, &["rev-parse", &branch]));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&remote);
+    }
+
     /// A teammate's commit on a stacked branch survives Push stack: just behind, the branch
     /// is skipped; diverged without having taken that commit in, the force push is refused.
     #[test]
@@ -560,7 +581,7 @@ mod tests {
         let op = push_op(&d, "a").unwrap();
         assert!(op.confirm.is_none() && !op.cmds.iter().flatten().any(|a| a.starts_with("--force")), "{:?}", op.cmds);
         let pushed: Vec<&str> = op.cmds.iter().filter_map(|c| c.last().filter(|_| c[0] == "push")).map(String::as_str).collect();
-        assert_eq!(pushed, ["a:refs/heads/a", "c:refs/heads/c"]);
+        assert_eq!(pushed, ["refs/heads/a:refs/heads/a", "refs/heads/c:refs/heads/c"]);
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&remote);
     }

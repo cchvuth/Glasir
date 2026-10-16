@@ -14,8 +14,12 @@ pub fn plural(n: usize) -> &'static str {
     if n == 1 { "" } else { "s" }
 }
 
+pub fn on_top(ui: &egui::Ui) -> bool {
+    ui.ctx().memory(|m| m.top_modal_layer()) == Some(ui.layer_id())
+}
+
 pub fn dismissed(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.button(label).clicked() || (ui.ctx().memory(|m| m.top_modal_layer()) == Some(ui.layer_id()) && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+    ui.button(label).clicked() || (on_top(ui) && ui.input(|i| i.key_pressed(egui::Key::Escape)))
 }
 
 pub fn modal_open(ctx: &egui::Context) -> bool {
@@ -23,12 +27,13 @@ pub fn modal_open(ctx: &egui::Context) -> bool {
 }
 
 pub fn note_focus(ctx: &egui::Context) {
-    let focused = ctx.memory(|m| m.focused().is_some());
+    let focused = ctx.memory(|m| m.focused());
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("focus_last_frame"), focused));
 }
 
 pub fn nothing_was_focused(ctx: &egui::Context) -> bool {
-    ctx.data(|d| d.get_temp::<bool>(egui::Id::new("focus_last_frame"))) == Some(false)
+    let last = ctx.data(|d| d.get_temp::<Option<egui::Id>>(egui::Id::new("focus_last_frame"))).flatten();
+    last.is_none_or(|id| !ctx.memory(|m| m.had_focus_last_frame(id)))
 }
 
 pub fn view_key(ui: &egui::Ui, key: egui::Key) -> bool {
@@ -36,7 +41,11 @@ pub fn view_key(ui: &egui::Ui, key: egui::Key) -> bool {
 }
 
 pub fn esc_pressed(ui: &egui::Ui) -> bool {
-    view_key(ui, egui::Key::Escape)
+    view_key(ui, egui::Key::Escape) && nothing_was_focused(ui.ctx())
+}
+
+pub fn esc_pressed_in(ui: &egui::Ui, field: egui::Id) -> bool {
+    view_key(ui, egui::Key::Escape) && (nothing_was_focused(ui.ctx()) || ui.memory(|m| m.had_focus_last_frame(field)))
 }
 
 fn age(t: i64) -> i64 {
@@ -62,9 +71,9 @@ pub fn relative_time(t: i64, fallback: &str) -> String {
 }
 
 /// "3 modified, 1 added, 2 deleted".
-pub fn change_summary(files: &[crate::git::Change]) -> String {
+pub fn change_summary<'a>(files: impl Iterator<Item = &'a crate::git::Change> + Clone) -> String {
     let kinds: [(&[char], &str); 6] = [(&['M'], "modified"), (&['A', '?'], "added"), (&['D'], "deleted"), (&['R'], "renamed"), (&['C'], "copied"), (&['T'], "type changed")];
-    let parts: Vec<_> = kinds.iter().map(|(cs, w)| (files.iter().filter(|c| cs.contains(&c.code)).count(), w)).filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
+    let parts: Vec<_> = kinds.iter().map(|(cs, w)| (files.clone().filter(|c| cs.contains(&c.code)).count(), w)).filter(|(n, _)| *n > 0).map(|(n, w)| format!("{n} {w}")).collect();
     parts.join(", ")
 }
 
@@ -187,8 +196,8 @@ mod tests {
     #[test]
     fn summary_counts() {
         let c = |code| crate::git::Change { path: "p".into(), old_path: None, code };
-        assert_eq!(super::change_summary(&[c('M'), c('A'), c('M'), c('D'), c('D'), c('M'), c('?')]), "3 modified, 2 added, 2 deleted");
-        assert_eq!(super::change_summary(&[]), "");
+        assert_eq!(super::change_summary([c('M'), c('A'), c('M'), c('D'), c('D'), c('M'), c('?')].iter()), "3 modified, 2 added, 2 deleted");
+        assert_eq!(super::change_summary([].iter()), "");
     }
 
     #[test]

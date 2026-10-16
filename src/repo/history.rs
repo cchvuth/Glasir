@@ -106,12 +106,13 @@ impl FileView {
         self.load(ctx, false);
     }
 
-    /// One view back, or forward.
-    pub fn step(&mut self, ctx: &egui::Context, forward: bool) {
+    /// One view back, or forward; false when there is none.
+    pub fn step(&mut self, ctx: &egui::Context, forward: bool) -> bool {
         let (from, to) = if forward { (&mut self.fwd, &mut self.back) } else { (&mut self.back, &mut self.fwd) };
-        let Some((path, mode)) = from.pop() else { return };
+        let Some((path, mode)) = from.pop() else { return false };
         to.push((std::mem::replace(&mut self.path, path), std::mem::replace(&mut self.mode, mode)));
         self.load(ctx, false);
+        true
     }
 
     /// After a repo reload: the working-tree blame always, the others when HEAD moved.
@@ -132,6 +133,12 @@ impl FileView {
             static LOADS: AtomicU64 = AtomicU64::new(1);
             (self.data, self.sel, self.data_gen) = (Some(d), None, LOADS.fetch_add(1, Ordering::Relaxed));
         }
+    }
+}
+
+impl Drop for FileView {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 
@@ -562,6 +569,32 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(stopped(), "the superseded blame was left running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn closing_the_view_stops_its_blame() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-close");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        commit(&dir, "f.txt", "one\n");
+        std::fs::write(dir.join(".gitattributes"), "f.txt diff=slow\n").unwrap();
+        let (gate, script) = (dir.join(".git/gate"), dir.join(".git/slow.sh"));
+        std::fs::write(&script, format!(": > '{}'\nsleep 30\ncat \"$1\"\n", gate.display())).unwrap();
+        sh(&dir, &["config", "diff.slow.textconv", &format!("sh '{}'", script.display())]);
+        let fv = FileView::open(&egui::Context::default(), &dir, "f.txt", Mode::Blame(None));
+        wait_for("the blame to start", || gate.exists());
+        drop(fv);
+        let stopped = || git::LOG.lock().unwrap().iter().any(|l| l.cwd == dir && l.args.iter().any(|a| a == "blame") && l.code.is_none());
+        for _ in 0..500 {
+            if stopped() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(stopped(), "the closed view's blame was left running");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

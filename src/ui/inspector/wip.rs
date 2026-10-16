@@ -365,15 +365,20 @@ impl RepoTab {
                 });
             }
             identity_row(ui, d, &self.email_rules, acts);
-            ui.horizontal(|ui| {
+            let next = ui.horizontal(|ui| {
                 let n = self.summary.chars().count();
                 let r = ui.add(TextEdit::singleline(&mut self.summary).id(sum_id).margin(crate::theme::INPUT_MARGIN).hint_text("Summary").desired_width(ui.available_width() - 30.0));
                 if std::mem::take(&mut self.focus_summary) {
                     r.request_focus();
                 }
                 ui.label(RichText::new(format!("{n}")).small().color(if n > 72 { theme::del() } else { theme::dim(ui) }));
-            });
-            theme::description(ui, &mut self.body, body_id);
+                r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            })
+            .inner;
+            theme::description(ui, &mut self.body, body_id, true);
+            if next {
+                ui.memory_mut(|m| m.request_focus(body_id));
+            }
             let was = self.amend;
             ui.horizontal_wrapped(|ui| {
                 // Nothing to amend before the first commit.

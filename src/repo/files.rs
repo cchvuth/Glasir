@@ -8,7 +8,7 @@ pub fn reveal(path: &Path) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("/usr/bin/open").arg("-R").arg(path).spawn();
     #[cfg(windows)]
-    let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn();
+    let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display().to_string().replace('/', "\\"))).spawn();
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = open::that_detached(path.parent().unwrap_or(path));
 }

@@ -18,10 +18,12 @@ fn tint(c: Color32, strong: bool) -> Color32 {
 
 /// Returns true when the editor should close.
 pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
+    let out_id = egui::Id::new(("merge_out", &ed.dir, &ed.path));
     if let Some(d) = Task::poll(&mut ed.task) {
         ed.output = crate::repo::merge_editor::decode(&d.original);
         ed.data = Some(d);
         ed.reparse();
+        ui.data_mut(|m| m.remove::<egui::text_edit::TextEditState>(out_id));
     }
     if let Some(r) = Task::poll(&mut ed.saving) {
         match r {
@@ -257,7 +259,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
         .inner_margin(6)
         .show(ui, |ui| {
             area.show(ui, |ui| {
-                let te = TextEdit::multiline(&mut ed.output).code_editor().frame(egui::Frame::NONE.inner_margin(crate::theme::INPUT_MARGIN)).min_size(ui.available_size()).layouter(&mut layouter);
+                let te = TextEdit::multiline(&mut ed.output).id(out_id).code_editor().frame(egui::Frame::NONE.inner_margin(crate::theme::INPUT_MARGIN)).min_size(ui.available_size()).layouter(&mut layouter);
                 let out = ui.add_enabled_ui(!thinking, |ui| te.show(ui)).inner;
                 if let Some((above, at)) = scroll_to {
                     let top = |c| out.galley.pos_from_cursor(egui::text::CCursor::new(c)).top();
@@ -307,4 +309,41 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
         ed.scroll = true;
     }
     close
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::testkit::{Sim, tab};
+    use egui::{Event, Key, Modifiers, PointerButton};
+
+    #[test]
+    fn undo_in_the_output_stays_with_its_file() {
+        let mut sim = Sim::new(1000.0, 800.0);
+        let t = tab(&sim.ctx, "merge-undo", &["x"]);
+        let conflict = |s: &str| format!("<<<<<<< ours\n{s} mine\n=======\n{s} theirs\n>>>>>>> theirs\n");
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(t.dir.join(f), conflict(f)).unwrap();
+        }
+        let (mut wrap, mut acts) = (false, vec![]);
+        for (path, edit) in [("a.txt", true), ("b.txt", false), ("a.txt", false)] {
+            let mut ed = Editor::open(&sim.ctx, &t.dir, path);
+            let mut draw = |ui: &mut Ui| _ = show(ui, &mut ed, None, false, &mut wrap, &mut acts);
+            crate::repo::testutil::wait_for("the file", || {
+                sim.frame(vec![], &mut draw);
+                sim.text(|s| s.contains("=======")).is_some()
+            });
+            let at = sim.text(|s| s.contains("=======")).unwrap();
+            sim.click(at, PointerButton::Primary, &mut draw);
+            if edit {
+                sim.frame(vec![Event::Text("zzz".into())], &mut draw);
+                for _ in 0..30 {
+                    sim.frame(vec![], &mut draw);
+                }
+                continue;
+            }
+            sim.frame(vec![Event::Key { key: Key::Z, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::COMMAND }], &mut draw);
+            assert_eq!(ed.output, conflict(path), "{path}");
+        }
+    }
 }

@@ -52,6 +52,7 @@ pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, disca
 pub use msgedit::MsgEdit;
 pub use search::{MAX_HITS, Search};
 pub use task::Task;
+pub use undo::Steps;
 
 use crate::ai;
 use crate::git::{self, CommitInfo, Res};
@@ -80,7 +81,7 @@ pub struct RepoTab {
     queued: Option<bool>,
     pub sel: Option<Sel>,
     pub info: Option<Res<CommitInfo>>,
-    /// Bumped whenever `info` is replaced: keys the cached folder tree of its files.
+    /// A new value whenever `info` is replaced, unique across tabs: keys the cached folder tree of its files.
     pub info_gen: u64,
     info_task: Option<Task<Res<CommitInfo>>>,
     /// The selection moved while `info_task` ran (holding ↓): load the current one when it ends.
@@ -126,9 +127,10 @@ pub struct RepoTab {
     pub ai: Option<ai::Job>,
     /// The commit message being replaced by an AI suggestion, restored on failure.
     ai_draft: Option<(String, String)>,
-    /// Amend's prefill: HEAD's message being fetched, and (box before, box as prefilled).
+    /// Amend's prefill: HEAD's message being fetched, and (box before, box as prefilled, that
+    /// HEAD as `rebase::head_state` puts it: the amend refuses once HEAD is elsewhere).
     amend_task: Option<Task<Option<String>>>,
-    amend_prev: Option<((String, String), (String, String))>,
+    amend_prev: Option<((String, String), (String, String), String)>,
     pub ai_cfg: ai::Config,
     /// Messages for the toast area, drained by the app every frame.
     pub notes: Vec<Msg>,
@@ -175,8 +177,8 @@ pub struct RepoTab {
     pub choice: Option<Choice>,
     /// Background fetch; Ok(true) when it moved a remote-tracking ref.
     bg_fetch: Option<Task<Res<bool>>>,
-    /// Stops the background fetch: a fetch / pull / push asked for meanwhile (two fetches race on ref locks) runs once it has ended.
-    bg_cancel: git::Cancel,
+    /// The repository's common git dir: one fetch at a time runs per one (`fetch::Fetching`).
+    common: PathBuf,
     /// `ctx` time of the last background fetch.
     last_fetch: f64,
     /// Why the last background fetch failed.
@@ -209,6 +211,7 @@ pub struct RepoTab {
 impl RepoTab {
     pub fn new(ctx: &egui::Context, dir: PathBuf, max_commits: usize, view: View) -> Self {
         let name = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().into_owned());
+        let common = git::run(&dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).map_or_else(|_| dir.clone(), |c| PathBuf::from(c.trim()));
         let mut t = RepoTab {
             dir,
             name,
@@ -280,7 +283,7 @@ impl RepoTab {
             verify_task: None,
             choice: None,
             bg_fetch: None,
-            bg_cancel: Default::default(),
+            common,
             last_fetch: f64::NEG_INFINITY,
             fetch_failed: None,
             reflog: None,
@@ -403,6 +406,9 @@ impl RepoTab {
             {
                 self.reload(ctx, full);
             }
+            if let Some((_, at)) = self.changed {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64((0.4 - (now - at)).max(0.05)));
+            }
         }
         if let Some(res) = Task::poll(&mut self.load) {
             match res {
@@ -508,8 +514,9 @@ impl RepoTab {
                         (id, s)
                     }));
                 }
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
                 self.info = Some(r);
-                self.info_gen += 1;
+                self.info_gen = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         if let Some((id, s)) = Task::poll(&mut self.stats_task)
@@ -612,8 +619,17 @@ impl RepoTab {
         self.info_task = Some(Task::spawn(ctx, move || git::compare_info(&dir, &from, &to, three_dot, &label)));
     }
 
-    pub fn unsaved(&self) -> Option<&str> {
-        self.edit.as_ref().filter(|e| e.dirty()).map(|e| e.path.as_str())
+    pub fn unsaved(&self) -> Option<String> {
+        if let Some(e) = self.edit.as_ref().filter(|e| e.dirty()) {
+            return Some(format!("Save or discard your edits to {}", e.path));
+        }
+        if let Some(m) = self.merge.as_ref().filter(|m| m.edited()) {
+            return Some(format!("Save or discard your resolution of {}", m.path));
+        }
+        if let Some(r) = self.rebase.as_ref().filter(|r| r.edited()) {
+            return Some(format!("Start or cancel your {} plan", if r.cherry { "cherry-pick" } else { "rebase" }));
+        }
+        self.compose.as_ref().filter(|p| !p.commits.is_empty()).map(|_| "Create or cancel the Commit Composer's commits".into())
     }
 
     pub fn apply(&mut self, ctx: &egui::Context, a: Action) {
@@ -751,11 +767,19 @@ impl RepoTab {
                     self.start_compose(ctx, Some(r));
                 }
             }
+            Action::CommitPlan => {
+                let (Some(p), Some(git_dir)) = (self.compose.take(), self.data.as_ref().map(|d| d.git_dir.clone())) else { return };
+                self.prepare(ctx, move |dir| op::Dropped::from(p.op(dir, &git_dir)));
+            }
             Action::SplitEnd { abort } => self.end_split(ctx, abort),
             Action::Reword { commit, message } => {
                 let Some(d) = self.data.as_ref() else { return };
                 let git_dir = d.git_dir.clone();
-                let branch = d.reword_path(&commit).ok().and_then(|at| at.0);
+                let at = d.reword_path(&commit).ok();
+                if let (Some(e), Some(at)) = (self.edit_msg.as_mut().filter(|e| e.id == commit), &at) {
+                    e.at = at.clone();
+                }
+                let branch = at.and_then(|at| at.0);
                 let is_head = branch.is_none() && d.status.head.as_deref() == Some(commit.as_str());
                 self.prepare(ctx, move |dir| match crate::repo::rebase::reword(dir, &git_dir, &commit, is_head, branch.as_deref(), message) {
                     Ok(op) => op::Dropped::Run(Op { reword: Some(commit), ..op }),
@@ -790,7 +814,7 @@ impl RepoTab {
             }
             Action::RunRebase { op, onto, branch, first } => {
                 let ed = self.rebase.take();
-                self.prepare(ctx, move |dir| op::Dropped::Run(crate::repo::rebase::confirm_rebase(dir, &onto, branch.as_deref(), first.as_deref(), op)));
+                self.prepare(ctx, move |dir| op::Dropped::Run(Op { parked: true, ..crate::repo::rebase::confirm_rebase(dir, &onto, branch.as_deref(), first.as_deref(), op) }));
                 self.parked_rebase = ed;
             }
             Action::Reflog => {
@@ -983,6 +1007,32 @@ mod tests {
         tx.send(watch::Change::Tree).unwrap();
         t.poll(&ctx, &mut vec![]);
         assert!(t.changed.is_some_and(|c| !c.0), "an outside save was dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_watcher_event_reloads_while_the_app_is_idle() {
+        let dir = scratch("watch-idle");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.watcher = Some((notify::recommended_watcher(|_| {}).unwrap(), rx));
+        t.watcher_task = None;
+        tx.send(watch::Change::Tree).unwrap();
+        let mut time = 100.0;
+        for _ in 0..20 {
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| t.poll(ui.ctx(), &mut vec![]));
+            out.textures_delta.clear();
+            let delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+            if t.changed.is_none() || delay == std::time::Duration::MAX {
+                break;
+            }
+            time += delay.as_secs_f64();
+        }
+        assert!(t.changed.is_none(), "the debounced reload waits for input");
+        settle(&ctx, &mut t);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

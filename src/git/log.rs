@@ -1,5 +1,5 @@
 //! In-memory log of the last 500 git commands (for the command-log window),
-//! with credentials in URLs redacted.
+//! with credentials in URLs and `core.sshCommand` values redacted.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -35,9 +35,18 @@ pub static LOG: Mutex<std::collections::VecDeque<Logged>> = Mutex::new(std::coll
 
 pub(super) fn record(dir: &Path, prog: &str, args: &[&str], start: Instant, code: Option<i32>, stderr: &str) {
     let lines: Vec<&str> = stderr.trim_end().lines().collect();
+    let ssh = |k: &str| k.eq_ignore_ascii_case("core.sshCommand");
     let entry = Logged {
         prog: prog.into(),
-        args: args.iter().map(|a| super::url::redact(a)).collect(),
+        args: args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match a.split_once('=') {
+                Some((k, v)) if ssh(k) => format!("{k}={}", super::url::redact_command(v)),
+                _ if i > 0 && ssh(args[i - 1]) => super::url::redact_command(a),
+                _ => super::url::redact(a),
+            })
+            .collect(),
         cwd: dir.to_path_buf(),
         ms: start.elapsed().as_millis(),
         code,
@@ -76,5 +85,14 @@ mod tests {
         assert_eq!(e.shell(), r"git -C '/tmp/a b' log '--format=%H %s' 'it'\''s'");
         let e = Logged { prog: "sh".into(), args: vec!["-c".into(), "echo hi".into()], ..e };
         assert_eq!(e.shell(), "cd '/tmp/a b' && sh -c 'echo hi'");
+    }
+
+    #[test]
+    fn command_log_hides_ssh_command_passwords() {
+        let dir = std::env::temp_dir().join(format!("glasir-log-ssh-{}", std::process::id()));
+        record(&dir, "git", &["config", "core.sshCommand", "sshpass -p hunter2 ssh"], Instant::now(), Some(0), "");
+        record(&dir, "git", &["-c", "core.sshcommand=sshpass -p hunter2 ssh", "fetch"], Instant::now(), Some(0), "");
+        let shown: Vec<String> = LOG.lock().unwrap().iter().filter(|e| e.cwd == dir).map(Logged::shell).collect();
+        assert!(shown.len() == 2 && shown.iter().all(|s| s.contains("sshpass -p *** ssh") && !s.contains("hunter2")), "{shown:?}");
     }
 }

@@ -7,7 +7,7 @@ mod openai;
 mod tasks;
 
 pub use client::{Config, IN_FILE, IN_KEYCHAIN, Provider, env_source, find_saved, remove_plain_token, save_plain_token, save_token, tls};
-pub use tasks::{Job, MAX_CONTEXT, PRESETS, Purpose, start, test, too_large};
+pub use tasks::{Job, MAX_CONTEXT, PRESETS, Purpose, secret, start, test, too_large};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

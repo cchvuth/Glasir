@@ -172,7 +172,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             let from = if d.remotes.len() > 1 { format!(" from {r}") } else { String::new() };
             let pr = crate::repo::prompt(format!("Pull request number on {r}"), "", crate::repo::remotes::pr_checkout(r));
             v.push(item(icon::GIT_PULL_REQUEST, format!("Check out PR #…{from}"), "fetch pull/<n>/head into pr/<n>", Cmd::Tab(pr)));
-            v.push(item(icon::STETHOSCOPE, format!("Check connection to {r}"), url.clone(), Cmd::Tab(Action::Doctor(r.clone()))));
+            v.push(item(icon::STETHOSCOPE, format!("Check connection to {r}"), crate::git::redact(url), Cmd::Tab(Action::Doctor(r.clone()))));
         }
         if let Some((r, _)) = d.remotes.iter().find(|r| r.0 == "origin").or(d.remotes.first()) {
             v.push(item(icon::KEY, "SSH key for this repository…", "core.sshCommand", Cmd::Tab(Action::Doctor(r.clone()))));
@@ -252,7 +252,10 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
     }
     let ranked: Vec<&Item> = p.ranked.2.iter().map(|&i| &p.items[i]).collect();
     let n = ranked.len();
-    let (up, down, enter) = ctx.input(|i| (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.key_pressed(Key::Enter)));
+    let modal = egui::Modal::new(egui::Id::new("palette"))
+        .area(egui::Modal::default_area(egui::Id::new("palette_area")).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 90.0)));
+    let top = ctx.memory(|m| m.top_modal_layer()) == Some(modal.area.layer());
+    let (up, down, enter) = if top { ctx.input(|i| (i.key_pressed(Key::ArrowUp), i.key_pressed(Key::ArrowDown), i.key_pressed(Key::Enter))) } else { Default::default() };
     if down && n > 0 {
         p.sel = (p.sel + 1) % n;
     }
@@ -266,8 +269,6 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
     }
     let screen = ctx.content_rect();
     let width = 640.0f32.min(screen.width() - 40.0);
-    let modal = egui::Modal::new(egui::Id::new("palette"))
-        .area(egui::Modal::default_area(egui::Id::new("palette_area")).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 90.0)));
     let resp = modal.show(ctx, |ui| {
         ui.set_width(width);
         let te = ui.add(
@@ -277,7 +278,9 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
                 .desired_width(f32::INFINITY)
                 .frame(egui::Frame::NONE.inner_margin(theme::INPUT_MARGIN)),
         );
-        te.request_focus();
+        if top {
+            te.request_focus();
+        }
         if te.changed() {
             p.sel = 0;
         }

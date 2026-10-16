@@ -47,6 +47,10 @@ pub fn text_key(t: &str) -> u64 {
     fingerprint(t.as_bytes())
 }
 
+fn contents(p: &Path) -> Option<Vec<u8>> {
+    std::fs::symlink_metadata(p).ok().filter(|m| m.is_file() && m.len() <= MAX).and_then(|_| std::fs::read(p).ok())
+}
+
 fn stat(p: &Path) -> (Option<SystemTime>, u64) {
     std::fs::metadata(p).map_or((None, 0), |m| (m.modified().ok(), m.len()))
 }
@@ -113,13 +117,13 @@ impl FileEdit {
     }
 
     fn on_disk(&self, dir: &Path) -> bool {
-        std::fs::read(dir.join(&self.path)).is_ok_and(|b| fingerprint(&b) == self.original)
+        contents(&dir.join(&self.path)).is_some_and(|b| fingerprint(&b) == self.original)
     }
 
     /// "Overwrite": keep the edits and take the file as it is now as the base to replace.
     pub fn overwrite(&mut self, dir: &Path) {
         let p = dir.join(&self.path);
-        self.original = fingerprint(&std::fs::read(&p).unwrap_or_default());
+        self.original = fingerprint(&contents(&p).unwrap_or_default());
         self.seen = stat(&p);
         self.conflict = false;
     }
@@ -252,6 +256,19 @@ mod tests {
         ed.overwrite(&dir);
         exec(&dir, &ed.save_op(&dir).unwrap()).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "edited\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_turned_into_a_link_is_not_read_through() {
+        let dir = repo("fe_turned_link");
+        std::fs::write(dir.join("a.txt"), "mine\n").unwrap();
+        std::fs::write(dir.join(".git/same"), "mine\n").unwrap();
+        let mut ed = FileEdit::load(&dir, "a.txt").unwrap();
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        std::os::unix::fs::symlink(dir.join(".git/same"), dir.join("a.txt")).unwrap();
+        assert!(ed.save_op(&dir).is_none() && ed.conflict);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

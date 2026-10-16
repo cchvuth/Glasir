@@ -2,7 +2,7 @@
 //! classified with a fix hint, and the credential / proxy settings git uses for the URL.
 
 use super::Task;
-use super::sshkey::{KeyInfo, is_ssh, redact_command};
+use super::sshkey::{KeyInfo, is_ssh};
 use crate::git;
 use std::path::Path;
 
@@ -32,17 +32,13 @@ pub fn check(dir: &Path, remote: &str) -> Report {
     let get = |args: &[&str]| git::run(dir, args).unwrap_or_default();
     let url = get(&["remote", "get-url", remote]).trim().to_owned();
     let res = git::ls_remote_quiet(dir, remote);
-    let mut settings: Vec<(String, String)> = get(&["config", "--show-origin", "--get-all", "credential.helper"])
-        .lines()
-        .map(|l| l.split_once('\t').map_or_else(|| helper(l), |(origin, v)| format!("{}   ({origin})", helper(v))))
-        .filter(|v: &String| !v.trim().is_empty())
-        .map(|v| ("credential.helper".into(), v))
-        .collect();
+    let out = get(&["config", "--show-origin", "-z", "--get-regexp", r"^credential\.(.+\.)?helper$"]);
+    let mut settings: Vec<(String, String)> = helpers(&out, &url).into_iter().map(|v| ("credential.helper".into(), v)).collect();
     if settings.is_empty() {
         settings.push(("credential.helper".into(), "none: git can't remember HTTPS passwords or tokens".into()));
     }
     if is_ssh(&url) {
-        let ssh = std::env::var("GIT_SSH_COMMAND").ok().or_else(|| Some(get(&["config", "core.sshCommand"]).trim().to_owned()).filter(|s| !s.is_empty()));
+        let ssh = std::env::var("GIT_SSH_COMMAND").ok().or_else(|| Some(get(&["config", "core.sshCommand"]).trim().to_owned()).filter(|s| !s.is_empty())).or_else(|| std::env::var("GIT_SSH").ok());
         settings.push(("ssh command".into(), ssh.unwrap_or_else(|| "ssh (default)".into())));
     } else if url.starts_with("http") {
         // http.<url>.* resolved for this URL: proxy, sslCAInfo, sslBackend, extraHeader...
@@ -62,7 +58,7 @@ pub fn check(dir: &Path, remote: &str) -> Report {
     // Tokens in the URL, a proxy's password or an ssh command's password must not reach the screen or a pasted report.
     for (k, v) in &mut settings {
         *v = match k.as_str() {
-            "ssh command" => redact_command(v),
+            "ssh command" => git::redact_command(v),
             _ if k.to_ascii_lowercase().ends_with("proxy") => redact_proxy(v),
             _ => git::redact(v),
         };
@@ -79,6 +75,40 @@ fn redact_proxy(v: &str) -> String {
 
 fn helper(v: &str) -> String {
     if v.trim_start().starts_with('!') { "inline shell command (hidden: it may hold a token)".into() } else { v.into() }
+}
+
+fn helpers(out: &str, url: &str) -> Vec<String> {
+    let (mut list, mut records) = (vec![], out.split('\0'));
+    while let (Some(origin), Some(kv)) = (records.next(), records.next()) {
+        let (k, v) = kv.split_once('\n').unwrap_or((kv, ""));
+        if k.strip_prefix("credential.").and_then(|k| k.strip_suffix(".helper")).is_some_and(|p| !url_matches(p, url)) {
+            continue;
+        }
+        if v.is_empty() {
+            list.clear();
+        } else {
+            list.push(format!("{}   ({origin})", helper(v)));
+        }
+    }
+    list
+}
+
+fn url_matches(pattern: &str, url: &str) -> bool {
+    fn parts(u: &str) -> (Option<String>, Option<&str>, String, &str, &str) {
+        let (scheme, rest) = u.split_once("://").map_or((None, u), |(s, r)| (Some(s.to_ascii_lowercase()), r));
+        let (auth, path) = rest.split_once(['/', '?', '#']).unwrap_or((rest, ""));
+        let (user, host) = auth.rsplit_once('@').map_or((None, auth), |(u, h)| (u.split(':').next(), h));
+        let (host, port) = host.rsplit_once(':').unwrap_or((host, ""));
+        let port = match (scheme.as_deref(), port) {
+            (Some("https"), "443") | (Some("http"), "80") => "",
+            _ => port,
+        };
+        (scheme, user, host.to_ascii_lowercase(), port, path.trim_matches('/'))
+    }
+    let (p, u) = (parts(pattern), parts(url));
+    let host = p.2.split('.').count() == u.2.split('.').count() && p.2.split('.').zip(u.2.split('.')).all(|(a, b)| a == "*" || a == b);
+    let path = p.4.is_empty() || p.4 == u.4 || (p.0.is_some() && u.4.strip_prefix(p.4).is_some_and(|r| r.starts_with('/')));
+    p.0.is_none_or(|s| u.0 == Some(s)) && p.1.is_none_or(|n| u.1 == Some(n)) && host && p.3 == u.3 && path
 }
 
 impl Doctor {
@@ -125,6 +155,17 @@ mod tests {
         assert!(r.settings.iter().any(|(_, v)| v.starts_with("inline shell command")) && r.settings.iter().all(|(_, v)| !v.contains("ghp_abc")), "{:?}", r.settings);
         assert_eq!((helper("osxkeychain"), helper("cache --timeout=3600")), ("osxkeychain".into(), "cache --timeout=3600".into()));
         assert!(!helper(" !echo password=ghp_abc").contains("ghp_"));
+        let out = "file:/etc/gitconfig\0credential.helper\nosxkeychain\0file:/h/.gitconfig\0credential.https://github.com.helper\n\0file:/h/.gitconfig\0credential.https://github.com.helper\n!gh auth git-credential\0\
+                   file:/h/.gitconfig\0credential.https://*.corp.example/team.helper\nstore\0file:/h/.gitconfig\0credential.ghe.corp.example.helper\ncache\0";
+        let names = |url: &str| helpers(out, url).iter().map(|h| h.split("   (").next().unwrap().to_owned()).collect::<Vec<_>>().join(",");
+        assert_eq!(names("https://github.com/o/r.git"), "inline shell command (hidden: it may hold a token)");
+        assert_eq!(names("https://me@ghe.corp.example/team/app"), "osxkeychain,store,cache");
+        assert_eq!(names("https://A.corp.example:443/team"), "osxkeychain,store");
+        assert_eq!(names("https://ghe.corp.example/teams/app"), "osxkeychain,cache");
+        for url in ["http://a.corp.example/team", "https://github.com:8443/o/r", "git@github.com:o/r.git", "https://a.b.corp.example/team/x"] {
+            assert_eq!(names(url), "osxkeychain", "{url}");
+        }
+        assert!(helpers(out, "https://github.com/o")[0].ends_with("   (file:/h/.gitconfig)"));
         assert!(check(&dir, "self").problem.is_none());
         assert!(is_ssh("git@ghe.corp:o/r.git") && is_ssh("ssh://git@ghe.corp/o/r"));
         assert!(!is_ssh("https://ghe.corp/o/r") && !is_ssh("/srv/r.git") && !is_ssh("C:\\r") && !is_ssh("./a:b"));

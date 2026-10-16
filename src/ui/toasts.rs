@@ -70,6 +70,7 @@ impl App {
             }
         });
         if let Some((i, tab)) = undo {
+            self.active = tab;
             self.tabs[tab].apply(ctx, crate::repo::Action::Undo);
             dismiss = Some(i);
         }

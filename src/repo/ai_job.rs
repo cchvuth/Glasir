@@ -25,7 +25,11 @@ impl RepoTab {
             // applying the reply later refuses if the file changed meanwhile.
             ai::Purpose::Resolve(path) => match self.merge.as_ref().filter(|m| &m.path == path) {
                 Some(m) => m.output.clone(),
-                None => std::fs::read_to_string(self.dir.join(path)).unwrap_or_default(),
+                None => {
+                    let p = self.dir.join(path);
+                    let small = std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_file() && m.len() <= (ai::MAX_CONTEXT / 3) as u64);
+                    if small { std::fs::read_to_string(&p).unwrap_or_default() } else { String::new() }
+                }
             },
             _ => String::new(),
         };
@@ -132,6 +136,31 @@ mod tests {
         t.apply(&ctx, Action::Ai(ai::Purpose::StashMessage));
         assert!(t.ai.is_none());
         assert!(t.notes.iter().any(|m| m.text.contains("Compose commits")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_reads_no_link_or_huge_file_up_front() {
+        let dir = scratch("ai-resolve-read");
+        sh(&dir, &["init", "-q"]);
+        std::fs::write(dir.join(".git/target"), "outside\n").unwrap();
+        std::os::unix::fs::symlink(dir.join(".git/target"), dir.join("link.txt")).unwrap();
+        std::fs::write(dir.join("big.txt"), "x".repeat(ai::MAX_CONTEXT / 3 + 1)).unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        t.ai_cfg.enabled = true;
+        for (path, why) in [("link.txt", "not a regular file"), ("big.txt", "too large")] {
+            t.apply(&ctx, Action::Ai(ai::Purpose::Resolve(path.into())));
+            let job = t.ai.as_mut().unwrap();
+            assert_eq!(job.draft, "", "{path}");
+            wait_for("the job", || {
+                job.poll();
+                !job.running()
+            });
+            assert!(job.done.as_ref().unwrap().as_ref().is_err_and(|e| e.contains(why)), "{path}");
+            t.ai = None;
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

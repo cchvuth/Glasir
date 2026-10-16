@@ -71,7 +71,7 @@ struct Layout {
 }
 
 impl Layout {
-    /// Cached in egui memory under `stamp` (changes whenever the file is reloaded) and `split`.
+    /// Cached in egui memory under `stamp` (changes whenever the file's lines may have) and `split`.
     fn get(ui: &Ui, stamp: u64, f: Option<&FileDiff>, split: bool) -> std::sync::Arc<Self> {
         let (id, key) = (ui.id().with("diff_layout"), (stamp, split));
         if let Some(c) = ui.data(|m| m.get_temp::<std::sync::Arc<Self>>(id)).filter(|c| c.key == key) {
@@ -475,9 +475,19 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         changed_span(&expand(&f.hunks[hi].lines[li].text), &expand(&f.hunks[hi].lines[other].text))
     };
     let mono = FontId::monospace(12.5);
+    let rev = match &src {
+        DiffSrc::Commit { id, .. } => id.as_str(),
+        DiffSrc::Worktree { .. } => "",
+    };
+    let (seen, shown) = (mem.with("src"), egui::Id::new((&change.path, rev, staged)));
+    let fresh = ui.data(|m| m.get_temp::<egui::Id>(seen)) != Some(shown);
+    ui.data_mut(|m| m.insert_temp(seen, shown));
     let out = ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
         ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
         let mut area = egui::ScrollArea::both().id_salt("diff").auto_shrink(false);
+        if fresh {
+            area = area.scroll_offset(egui::Vec2::ZERO);
+        }
         if let Some(t) = target {
             area = area.vertical_scroll_offset(t.max(0.0));
         }
@@ -533,7 +543,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                         let l = &f.hunks[hi].lines[li];
                         let picked = ds.picked.contains(&(hi, li));
                         let pick = l.kind != b'\\' && ((partial && l.kind != b' ') || !worktree);
-                        let resp = ui.interact(rect, ui.id().with(("dl", r)), if pick { Sense::click_and_drag() } else { Sense::click() });
+                        let resp = ui.interact(rect, ui.id().with(("dl", r, ds.stamp)), if pick { Sense::click_and_drag() } else { Sense::click() });
                         // Commit diffs pick any line, for "History of these lines".
                         if pick {
                             pick_lines(ui, mem, &mut ds.picked, ds.stamp, rows, tops, f, &resp, r, None, (hi, li));
@@ -554,7 +564,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
                             };
                             let l = &h.lines[li];
                             let pick = l.kind != b'\\' && ((partial && l.kind != b' ') || !worktree);
-                            let resp = ui.interact(side, ui.id().with(("sl", r, old)), if pick { Sense::click_and_drag() } else { Sense::click() });
+                            let resp = ui.interact(side, ui.id().with(("sl", r, old, ds.stamp)), if pick { Sense::click_and_drag() } else { Sense::click() });
                             if pick {
                                 pick_lines(ui, mem, &mut ds.picked, ds.stamp, rows, tops, f, &resp, r, Some(old), (hi, li));
                             }

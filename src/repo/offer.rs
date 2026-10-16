@@ -87,8 +87,9 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
         // Only the toolbar push (current branch, `--progress`): pulling fixes nothing for another branch.
         "push" if err.contains("[rejected]") && has("--progress") && !args.iter().any(|a| a.starts_with("--force")) => Some(push_rejected(err, d)),
         // gpg / ssh-keygen failed (no key, pinentry cancelled, locked agent): say so, offer to go unsigned.
-        // A lone command only: in a commit-then-rebase op, a later step may be what failed to sign.
-        verb @ ("commit" | "tag") if op.cmds.len() == i + 1 && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
+        // A lone command only (bar the stacks' restack after it, which reports a failure as a note):
+        // in a commit-then-rebase op, a later step may be what failed to sign.
+        verb @ ("commit" | "tag") if op.cmds[i + 1..].iter().all(|c| c.first().is_some_and(|a| a == super::stack::RESTACK)) && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
             Some(signing_failed(op, i, verb, err))
         }
         _ => None,
@@ -212,6 +213,33 @@ mod tests {
         exec(&a, ren.revert.as_ref().unwrap()).unwrap();
         assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "fix@{u}"]).trim(), "origin/chan/fix");
         assert!(git::run(&a, &["config", "--get", "branch.fix2.merge"]).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn push_and_force_push_a_branch_named_like_a_tag() {
+        let root = scratch("push-tagged");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let (a, remote) = (root.join("a"), root.join("remote.git"));
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        sh(&a, &["push", "-q", "origin", "main:chan/fix"]);
+        let load = || load_all(&a, 100, View::default()).unwrap();
+        let tip = |r: &str| sh(&remote, &["rev-parse", r]);
+        for (branch, from, remote_branch) in [("rel", None, "rel"), ("feature", Some("origin/main"), "feature"), ("fix", Some("origin/chan/fix"), "chan/fix")] {
+            let mut start = vec!["checkout", "-q", "-b", branch];
+            start.extend(from);
+            sh(&a, &start);
+            commit(&a, branch, "one\n");
+            sh(&a, &["tag", branch]);
+            exec(&a, &load().push_op(false).unwrap()).unwrap();
+            assert_eq!(tip(remote_branch), sh(&a, &["rev-parse", "HEAD"]), "{branch}");
+            sh(&a, &["commit", "-q", "--amend", "-m", "again"]);
+            exec(&a, &load().push_op(true).unwrap()).unwrap();
+            assert_eq!(tip(remote_branch), sh(&a, &["rev-parse", "HEAD"]), "{branch} forced");
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -356,6 +384,25 @@ mod tests {
         assert_eq!(amend.cmds[0][0], crate::repo::rebase::HEAD_IS);
         op_unsigned(&dir, &amend, "Commit without signing");
         assert_eq!((sh(&dir, &["show", "HEAD:a"]).as_str(), info().sig), ("c", 'N'));
+
+        // With stacks a restack follows the commit: still offered, and the retry restacks (once).
+        sh(&dir, &["config", "--unset", "commit.gpgsign"]);
+        for b in ["s1", "s2"] {
+            sh(&dir, &["checkout", "-q", "-b", b]);
+            commit(&dir, b, b);
+        }
+        sh(&dir, &["checkout", "-q", "s1"]);
+        std::fs::write(dir.join("s1"), "s1 more").unwrap();
+        sh(&dir, &["add", "s1"]);
+        t.summary = "s1 more".into();
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let op = crate::repo::stack::follow(t.commit_op(), Some(&d));
+        assert_eq!(op.cmds.last().unwrap()[0], crate::repo::stack::RESTACK);
+        let err = exec(&dir, &op).unwrap_err();
+        let retry = offer(&op, &err, None).expect("offered with the restack after the commit").ops.remove(0).1;
+        assert_eq!(crate::repo::stack::follow(retry.clone(), Some(&d)).cmds, retry.cmds);
+        exec(&dir, &retry).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "s2~1"]), sh(&dir, &["rev-parse", "s1"]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

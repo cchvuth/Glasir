@@ -15,12 +15,12 @@ mod ui;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
-    let arg = std::env::args().nth(1);
+    let arg = std::env::args_os().nth(1);
     // git and ssh run us as GIT_ASKPASS / SSH_ASKPASS with the prompt as the only argument.
     if std::env::var_os("GLASIR_ASKPASS").is_some()
-        && let Some(prompt) = arg.as_ref().filter(|p| std::env::args().len() == 2 && !p.starts_with('-') && !std::path::Path::new(p).exists())
+        && let Some(prompt) = arg.as_ref().filter(|p| std::env::args_os().len() == 2 && !p.as_encoded_bytes().starts_with(b"-") && !std::path::Path::new(p).exists())
     {
-        return askpass::run(prompt.clone());
+        return askpass::run(prompt.to_string_lossy().into_owned());
     }
     // Settings, open tabs and the fallback token lived under the former name.
     if let (Some(new), Some(old)) = (eframe::storage_dir("Glasir"), eframe::storage_dir("Cuttle"))

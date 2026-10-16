@@ -122,6 +122,8 @@ pub enum Action {
     AmendToggled(bool),
     /// Commit Composer on existing commits (see `compose::Recompose`).
     Recompose(super::compose::Recompose),
+    /// Create the Commit Composer plan's commits (its op is worked out off the UI thread).
+    CommitPlan,
     /// Uncommit this commit and guide splitting it into several.
     Split(String),
     /// Finish the guided split (`rebase --continue`), or abort it.

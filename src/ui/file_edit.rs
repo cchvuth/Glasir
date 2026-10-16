@@ -15,7 +15,8 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
     // ⌘⇧S is the global stage-all; consume_key ignores the extra Shift.
     let save = ui.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::COMMAND, Key::S));
     let dirty = ed.dirty();
-    let mut leave = ed.ask.is_none() && super::format::esc_pressed(ui);
+    let text_id = ui.id().with(("file_edit_text", dir, &ed.path));
+    let mut leave = ed.ask.is_none() && super::format::esc_pressed_in(ui, text_id);
     if save && dirty && !ed.saving {
         acts.push(Action::EditSave);
     }
@@ -101,7 +102,7 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
             ui.spacing_mut().item_spacing.x = 0.0;
             let (g, _) = ui.allocate_exact_size(vec2(gutter, 0.0), egui::Sense::hover());
             let out = TextEdit::multiline(&mut ed.text)
-                .id_salt("file_edit_text")
+                .id(text_id)
                 .font(TextStyle::Monospace)
                 .frame(egui::Frame::NONE)
                 .interactive(!ed.saving) // text typed while the save runs would be lost

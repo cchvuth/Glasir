@@ -181,6 +181,18 @@ fn tag_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, acts: &mu
     theme::context_menu(&resp, |ui| ref_menu(ui, d, r, acts));
 }
 
+fn in_view(ui: &mut Ui, step: &mut f32, row: impl FnOnce(&mut Ui)) {
+    let (y, clip) = (ui.cursor().top(), ui.clip_rect());
+    if *step > 0.0 && (y + *step < clip.top() || y > clip.bottom()) {
+        ui.add_space(*step);
+        return;
+    }
+    row(ui);
+    if *step == 0.0 {
+        *step = ui.cursor().top() - y;
+    }
+}
+
 fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
     egui::CollapsingHeader::new(RichText::new(format!("{title}  {count}")).small().strong())
         .id_salt(title)
@@ -243,16 +255,17 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     list.sort_by_key(|r| d.branch_rank(&r.name[n..]));
                     list.retain(|r| !r.name[n..].contains('/'));
                     let names: Vec<&str> = list.iter().map(|r| &r.name[n..]).collect();
+                    let mut step = 0.0;
                     for (i, r) in list.iter().copied().enumerate() {
                         pinned_separator(ui, d, i, &names);
-                        remote_row(ui, d, r, &r.name[n..], acts);
+                        in_view(ui, &mut step, |ui| remote_row(ui, d, r, &r.name[n..], acts));
                     }
                     let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Remote && d.split_remote(&d.refs[i].name).is_some_and(|s| s.0 == rem) && d.refs[i].name[n..].contains('/') && matches(f, &d.refs[i].name)).collect();
                     folders::show(ui, d, ui.id().with((dir, "remote", rem)), &nested, n, f, None, acts, |ui, r, name, acts| remote_row(ui, d, r, name, acts));
                 });
                 let all: Vec<_> = d.refs.iter().filter(|r| r.kind == RefKind::Remote && d.split_remote(&r.name).is_some_and(|s| s.0 == rem)).collect();
                 eye(ui, resp.header_response.rect, d, &all, acts);
-                resp.header_response.on_hover_text(format!("{rem}\n{url}")).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
+                resp.header_response.on_hover_text(format!("{rem}\n{}", crate::git::redact(url))).context_menu(|ui| remotes::remote_menu(ui, d, rem, acts));
             }
             if d.remotes.is_empty() {
                 ui.add(
@@ -272,8 +285,9 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
         tags.sort_by_key(|&i| std::cmp::Reverse(d.refs[i].date));
         section(ui, "TAGS", tags.len(), |ui| {
             let (roots, mut nested): (Vec<usize>, Vec<usize>) = tags.iter().partition(|&&i| !d.refs[i].name.contains('/'));
+            let mut step = 0.0;
             for i in roots {
-                tag_row(ui, d, &d.refs[i], &d.refs[i].name, acts);
+                in_view(ui, &mut step, |ui| tag_row(ui, d, &d.refs[i], &d.refs[i].name, acts));
             }
             nested.sort_unstable();
             folders::show(ui, d, ui.id().with((dir, "tags")), &nested, 0, f, None, acts, |ui, r, name, acts| tag_row(ui, d, r, name, acts));
@@ -287,8 +301,9 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{Submodule, Worktree};
-    use crate::ui::testkit::{Sim, local_ref, tab};
+    use crate::git::{Ref, Submodule, Worktree};
+    use crate::ui::testkit::{Sim, Tab, local_ref, tab};
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     #[test]
@@ -318,5 +333,61 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(picked, ["Checkout b3", "/wt/w3", "Update (recursive) s3"]);
+    }
+
+    fn tags_and_remote_branches(sim: &Sim, name: &str) -> (Tab, RepoData) {
+        let mut t = tab(&sim.ctx, name, &["x"]);
+        let mut d = t.data.take().unwrap();
+        let tag = |i: usize| Ref { kind: RefKind::Tag, full: format!("refs/tags/v{i:03}"), date: 1000 - i as i64, ..local_ref(&format!("v{i:03}")) };
+        let remote = |b: String| Ref { kind: RefKind::Remote, name: format!("origin/{b}"), full: format!("refs/remotes/origin/{b}"), ..local_ref(&b) };
+        d.remotes = Arc::new(vec![("origin".into(), String::new())]);
+        d.refs = Arc::new((0..150).map(tag).chain(["main".to_owned()].into_iter().chain((0..150).map(|i| format!("b{i:03}"))).map(remote)).collect());
+        (t, d)
+    }
+
+    fn scrolled_to(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, off: f32, acts: &mut Vec<Action>) {
+        let id = ui.make_persistent_id(egui::IdSalt::new("scroll_area"));
+        let mut state = egui::scroll_area::State::load(ui.ctx(), id).unwrap_or_default();
+        state.offset.y = off;
+        state.store(ui.ctx(), id);
+        sidebar(ui, d, dir, &None, &mut String::new(), acts);
+    }
+
+    #[test]
+    fn tag_and_remote_rows_in_view_sit_where_all_rows_would() {
+        let (mut sim, mut tall) = (Sim::new(300.0, 400.0), Sim::new(300.0, 12000.0));
+        let (t, d) = tags_and_remote_branches(&sim, "sidebar-rows");
+        let rows = (0..150).flat_map(|i| [format!("v{i:03}"), format!("b{i:03}")]);
+        let names: Vec<String> = rows.chain(["TAGS  150".into(), "STASHES  0".into()]).collect();
+        let y_of = |sim: &mut Sim, off: f32| {
+            sim.frame(vec![], |ui| scrolled_to(ui, &d, &t.dir, off, &mut vec![]));
+            names.iter().filter_map(|n| Some((n.as_str(), sim.text(|s| s.contains(n.as_str()))?.y + off))).collect::<HashMap<_, _>>()
+        };
+        let all = y_of(&mut tall, 0.0);
+        assert_eq!(all.len(), names.len());
+        let everything = tall.ctx.fonts(|f| f.num_galleys_in_cache());
+        for (row, above) in [("b000", 100.0), ("b075", 200.0), ("TAGS  150", 100.0), ("v000", 250.0), ("v120", 200.0), ("STASHES  0", 300.0)] {
+            let off = all[row] - above;
+            let seen = y_of(&mut sim, off);
+            let laid_out = sim.ctx.fonts(|f| f.num_galleys_in_cache());
+            assert!(seen.contains_key(row) && laid_out * 4 < everything, "{row}: {laid_out} of {everything} texts laid out");
+            for (n, y) in seen {
+                assert!((y - all[n]).abs() < 1.0, "offset {off}: {n} at {y}, not {}", all[n]);
+            }
+        }
+    }
+
+    #[test]
+    fn menu_stays_with_its_tag_or_remote_branch_when_the_list_scrolls() {
+        let (mut sim, mut tall) = (Sim::new(300.0, 400.0), Sim::new(300.0, 12000.0));
+        let (t, d) = tags_and_remote_branches(&sim, "sidebar-row-menus");
+        tall.frame(vec![], |ui| scrolled_to(ui, &d, &t.dir, 0.0, &mut vec![]));
+        let mut acts = vec![];
+        for (row, item) in [("b075", "Checkout origin/b075"), ("v075", "Checkout v075")] {
+            let base = tall.text(|s| s.ends_with(row)).unwrap().y - 200.0;
+            sim.menu_survives(row, item, |ui, scrolled| scrolled_to(ui, &d, &t.dir, base + if scrolled { 60.0 } else { 0.0 }, &mut acts));
+        }
+        let picked: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { Some(op.label.as_str()) } else { None }).collect();
+        assert_eq!(picked, ["Checkout origin/b075", "Checkout v075"]);
     }
 }

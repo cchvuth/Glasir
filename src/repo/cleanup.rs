@@ -437,8 +437,11 @@ impl RepoTab {
             })
             .collect();
         if c.rows.is_none() {
-            let (dir, fetch) = (self.dir.clone(), c.remote);
-            c.task = Some(Task::spawn(ctx, move || scan(&dir, &full, fetch, rows)));
+            let (dir, fetch, common) = (self.dir.clone(), c.remote, self.common.clone());
+            c.task = Some(Task::spawn(ctx, move || {
+                let _turn = fetch.then(|| super::fetch::Fetching::user(common));
+                scan(&dir, &full, fetch, rows)
+            }));
         }
         if c.prune && c.stale_refs.is_none() && c.prune_task.is_none() {
             let (dir, remotes) = (self.dir.clone(), d.remotes.iter().map(|r| r.0.clone()).collect::<Vec<_>>());

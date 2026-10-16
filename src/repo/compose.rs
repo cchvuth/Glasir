@@ -25,6 +25,7 @@ pub struct Commit {
 }
 
 pub struct Plan {
+    pub id: u64,
     pub units: Vec<Unit>,
     /// Empty until Claude's reply arrives.
     pub commits: Vec<Commit>,
@@ -95,12 +96,6 @@ fn range(dir: &Path, r: &Recompose) -> Res<(String, usize, String)> {
     Ok((base, ids.len(), subjects))
 }
 
-fn secret(path: &str) -> bool {
-    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
-    [".env", "credentials", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".netrc", "_netrc", ".npmrc", ".pypirc", ".git-credentials", ".pgpass"].iter().any(|p| name.starts_with(p))
-        || [".env", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".ppk"].iter().any(|e| name.ends_with(e))
-}
-
 /// The changes the units are made of: `git diff <base>` and the untracked
 /// files (`wip`), or `git diff <base> HEAD`. Submodules with only local edits are left out: `git add`
 /// can't commit those. Each commit starts from HEAD's tree, so a staged version
@@ -119,7 +114,7 @@ fn changes(dir: &Path, base: &str, wip: bool) -> Res<(String, String)> {
 }
 
 impl Plan {
-    /// The units and their listing for Claude (`[id] path (what)` + the diff, none for an untracked
+    /// The units and their listing for Claude (`[id] path (what)` + the diff, none for a new
     /// file named like a key or `.env`); `r`: recompose those commits instead of committing the uncommitted changes.
     pub fn load(dir: &Path, r: Option<&Recompose>) -> Res<(Plan, String)> {
         let head = git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).map_err(|_| "Make a first commit first.".to_string())?.trim().to_owned();
@@ -146,9 +141,10 @@ impl Plan {
             let status = if typechange { "type changed" } else if has("new file") { "new file" } else if has("deleted file") { "deleted" } else { "modified" };
             // Binary, submodule, type, mode-only or non-UTF-8 changes can't be split into hunks.
             let lossy = f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text.contains('\u{FFFD}'));
-            if typechange || f.hunks.is_empty() || f.binary || lossy || f.header.iter().any(|h| h.contains(" 160000")) {
-                let kind = if f.binary { "binary, whole file" } else { "whole file" };
-                add(&mut units, &mut listing, path, format!("{status}, {kind}"), None, if lossy { &[] } else { &f.hunks });
+            let hide = status == "new file" && ai::secret(path);
+            if typechange || f.hunks.is_empty() || f.binary || lossy || hide || f.header.iter().any(|h| h.contains(" 160000")) {
+                let kind = if f.binary { "binary, whole file" } else if hide { "whole file, contents not sent: may hold secrets" } else { "whole file" };
+                add(&mut units, &mut listing, path, format!("{status}, {kind}"), None, if lossy || hide { &[] } else { &f.hunks });
                 continue;
             }
             let n = f.hunks.len();
@@ -163,7 +159,7 @@ impl Plan {
             if listing.len() > ai::MAX_CONTEXT {
                 return Err(ai::too_large(listing.len()));
             }
-            if secret(path) {
+            if ai::secret(path) {
                 add(&mut units, &mut listing, path, "new file, untracked, contents not sent: may hold secrets".into(), None, &[]);
                 continue;
             }
@@ -175,7 +171,9 @@ impl Plan {
         if units.is_empty() {
             return Err(if wip { "There are no uncommitted changes." } else { "These commits change nothing together." }.into());
         }
-        Ok((Plan { units, commits: vec![], note: None, files, head, base, wip, replaces, changes: raw + &untracked }, listing))
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok((Plan { id, units, commits: vec![], note: None, files, head, base, wip, replaces, changes: raw + &untracked }, listing))
     }
 
     /// Takes Claude's JSON reply (see `ai::Purpose::Compose`), repairing it.
@@ -385,21 +383,23 @@ mod tests {
     }
 
     #[test]
-    fn untracked_secrets_go_by_name_only() {
-        assert!(["config/.env.local", "prod.env", "id_rsa", "keys/ID_ED25519.pub", "tls/server.pem", "a.key", "c.p12", "app.keystore", "credentials.json", ".netrc", ".npmrc"].iter().all(|p| secret(p)));
-        assert!(!["src/main.rs", "environment.ts", "keyboard.rs", "monkey"].iter().any(|p| secret(p)));
+    fn new_secret_files_go_by_name_only() {
         let dir = scratch("compose-secret");
         sh(&dir, &["init", "-q"]);
         identity(&dir);
         sh(&dir, &["config", "core.excludesFile", &dir.join(".git/none").to_string_lossy()]);
         commit(&dir, "a", "one\n");
         std::fs::write(dir.join(".env"), "API_KEY=sk-live-123\n").unwrap();
+        std::fs::write(dir.join("prod.env"), "DB_PASSWORD=hunter2\n").unwrap();
+        sh(&dir, &["add", "prod.env"]);
         std::fs::write(dir.join("c"), "new\n").unwrap();
         let (mut plan, listing) = Plan::load(&dir, None).unwrap();
-        assert!(!listing.contains("sk-live") && listing.contains("[1] .env (new file, untracked, contents not sent") && listing.contains("+new"), "{listing}");
-        plan.fill(r#"{"commits":[{"message":"Add both","units":[1,2]}]}"#).unwrap();
+        for shown in ["[1] prod.env (new file, whole file, contents not sent", "[2] .env (new file, untracked, contents not sent", "+new"] {
+            assert!(listing.contains(shown) && !listing.contains("sk-live") && !listing.contains("hunter2"), "{listing}");
+        }
+        plan.fill(r#"{"commits":[{"message":"Add all","units":[1,2,3]}]}"#).unwrap();
         super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
-        assert_eq!(sh(&dir, &["ls-tree", "--name-only", "HEAD"]), ".env\na\nc\n");
+        assert_eq!(sh(&dir, &["ls-tree", "--name-only", "HEAD"]), ".env\na\nc\nprod.env\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn edit_plan() {
-        let mut p = Plan { units: vec![], commits: vec![], note: None, files: vec![], head: String::new(), base: String::new(), wip: true, replaces: 0, changes: String::new() };
+        let mut p = Plan { id: 0, units: vec![], commits: vec![], note: None, files: vec![], head: String::new(), base: String::new(), wip: true, replaces: 0, changes: String::new() };
         p.commits = vec![Commit { message: "a".into(), units: vec![0, 1] }, Commit { message: "b".into(), units: vec![2] }];
         p.move_unit(1, None);
         assert_eq!(ids(&p.commits), [vec![0], vec![1], vec![2]]);

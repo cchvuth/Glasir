@@ -37,6 +37,8 @@ pub(super) struct UndoEntry {
     id: u64,
 }
 
+pub struct Steps(Vec<UndoEntry>, Vec<UndoEntry>);
+
 impl UndoEntry {
     pub(super) fn new(label: String, refs: Option<Refs>, files: Vec<Files>, ops: Option<(Box<Op>, Box<Op>)>) -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -384,6 +386,12 @@ impl RepoTab {
     pub fn redo_label(&self) -> Option<&str> {
         self.redo.last().map(|u| u.label.as_str())
     }
+    pub fn take_steps(&mut self) -> Steps {
+        Steps(std::mem::take(&mut self.undo), std::mem::take(&mut self.redo))
+    }
+    pub fn put_steps(&mut self, s: Steps) {
+        (self.undo, self.redo) = (s.0, s.1);
+    }
 
     /// A new step makes the redos stale: their backups go (off the UI thread).
     pub(super) fn clear_redo(&mut self) {
@@ -425,6 +433,26 @@ impl RepoTab {
                 }
             }
             git::drop_backups(&dir, &done);
+            let mut listed: HashSet<String> = git::stashes(&dir).unwrap_or_default().into_iter().map(|s| s.id).collect();
+            for c in e.ops.iter().flat_map(|(u, _)| &u.cmds) {
+                match c.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+                    ["stash", "store", "-m", m, id] | [super::op::STASH_UNPOP, id, m] => {
+                        if listed.insert(id.to_owned()) && git::run(&dir, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_ok() && git::keep(&dir, id, m).is_ok() {
+                            names.insert(format!("\"{m}\""));
+                        }
+                    }
+                    [super::op::BRANCH_RESTORE, b, oid, ..] if git::run(&dir, &["for-each-ref", "--count=1", "--contains", oid, "--format=x", "refs/heads", "refs/remotes", "refs/tags"]).is_ok_and(|o| o.trim().is_empty()) => {
+                        let name = format!("{msg} (branch {b} at {})", &oid[..oid.len().min(7)]);
+                        if let Ok(s) = git::clean_snap(&dir, oid, &name)
+                            && git::keep(&dir, &s.commit, &name).is_ok()
+                        {
+                            git::drop_backups(&dir, &[s.refname]);
+                            names.insert(format!("\"{name}\""));
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let names = names.into_iter().collect::<Vec<_>>().join(" and ");
             Done::Skipped(format!("Skipped {}{}.", e.label, if names.is_empty() { String::new() } else { format!(": its files are in the stash list as {names}") }))
         })));
@@ -473,8 +501,10 @@ impl RepoTab {
             legs.reverse();
         }
         let op = e.ops.as_ref().map(|(u, r)| if undo { (**u).clone() } else { (**r).clone() });
+        let common = op.as_ref().filter(|o| super::op::network(o)).map(|_| self.common.clone());
         let l = label.clone();
         let job: Job = Box::new(move || {
+            let _turn = common.map(super::fetch::Fetching::user);
             let (note, valid) = if refs.is_some() || !legs.is_empty() { transition(&dir, &l, refs, &legs)? } else { (None, true) };
             let fresh = match op {
                 Some(op) if undo => super::op::exec(&dir, &op).map(|_| None)?,

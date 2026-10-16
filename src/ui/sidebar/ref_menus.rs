@@ -134,7 +134,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         let to = if rb == name { remote.to_owned() } else { format!("{remote}/{rb}") };
         if ui.button(format!("Push {name} to {to}")).clicked() {
             // `-u` only toward the upstream's own remote: it must not retarget a triangular setup.
-            let spec = format!("{name}:refs/heads/{rb}");
+            let spec = format!("{}:refs/heads/{rb}", r.full);
             let keep = d.split_remote(&r.upstream).is_some_and(|u| u.0 != remote);
             acts.push(op(format!("Push {name}"), &if keep { vec!["push", remote, &spec] } else { vec!["push", "-u", remote, &spec] }));
         }
@@ -269,5 +269,38 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
     ui.separator();
     if ui.button("Copy tag name").clicked() {
         acts.push(Action::Copy(r.name.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::testkit::{Sim, load, tab};
+    use egui::PointerButton;
+
+    #[test]
+    fn push_works_for_a_branch_that_shares_its_name_with_a_tag() {
+        let mut sim = Sim::new(500.0, 900.0);
+        let mut t = tab(&sim.ctx, "push-tagged", &["one"]);
+        let (dir, remote) = (t.dir.clone(), std::env::temp_dir().join(format!("glasir-ui-push-tagged-remote-{}", std::process::id())));
+        let _ = std::fs::remove_dir_all(&remote);
+        std::fs::create_dir_all(&remote).unwrap();
+        let git = |at: &std::path::Path, args: &[&str]| crate::git::run(at, args).unwrap();
+        git(&remote, &["init", "-q", "--bare"]);
+        git(&dir, &["checkout", "-q", "-b", "release-1.0"]);
+        git(&dir, &["tag", "release-1.0"]);
+        git(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let (d, mut acts) = (t.data.as_ref().unwrap(), vec![]);
+        let mut draw = |ui: &mut Ui| ref_menu(ui, d, d.local("release-1.0").unwrap(), &mut acts);
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s.starts_with("Push release-1.0 to")).expect("the push item");
+        sim.click(at, PointerButton::Primary, draw);
+        assert_eq!(acts.len(), 1);
+        t.apply(&sim.ctx, acts.remove(0));
+        load(&mut t, &sim.ctx);
+        assert_eq!(git(&remote, &["rev-parse", "refs/heads/release-1.0"]), git(&dir, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&remote);
     }
 }

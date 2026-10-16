@@ -43,7 +43,10 @@ impl RepoTab {
                 }
                 let message = git::run(dir, &["log", "-1", "--format=%B", &commit]).unwrap_or_default().trim().to_owned();
                 let files = git::run(dir, &["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", &commit]).unwrap_or_default();
-                let files = files.split('\0').filter(|f| !f.is_empty()).map(String::from).collect();
+                let files: Vec<String> = files.split('\0').filter(|f| !f.is_empty()).map(String::from).collect();
+                if files.is_empty() {
+                    return super::op::Dropped::Note("A commit that changes no files can't be split.".into());
+                }
                 let branch = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default().trim().to_owned();
                 // `undo_len` is set when it starts.
                 super::op::Dropped::Split(op, Box::new(Split { id: commit, rebase: !is_head, files, message, undo_len: 0, branch, replaying: false }))
@@ -52,18 +55,22 @@ impl RepoTab {
         });
     }
 
-    /// The split [`Self::start_split`] prepared: the commit's message goes to the box, its op runs.
+    /// The split [`Self::start_split`] prepared: its op runs and, unless it's skipped, the commit's message goes to the box.
     /// One that rewrites pushed commits asks first, and is prepared again once confirmed.
     pub(super) fn begin_split(&mut self, ctx: &egui::Context, op: Op, mut sp: Split) {
         if let Some(text) = op.confirm {
             self.confirm = Some(Op::new(op.label, &[CONFIRMED, &sp.id]).confirm(text));
             return;
         }
+        let label = op.label.clone();
+        self.run(ctx, op);
+        if self.busy() != Some(label.as_str()) {
+            return;
+        }
         let (summary, body) = sp.message.split_once('\n').unwrap_or((&sp.message, ""));
         (self.summary, self.body, self.amend) = (summary.into(), body.trim().into(), false);
         sp.undo_len = self.undo.len();
         self.split = Some(sp);
-        self.run(ctx, op);
     }
 
     /// Continue: replay the rest when nothing of the commit is left uncommitted,
@@ -187,7 +194,7 @@ impl RepoTab {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{commit, identity, scratch, settle, sh};
+    use super::super::testutil::{commit, identity, scratch, settle, sh, wait_for};
     use super::super::{Action, View};
     use super::*;
     use std::path::Path;
@@ -1675,6 +1682,71 @@ mod tests {
         let m = step(&ctx, &mut t, Action::Undo);
         assert_eq!((sh(&dir, &["show", ":b"]).as_str(), std::fs::read_to_string(dir.join("b")).unwrap().as_str()), ("STAGED", "WT"), "{m:?}");
         assert!(t.split.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An older split's "Commit the rest" refused by a hook never continued the rebase: the split
+    /// goes on (its banner stays), and Continue finishes it once the hook lets the commit through.
+    #[test]
+    fn a_refused_commit_the_rest_keeps_an_older_split_going() {
+        let (dir, ctx, mut t, _) = older_repo("split-hook-older");
+        commit_part(&ctx, &mut t, "x");
+        let hook = dir.join(".git/hooks/pre-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        let c = t.choice.take().expect("left over");
+        let m = step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
+        assert!(t.split.as_ref().is_some_and(|sp| !sp.replaying), "{m:?}");
+        std::fs::remove_file(&hook).unwrap();
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        let c = t.choice.take().expect("still left over");
+        let m = step(&ctx, &mut t, Action::Git(c.ops[0].1.clone()));
+        assert!(t.split.is_none(), "{m:?}");
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "3\nabcx\nx\nbase\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A commit that changes no files can't be split: its Continue would offer to commit every ignored file.
+    #[test]
+    fn an_empty_commit_is_not_split() {
+        let (dir, ctx) = new_repo("split-empty");
+        commit(&dir, ".gitignore", "*.log\n");
+        std::fs::write(dir.join("build.log"), "log").unwrap();
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "marker"]);
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let mut t = open(&ctx, &dir);
+        step(&ctx, &mut t, Action::Split(tip.trim().into()));
+        step(&ctx, &mut t, Action::SplitEnd { abort: false });
+        assert!(t.split.is_none() && t.choice.is_none());
+        assert!(t.notes.iter().any(|n| n.text.contains("changes no files")));
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A split whose op is skipped (another op still runs) starts nothing: no banner, the commit box keeps its draft.
+    #[test]
+    fn a_skipped_split_starts_nothing() {
+        let (dir, ctx) = new_repo("split-busy");
+        commit(&dir, "a", "1");
+        commit(&dir, "a", "2");
+        let tip = sh(&dir, &["rev-parse", "HEAD"]);
+        let mut t = open(&ctx, &dir);
+        t.summary = "my draft".into();
+        t.apply(&ctx, Action::Split(tip.trim().into()));
+        let (_busy, rx) = std::sync::mpsc::channel();
+        t.running = Some(("Fetch".into(), super::super::Task(rx)));
+        let mut msgs = vec![];
+        wait_for("the split", || {
+            t.poll(&ctx, &mut msgs);
+            t.drop_task.is_none()
+        });
+        assert!(t.split.is_none() && t.summary == "my draft");
+        assert_eq!(t.notes.pop().map(|n| n.text), Some(format!("'Split {}' skipped: 'Fetch' is still running.", &tip[..7])));
+        t.running = None;
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), tip);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

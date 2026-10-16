@@ -184,6 +184,7 @@ The name fits a Git client:
   your target branch *before* you merge or pull.
 - **3-way merge editor**: Current / Incoming / editable Output, per-conflict
   take-current / incoming / both, auto-resolve trivial conflicts, conflict navigation.
+  Closing the tab or quitting with an unsaved resolution (or rebase / Composer plan) asks first.
 - **Conflict list**: each file shows its type (both modified, deleted by them, added by us, ...);
   take-side actions are named after the real branch / commit; **Mark all resolved** stages only
   text-merged files with no conflict markers left (never `-merge` / `binary` ones) and lists the rest; Continue stays disabled with a reason
@@ -249,7 +250,8 @@ The name fits a Git client:
 
 ### Worktrees, stashes and tags
 - **Worktrees**: list with change counts and lock state, create (new or existing
-  branch), open in a new tab, lock / unlock, remove (with force / with its
+  branch), switch in place (the commit message draft and ⌘Z steps stay with each
+  worktree) or open in a new tab, lock / unlock, remove (with force / with its
   branch), prune.
 - **Stashes**: stash all (with your own message, or git's default), staged only,
   a single file (right-click it in the WIP lists), or with an AI-written message;

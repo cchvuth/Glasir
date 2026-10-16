@@ -103,9 +103,10 @@ pub fn list(ui: &mut Ui, list: &[Change], key: u64, tree: bool, name: &'static s
     }
 }
 
-fn visible(ui: &Ui, step: f32, n: usize) -> (usize, usize) {
+pub fn visible(ui: &Ui, step: f32, n: usize) -> (usize, usize) {
     let (top, clip) = (ui.cursor().top(), ui.clip_rect());
-    ((((clip.top() - top) / step).floor().max(0.0) as usize).min(n), (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).min(n))
+    let first = (((clip.top() - top) / step).floor().max(0.0) as usize).min(n);
+    (first, (((clip.bottom() - top) / step).ceil().max(0.0) as usize + 1).clamp(first, n))
 }
 
 type Cached = Arc<(u64, Arc<FileTree>, HashSet<String>, Vec<usize>)>;
@@ -224,6 +225,29 @@ mod tests {
             }
         }
         assert!(heights.windows(2).all(|w| w[0] == w[1]), "{heights:?}");
+    }
+
+    #[test]
+    fn a_list_closing_above_the_view_draws_no_rows() {
+        let mut sim = crate::ui::testkit::Sim::new(300.0, 400.0);
+        let cs: Vec<Change> = (0..120).map(|i| Change { path: format!("d/f{i:03}"), old_path: None, code: 'M' }).collect();
+        let (mut closed, mut inverted) = (HashSet::new(), false);
+        for (off, open) in [(0.0, true), (2000.0, false)] {
+            sim.frame(vec![], |ui| {
+                egui::ScrollArea::vertical().vertical_scroll_offset(off).show(ui, |ui| {
+                    egui::CollapsingHeader::new("Unstaged").open(Some(open)).show(ui, |ui| {
+                        inverted |= !ui.clip_rect().is_positive();
+                        show(ui, cs.iter(), 0, Id::new("v"), &mut closed, false, |ui, item| {
+                            if let Item::File { .. } = item {
+                                ui.allocate_exact_size(egui::vec2(10.0, ROW_H), Sense::hover());
+                            }
+                            false
+                        });
+                    });
+                });
+            });
+        }
+        assert!(inverted, "the closing body's clip rect was not inverted");
     }
 
     #[test]

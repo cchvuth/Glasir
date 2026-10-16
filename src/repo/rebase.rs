@@ -58,7 +58,11 @@ impl Editor {
         let mut args = vec!["--no-walk=unsorted"];
         args.extend(ids.iter().map(String::as_str));
         let items = items(dir, &args)?;
-        Ok(Editor { base: head, label, items, sel: 0, cherry: true, head: head_state(dir), orig: vec![], dir: dir.into() })
+        Ok(Editor { base: head, label, orig: items.iter().map(|i| i.id.clone()).collect(), items, sel: 0, cherry: true, head: head_state(dir), dir: dir.into() })
+    }
+
+    pub fn edited(&self) -> bool {
+        self.items.iter().any(|it| it.act != Act::Pick) || !self.items.iter().map(|it| &it.id).eq(&self.orig)
     }
 
     pub(crate) fn problem(&self) -> Option<&'static str> {
@@ -83,11 +87,14 @@ impl Editor {
         // Stacked branches pointing into the range stay on their (rewritten) commits.
         let stacked = match self.cherry || !super::stack::follows() {
             true => vec![],
-            false => stacked_refs(&self.dir, &self.items, self.head.rsplit(' ').next().unwrap_or_default()),
+            false => stacked_refs(&self.dir, |oid| self.items.iter().any(|i| i.id == oid), self.head.rsplit(' ').next().unwrap_or_default()),
         };
-        let mut todo = String::new();
+        let (mut todo, mut refs) = (String::new(), String::new());
         for (n, it) in self.items.iter().enumerate().rev() {
-            let refs = stacked.iter().filter(|(_, oid)| *oid == it.id).map(|(r, _)| format!("update-ref {r}\n")).collect::<String>();
+            if matches!(it.act, Act::Pick | Act::Reword | Act::Edit) {
+                todo += &std::mem::take(&mut refs);
+            }
+            refs.extend(stacked.iter().filter(|(_, oid)| *oid == it.id).map(|(r, _)| format!("update-ref {r}\n")));
             let verb = match it.act {
                 Act::Pick | Act::Reword => "pick",
                 Act::Edit => "edit",
@@ -100,7 +107,7 @@ impl Editor {
             let x = self.cherry && super::merge_opts::pick_x();
             let note = format!("(cherry picked from commit {})", it.id);
             if it.act != Act::Reword && !(x && it.act == Act::Pick) {
-                todo += &format!("{verb} {}\n{refs}", it.id);
+                todo += &format!("{verb} {}\n", it.id);
                 continue;
             }
             let msg = git_dir.join(format!("glasir-msg-{n}"));
@@ -119,8 +126,9 @@ impl Editor {
                 false => format!("git log -1 --format=%B > {msg} && printf '\\n%s\\n' '{note}' >> {msg} && git commit --amend --allow-empty -F {msg}"),
             };
             todo += &format!("exec git rev-parse HEAD > {pre}\n{verb} {}\n", it.id);
-            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then {amend}; fi\n{refs}");
+            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then {amend}; fi\n");
         }
+        todo += &refs;
         let path = git_dir.join("glasir-rebase-todo");
         std::fs::write(&path, todo).map_err(|e| e.to_string())?;
         let editor = format!("sequence.editor=cat {} >", sh_quote(&path));
@@ -151,29 +159,29 @@ impl Editor {
     }
 
     /// What Start runs: [`Self::op`], a rebase asking first when it rewrites pushed commits: those from the
-    /// plan's first change up (git keeps the unchanged picks below it; a squash or fixup rewrites the one below).
+    /// plan's first change up (git keeps the unchanged picks below it; a squash or fixup rewrites the one it
+    /// melds into, the next one below that isn't dropped).
     pub fn start(&self, git_dir: &Path) -> Res<super::Action> {
         let op = self.op(git_dir)?;
-        if self.cherry {
-            return Ok(super::Action::Git(op));
-        }
         let changed = self.items.iter().zip(&self.orig).rposition(|(it, id)| it.id != *id || it.act != Act::Pick);
-        let first = changed.and_then(|j| self.orig.get(j + matches!(self.items[j].act, Act::Squash | Act::Fixup) as usize)).cloned();
+        let meld = |i: usize| (i + 1..self.items.len()).find(|&k| self.items[k].act != Act::Drop);
+        let first = changed.map(|j| (0..=j).filter(|&i| matches!(self.items[i].act, Act::Squash | Act::Fixup)).filter_map(meld).fold(j, usize::max));
+        let first = first.and_then(|j| self.orig.get(j)).cloned();
         Ok(super::Action::RunRebase { op, onto: self.base.clone(), branch: None, first })
     }
 }
 
-/// Local branches (full name, commit) pointing at one of `items` below HEAD's commit `head`
-/// (one at `head` is a copy, like a backup): not a trunk or protected branch, not the remote's
+/// Local branches (full name, commit) pointing at a commit the rewrite takes (`rewritten`) below the tip's
+/// commit `head` (one at `head` is a copy, like a backup): not a trunk or protected branch, not the remote's
 /// default, and not checked out anywhere (HEAD's moves anyway; git refuses another worktree's).
-fn stacked_refs(dir: &Path, items: &[Item], head: &str) -> Vec<(String, String)> {
+fn stacked_refs(dir: &Path, rewritten: impl Fn(&str) -> bool, head: &str) -> Vec<(String, String)> {
     let fmt = "--format=%(refname)%09%(objectname)%09%(symref:lstrip=3)%09%(worktreepath)";
     let out = git::run(dir, &["for-each-ref", fmt, "refs/heads", "refs/remotes/origin/HEAD"]).unwrap_or_default();
     let rows: Vec<Vec<&str>> = out.lines().map(|l| l.splitn(4, '\t').collect()).collect();
     let default = rows.iter().find(|f| f[0] == "refs/remotes/origin/HEAD").and_then(|f| f.get(2).copied());
     rows.iter()
         .filter_map(|f| match f[..] {
-            [r, oid, _, ""] if oid != head && items.iter().any(|i| i.id == oid) => {
+            [r, oid, _, ""] if oid != head && rewritten(oid) => {
                 let name = r.strip_prefix("refs/heads/")?;
                 (!super::stack::protected(name) && Some(name) != default).then(|| (r.to_owned(), oid.to_owned()))
             }
@@ -232,31 +240,31 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
 }
 
 /// Asks first when rewriting `commit` up to `tip` (HEAD or `refs/heads/<branch>`) reaches
-/// commits already on the upstream (`HEAD@{u}` or `<branch>@{u}`; with none, on any remote branch).
+/// commits already on the upstream (`HEAD@{u}` or `<branch>@{u}`), or else on any remote branch
+/// (no upstream or a gone one, a fork's branch, one pushed without -u).
 fn confirm_pushed(dir: &Path, commit: &str, (tip, upstream): (&str, &str), op: Op) -> Op {
     // The commits the rewrite replaces (`commit` and its descendants up to HEAD) that the upstream
     // has: those up to the merge bases (an extra `^@{u}` would cut the ancestry path short).
     let (ancestry, parents) = (format!("--ancestry-path={commit}"), format!("^{commit}^@"));
-    let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", upstream]) else {
-        let all = git::run(dir, &["rev-list", &ancestry, tip, &parents]).unwrap_or_default();
-        let local = git::run(dir, &["rev-list", tip, &parents, "--not", "--remotes"]).unwrap_or_default();
-        let local: std::collections::HashSet<&str> = local.lines().collect();
-        return match all.lines().filter(|c| !local.contains(c)).count() {
-            0 => op,
-            n => op.confirm(rewrites_pushed(n, None)),
+    if let Ok(up) = git::run(dir, &["rev-parse", "--abbrev-ref", upstream]) {
+        let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
+        let mut args = vec!["rev-list", "--count", &ancestry, &parents];
+        args.extend(bases.lines());
+        let n = match bases.trim().is_empty() {
+            true => 0,
+            false => git::run(dir, &args).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0),
         };
-    };
-    let bases = git::run(dir, &["merge-base", "--all", tip, upstream]).unwrap_or_default();
-    let mut args = vec!["rev-list", "--count", &ancestry, &parents];
-    args.extend(bases.lines());
-    let n = match bases.trim().is_empty() {
-        true => 0,
-        false => git::run(dir, &args).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0),
-    };
-    if n > 0 {
-        return op.confirm(rewrites_pushed(n, Some(up.trim())));
+        if n > 0 {
+            return op.confirm(rewrites_pushed(n, Some(up.trim())));
+        }
     }
-    op
+    let all = git::run(dir, &["rev-list", &ancestry, tip, &parents]).unwrap_or_default();
+    let local = git::run(dir, &["rev-list", tip, &parents, "--not", "--remotes"]).unwrap_or_default();
+    let local: std::collections::HashSet<&str> = local.lines().collect();
+    match all.lines().filter(|c| !local.contains(c)).count() {
+        0 => op,
+        n => op.confirm(rewrites_pushed(n, None)),
+    }
 }
 
 pub(super) fn rewrites_pushed(n: usize, up: Option<&str>) -> String {
@@ -316,7 +324,8 @@ pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, branch: O
 
 /// `exec` pseudo-command: `REWRITE commit` gives `commit` the message on stdin by writing it and
 /// every commit after it up to HEAD again (same trees, authors and parents, merges too; signatures
-/// dropped), then moving HEAD's branch there. No tree changes: the index and working tree stay.
+/// dropped), then moving HEAD's branch there, and the stacked branches on rewritten commits to their
+/// copies ([`stacked_refs`]), in one transaction. No tree changes: the index and working tree stay.
 pub(super) const REWRITE: &str = "!rewrite";
 
 pub(super) fn rewrite(dir: &Path, commit: &str, tip: &str, message: &[u8]) -> Res<String> {
@@ -352,8 +361,10 @@ pub(super) fn rewrite(dir: &Path, commit: &str, tip: &str, message: &[u8]) -> Re
         let oid = git::run_input(dir, &["hash-object", "-t", "commit", "-w", "--stdin"], Some(&out))?;
         new.insert(id.to_owned(), oid.trim().to_owned());
     }
-    let to = new.get(&head).ok_or("Commit is not on the current branch.")?;
-    git::run(dir, &["update-ref", "-m", &format!("reword {}", &commit[..commit.len().min(7)]), tip, to, &head])?;
+    new.get(&head).ok_or("Commit is not on the current branch.")?;
+    let stacked = if super::stack::follows() { stacked_refs(dir, |oid| new.contains_key(oid), &head) } else { vec![] };
+    let moves: String = [(tip.to_owned(), head)].into_iter().chain(stacked).map(|(r, old)| format!("update {r} {} {old}\n", new[&old])).collect();
+    git::run_input(dir, &["update-ref", "-m", &format!("reword {}", &commit[..commit.len().min(7)]), "--stdin"], Some(moves.as_bytes()))?;
     Ok(String::new())
 }
 
@@ -445,13 +456,17 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
         let op = Op::new(format!("Amend {short}"), &[HEAD_IS, &format!("{} {commit}", sym.trim())]).then(&["commit", "--amend", "--no-edit"]).undo(Undo::Soft);
         return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op));
     }
-    // Same safety checks as the editor: on this branch, with no merges after it.
+    // Same safety checks as the editor: nothing in progress, on this branch, with no merges after it.
+    if !matches!(git::state(&git::git_dir(dir)?), git::State::Clean | git::State::Bisecting) {
+        return Err("Finish or abort the operation in progress first.".into());
+    }
     on_branch(dir, commit)?;
     pending_autosquash(Editor::load(dir, &format!("{commit}^"), short)?.items.iter().map(|i| i.message.as_str()))?;
     // Soft: undo puts the folded-in changes back in the index (`--keep` would drop them).
     // Backed up: the replayed commits may put files where ignored ones sit.
     let base = format!("{commit}^");
-    let op = Op::new(format!("Amend staged into {short}"), &["commit", "-m", &format!("fixup! {commit}")])
+    let op = Op::new(format!("Amend staged into {short}"), &[HEAD_IS, &head_state(dir)])
+        .then(&["commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &base])
         .undo(Undo::Soft)
         .backup(super::Backup::Tree { revs: vec![base], untracked: false });
@@ -799,6 +814,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Triangular: tracking upstream/main, pushed to origin/feature. Commits on a remote branch
+    /// other than the upstream ask first too.
+    #[test]
+    fn rewrites_of_commits_on_another_remote_branch_ask_first() {
+        let (dir, g) = repo("pushed-triangular");
+        let gd = git::git_dir(&dir).unwrap();
+        for r in ["upstream", "origin"] {
+            g(&["remote", "add", r, "https://example.invalid/r.git"]);
+        }
+        g(&["update-ref", "refs/remotes/upstream/main", "HEAD~2"]);
+        g(&["checkout", "-q", "-b", "feature"]);
+        g(&["branch", "-q", "--set-upstream-to=upstream/main"]);
+        g(&["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "d"]);
+        g(&["commit", "-q", "-m", "c4"]);
+        let rev = |r: &str| g(&["rev-parse", r]).trim().to_owned();
+        let ask = quick(&dir, &gd, &rev("HEAD~1"), Act::Drop, None).unwrap().confirm;
+        assert!(ask.as_deref().is_some_and(|c| c.contains("1 commit already on a remote branch")), "{ask:?}");
+        assert!(quick(&dir, &gd, &rev("HEAD"), Act::Reword, Some("c4 better".into())).unwrap().confirm.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A squash melding past a dropped commit rewrites the pushed one below the drop: Start asks.
+    #[test]
+    fn start_asks_when_a_squash_melds_past_a_drop_into_a_pushed_commit() {
+        let (dir, g) = repo("start-meld");
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "d"]);
+        g(&["commit", "-q", "-m", "c4"]);
+        g(&["update-ref", "refs/remotes/origin/main", "HEAD~2"]);
+        let mut ed = Editor::load(&dir, g(&["rev-parse", "HEAD~3"]).trim(), "c1").unwrap(); // c4, c3, c2
+        ed.items[0].act = Act::Squash;
+        ed.items[1].act = Act::Drop;
+        let Ok(super::super::Action::RunRebase { op, onto, branch, first }) = ed.start(&git::git_dir(&dir).unwrap()) else { panic!("a rebase") };
+        assert_eq!(first.as_deref(), Some(g(&["rev-parse", "HEAD~2"]).trim()));
+        let ask = confirm_rebase(&dir, &onto, branch.as_deref(), first.as_deref(), op).confirm;
+        assert!(ask.as_deref().is_some_and(|c| c.contains("1 commit already on a remote branch")), "{ask:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn reword_head_refuses_once_head_moved() {
         let (dir, g) = repo("reword-head-moved");
@@ -828,6 +884,36 @@ mod tests {
         g(&["add", "b"]);
         assert!(crate::repo::op::exec(&dir, &op).is_err());
         assert_eq!(g(&["rev-parse", "HEAD"]), tip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Another branch checked out while the amend into an older commit waited: nothing lands on it.
+    #[test]
+    fn amend_into_older_refuses_once_head_moved() {
+        let (dir, g) = repo("amend-older-moved");
+        let c2 = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        std::fs::write(dir.join("b"), "c2 fixed\n").unwrap();
+        g(&["add", "b"]);
+        let op = amend_into(&dir, &c2, false).unwrap();
+        g(&["checkout", "-q", "-b", "other"]);
+        let tip = g(&["rev-parse", "HEAD"]);
+        assert!(crate::repo::op::exec(&dir, &op).is_err());
+        assert_eq!((g(&["rev-parse", "other"]), g(&["diff", "--cached", "--name-only"])), (tip, "b\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// During a merge the fixup commit would be the merge commit: refused.
+    #[test]
+    fn amend_into_older_refuses_mid_merge() {
+        let (dir, g) = repo("amend-mid-merge");
+        g(&["checkout", "-q", "-b", "side", "HEAD~1"]);
+        std::fs::write(dir.join("s"), "s\n").unwrap();
+        g(&["add", "s"]);
+        g(&["commit", "-q", "-m", "s"]);
+        g(&["checkout", "-q", "main"]);
+        g(&["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        let c2 = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        assert!(amend_into(&dir, &c2, false).is_err_and(|e| e.contains("in progress")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1057,6 +1143,60 @@ mod tests {
         t.apply(&ctx, Action::Git(Op { confirm: None, ..op }));
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["log", "--format=%s"]), "new work\nd\nc\nb\na\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// main ← a (A1, A2) ← b (B1, B2): squashing B1 into its parent moves `a` onto the meld, so it
+    /// stays below `b` (as `--update-refs --autosquash` does).
+    #[test]
+    fn squash_into_a_stacked_tip_moves_its_branch_onto_the_meld() {
+        use crate::repo::testutil::*;
+        let dir = scratch("stack-meld");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "m", "m");
+        sh(&dir, &["checkout", "-q", "-b", "a"]);
+        commit(&dir, "a1", "A1");
+        commit(&dir, "a2", "A2");
+        sh(&dir, &["checkout", "-q", "-b", "b"]);
+        commit(&dir, "b1", "B1");
+        commit(&dir, "b2", "B2");
+        let b1 = sh(&dir, &["rev-parse", "b~1"]).trim().to_owned();
+        run_op(&dir, &quick(&dir, &git::git_dir(&dir).unwrap(), &b1, Act::Squash, None).unwrap());
+        assert_eq!(sh(&dir, &["rev-parse", "a"]), sh(&dir, &["rev-parse", "b~1"]));
+        assert_eq!(sh(&dir, &["show", "a:b1"]), "B1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rewording through a merge (`REWRITE`) moves the stacked branch on the way along; ⌘Z puts it back.
+    #[test]
+    fn reword_through_a_merge_moves_stacked_branches() {
+        use crate::repo::testutil::*;
+        use crate::repo::{Action, RepoTab, View};
+        let dir = scratch("reword-stacked");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "m", "m");
+        sh(&dir, &["checkout", "-q", "-b", "a"]);
+        commit(&dir, "a1", "A1");
+        sh(&dir, &["checkout", "-q", "-b", "side", "main"]);
+        commit(&dir, "s", "S");
+        sh(&dir, &["checkout", "-q", "a"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        sh(&dir, &["checkout", "-q", "-b", "b"]);
+        commit(&dir, "b1", "B1");
+        let id = |r: &str| sh(&dir, &["rev-parse", r]).trim().to_owned();
+        let before = ["a", "b", "side"].map(&id);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Reword { commit: id("a~1"), message: "A1 better".into() });
+        settle(&ctx, &mut t);
+        assert_eq!((id("a"), id("side")), (id("b~1"), before[2].clone()));
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%s", "a^1"]), "A1 better\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(["a", "b", "side"].map(&id), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

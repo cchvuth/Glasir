@@ -54,7 +54,7 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                             }
                         });
                     });
-                    ui.add(TextEdit::multiline(&mut c.message).margin(crate::theme::INPUT_MARGIN).hint_text("Commit message").desired_rows(1).desired_width(f32::INFINITY));
+                    ui.add(TextEdit::multiline(&mut c.message).id_salt((p.id, &c.units)).margin(crate::theme::INPUT_MARGIN).hint_text("Commit message").desired_rows(1).desired_width(f32::INFINITY));
                     // Fixed-height rows, so only the ones in view are built (a plan can hold thousands).
                     let rh = ui.spacing().interact_size.y;
                     let step = rh + ui.spacing().item_spacing.y;
@@ -105,11 +105,44 @@ pub(super) fn compose_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
         Some(Edit::Swap(k)) => p.commits.swap(k, k + 1),
         None => {}
     }
-    if run && let Some(d) = &t.data {
-        acts.push(p.op(&t.dir, &d.git_dir).map_or_else(Action::Error, Action::Git));
-        close = true;
-    }
-    if close {
+    if run {
+        acts.push(Action::CommitPlan);
+    } else if close {
         t.compose = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::repo::{Action, compose::Plan};
+    use crate::ui::testkit::{Sim, load, tab};
+
+    /// Create builds the plan's op off the UI thread (it reads every change again), then the
+    /// commits are made as one ⌘Z step.
+    #[test]
+    fn create_builds_the_op_off_the_ui_thread() {
+        let mut sim = Sim::new(900.0, 700.0);
+        let mut t = tab(&sim.ctx, "compose-create", &["one"]);
+        let git = |t: &crate::repo::RepoTab, args: &[&str]| crate::git::run(&t.dir, args).unwrap();
+        std::fs::write(t.dir.join("f"), "two").unwrap();
+        let (mut plan, _) = Plan::load(&t.dir, None).unwrap();
+        plan.fill(r#"{"commits":[{"message":"Two","units":[1]}]}"#).unwrap();
+        t.compose = Some(plan);
+        let mut acts = vec![];
+        let mut draw = |ui: &mut egui::Ui| super::compose_dialog(&mut t, ui.ctx(), &mut acts);
+        sim.frame(vec![], &mut draw);
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s == "Create 1 commit").expect("the Create button");
+        sim.click(at, egui::PointerButton::Primary, &mut draw);
+        for a in acts {
+            t.apply(&sim.ctx, a);
+        }
+        assert!(t.compose.is_none());
+        assert_eq!(t.busy(), Some("Preparing the rewrite…"));
+        load(&mut t, &sim.ctx);
+        assert_eq!((git(&t, &["log", "--format=%s"]), git(&t, &["status", "--porcelain"])), ("Two\none\n".into(), String::new()));
+        t.apply(&sim.ctx, Action::Undo);
+        load(&mut t, &sim.ctx);
+        assert_eq!((git(&t, &["log", "--format=%s"]), git(&t, &["status", "--porcelain"])), ("one\n".into(), "M  f\n".into()));
     }
 }

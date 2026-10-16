@@ -153,6 +153,74 @@ pub fn redact(s: &str) -> String {
     out + rest
 }
 
+pub fn redact_command(cmd: &str) -> String {
+    let cmd = redact(cmd);
+    let mut hide = vec![];
+    secrets(&cmd, 0, &mut hide);
+    let (mut out, mut from) = (String::new(), 0);
+    for (start, end) in hide {
+        out += &cmd[from..start];
+        out += "***";
+        from = end;
+    }
+    out + &cmd[from..]
+}
+
+fn secrets(cmd: &str, at: usize, hide: &mut Vec<(usize, usize)>) {
+    let secret = |key: &str| {
+        let key = key.to_ascii_lowercase();
+        ["pass", "password", "passwd", "pwd", "token", "secret"].iter().any(|s| key.ends_with(s))
+    };
+    let mut words = shell_words(cmd).into_iter().peekable();
+    while let Some((start, end)) = words.next() {
+        let word = &cmd[start..end];
+        let eq = word.find('=');
+        match eq {
+            Some(i) if secret(&word[..i]) => hide.push((at + start + i + 1, at + end)),
+            _ => {
+                let v = eq.map_or(start, |i| start + i + 1);
+                let quoted = |q: u8| cmd.as_bytes()[v] == q && cmd.as_bytes()[end - 1] == q;
+                let (s, e) = if end - v > 1 && (quoted(b'\'') || quoted(b'"')) { (v + 1, end - 1) } else { (v, end) };
+                if (s, e) != (start, end) && cmd[s..e].contains(char::is_whitespace) {
+                    secrets(&cmd[s..e], at + s, hide);
+                }
+            }
+        }
+        if word == "-pw" {
+            hide.extend(words.next().map(|(s, e)| (at + s, at + e)));
+        }
+        if word.rsplit('/').next() == Some("sshpass") {
+            while let Some((start, end)) = words.next_if(|&(start, _)| cmd[start..].starts_with('-')) {
+                let Some(p) = cmd[start + 1..end].find(['f', 'd', 'p', 'P']).map(|i| start + 1 + i) else { continue };
+                let arg = if p + 1 < end { Some((p + 1, end)) } else { words.next() };
+                if cmd[p..].starts_with('p') {
+                    hide.extend(arg.map(|(s, e)| (at + s, at + e)));
+                }
+            }
+        }
+    }
+}
+
+fn shell_words(s: &str) -> Vec<(usize, usize)> {
+    let (mut words, mut start, mut quote, mut escaped) = (vec![], None, None, false);
+    for (i, c) in s.char_indices() {
+        match (quote, c) {
+            _ if escaped => escaped = false,
+            (None | Some('"'), '\\') => escaped = true,
+            (Some(q), _) if c == q => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, _) if c.is_whitespace() => {
+                words.extend(start.take().map(|from| (from, i)));
+                continue;
+            }
+            _ => {}
+        }
+        start.get_or_insert(i);
+    }
+    words.extend(start.map(|from| (from, s.len())));
+    words
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +313,31 @@ mod tests {
             assert_eq!(redact(keep), keep);
         }
         assert_eq!(redact("ssh://git:pw@h/r"), "ssh://***@h/r");
+    }
+
+    #[test]
+    fn hides_passwords_in_an_ssh_command() {
+        for (cmd, shown) in [
+            ("sshpass -p secret ssh -p 2222 git@h", "sshpass -p *** ssh -p 2222 git@h"),
+            ("sshpass -psecret ssh -p 2222 git@h", "sshpass -p*** ssh -p 2222 git@h"),
+            ("/usr/bin/sshpass -v -p 'two words' ssh -p 22 h", "/usr/bin/sshpass -v -p *** ssh -p 22 h"),
+            ("sshpass -P pass -p \"a \\\" b\" ssh h", "sshpass -P pass -p *** ssh h"),
+            ("sshpass -vpsecret ssh h", "sshpass -vp*** ssh h"),
+            ("sshpass -p 'unclosed ssh h", "sshpass -p ***"),
+            ("SSHPASS=hunter2 sshpass -e ssh h", "SSHPASS=*** sshpass -e ssh h"),
+            ("env GH_TOKEN=ghp_x ssh --password='a b' h", "env GH_TOKEN=*** ssh --password=*** h"),
+            ("plink -batch -pw hunter2 -i k.ppk", "plink -batch -pw *** -i k.ppk"),
+            ("ssh -o ProxyCommand='nc -x http://u:pw@px:3128 %h %p' h", "ssh -o ProxyCommand='nc -x http://***@px:3128 %h %p' h"),
+            ("ssh -o ProxyCommand='sshpass -p hunter2 ssh -W %h:%p jump' git@h", "ssh -o ProxyCommand='sshpass -p *** ssh -W %h:%p jump' git@h"),
+            ("ssh -o 'ProxyCommand=sshpass -p hunter2 ssh -W %h:%p jump' git@h", "ssh -o 'ProxyCommand=sshpass -p *** ssh -W %h:%p jump' git@h"),
+            ("ssh -o \"ProxyCommand plink -pw hunter2 jump\" h", "ssh -o \"ProxyCommand plink -pw *** jump\" h"),
+            ("sh -c 'sshpass -phunter2 ssh \"$@\"' ssh h", "sh -c 'sshpass -p*** ssh \"$@\"' ssh h"),
+        ] {
+            assert_eq!(redact_command(cmd), shown, "{cmd}");
+        }
+        for same in ["ssh -p 2222 -i '/k/id' -o IdentitiesOnly=yes -o PasswordAuthentication=no git@h", "sshpass -f /etc/pw -P assword -d 3 ssh -p 22 h", "sshpass -e ssh -p 22 h", "sshpass -p", "ssh (default)", "", "ssh -o 'ProxyJump=a b' -i \"C:\\Program Files\\k\" ''"] {
+            assert_eq!(redact_command(same), same);
+        }
     }
 
     #[test]

@@ -85,14 +85,24 @@ const NOISE: [&str; 7] = [
     ":(exclude,glob)**/*.min.js",
 ];
 
+pub fn secret(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    [".env", "credentials", "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".netrc", "_netrc", ".npmrc", ".pypirc", ".git-credentials", ".pgpass"].iter().any(|p| name.starts_with(p))
+        || [".env", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".ppk"].iter().any(|e| name.ends_with(e))
+}
+
 fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
     let mut stat = vec!["diff", "--no-color", "--no-ext-diff", "--stat=200"];
     stat.extend_from_slice(range);
+    let mut added = vec!["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A"];
+    added.extend_from_slice(range);
+    let hidden: Vec<String> = git::run(dir, &added)?.split('\0').filter(|p| secret(p)).map(|p| format!(":(exclude,literal){p}")).collect();
     let mut patch = vec!["diff", "--no-color", "--no-ext-diff", "-M"];
     patch.extend_from_slice(range);
     patch.push("--");
     patch.push(".");
     patch.extend_from_slice(&NOISE);
+    patch.extend(hidden.iter().map(String::as_str));
     let out = format!("{}\n{}", git::run(dir, &stat)?, git::run(dir, &patch)?);
     if out.len() > MAX_CONTEXT {
         return Err(format!("{} Narrow them down (e.g. stage fewer files).", too_large(out.len())));
@@ -398,6 +408,24 @@ mod tests {
         for p in [Purpose::ExplainWip, Purpose::StashMessage] {
             let (prompt, ..) = build(&dir, &p, "").unwrap();
             assert!(prompt.contains("hello"), "{p:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_secret_files_go_by_name_only() {
+        assert!(["config/.env.local", "prod.env", "id_rsa", "keys/ID_ED25519.pub", "tls/server.pem", "a.key", "c.p12", "app.keystore", "credentials.json", ".netrc", ".npmrc"].iter().all(|p| secret(p)));
+        assert!(!["src/main.rs", "environment.ts", "keyboard.rs", "monkey"].iter().any(|p| secret(p)));
+        let dir = std::env::temp_dir().join(format!("glasir-ai-secret-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        git::run(&dir, &["init", "-q"]).unwrap();
+        std::fs::write(dir.join("a"), "hello\n").unwrap();
+        std::fs::write(dir.join(".env"), "API_KEY=sk-live-123\n").unwrap();
+        git::run(&dir, &["add", "a", ".env"]).unwrap();
+        for p in [Purpose::CommitMessage { amend: false }, Purpose::ExplainWip, Purpose::StashMessage] {
+            let (prompt, ..) = build(&dir, &p, "").unwrap();
+            assert!(prompt.contains("hello") && prompt.contains(".env") && !prompt.contains("sk-live"), "{p:?}: {prompt}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

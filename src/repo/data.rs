@@ -49,6 +49,7 @@ pub struct RepoData {
     pub tips: Vec<(usize, usize)>,
     /// Commit id -> indices into `refs`, most important first.
     pub refs_at: HashMap<String, Vec<usize>>,
+    local_at: HashMap<String, usize>,
     /// Base commit id -> indices into `stashes`.
     pub stash_at: HashMap<String, Vec<usize>>,
     /// The filter this history was loaded with.
@@ -137,7 +138,7 @@ impl RepoData {
     }
 
     pub fn local(&self, name: &str) -> Option<&Ref> {
-        self.refs.iter().find(|r| r.kind == RefKind::Local && r.name == name)
+        self.local_at.get(name).and_then(|&i| self.refs.get(i)).filter(|r| r.kind == RefKind::Local && r.name == name)
     }
 
     /// Web URL of the main remote (github.com or GitHub Enterprise).
@@ -372,6 +373,7 @@ impl RepoData {
                 ["origin/main", "origin/master"].into_iter().find(|n| has(n)).map(|n| n[7..].to_owned())
             })
             .unwrap_or_else(|| "main".into());
+        let local_at = refs.iter().enumerate().filter(|(_, r)| r.kind == RefKind::Local).map(|(i, r)| (r.name.clone(), i)).collect();
         Self {
             default_branch,
             tips,
@@ -399,6 +401,7 @@ impl RepoData {
             layout_key,
             row_of,
             refs_at,
+            local_at,
             stash_at,
             view,
             stack: Default::default(),
@@ -673,6 +676,21 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "refs/heads/feat~1"]), tip);
         assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/feat\n");
         let _ = std::fs::remove_dir_all(&up);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_branches_by_name() {
+        let dir = scratch("local-by-name");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one\n");
+        sh(&dir, &["branch", "origin/x"]);
+        sh(&dir, &["tag", "main"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let full = |n: &str| d.local(n).map(|r| r.full.as_str());
+        assert_eq!([full("main"), full("origin/x"), full("origin/main"), full("x")], [Some("refs/heads/main"), Some("refs/heads/origin/x"), None, None]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

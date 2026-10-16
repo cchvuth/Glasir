@@ -46,7 +46,7 @@ impl Form {
         None
     }
 
-    /// Saves the form (a new remote is fetched right away); ⌘Z reverts it.
+    /// Saves the form (a new remote is fetched right after, by an op of its own); ⌘Z reverts it.
     /// `None` when nothing changed.
     pub fn op(&self) -> Option<Op> {
         let (name, url, push) = (self.name.trim(), self.url.trim(), self.push.trim());
@@ -55,7 +55,6 @@ impl Form {
             if !push.is_empty() {
                 cmds.push(vec!["remote", "set-url", "--push", name, push]);
             }
-            cmds.push(vec!["fetch", "--progress", name]);
             return Some(seq(format!("Add remote {name}"), &cmds).revert(Op::new(format!("Remove remote {name}"), &["remote", "remove", name])));
         };
         let push_key = format!("remote.{name}.pushurl");
@@ -242,6 +241,7 @@ mod tests {
         f.push = "/elsewhere.git".into();
         assert_eq!(f.problem(&d), None);
         exec(&dir, &f.op().unwrap()).unwrap();
+        sh(&dir, &["fetch", "-q", "origin"]);
         sh(&dir, &["checkout", "-q", "--track", "origin/feat"]);
         let d = load();
         assert_eq!(d.cfg("remote.origin.pushurl"), Some("/elsewhere.git"));
@@ -287,7 +287,7 @@ mod tests {
     }
 
     /// A local-only repo gets its first remote (a freshly created, empty one) and
-    /// publishes to it: the fetch of the empty remote succeeds, the push sets upstream.
+    /// publishes to it: the push sets upstream.
     #[test]
     fn add_origin_then_first_push() {
         let up = scratch("first-push-up");
@@ -303,10 +303,39 @@ mod tests {
         f.url = up.to_string_lossy().into();
         exec(&dir, &f.op().unwrap()).unwrap();
         let op = load().push_op(false).unwrap();
-        assert_eq!(op.cmds[0], ["push", "--progress", "-u", "origin", "main"]);
+        assert_eq!(op.cmds[0], ["push", "--progress", "-u", "origin", "refs/heads/main"]);
         exec(&dir, &op).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/main");
         assert_eq!(sh(&up, &["rev-parse", "main"]), sh(&dir, &["rev-parse", "HEAD"]));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
+
+    #[test]
+    fn a_failed_first_fetch_leaves_the_remote_undoable() {
+        use crate::repo::testutil::settle;
+        use crate::repo::{Action, RepoTab};
+        let up = scratch("addfetch-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        let dir = scratch("addfetch");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut run = |a: Action| {
+            t.apply(&ctx, a);
+            settle(&ctx, &mut t)
+        };
+        let add = |name: &str, url: &str| Action::Git(Form { name: name.into(), url: url.into(), ..Default::default() }.op().unwrap());
+        run(add("origin", &up.to_string_lossy()));
+        assert_eq!(sh(&dir, &["rev-parse", "origin/main"]), sh(&up, &["rev-parse", "main"]));
+        let msgs = run(add("typo", &dir.join("nope").to_string_lossy()));
+        assert!(msgs.iter().any(|m| m.error && m.text.starts_with("Fetch typo failed")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(sh(&dir, &["remote"]), "origin\ntypo\n");
+        run(Action::Undo);
+        assert_eq!(sh(&dir, &["remote"]), "origin\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }

@@ -168,6 +168,7 @@ impl RepoTab {
                 // Eligibility is only worked out while the message is hovered or clicked.
                 let why_not = |hit: &Response| match (&compare, hit.hovered() || hit.clicked()) {
                     (Some(_), _) | (_, false) => None,
+                    _ if busy => Some("Wait for the running operation to finish."),
                     _ => self.data.as_ref().and_then(|d| d.reword_path(&info.id).err()),
                 };
                 let mut edit = false;
@@ -310,7 +311,7 @@ impl RepoTab {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| tree::toggle(ui, as_tree));
             });
             let stash = self.data.as_ref().filter(|d| d.stashes.iter().any(|s| s.id == info.id));
-            let mut summary = change_summary(&info.files.iter().chain(&info.untracked).cloned().collect::<Vec<_>>());
+            let mut summary = change_summary(info.files.iter().chain(&info.untracked));
             let (add, del) = info.stats.values().flatten().fold((0, 0), |t, s| (t.0 + s.0, t.1 + s.1));
             if add + del > 0 {
                 summary += &format!(" · +{add} -{del}");
@@ -323,7 +324,7 @@ impl RepoTab {
             let untracked_id = format!("{}^3", info.id);
             let parent = info.parents.first().cloned();
             let file = |ui: &mut Ui, c: &Change, depth: Option<usize>, acts: &mut Vec<Action>| {
-                let (id, parent) = if info.untracked.iter().any(|u| u.path == c.path) { (&untracked_id, None) } else { (&info.id, parent.clone()) };
+                let (id, parent) = if info.untracked.contains(c) { (&untracked_id, None) } else { (&info.id, parent.clone()) };
                 // A deleted file is blamed as it was just before.
                 let blame_rev = if c.code == 'D' { parent.clone() } else { Some(id.clone()) };
                 let src = DiffSrc::Commit { id: id.clone(), parent, change: c.clone() };
@@ -394,16 +395,21 @@ impl RepoTab {
 fn msg_editor(ui: &mut Ui, edit: &mut Option<MsgEdit>, busy: bool, acts: &mut Vec<Action>) {
     let Some(e) = edit else { return };
     let (sum_id, body_id) = (ui.id().with(("msg_summary", &e.id)), ui.id().with(("msg_body", &e.id)));
-    ui.horizontal(|ui| {
+    let next = ui.horizontal(|ui| {
         let n = e.summary.chars().count();
         let w = ui.available_width() - 30.0;
-        let field = ui.add(TextEdit::singleline(&mut e.summary).id(sum_id).margin(theme::INPUT_MARGIN).hint_text("Summary").desired_width(w));
+        let field = ui.add(TextEdit::singleline(&mut e.summary).id(sum_id).interactive(!busy).margin(theme::INPUT_MARGIN).hint_text("Summary").desired_width(w));
         if std::mem::take(&mut e.focus) {
             field.request_focus();
         }
         ui.label(RichText::new(n.to_string()).small().color(if n > 72 { theme::del() } else { theme::dim(ui) }));
-    });
-    theme::description(ui, &mut e.body, body_id);
+        field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    })
+    .inner;
+    theme::description(ui, &mut e.body, body_id, !busy);
+    if next {
+        ui.memory_mut(|m| m.request_focus(body_id));
+    }
     let can = !busy && !e.summary.trim().is_empty();
     let (mut save, mut cancel) = (false, false);
     ui.horizontal(|ui| {

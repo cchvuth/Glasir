@@ -3,6 +3,7 @@
 
 use super::action::DiffSrc;
 use crate::git::{self, Res};
+use std::io::Read;
 use std::path::Path;
 
 const MAX_BYTES: u64 = 50 << 20;
@@ -16,7 +17,7 @@ pub struct Side {
     pub bytes: u64,
 }
 
-/// `None`: the side doesn't exist (added / deleted); `Err`: too big or not decodable.
+/// `None`: the side doesn't exist (added / deleted); `Err`: too big, not a regular file or not decodable.
 pub struct ImageDiff {
     pub old: Option<Res<Side>>,
     pub new: Option<Res<Side>>,
@@ -48,8 +49,16 @@ fn load_side(ctx: &egui::Context, dir: &Path, path: &str, spec: Option<String>) 
             git::run_raw(dir, &["cat-file", "blob", spec], None)?
         }
         None => {
-            too_big(std::fs::metadata(dir.join(path)).map_err(|e| e.to_string())?.len())?;
-            std::fs::read(dir.join(path)).map_err(|e| e.to_string())?
+            let p = dir.join(path);
+            let m = std::fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
+            if !m.is_file() {
+                return Err("Not a regular file (symlink or special file)".into());
+            }
+            too_big(m.len())?;
+            let mut b = vec![];
+            std::fs::File::open(&p).and_then(|f| f.take(MAX_BYTES + 1).read_to_end(&mut b)).map_err(|e| e.to_string())?;
+            too_big(b.len() as u64)?;
+            b
         }
     };
     let img = image::load_from_memory(&bytes).map_err(|e| format!("Can't decode image: {e}"))?;
@@ -100,6 +109,12 @@ mod tests {
         let root = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
         let d = load(&ctx, &dir, &DiffSrc::Commit { id: root, parent: None, change: Change { code: 'A', ..change } });
         assert_eq!(dims(&d), [None, Some([4, 3])]);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.join("a.png"), dir.join("link.png")).unwrap();
+            assert!(load_side(&ctx, &dir, "a.png", None).is_ok());
+            assert!(load_side(&ctx, &dir, "link.png", None).is_err_and(|e| e.contains("Not a regular file")));
+        }
         assert!(is_image("x/Y.JPG") && !is_image("a.svg") && !is_image("png"));
         let _ = std::fs::remove_dir_all(&dir);
     }

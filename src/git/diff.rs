@@ -294,11 +294,12 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
         args.push(o);
     }
     args.push(&c.path);
-    let text = run(dir, &args)?;
-    if let Some(f) = large(text.matches('\n').count(), text.len(), o) {
+    let raw = run_raw(dir, &args, None)?;
+    if let Some(f) = large(raw.iter().filter(|&&b| b == b'\n').count(), raw.len(), o) {
         return Ok(f);
     }
-    let mut f = parse_one(&text);
+    let mut f = parse_one(&String::from_utf8_lossy(&raw));
+    f.lossy = std::str::from_utf8(&raw).is_err();
     if f.binary {
         let old = c.old_path.as_deref().unwrap_or(&c.path);
         let new = if id == super::WORKTREE { file_size(dir, &c.path) } else { blob_size(dir, &format!("{id}:{}", c.path)) };
@@ -535,6 +536,40 @@ mod tests {
             let f = commit_diff(&dir, "HEAD", parent, &c, DiffOpts::default()).unwrap();
             assert_eq!(partial_patch(&f, |_, _| true, false).unwrap().lines().last(), Some("+x=1"), "{parent:?}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn non_utf8_commit_diff_is_lossy() {
+        let dir = std::env::temp_dir().join(format!("glasir-commit-lossy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        for text in [&b"cafe\n"[..], b"caf\xe9\n"] {
+            std::fs::write(dir.join("f"), text).unwrap();
+            g(&["add", "f"]);
+            g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "f"]);
+        }
+        let c = Change { path: "f".into(), old_path: None, code: 'M' };
+        let f = commit_diff(&dir, "HEAD", Some("HEAD~"), &c, DiffOpts::default()).unwrap();
+        assert!(f.lossy && partial_patch(&f, |_, _| true, true).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn root_commit_diff_despite_log_show_root_off() {
+        let dir = std::env::temp_dir().join(format!("glasir-show-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        g(&["config", "log.showRoot", "false"]);
+        std::fs::write(dir.join("f"), "a\n").unwrap();
+        g(&["add", "f"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "f"]);
+        let c = Change { path: "f".into(), old_path: None, code: 'A' };
+        assert_eq!(commit_diff(&dir, "HEAD", None, &c, DiffOpts::default()).unwrap().hunks.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

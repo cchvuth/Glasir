@@ -9,8 +9,8 @@ pub const APPLY_STASH_FILE: &str = "!apply-stash-file";
 
 /// Apply only the stash's own change to a tracked `path` (its diff against the stash's base), so
 /// commits made since stay; like `git stash apply` for one file, but working tree only. Where the
-/// lines around it changed since, a 3-way merge into the file (it may leave conflict markers); a
-/// file gone since gets the stash's version.
+/// file changed since, a 3-way merge into it (it may leave conflict markers); a file gone since
+/// gets the stash's version.
 pub fn apply_stash_file(d: &RepoData, label: String, stash: &str, path: &str) -> Op {
     let mut o = restore_file(d, label, stash, path, "the stash's change");
     o.cmds = vec![vec![APPLY_STASH_FILE.into(), stash.into(), path.into()]];
@@ -19,24 +19,33 @@ pub fn apply_stash_file(d: &RepoData, label: String, stash: &str, path: &str) ->
 
 pub(super) fn apply_stash(dir: &Path, stash: &str, path: &str) -> Res<String> {
     let patch = git::run_raw(dir, &["--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--binary", &format!("{stash}^1"), stash, "--", path], None)?;
-    let Err(e) = git::run_input(dir, &["apply", "--whitespace=nowarn"], Some(&patch)) else { return Ok(String::new()) };
-    let has = |l: &str| patch.split(|&b| b == b'\n').take_while(|x| !x.starts_with(b"@@")).any(|x| x.starts_with(l.as_bytes()));
+    let has = |l: &str| patch.split(|&b| b == b'\n').any(|x| x.starts_with(l.as_bytes()));
+    let (deletes, adds) = (has("deleted file mode"), has("new file mode"));
+    let blob = |rev: &str| git::run_raw(dir, &["cat-file", "--filters", &format!("{rev}:{path}")], None);
+    let base = if adds && !deletes { vec![] } else { blob(&format!("{stash}^1"))? };
     let file = dir.join(path);
-    match std::fs::symlink_metadata(&file) {
-        Err(_) if has("deleted file mode") => return Ok(String::new()),
-        Err(_) => return git::run(dir, &["--literal-pathspecs", "restore", "--source", stash, "--worktree", "--", path]),
-        Ok(m) if !m.is_file() => return Err(e),
-        Ok(_) => {}
+    let linked = git::ancestors(path).any(|a| std::fs::symlink_metadata(dir.join(a)).is_ok_and(|m| m.is_symlink()));
+    let edited = !linked && has("@@ ") && std::fs::symlink_metadata(&file).is_ok_and(|m| m.is_file()) && std::fs::read(&file).is_ok_and(|now| now != base);
+    if !edited {
+        let Err(e) = git::run_input(dir, &["apply", "--whitespace=nowarn"], Some(&patch)) else { return Ok(String::new()) };
+        match std::fs::symlink_metadata(&file) {
+            _ if linked => return Err(e),
+            Err(_) if deletes && !adds => return Ok(String::new()),
+            Err(_) => return git::run(dir, &["--literal-pathspecs", "restore", "--source", stash, "--worktree", "--", path]),
+            Ok(m) if !m.is_file() && !(deletes && adds) => return Err(e),
+            Ok(_) => {}
+        }
     }
-    if has("deleted file mode") {
+    if deletes && adds {
+        return Err(format!("The stash replaces {path} with another kind of file (such as a symlink), and it changed since, so it was left as it is."));
+    }
+    if deletes {
         return Err(format!("The stash deletes {path}, which changed since, so it was left as it is."));
     }
     if has("GIT binary patch") {
         return Err(format!("{path} is binary and changed since the stash, so the stash's change can't be merged into it; it was left as it is."));
     }
     let ours = std::fs::read(&file).map_err(|e| format!("{path}: {e}"))?;
-    let blob = |rev: &str| git::run_raw(dir, &["cat-file", "--filters", &format!("{rev}:{path}")], None);
-    let base = if has("new file mode") { vec![] } else { blob(&format!("{stash}^1"))? };
     let theirs = blob(stash)?;
     let name = git::stashes(dir).ok().and_then(|ss| ss.into_iter().find(|s| s.id == stash)).map_or("stash".into(), |s| format!("{}: {}", s.name, s.message));
     let merged = git::scratch(dir, |b| {
@@ -186,6 +195,67 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("bin")).unwrap(), b"\0mine\n");
         assert!(super::apply_stash(&dir, &id, "d").is_err_and(|e| e.contains("deletes")));
         assert_eq!(std::fs::read_to_string(dir.join("d")).unwrap(), "2\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stash_file_change_stays_in_its_own_block() {
+        let dir = scratch("stashfile-twin");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let block = |b: &str, d: &str| format!("a\n{b}\nc\n{d}\ne\nf\ng\n");
+        let file = |first: String| format!("top\n{first}{}{}end\n", "gap\n".repeat(10), block("b", "d"));
+        commit(&dir, "f", &file(block("b", "d")));
+        std::fs::write(dir.join("f"), file(block("b", "D"))).unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        commit(&dir, "f", &file(block("B", "d")));
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        super::apply_stash(&dir, &id, "f").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), file(block("B", "D")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stash_file_beyond_a_symlinked_folder_is_refused() {
+        let root = scratch("stashfile-beyond");
+        let (dir, outside) = (root.join("r"), root.join("outside"));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "sub/a", "1\n2\n3\n");
+        std::fs::write(dir.join("sub/a"), "1\n2 stash\n3\n").unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        std::fs::remove_dir_all(dir.join("sub")).unwrap();
+        std::os::unix::fs::symlink("../outside", dir.join("sub")).unwrap();
+        std::fs::write(outside.join("a"), "1\n2 mine\n3\n").unwrap();
+        assert!(super::apply_stash(&dir, &id, "sub/a").is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("a")).unwrap(), "1\n2 mine\n3\n");
+        std::fs::remove_file(outside.join("a")).unwrap();
+        assert!(super::apply_stash(&dir, &id, "sub/a").is_err());
+        assert!(std::fs::symlink_metadata(dir.join("sub")).unwrap().is_symlink() && !outside.join("a").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stash_file_turned_symlink_is_restored_or_refused() {
+        let dir = scratch("stashfile-typechange");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "l", "x\n");
+        std::fs::remove_file(dir.join("l")).unwrap();
+        std::os::unix::fs::symlink("target", dir.join("l")).unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        let id = sh(&dir, &["rev-parse", "stash@{0}"]).trim().to_owned();
+        std::fs::write(dir.join("l"), "y\n").unwrap();
+        assert!(super::apply_stash(&dir, &id, "l").is_err_and(|e| e.contains("another kind of file")));
+        assert_eq!(std::fs::read_to_string(dir.join("l")).unwrap(), "y\n");
+        std::fs::remove_file(dir.join("l")).unwrap();
+        super::apply_stash(&dir, &id, "l").unwrap();
+        assert_eq!(std::fs::read_link(dir.join("l")).unwrap(), std::path::Path::new("target"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

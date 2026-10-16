@@ -130,14 +130,15 @@ fn texture(ctx: &egui::Context, email: &str, bytes: &[u8]) -> Option<egui::Textu
 }
 
 /// `(host, owner, repo)` of an origin on github.com or GitHub Enterprise; never
-/// another forge or a local path.
+/// another forge, a local path or an HTTPS origin with a port (its API and credentials aren't the host's).
 fn github_repo(origin: &str) -> Option<(String, String, String)> {
     let host = git::host(origin)?;
     let web = git::web_url(origin)?;
-    let mut path = web.strip_prefix("https://")?.split('/').skip(1);
+    let mut path = web.strip_prefix("https://")?.split('/');
+    let port = path.next()?.contains(':');
     let (owner, repo) = (path.next().filter(|s| !s.is_empty())?, path.next().filter(|s| !s.is_empty())?);
     let other = ["gitlab", "bitbucket", "azure.com", "visualstudio.com", "codeberg", "gitea", "sr.ht", "gitee"];
-    let ok = host.contains('.') && host.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.".contains(&b)) && !other.iter().any(|o| host.contains(o));
+    let ok = !port && host.contains('.') && host.bytes().all(|b| b.is_ascii_alphanumeric() || b"-.".contains(&b)) && !other.iter().any(|o| host.contains(o));
     ok.then(|| (host, git::url_path(owner), git::url_path(repo)))
 }
 
@@ -440,7 +441,7 @@ mod tests {
         assert_eq!(r("git@github.com:octo/hello.git").as_deref(), Some("github.com octo hello"));
         assert_eq!(r("ssh://git@GHE.corp.example:7999/team/app.git").as_deref(), Some("ghe.corp.example team app"));
         assert_eq!(r("https://me@ghe.corp.example/team/app").as_deref(), Some("ghe.corp.example team app"));
-        for none in ["git@gitlab.com:a/b.git", "https://bitbucket.org/a/b", "http://local:3000/a/b", "/srv/repo.git", "https://github.com/onlyowner"] {
+        for none in ["git@gitlab.com:a/b.git", "https://bitbucket.org/a/b", "http://local:3000/a/b", "/srv/repo.git", "https://github.com/onlyowner", "https://ghe.corp.example:8443/team/app"] {
             assert_eq!(r(none), None, "{none}");
         }
         assert_eq!(api_base("github.com"), "https://api.github.com");

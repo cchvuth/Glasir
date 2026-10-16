@@ -13,7 +13,7 @@ use std::time::Instant;
 pub fn cmd(dir: &Path) -> Command {
     let mut c = base("git", dir);
     // Neutralize user config and translations that would change the output we parse.
-    c.args(["-c", "log.showSignature=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
+    c.args(["-c", "log.showSignature=false", "-c", "log.showRoot=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
         .args(["-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/"])
         .args(["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "color.diff=never"])
         .env("LANGUAGE", "en");
@@ -156,8 +156,8 @@ impl Cancel {
     }
 }
 
-/// Reads `r` to the end into the buffer it returns, then drops `done`; with `progress`, keeps it
-/// set to the latest progress line.
+/// Reads `r` to the end into the buffer it returns (what comes once that is dropped is discarded),
+/// then drops `done`; with `progress`, keeps it set to the latest progress line.
 fn read_all(mut r: impl Read + Send + 'static, progress: Option<Arc<Mutex<String>>>, done: Sender<()>) -> Arc<Mutex<Vec<u8>>> {
     let v = Arc::new(Mutex::new(vec![]));
     let w = v.clone();
@@ -171,6 +171,9 @@ fn read_all(mut r: impl Read + Send + 'static, progress: Option<Arc<Mutex<String
                 Err(_) => break,
             };
             let mut v = w.lock().unwrap();
+            if Arc::strong_count(&w) == 1 {
+                continue;
+            }
             v.extend_from_slice(&buf[..n]);
             if let Some(p) = &progress
                 && let Some(l) = last_progress(&String::from_utf8_lossy(&v[v.len().saturating_sub(1024)..]))
@@ -206,7 +209,15 @@ pub fn run_raw(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> 
     exec(cmd(dir), dir, args, input)
 }
 
-pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> {
+pub fn run_stderr(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<String> {
+    exec_both(cmd(dir), dir, args, input).map(|o| o.1)
+}
+
+pub fn exec(c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<Vec<u8>> {
+    exec_both(c, dir, args, input).map(|o| o.0)
+}
+
+fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<(Vec<u8>, String)> {
     let cancel = Cancel::active();
     if cancel.is_cancelled() {
         return Err(CANCELLED.into());
@@ -251,7 +262,7 @@ pub fn exec(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) -> 
     let logged = if prog == "git" { stderr.clone() } else { format!("{}{stderr}", String::from_utf8_lossy(&stdout)) };
     record(dir, &prog, args, start, status.code(), &logged);
     if status.success() {
-        return Ok(stdout);
+        return Ok((stdout, stderr));
     }
     let msg = format!("{}\n{}", stderr.trim(), String::from_utf8_lossy(&stdout).trim());
     let msg = msg.trim();
@@ -305,9 +316,10 @@ pub fn stream(dir: &Path, args: &[&str], mut each: impl FnMut(&str) -> bool) -> 
     }
 }
 
-/// `taskkill /F` skips git's cleanup: remove the lock files the killed git created in the git dir
-/// and its refs (`index.lock`, `packed-refs.lock`, `refs/**/*.lock`...), never older ones, which
-/// another git may hold.
+/// `taskkill /F` skips git's cleanup: remove the lock files the killed git created in the git dir,
+/// its refs and object store (`index.lock`, `packed-refs.lock`, `refs/**/*.lock`,
+/// `objects/maintenance.lock`, commit-graph and multi-pack-index locks...), never older ones,
+/// which another git may hold.
 #[cfg(any(windows, test))]
 fn drop_locks(dir: &Path, since: std::time::SystemTime) {
     use std::path::PathBuf;
@@ -317,8 +329,9 @@ fn drop_locks(dir: &Path, since: std::time::SystemTime) {
     while let Some((d, refs)) = dirs.pop() {
         for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
             let (p, Ok(t)) = (e.path(), e.file_type()) else { continue };
-            if t.is_dir() && (refs || matches!(e.file_name().to_str(), Some("refs" | "reftable"))) {
-                dirs.push((p, true));
+            let deep = refs || matches!(e.file_name().to_str(), Some("refs" | "reftable"));
+            if t.is_dir() && (deep || matches!(e.file_name().to_str(), Some("objects" | "info" | "pack" | "commit-graphs"))) {
+                dirs.push((p, deep));
             } else if t.is_file() && p.extension().is_some_and(|x| x == "lock") && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m >= since) {
                 let _ = std::fs::remove_file(p);
             }
@@ -403,7 +416,17 @@ mod tests {
             p
         };
         let old = ["index.lock", "refs/heads/old.lock"].map(|p| file(p, since - Duration::from_secs(5)));
-        let new = ["packed-refs.lock", "shallow.lock", "refs/remotes/origin/main.lock", "reftable/tables.list.lock"].map(|p| file(p, since + Duration::from_secs(1)));
+        let new = [
+            "packed-refs.lock",
+            "shallow.lock",
+            "refs/remotes/origin/main.lock",
+            "reftable/tables.list.lock",
+            "objects/maintenance.lock",
+            "objects/info/commit-graph.lock",
+            "objects/info/commit-graphs/commit-graph-chain.lock",
+            "objects/pack/multi-pack-index.lock",
+        ]
+        .map(|p| file(p, since + Duration::from_secs(1)));
         let fetched = file("FETCH_HEAD", since + Duration::from_secs(1));
         drop_locks(&dir, since);
         assert!(old.iter().all(|p| p.exists()) && fetched.exists() && !new.iter().any(|p| p.exists()));

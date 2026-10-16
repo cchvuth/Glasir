@@ -64,8 +64,9 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
             }
         }
     });
-    if let Some(forward) = nav {
-        fv.step(ui.ctx(), forward);
+    if let Some(forward) = nav
+        && fv.step(ui.ctx(), forward)
+    {
         acts.push(Action::CloseDiff);
     }
     ui.add_space(6.0);
@@ -204,12 +205,12 @@ fn blame_view(ui: &mut Ui, b: &Blame, data_gen: u64, wrap: bool, acts: &mut Vec<
         let cached = ui.data(|d| d.get_temp::<std::sync::Arc<((u64, usize), Vec<f32>, f32)>>(id)).filter(|c| c.0 == key);
         let cached = cached.unwrap_or_else(|| {
             let tops = tops(H, b.lines.iter().map(|l| wrapped(|| l.2.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum(), cols)));
-            let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6 + g + 28.0;
+            let width = b.lines.iter().map(|l| l.2.len()).max().unwrap_or(0) as f32 * 7.6;
             let c = std::sync::Arc::new((key, tops, width));
             ui.data_mut(|d| d.insert_temp(id, c.clone()));
             c
         });
-        let (tops, width) = (&cached.1, cached.2);
+        let (tops, width) = (&cached.1, cached.2 + g + 28.0);
         egui::ScrollArea::both().id_salt("blame").auto_shrink(false).show_viewport(ui, |ui, view| {
             let max = if wrap { 0.0 } else { width };
             ui.set_min_size(vec2(max.max(ui.available_width()), tops[b.lines.len()]));
@@ -293,6 +294,19 @@ mod tests {
             sim.frame(vec![], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
         }
         assert!(!egui::Popup::is_any_open(&sim.ctx), "the menu doesn't turn into the other commit's");
+    }
+
+    #[test]
+    fn back_or_forward_with_nowhere_to_go_keeps_the_diff() {
+        let mut sim = Sim::new(520.0, 500.0);
+        let t = tab(&sim.ctx, "history-nav", &["x"]);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        let (mut wrap, mut acts) = (false, vec![]);
+        for key in [egui::Key::OpenBracket, egui::Key::CloseBracket] {
+            let press = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
+            sim.frame(vec![press], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        }
+        assert!(!acts.iter().any(|a| matches!(a, Action::CloseDiff)));
     }
 
     #[test]

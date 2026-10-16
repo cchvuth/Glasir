@@ -59,7 +59,7 @@ fn classify(p: &Path, gits: &[std::path::PathBuf; 2], root: &Path, ignored: &mut
         return (!is_ignored(root, rel, ignored)).then_some(Change::Tree);
     };
     match rel.components().next().map(|c| c.as_os_str().to_string_lossy()).as_deref() {
-        Some("refs" | "packed-refs") => Some(Change::Refs),
+        Some("refs" | "packed-refs" | "reftable") => Some(Change::Refs),
         // Per-worktree files count only in our own git dir, not the main worktree's.
         Some("HEAD" | "MERGE_HEAD" | "rebase-merge" | "rebase-apply" | "CHERRY_PICK_HEAD") if i == 0 => Some(Change::Refs),
         Some("index") if i == 0 => {
@@ -115,6 +115,32 @@ mod tests {
         let full = (0..40).any(|_| rx.recv_timeout(std::time::Duration::from_millis(250)) == Ok(super::Change::Refs));
         assert!(full, "no full reload for a stash made in the main worktree");
         let _ = std::fs::remove_dir_all(&wt);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reftable_writes_are_ref_changes() {
+        use std::path::{Path, PathBuf};
+        let (own, common) = (PathBuf::from("/r/.git/worktrees/wt"), PathBuf::from("/r/.git"));
+        let gits = [own.clone(), common.clone()];
+        let c = |p: PathBuf| super::classify(&p, &gits, Path::new("/wt"), &mut Default::default());
+        assert_eq!(c(own.join("reftable/tables.list")), Some(super::Change::Refs));
+        assert_eq!(c(common.join("reftable/0x000000000001-0x000000000002-1d179f9d.ref")), Some(super::Change::Refs));
+        assert_eq!(c(common.join("worktrees/other/reftable/tables.list")), None);
+        let canon = |p: PathBuf| if cfg!(windows) { p } else { std::fs::canonicalize(p).unwrap() };
+        let dir = canon(scratch("watch-reftable"));
+        if crate::git::run(&dir, &["init", "-q", "--ref-format=reftable", "-b", "main"]).is_err() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        identity(&dir);
+        commit(&dir, "a", "a");
+        let ctx = egui::Context::default();
+        let (_w, rx) = super::watch(&ctx, &dir).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        sh(&dir, &["branch", "x"]);
+        let full = (0..40).any(|_| rx.recv_timeout(std::time::Duration::from_millis(250)) == Ok(super::Change::Refs));
+        assert!(full, "no full reload for a branch made in a reftable repo");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

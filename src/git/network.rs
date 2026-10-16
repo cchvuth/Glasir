@@ -122,13 +122,14 @@ pub fn fetch_failure(err: &str) -> &'static str {
 /// Runs `f` with all uncommitted changes (untracked too) stashed, then reapplies them.
 /// If they conflict with the new state, the conflict markers stay and so does the stash.
 pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) -> Res<String> {
-    let top = || run(dir, &["rev-parse", "-q", "--verify", "refs/stash"]).unwrap_or_default();
+    let top = || Cancel::default().scope(|| run(dir, &["rev-parse", "-q", "--verify", "refs/stash"])).unwrap_or_default();
     let before = top();
-    run(dir, &["stash", "push", "-u", "-m", msg])?;
+    let pushed = run(dir, &["stash", "push", "-u", "-m", msg]);
     if top() == before {
-        return f(); // nothing was stashed: never pop someone else's entry
+        return pushed.and_then(|_| f()); // nothing was stashed: never pop someone else's entry
     }
-    let res = f();
+    let failed = pushed.is_err();
+    let res = pushed.and_then(|_| f());
     // Outside any cancel scope: a cancelled op must still give the changes back.
     let pop = Cancel::default().scope(|| {
         run(dir, &["stash", "pop", "--index"]).or_else(|e| {
@@ -138,6 +139,9 @@ pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) ->
     });
     match (res, pop) {
         (res, Ok(_)) => res,
+        (Err(p), Err(e)) if failed => Err(format!(
+            "{p}\n\nYour changes are kept in the stash \"{msg}\", and your files may hold some of them: check both before you drop it.\n\n{e}"
+        )),
         (_, Err(e)) if e.contains("could not restore untracked files") => Err(format!(
             "Some untracked files couldn't come back: the new state has files of the same name. They are kept only in the stash \"{msg}\", so don't drop it.\n\n{e}"
         )),
@@ -237,6 +241,58 @@ mod tests {
         assert_eq!(g(&["stash", "list"]), "");
         std::thread::sleep(std::time::Duration::from_millis(1000));
         assert!(!late.exists(), "git's children kept running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn autostash_push_that_fails_after_saving_reapplies() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("glasir-autostash-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("held")).unwrap();
+        run(&dir, &["init", "-q"]).unwrap();
+        run(&dir, &["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]).unwrap();
+        std::fs::write(dir.join("held/x"), "x\n").unwrap();
+        std::fs::write(dir.join("notes"), "precious\n").unwrap();
+        let held = |mode| std::fs::set_permissions(dir.join("held"), std::fs::Permissions::from_mode(mode)).unwrap();
+        held(0o555);
+        let res = with_autostash(&dir, "auto", || Err("ran".into()));
+        held(0o755);
+        assert!(res.as_ref().is_err_and(|e| e.contains("kept in the stash \"auto\"")), "{res:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("notes")).unwrap(), "precious\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn autostash_cancelled_after_saving_reapplies() {
+        let dir = std::env::temp_dir().join(format!("glasir-autostash-stalled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| run(&dir, args).unwrap();
+        let stall = dir.join(".git/stall");
+        g(&["init", "-q"]);
+        g(&["config", "filter.stall.smudge", &format!("rm '{}' 2>/dev/null && sleep 3; cat", stall.display())]);
+        std::fs::write(dir.join(".gitattributes"), "f filter=stall\n").unwrap();
+        std::fs::write(dir.join("f"), "one\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("f"), "mine\n").unwrap();
+        std::fs::write(dir.join("u"), "u\n").unwrap();
+        std::fs::write(&stall, "").unwrap();
+        let cancel = Cancel::default();
+        let c2 = cancel.clone();
+        std::thread::spawn(move || {
+            while stall.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            c2.cancel();
+        });
+        let res = cancel.scope(|| with_autostash(&dir, "auto", || run(&dir, &["-c", "alias.slow=!sleep 5", "slow"])));
+        assert_eq!(res, Err(CANCELLED.to_owned()));
+        let read = |p: &str| std::fs::read_to_string(dir.join(p)).unwrap_or_default();
+        assert_eq!((read("f"), read("u"), g(&["stash", "list"])), ("mine\n".into(), "u\n".into(), String::new()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

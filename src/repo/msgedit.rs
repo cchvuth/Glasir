@@ -16,7 +16,7 @@ pub struct MsgEdit {
     original: String,
     /// The branch it's rewritten on (`None`: HEAD's), and the parent steps from its tip (which
     /// parent each), to find the commit again after the rewrite renamed it.
-    at: (Option<String>, Vec<usize>),
+    pub(super) at: (Option<String>, Vec<usize>),
     /// Its reword went through: when the commit disappears, select its rewritten successor.
     saved: bool,
     /// Focus the summary field on the next frame.
@@ -253,6 +253,35 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-list", "HEAD"]).lines().map(String::from).collect::<Vec<_>>(), before);
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "dirty");
         assert_eq!(sh(&dir, &["status", "--porcelain"]).trim(), "M a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An edit opened before a commit made elsewhere moved its commit down: Save selects the
+    /// reworded commit, not the one now in its old place.
+    #[test]
+    fn reword_follows_a_commit_moved_down_since_the_edit_opened() {
+        let dir = scratch("inline-reword-moved");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for (f, m) in [("a", "one"), ("b", "two"), ("c", "three")] {
+            commit(&dir, f, m);
+        }
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let two = sh(&dir, &["rev-parse", "HEAD~1"]).trim().to_owned();
+        t.select(&ctx, Sel::Commit(two.clone()));
+        t.edit_msg = Some(MsgEdit::new(&two, "two", t.data.as_ref().unwrap().reword_path(&two).unwrap()));
+        commit(&dir, "d", "four");
+        t.apply(&ctx, Action::Reload);
+        settle(&ctx, &mut t);
+        assert!(t.edit_msg.is_some());
+        t.apply(&ctx, Action::Reword { commit: two, message: "two, better".into() });
+        settle(&ctx, &mut t);
+        let new = sh(&dir, &["rev-parse", "HEAD~2"]).trim().to_owned();
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "four\nthree\ntwo, better\none\n");
+        assert_eq!(t.sel, Some(Sel::Commit(new)));
+        assert!(t.edit_msg.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

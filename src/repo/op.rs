@@ -57,6 +57,7 @@ pub struct Op {
     /// Run (even when cancelled) if a command fails: rolls a multi-step op back, stopping at a failing step.
     pub on_fail: Vec<Vec<String>>,
     pub reword: Option<String>,
+    pub parked: bool,
 }
 
 /// What an op is about to overwrite, backed up first so ⌘Z brings it back.
@@ -90,6 +91,7 @@ impl Op {
             custom: false,
             on_fail: vec![],
             reword: None,
+            parked: false,
         }
     }
     pub fn revert(mut self, op: Op) -> Self {
@@ -501,7 +503,7 @@ pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool)
 /// still at `oid` (undo would bring back that commit); `BRANCH_RESTORE name oid key value..`
 /// recreates it with its config.
 const BRANCH_DELETE: &str = "!branch-delete";
-const BRANCH_RESTORE: &str = "!branch-restore";
+pub(super) const BRANCH_RESTORE: &str = "!branch-restore";
 
 fn branch_cmd(dir: &Path, a: &[&str]) -> Res<String> {
     match a {
@@ -650,7 +652,7 @@ fn apply_stash(dir: &Path, id: &str, target: &str, pop: bool) -> Res<String> {
 /// back with the op's backup), a renamed stash's old message.
 pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
     let saving = op.cmds.iter().any(|c| c.iter().skip_while(|a| a.starts_with("--")).take(2).eq(["stash", "push"]));
-    let top = || git::run(dir, &["rev-parse", "-q", "--verify", "refs/stash"]).map(|s| s.trim().to_owned()).unwrap_or_default();
+    let top = || git::Cancel::default().scope(|| git::run(dir, &["rev-parse", "-q", "--verify", "refs/stash"])).map(|s| s.trim().to_owned()).unwrap_or_default();
     let before = saving.then(top);
     let find = |cmd: &str| op.cmds.iter().find(|c| c.len() >= 2 && c[0] == cmd).map(|c| c[1].clone());
     let stash = |id: Option<String>| id.and_then(|id| git::stashes(dir).ok()?.into_iter().find(|s| s.id == id));
@@ -733,17 +735,24 @@ pub fn drop_stashes(all: &[git::Stash], names: &[String]) -> Op {
     op.revert(back)
 }
 
-fn amend_rewrites_pushed(d: &RepoData) -> Option<String> {
-    let (s, head) = (&d.status, d.status.head.as_deref()?);
-    match &s.upstream {
-        Some(up) => (s.ahead == 0).then(|| super::rebase::rewrites_pushed(1, Some(up))),
-        None => d.refs.iter().any(|r| r.kind == RefKind::Remote && r.target == head).then(|| super::rebase::rewrites_pushed(1, None)),
-    }
+pub(super) fn network(op: &Op) -> bool {
+    op.cmds.iter().any(|c| matches!(c[0].as_str(), "fetch" | "pull" | "push" | "remote" | super::cleanup::REMOTE_DELETE | super::tools::SHELL))
 }
 
-/// Check out a ref: local branch, remote branch (its local twin fast-forwarded, a new
-/// tracking branch, or, when the twin tracks something else, a new branch named in a prompt),
-/// or a tag (detached). A branch checked out in another worktree opens that worktree instead.
+fn amend_rewrites_pushed(d: &RepoData) -> Option<String> {
+    let (s, head) = (&d.status, d.status.head.as_deref()?);
+    if let Some(up) = s.upstream.as_deref().filter(|u| s.ahead == 0 && d.refs.iter().any(|r| r.kind != RefKind::Tag && r.name == *u)) {
+        return Some(super::rebase::rewrites_pushed(1, Some(up)));
+    }
+    let row = d.row_of.get(head);
+    let on = |r: &Ref| r.target == head || row.zip(d.row_of.get(&r.target)).is_some_and(|(&h, &t)| t <= h && d.reachable(t)[h]);
+    d.refs.iter().any(|r| r.kind == RefKind::Remote && on(r)).then(|| super::rebase::rewrites_pushed(1, None))
+}
+
+/// Check out a ref: local branch, remote branch (the local branch tracking it, else its local
+/// twin, fast-forwarded; a new tracking branch; or, when the twin tracks something else, a new
+/// branch named in a prompt), or a tag (detached). A branch checked out in another worktree
+/// opens that worktree instead.
 pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
     match r.kind {
         RefKind::Local if r.head => None,
@@ -752,9 +761,12 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
         RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
             let split = d.split_remote(&r.name);
-            let local = split.map_or(r.name.as_str(), |s| s.1);
+            let twin = split.map_or(r.name.as_str(), |s| s.1);
+            let tracks = |l: &&Ref| l.kind == RefKind::Local && l.upstream == r.name;
+            let local = d.local(twin).filter(tracks).or_else(|| d.refs.iter().find(tracks)).map_or(twin, |l| l.name.as_str());
             if d.local(local).is_some_and(|l| !l.upstream.is_empty() && l.upstream != r.name) {
-                let name = split.map_or_else(|| r.name.replace('/', "-"), |(rem, b)| format!("{rem}-{b}"));
+                let base = split.map_or_else(|| r.name.replace('/', "-"), |(rem, b)| format!("{rem}-{b}"));
+                let name = (1..).map(|i| if i == 1 { base.clone() } else { format!("{base}-{i}") }).find(|n| d.local(n).is_none())?;
                 let op = Op::new(format!("Checkout {}", r.name), &["checkout", "-b", "{}", "--track", &r.full, "--"]).undo(Undo::Keep);
                 return Some(super::action::prompt(format!("New branch for {} (your {local} doesn't track it)", r.name), name, op));
             }
@@ -793,7 +805,7 @@ impl RepoTab {
             return self.retry_or_skip(ctx, cmd == UNDO_SKIP, undo == "1", id);
         }
         if self.tool_blocks(&op.label, |p| super::tools::touches(&op, p)) {
-            return self.unpark_rebase();
+            return if op.parked { self.unpark_rebase() };
         }
         if op.confirm.is_some() {
             self.confirm = Some(op);
@@ -801,16 +813,15 @@ impl RepoTab {
         }
         if let Some((busy, _)) = &self.running {
             self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
-            return self.unpark_rebase();
+            return if op.parked { self.unpark_rebase() };
         }
-        self.parked_rebase = None;
+        if op.parked {
+            self.parked_rebase = None;
+        }
         if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
             return self.open_tool(ctx, op, kind);
         }
-        let bg = self.bg_fetch.take_if(|_| op.cmds.iter().any(|c| matches!(c[0].as_str(), "fetch" | "pull" | "push" | super::cleanup::REMOTE_DELETE)));
-        if bg.is_some() {
-            self.bg_cancel.cancel();
-        }
+        let common = network(&op).then(|| self.common.clone());
         let op = super::stack::follow(op, self.data.as_ref());
         let dir = self.dir.clone();
         let label = op.label.clone();
@@ -819,9 +830,7 @@ impl RepoTab {
         self.running = Some((
             label,
             Task::spawn(ctx, move || {
-                if let Some(t) = bg {
-                    let _ = t.0.recv();
-                }
+                let _turn = common.map(super::fetch::Fetching::user);
                 // Durable before anything runs: Err refuses the op. One that moves HEAD (checkout,
                 // merge, rebase, continue, abort...) backs up what git may overwrite there: ignored
                 // files where its commits put one, and a stopped merge's resolutions.
@@ -875,6 +884,7 @@ impl RepoTab {
                 if push_next {
                     op.label = "Commit".into();
                 }
+                let fetch_next = op.cmds[0].get(..3).filter(|c| res.is_ok() && c[..2] == ["remote", "add"]).map(|c| c[2].clone());
                 match &res {
                     Ok(out) if !op.light => {
                         // A custom shell command's output is the point: show its last lines.
@@ -942,7 +952,9 @@ impl RepoTab {
                     (super::split::FINISH, true) => self.finish_split(),
                     // Stopped on a conflict in a later commit: the split ends with that rebase (below).
                     (super::split::FINISH, false) => match self.split.as_mut() {
-                        Some(sp) if sp.rebase && self.data.as_ref().is_some_and(|d| git::state(&d.git_dir) == git::State::Rebasing) => sp.replaying = true,
+                        Some(sp) if sp.rebase && self.data.as_ref().is_some_and(|d| git::state(&d.git_dir) == git::State::Rebasing) => {
+                            sp.replaying = git::run(&self.dir, &["rev-parse", "-q", "--verify", "REBASE_HEAD"]).is_ok_and(|h| h.trim() != sp.id)
+                        }
                         // A HEAD split's commit refused (a hook): HEAD is where it was, the split goes on.
                         Some(sp) if !sp.rebase => {}
                         _ => self.split = None,
@@ -983,6 +995,9 @@ impl RepoTab {
                 }
                 if let (true, Some(p)) = (push_next, self.push_op(false)) {
                     self.run(ctx, p);
+                }
+                if let Some(name) = fetch_next {
+                    self.run(ctx, Op::new(format!("Fetch {name}"), &["fetch", "--progress", &name]));
                 }
             }
             Done::Undo(was_undo, id, res) => {
@@ -1039,7 +1054,11 @@ impl RepoTab {
                 return self.prepare(ctx, move |dir| {
                     let act = if drop { crate::repo::rebase::Act::Drop } else { crate::repo::rebase::Act::Squash };
                     let op = crate::repo::rebase::multi(dir, &git_dir, &ids, act);
-                    Dropped::from(op.map(|o| if drop { o.confirm(format!("Drop {n} commits from the current branch? (Undo with ⌘Z.)")) } else { o }))
+                    Dropped::from(op.map(|o| {
+                        let ask = format!("Drop {n} commits from the current branch? (Undo with ⌘Z.)");
+                        let text = o.confirm.as_ref().map_or_else(|| ask.clone(), |pushed| format!("{ask}\n\n{pushed}"));
+                        if drop { o.confirm(text) } else { o }
+                    }))
                 });
             }
         };
@@ -1122,7 +1141,10 @@ impl RepoTab {
         }
         // Not after an amend: that push would need a force. `poll_op` pushes once it's committed.
         let push = self.push_after && !self.amend && self.push_op(false).is_some();
-        let op = Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
+        let mut op = Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
+        if let Some((_, _, head)) = self.amend_prev.as_ref().filter(|_| self.amend) {
+            op.cmds.insert(0, vec![super::rebase::HEAD_IS.into(), head.clone()]);
+        }
         match self.data.as_ref().filter(|_| self.amend).and_then(amend_rewrites_pushed) {
             Some(text) => op.confirm(text),
             None => op,
@@ -1143,17 +1165,21 @@ impl RepoTab {
         self.prefill_template();
     }
 
-    /// Amend ticked on an empty box: fetch HEAD's message off the UI thread, remembering what was there.
+    /// Amend ticked on an empty box: fetch HEAD's message off the UI thread, remembering what was
+    /// there and which HEAD that is (as loaded).
     pub(super) fn fill_amend(&mut self, ctx: &egui::Context) {
+        let Some(s) = self.data.as_ref().map(|d| &d.status) else { return };
+        let head = s.head.clone().unwrap_or_default();
+        let pin = format!("{} {head}", s.branch.as_deref().map(|b| format!("refs/heads/{b}")).unwrap_or_default());
         let dir = self.dir.clone();
-        self.amend_prev = Some(((self.summary.clone(), self.body.clone()), Default::default()));
-        self.amend_task = Some(super::Task::spawn(ctx, move || git::run(&dir, &["log", "-1", "--format=%B"]).ok()));
+        self.amend_prev = Some(((self.summary.clone(), self.body.clone()), Default::default(), pin));
+        self.amend_task = Some(super::Task::spawn(ctx, move || git::run(&dir, &["log", "-1", "--format=%B", &head]).ok()));
     }
 
     /// Amend unticked: the message it prefilled goes, unless it was edited.
     pub(super) fn unfill_amend(&mut self) {
         self.amend_task = None;
-        if let Some((prev, filled)) = self.amend_prev.take()
+        if let Some((prev, filled, _)) = self.amend_prev.take()
             && (&self.summary, &self.body) == (&filled.0, &filled.1)
         {
             (self.summary, self.body) = prev;
@@ -1162,7 +1188,7 @@ impl RepoTab {
 
     pub(super) fn poll_amend(&mut self) {
         if let Some(Some(msg)) = super::Task::poll(&mut self.amend_task)
-            && let Some((prev, filled)) = &mut self.amend_prev
+            && let Some((prev, filled, _)) = &mut self.amend_prev
             && self.amend
             && (&self.summary, &self.body) == (&prev.0, &prev.1)
         {
@@ -1192,10 +1218,11 @@ impl RepoData {
     /// (pushRemote / pushDefault, not the upstream's remote).
     pub fn push_op(&self, force: bool) -> Option<Op> {
         let branch = self.status.branch.as_deref()?;
+        let src = format!("refs/heads/{branch}");
         let fork = self.cfg(&format!("branch.{branch}.pushremote")).or(self.cfg("remote.pushdefault"));
         let Some((up_remote, up_rb)) = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up)) else {
             let remote = fork.or(self.default_remote())?;
-            return Some(Op::new("Push", &["push", "--progress", "-u", remote, branch]));
+            return Some(Op::new("Push", &["push", "--progress", "-u", remote, &src]));
         };
         // Triangular: push.default simple/current push to the same name on the fork.
         let (remote, rb) = match fork {
@@ -1209,15 +1236,15 @@ impl RepoData {
             return Some(if remote != up_remote {
                 Op::new("Push", &["push", "--progress"])
             } else if self.status.upstream.as_deref() != Some(up.as_str()) {
-                Op::new("Push", &["push", "--progress", "-u", remote, branch])
+                Op::new("Push", &["push", "--progress", "-u", remote, &src])
             } else if rb == branch {
                 Op::new("Push", &["push", "--progress"])
             } else {
-                Op::new("Push", &["push", "--progress", remote, &format!("{branch}:refs/heads/{rb}")])
+                Op::new("Push", &["push", "--progress", remote, &format!("{src}:refs/heads/{rb}")])
             });
         }
         let sha = self.refs.iter().find(|r| r.kind == RefKind::Remote && r.name == up).map_or("", |r| r.target.as_str());
-        let (lease, spec) = (format!("--force-with-lease=refs/heads/{rb}:{sha}"), format!("{branch}:refs/heads/{rb}"));
+        let (lease, spec) = (format!("--force-with-lease=refs/heads/{rb}:{sha}"), format!("{src}:refs/heads/{rb}"));
         let args = ["push", "--progress", &lease, "--force-if-includes", remote, &spec];
         let at = if sha.is_empty() { "doesn't exist".into() } else { format!("is still at {}", &sha[..7.min(sha.len())]) };
         let text = format!(
@@ -1265,6 +1292,125 @@ mod tests {
         let _ = std::fs::remove_dir_all(&remote);
     }
 
+    /// Amend asks by what the remotes have: not for a gone upstream, but for a HEAD on another
+    /// remote's branch (triangular: tracking upstream/main, pushed to origin), there below its tip too.
+    #[test]
+    fn amend_asks_when_any_remote_branch_has_head() {
+        let dir = scratch("amend-remotes");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        commit(&dir, "b", "two");
+        for r in ["origin", "upstream"] {
+            sh(&dir, &["remote", "add", r, "https://example.invalid/r.git"]);
+        }
+        sh(&dir, &["config", "branch.main.remote", "origin"]);
+        sh(&dir, &["config", "branch.main.merge", "refs/heads/main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        (t.amend, t.summary) = (true, "two, better".into());
+        assert!(t.commit_op().confirm.is_none(), "a gone upstream holds nothing");
+        let child = sh(&dir, &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "three"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", child.trim()]);
+        sh(&dir, &["update-ref", "refs/remotes/upstream/main", "HEAD~1"]);
+        sh(&dir, &["branch", "-q", "--set-upstream-to=upstream/main"]);
+        let mut ask = || {
+            t.reload(&ctx, true);
+            settle(&ctx, &mut t);
+            t.commit_op().confirm
+        };
+        assert!(ask().is_some_and(|c| c.contains("1 commit already on a remote branch")));
+        sh(&dir, &["branch", "--unset-upstream"]);
+        assert!(ask().is_some_and(|c| c.contains("1 commit already on a remote branch")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Dropping pushed commits of a multi-selection asks once, with the pushed warning kept.
+    #[test]
+    fn multi_drop_of_pushed_commits_keeps_the_warning() {
+        let dir = scratch("multi-drop-pushed");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a", "b", "c"] {
+            commit(&dir, f, f);
+        }
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let ids = ["HEAD", "HEAD~1"].map(|r| sh(&dir, &["rev-parse", r]).trim().to_owned()).to_vec();
+        t.apply(&ctx, Action::MultiOp(crate::repo::MultiOp::Drop, ids));
+        settle(&ctx, &mut t);
+        let ask = t.confirm.take().and_then(|o| o.confirm).unwrap_or_default();
+        assert!(ask.starts_with("Drop 2 commits") && ask.contains("1 commit already on a remote branch"), "{ask}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn amend_refuses_once_head_moved_from_the_commit_it_filled_in() {
+        let dir = scratch("amend-pinned");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        sh(&dir, &["branch", "other"]);
+        commit(&dir, "a", "two");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.amend = true;
+        t.apply(&ctx, Action::AmendToggled(true));
+        super::super::testutil::wait_for("the message", || {
+            t.poll(&ctx, &mut vec![]);
+            t.summary == "two"
+        });
+        sh(&dir, &["checkout", "-q", "other"]);
+        let other = sh(&dir, &["rev-parse", "other"]);
+        let op = t.commit_op();
+        let msgs = run(&ctx, &mut t, Action::Git(op));
+        assert_eq!(sh(&dir, &["rev-parse", "other"]), other);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("changed since")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        sh(&dir, &["checkout", "-q", "main"]);
+        t.summary = "two, better".into();
+        let op = t.commit_op();
+        run(&ctx, &mut t, Action::Git(op));
+        assert_eq!(sh(&dir, &["log", "--format=%s", "main"]), "two, better\none\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_parked_plan_comes_back_when_its_rewrite_is_skipped() {
+        use super::super::rebase::{Act, Editor};
+        let dir = scratch("parked-plan");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        sh(&dir, &["checkout", "-q", "-b", "side"]);
+        commit(&dir, "s", "side");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a", "two");
+        commit(&dir, "a", "three");
+        let side = sh(&dir, &["rev-parse", "side"]).trim().to_owned();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let git_dir = t.data.as_ref().unwrap().git_dir.clone();
+        let mut rebase = Editor::load(&dir, "HEAD~2", "one").unwrap();
+        rebase.items[0].act = Act::Drop;
+        for ed in [rebase, Editor::cherry_pick(&dir, &[side]).unwrap()] {
+            let start = ed.start(&git_dir).unwrap();
+            assert!(matches!(start, Action::RunRebase { .. }));
+            t.rebase = Some(ed);
+            t.apply(&ctx, start);
+            t.apply(&ctx, Action::Git(Op::new("Slow", &["-c", "alias.slow=!sleep 3", "slow"])));
+            settle(&ctx, &mut t);
+            assert!(t.rebase.take().is_some(), "the plan is back");
+            assert_eq!(sh(&dir, &["log", "--format=%s"]), "three\ntwo\none\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Double-clicking R/x fast-forwards the local x that tracks it (or nothing). One tracking something else
     /// (fork workflow: feat tracks origin/feat, mate/feat is a teammate's) is never moved: the
     /// prompt asks for a new branch tracking R/x.
@@ -1302,6 +1448,16 @@ mod tests {
         exec(&dir, &fill(Action::Prompt(p), "mate-feat")).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "mate-feat@{u}"]), "mate/feat\n");
         assert_eq!((sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["rev-parse", "--abbrev-ref", "feat@{u}"])), (feat, "origin/feat\n".into()));
+        sh(&dir, &["checkout", "-q", "main"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
+        let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!("checks out the branch made for it") };
+        assert_eq!(op.cmds[0], ["checkout", "mate-feat", "--"]);
+        sh(&dir, &["branch", "--unset-upstream", "mate-feat"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
+        let Some(Action::Prompt(p)) = super::branch_checkout(&d, r) else { panic!("asks for a new branch") };
+        assert_eq!(p.value, "mate-feat-2");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1651,6 +1807,34 @@ mod tests {
         settle(&ctx, &mut t);
         assert!(t.choice.as_ref().is_some_and(|c| c.title == "Undo failed"));
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: top\n");
+        sh(&dir, &["config", "--unset", "core.hooksPath"]);
+        let skip = t.choice.take().unwrap().ops.remove(1).1;
+        let msgs = run(&ctx, &mut t, Action::Git(skip));
+        assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: bottom\nOn main: top\n", "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skipping_a_failed_branch_restore_keeps_its_tip() {
+        let dir = scratch("skip-restore");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "base");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "a", "only on x");
+        let tip = sh(&dir, &["rev-parse", "x"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let op = super::delete_branches(t.data.as_ref().unwrap(), "Delete x".into(), &["x"], true);
+        run(&ctx, &mut t, Action::Git(op));
+        sh(&dir, &["branch", "x"]);
+        run(&ctx, &mut t, Action::Undo);
+        let skip = t.choice.take().expect("x can't come back").ops.remove(1).1;
+        let msgs = run(&ctx, &mut t, Action::Git(skip));
+        assert_eq!(sh(&dir, &["rev-parse", "stash@{0}^1"]), tip);
+        assert!(msgs.iter().any(|m| m.text.contains("(branch x at ")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

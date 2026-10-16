@@ -2,7 +2,7 @@
 //! branch cleanup, absorb preview, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
-use crate::ui::format::{dismissed, keys, plural};
+use crate::ui::format::{dismissed, keys, on_top, plural};
 use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, Prompt, RepoTab, Undo};
@@ -17,17 +17,18 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     egui::Modal::new(Id::new("prompt")).show(ctx, |ui| {
         ui.set_width(360.0);
         ui.heading(&p.title);
+        let top = on_top(ui);
         let first = ui.add(TextEdit::singleline(&mut p.value).margin(crate::theme::INPUT_MARGIN).desired_width(f32::INFINITY));
         if let Some((hint, v2)) = &mut p.second {
             ui.add(TextEdit::multiline(v2).margin(crate::theme::INPUT_MARGIN).hint_text(keys(hint)).desired_rows(3).desired_width(f32::INFINITY));
-        } else {
+        } else if top {
             first.request_focus();
         }
         if let Some(sign) = &mut p.sign {
             ui.checkbox(sign, "Sign tag").on_hover_text("git tag --sign, with your configured key (gpg.format, user.signingkey); default from tag.gpgSign");
         }
         ui.horizontal(|ui| {
-            let enter = ui.input(|i| i.key_pressed(Key::Enter) && (p.second.is_none() || i.modifiers.command));
+            let enter = top && ui.input(|i| i.key_pressed(Key::Enter) && (p.second.is_none() || i.modifiers.command));
             if ui.button("OK").clicked() || enter {
                 done = Some(true);
             }
@@ -39,8 +40,8 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
     if let Some(ok) = done {
         let p = t.prompt.take().unwrap();
         let v = p.value.trim();
-        // `-m ""` gives git's default message (a stash).
-        let optional = p.op.cmds.iter().any(|c| c.windows(2).any(|w| w == ["-m", "{}"]));
+        // `-m ""` gives git's default message (a stash), `--reason ""` none (a worktree lock).
+        let optional = p.op.cmds.iter().any(|c| c.windows(2).any(|w| w == ["-m", "{}"] || w == ["--reason", "{}"]));
         if ok && (!v.is_empty() || optional) {
             let mut op = p.op;
             if let Some(sign) = p.sign {
@@ -87,6 +88,22 @@ mod fill_tests {
         assert_eq!(filled, [vec!["checkout", "-b", "new", "x{}"], vec!["branch", "-m", "a{}b", "new"], vec!["tag", "-a", "new", "-m", "msg", "{2}x"]]);
         let path = format!("/w/{{}}/repo.worktrees/{}", crate::repo::Prompt::VALUE);
         assert_eq!(super::fill_arg(&path, "feat", ""), "/w/{}/repo.worktrees/feat");
+    }
+
+    #[test]
+    fn an_empty_lock_reason_still_locks() {
+        use crate::repo::{Action, Op, Prompt};
+        let mut sim = crate::ui::testkit::Sim::new(800.0, 600.0);
+        let mut t = crate::ui::testkit::tab(&sim.ctx, "lock-reason", &["one"]);
+        let op = Op::new("Lock worktree", &["worktree", "lock", "--reason", "{}", "/wt"]);
+        t.prompt = Some(Prompt { title: "Lock reason (optional)".into(), value: String::new(), op, second: None, sign: None });
+        let mut acts = vec![];
+        let mut draw = |ui: &mut egui::Ui| super::prompt_dialog(&mut t, ui.ctx(), &mut acts);
+        sim.frame(vec![], &mut draw);
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s == "OK").expect("the OK button");
+        sim.click(at, egui::PointerButton::Primary, &mut draw);
+        assert!(matches!(&acts[..], [Action::Git(op)] if op.cmds[0] == ["worktree", "lock", "--reason", "", "/wt"]), "{acts:?}");
     }
 }
 
@@ -427,7 +444,7 @@ pub(super) fn choice_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
 /// The menu shown after dropping a commit onto a commit or a branch.
 pub(super) fn commit_drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let Some((title, items, at)) = &t.commit_drop else { return };
-    let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
+    let mut close = false;
     let area = egui::Area::new(Id::new("commit_drop_menu")).order(egui::Order::Foreground).fixed_pos(*at).show(ctx, |ui| {
         Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(260.0);
@@ -468,7 +485,7 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
     };
     let (src, dst, src_rev, dst_rev) = (&s.name, &dr.name, d.rev(s), d.rev(dr));
     let local = |r: &git::Ref| r.kind == git::RefKind::Local;
-    let mut close = ctx.input(|i| i.key_pressed(Key::Escape));
+    let mut close = false;
     let area = egui::Area::new(Id::new("drop_menu")).order(egui::Order::Foreground).fixed_pos(at).show(ctx, |ui| {
         Frame::popup(ui.style()).show(ui, |ui| {
             ui.set_min_width(260.0);

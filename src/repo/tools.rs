@@ -87,9 +87,10 @@ fn quote(s: &str) -> String {
     }
 }
 
-/// The first `{key}` inside quotes or (sh) backticks the user wrote, or right after an escape: there
-/// ours would end theirs (`''$(…)''`; a backtick in the value ends `` `…` ``, quotes or not) or be
-/// literal (`"'$(…)'"`, `\'$(…)'`), leaving the value open to the shell.
+/// The first `{key}` inside quotes, (sh) backticks or arithmetic the user wrote, or right after an
+/// escape or (sh) a `$`: there ours would end theirs (`''$(…)''`; a backtick in the value ends
+/// `` `…` ``, quotes or not), be literal (`"'$(…)'"`, `\'$(…)'`, `$(('$(…)'))`) or turn into
+/// ANSI-C quoting (`${key}` → `$'…'`), leaving the value open to the shell.
 fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
     let esc = if cfg!(windows) { '`' } else { '\\' };
     let key = |i: usize| keys.iter().find(|k| line[i + 1..].strip_prefix(**k).is_some_and(|r| r.starts_with('}'))).copied();
@@ -111,8 +112,10 @@ fn quoted_key<'a>(line: &str, keys: &[&'a str]) -> Option<&'a str> {
                     return key(j);
                 }
             }
-            // ANSI-C `$'…'`: where it ends depends on the shell (`\'`), so every later key counts as quoted.
-            (None, '$') if !cfg!(windows) && line[i + 1..].starts_with('\'') => {
+            (None, '$') if !cfg!(windows) && line[i + 1..].starts_with('{') && key(i + 1).is_some() => return key(i + 1),
+            // ANSI-C `$'…'`: where it ends depends on the shell (`\'`); arithmetic `$((…))` / `$[…]`
+            // keeps quotes literal. So every later key counts as quoted.
+            (None, '$') if !cfg!(windows) && ["'", "((", "["].iter().any(|s| line[i + 1..].starts_with(s)) => {
                 chars.next();
                 open = Some('$');
             }
@@ -142,7 +145,7 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
         }
         _ => {
             if let Some(k) = quoted_key(line, &vals.map(|(k, _)| k)) {
-                return Err(format!("Remove the quotes, backticks or escape around {{{k}}} in custom command '{}' (use $(…) for backticks): Glasir quotes values itself.", c.name.trim()));
+                return Err(format!("Remove the quotes, backticks, $ or escape around {{{k}}} in custom command '{}' (use $(…) for backticks): Glasir quotes values itself.", c.name.trim()));
             }
             Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)])
         }
@@ -493,9 +496,10 @@ mod tests {
         for command in ["echo \"{branch}\"", "prettier --write '{path}'", "echo \"a $(cat '{sha}')\"", &escaped[0], &escaped[1]] {
             assert!(run(command).is_err_and(|e| e.contains("Remove the quotes")), "{command}");
         }
-        // ANSI-C quoting: `\'` ends it in some shells only, so ours may land inside.
+        // ANSI-C quoting: `\'` ends it in some shells only, so ours may land inside; `${path}` would
+        // become `$'…'`; arithmetic keeps our quotes literal.
         #[cfg(unix)]
-        for command in ["echo $'\\'{path}", "echo $'\\'' {path}'"] {
+        for command in ["echo $'\\'{path}", "echo $'\\'' {path}'", "cat ${path}", "echo $(( {sha} + 1 ))", "echo $[{sha}]"] {
             assert!(run(command).is_err(), "{command}");
         }
         #[cfg(unix)]
@@ -504,6 +508,7 @@ mod tests {
                 assert!(run(command).is_err_and(|e| e.contains("Remove the quotes, backticks")), "{command}");
             }
             assert!(run("echo `date` {branch} \\` {sha}").is_ok());
+            assert!(run("echo ${HOME} \\${path}").is_ok());
         }
         let o = run(&format!("echo {{branch}} \"{{nope}}\" {esc}\"{{sha}}")).unwrap();
         assert_eq!(o.cmds[0][1], format!("echo 'x$(touch${{IFS}}PWNED)' \"{{nope}}\" {esc}\"'abc'"));

@@ -186,9 +186,89 @@ pub fn file_row(ui: &mut Ui, c: &Change, selected: bool, lfs: bool, stat: Option
 #[cfg(test)]
 mod tests {
     use crate::git::{Change, CommitInfo};
-    use crate::repo::{Action, Sel};
+    use crate::repo::{Action, DiffSrc, RepoTab, Sel};
     use crate::ui::testkit::{Sim, load, tab};
     use egui::{Event, PointerButton, RawInput, pos2, vec2};
+
+    fn wait_details(t: &mut RepoTab, ctx: &egui::Context, id: Option<String>) {
+        if let Some(id) = id {
+            t.select(ctx, Sel::Commit(id));
+        }
+        crate::repo::testutil::wait_for("the commit details", || {
+            t.poll(ctx, &mut vec![]);
+            t.info.is_some()
+        });
+    }
+
+    #[test]
+    fn each_tab_shows_its_own_commit_tree() {
+        let mut sim = Sim::new(420.0, 600.0);
+        let mut tabs = ["a.txt", "b.txt"].map(|f| {
+            let mut t = tab(&sim.ctx, &format!("tree-{f}"), &["x"]);
+            wait_details(&mut t, &sim.ctx, None);
+            std::fs::write(t.dir.join(f), f).unwrap();
+            for args in [&["add", f][..], &["commit", "-q", "-m", f]] {
+                crate::git::run(&t.dir, args).unwrap();
+            }
+            t.reload(&sim.ctx, true);
+            load(&mut t, &sim.ctx);
+            let head = t.data.as_ref().and_then(|d| d.status.head.clone());
+            wait_details(&mut t, &sim.ctx, head);
+            t
+        });
+        let (mut tree, mut acts) = (true, vec![]);
+        for t in &mut tabs {
+            sim.frame(vec![], |ui| t.details(ui, &mut tree, &mut acts));
+        }
+        assert!(sim.text(|s| s == "b.txt").is_some() && sim.text(|s| s == "a.txt").is_none(), "the second tab shows the first one's files");
+    }
+
+    #[test]
+    fn enter_in_a_summary_moves_on_to_the_description() {
+        let mut sim = Sim::new(420.0, 700.0);
+        let mut t = tab(&sim.ctx, "summary-enter", &["x"]);
+        wait_details(&mut t, &sim.ctx, None);
+        let enter = Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        let (mut tree, mut acts) = (false, vec![]);
+        let mut type_in = |sim: &mut Sim, t: &mut RepoTab| {
+            for events in [vec![], vec![enter.clone()], vec![], vec![Event::Text("b".into())]] {
+                sim.frame(events, |ui| t.details(ui, &mut tree, &mut acts));
+            }
+        };
+        let id = t.info.as_ref().and_then(|i| i.as_ref().ok()).map(|i| i.id.clone()).unwrap();
+        t.edit_msg = Some(crate::repo::MsgEdit::new(&id, "x", (None, vec![])));
+        type_in(&mut sim, &mut t);
+        let e = t.edit_msg.as_ref().unwrap();
+        assert_eq!((e.summary.as_str(), e.body.as_str()), ("x", "b"), "the message editor");
+        std::fs::write(t.dir.join("f"), "changed").unwrap();
+        t.reload(&sim.ctx, false);
+        load(&mut t, &sim.ctx);
+        (t.sel, t.focus_summary, t.summary) = (Some(Sel::Wip), true, "x".into());
+        type_in(&mut sim, &mut t);
+        assert_eq!((t.summary.as_str(), t.body.as_str()), ("x", "b"), "the commit box");
+    }
+
+    #[test]
+    fn a_stash_row_diffs_against_the_list_it_is_in() {
+        let mut sim = Sim::new(420.0, 600.0);
+        let mut t = tab(&sim.ctx, "stash-both", &["x"]);
+        std::fs::write(t.dir.join(".env"), "k").unwrap();
+        for args in [&["add", ".env"][..], &["commit", "-q", "-m", "env"], &["rm", "-q", "--cached", ".env"]] {
+            crate::git::run(&t.dir, args).unwrap();
+        }
+        std::fs::write(t.dir.join(".env"), "k2").unwrap();
+        crate::git::run(&t.dir, &["stash", "-u"]).unwrap();
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let stash = t.data.as_ref().unwrap().stashes[0].id.clone();
+        wait_details(&mut t, &sim.ctx, Some(stash.clone()));
+        let (mut tree, mut acts) = (false, vec![]);
+        sim.frame(vec![], |ui| t.details(ui, &mut tree, &mut acts));
+        let at = sim.text(|s| s == ".env").expect("the tracked row");
+        sim.click(at, PointerButton::Primary, |ui| t.details(ui, &mut tree, &mut acts));
+        let diffs: Vec<_> = acts.iter().filter_map(|a| if let Action::Diff(DiffSrc::Commit { id, change, .. }) = a { Some((id.clone(), change.code)) } else { None }).collect();
+        assert_eq!(diffs, [(stash, 'M')]);
+    }
 
     #[test]
     fn a_menu_stays_with_its_commit_file_when_the_list_changes() {

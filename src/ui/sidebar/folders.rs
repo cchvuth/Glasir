@@ -7,7 +7,7 @@ use crate::repo::{Action, RepoData};
 use crate::repo::filetree::{FileTree, Node};
 use crate::theme;
 use crate::ui::inspector::ROW_H;
-use crate::ui::inspector::tree::{INDENT, dir_row};
+use crate::ui::inspector::tree::{INDENT, dir_row, visible};
 use egui::{Id, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, Weak};
@@ -48,9 +48,7 @@ pub fn show(ui: &mut Ui, d: &RepoData, id: Id, idx: &[usize], strip: usize, filt
     };
     let (tree, vis) = (&cached.2, &cached.4);
     let step = ROW_H + ui.spacing().item_spacing.y;
-    let (top, clip) = (ui.cursor().top(), ui.clip_rect());
-    let first = (((clip.top() - top) / step).floor().max(0.0) as usize).min(vis.len());
-    let last = ((((clip.bottom() - top) / step).ceil().max(0.0) as usize) + 1).min(vis.len());
+    let (first, last) = visible(ui, step, vis.len());
     ui.add_space(first as f32 * step);
     let mut toggled = None;
     for &n in &vis[first..last] {
@@ -146,6 +144,24 @@ mod tests {
             }
         }
         assert!(heights.windows(2).all(|w| w[0] == w[1]), "{heights:?}");
+    }
+
+    #[test]
+    fn a_list_closing_above_the_view_draws_no_rows() {
+        let mut sim = Sim::new(300.0, 400.0);
+        let (_t, d) = branches(&sim, "folder-closing", &names(120));
+        let (idx, mut inverted) = ((0..120).collect::<Vec<_>>(), false);
+        for (off, open) in [(0.0, true), (2000.0, false)] {
+            sim.frame(vec![], |ui| {
+                ScrollArea::vertical().vertical_scroll_offset(off).show(ui, |ui| {
+                    egui::CollapsingHeader::new("TAGS").open(Some(open)).show(ui, |ui| {
+                        inverted |= !ui.clip_rect().is_positive();
+                        show(ui, &d, Id::new("tree"), &idx, 0, "b", None, &mut vec![], |ui, r, name, acts| local_row(ui, &d, r, name, 0, acts))
+                    });
+                });
+            });
+        }
+        assert!(inverted, "the closing body's clip rect was not inverted");
     }
 
     #[test]

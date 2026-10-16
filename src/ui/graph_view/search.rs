@@ -1,7 +1,7 @@
 //! The ⌘F search bar above the graph. The query, the git search and its hits live in
 //! `crate::repo::Search`.
 
-use crate::ui::format::{esc_pressed, keys, view_key};
+use crate::ui::format::{esc_pressed_in, keys, view_key};
 use crate::repo::{Action, RepoData, Search, Sel};
 use crate::theme::{self, icon};
 use egui::{Button, Key, Ui};
@@ -71,6 +71,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
             ui.label(egui::RichText::new(icon::MAGNIFYING_GLASS).color(theme::dim(ui)));
             let te = ui.add(
                 egui::TextEdit::singleline(&mut s.query)
+                    .id(egui::Id::new(("graph_search", &d.git_dir)))
                     .margin(crate::theme::INPUT_MARGIN)
                     .hint_text("Search commits, or author: path: code: …")
                     .desired_width(ui.available_width().min(320.0)),
@@ -79,7 +80,7 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
             if std::mem::take(&mut s.focus) {
                 te.request_focus();
             }
-            let (enter, esc) = (ui.input(|i| i.key_pressed(Key::Enter)), esc_pressed(ui));
+            let (enter, esc) = (ui.input(|i| i.key_pressed(Key::Enter)), esc_pressed_in(ui, te.id));
             if te.lost_focus() && enter {
                 step = if shift { -1 } else { 1 };
                 te.request_focus();
@@ -104,4 +105,29 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
         }
     }
     close
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::testkit::{Sim, tab};
+
+    #[test]
+    fn the_field_keeps_its_focus_when_the_history_button_appears() {
+        let mut sim = Sim::new(700.0, 100.0);
+        let mut t = tab(&sim.ctx, "search-focus", &["one"]);
+        let d = t.data.take().unwrap();
+        let mut s = Search::open(t.dir.clone());
+        let draw = |sim: &mut Sim, s: &mut Search| {
+            for _ in 0..2 {
+                sim.frame(vec![], |ui| _ = search_bar(ui, s, &d, &mut None, &mut vec![]));
+            }
+        };
+        draw(&mut sim, &mut s);
+        let field = sim.ctx.memory(|m| m.focused());
+        assert!(field.is_some(), "the field did not take focus");
+        s.history = vec!["fix".into()];
+        draw(&mut sim, &mut s);
+        assert_eq!(sim.ctx.memory(|m| m.focused()), field);
+    }
 }

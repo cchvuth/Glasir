@@ -492,6 +492,10 @@ impl Editor {
         }
     }
 
+    pub fn edited(&self) -> bool {
+        self.data.as_ref().is_some_and(|d| decode(&d.original) != self.output)
+    }
+
     /// Replace the output (e.g. with Claude's resolution).
     pub fn fill(&mut self, text: &str) {
         match like(self.data.as_ref().map_or(&[][..], |d| &d.original[..]), text) {

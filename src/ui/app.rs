@@ -8,7 +8,7 @@ use super::welcome::CloneDlg;
 use super::{command_log, graph_view, palette, repo_view};
 use crate::git;
 use crate::repo::message::Template;
-use crate::repo::{Action, Msg, RepoTab, Search, Sel, Task, fetch_op, unstage_all_op};
+use crate::repo::{Action, Msg, RepoTab, Search, Sel, Steps, Task, fetch_op, unstage_all_op};
 use crate::theme::{self, icon};
 use egui::{Frame, Key, Margin, Modifiers, RichText, Ui};
 use std::collections::HashMap;
@@ -29,6 +29,7 @@ pub struct App {
     pub(super) bench: Option<usize>,
     pub(super) tabs: Vec<RepoTab>,
     drafts: HashMap<PathBuf, Draft>,
+    steps: HashMap<PathBuf, Steps>,
     /// `== tabs.len()` shows the welcome page.
     pub(super) active: usize,
     pub(super) s: Settings,
@@ -82,6 +83,7 @@ impl App {
             bench: None,
             tabs: vec![],
             drafts: HashMap::new(),
+            steps: HashMap::new(),
             active: 0,
             toasts: vec![],
             clone: None,
@@ -146,10 +148,13 @@ impl App {
         if let Some(draft) = self.drafts.remove(&top) {
             (t.summary, t.body, t.template, t.coauthors) = draft;
         }
+        if let Some(steps) = self.steps.remove(&top) {
+            t.put_steps(steps);
+        }
         t
     }
 
-    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, an amend). A typed commit message goes with the worktree it was typed for: it is back when that worktree is shown again.
+    /// Shows the worktree at `path` in tab `i` (a new tab while that one is busy or has work only it holds: unsaved edits, a split, a rebase plan, a merge, a composer plan, an amend, a commit message Claude is writing). A typed commit message and the undo / redo steps go with the worktree they belong to: they are back when that worktree is shown again.
     fn switch(&mut self, ctx: &egui::Context, i: usize, path: &Path) {
         let top = match git::run(path, &["rev-parse", "--show-toplevel"]) {
             Ok(top) => PathBuf::from(top.trim()),
@@ -162,6 +167,8 @@ impl App {
         if let Some(draft) = draft(&self.tabs[i]) {
             self.drafts.insert(self.tabs[i].dir.clone(), draft);
         }
+        let steps = self.tabs[i].take_steps();
+        self.steps.insert(self.tabs[i].dir.clone(), steps);
         drop_data_off_thread(&mut self.tabs[i]);
         self.tabs[i] = self.new_tab(ctx, top.clone());
         self.active = i;
@@ -194,10 +201,10 @@ impl App {
         if cmd && !modal && pressed(Key::O) {
             self.pick_and_open(ctx);
         }
-        if cmd && pressed(Key::Comma) {
+        if cmd && !modal && pressed(Key::Comma) {
             self.open_settings();
         }
-        if (cmd && pressed(Key::Slash)) || (!typing && pressed(Key::Questionmark)) {
+        if (!modal || self.shortcuts) && ((cmd && pressed(Key::Slash)) || (!typing && pressed(Key::Questionmark))) {
             self.shortcuts = !self.shortcuts;
         }
         if cmd && shift && pressed(Key::L) {
@@ -246,7 +253,7 @@ impl App {
         if !typing && cmd && pressed(Key::Y) {
             act = Some(Action::Redo);
         }
-        if cmd && pressed(Key::F) && t.edit.is_none() {
+        if cmd && pressed(Key::F) && t.edit.is_none() && t.merge.is_none() && t.file_view.is_none() && t.rebase.is_none() && t.reflog.is_none() {
             t.diff = None;
             t.search.get_or_insert_with(|| Search::open(t.dir.clone())).focus = true;
         }
@@ -275,8 +282,8 @@ impl App {
     /// Dropping a tab mid-op drops the op's result: its recovery (e.g. a failed Compose's
     /// unstage) and its undo step would never happen.
     pub(super) fn close_tab(&mut self, ctx: &egui::Context, i: usize) {
-        if let Some(p) = self.tabs.get(i).and_then(RepoTab::unsaved) {
-            return self.toast(ctx, format!("Save or discard your edits to {p} first."), true);
+        if let Some(w) = self.tabs.get(i).and_then(RepoTab::unsaved) {
+            return self.toast(ctx, format!("{w} first."), true);
         }
         if let Some(b) = self.tabs.get(i).and_then(RepoTab::busy).map(str::to_owned) {
             return self.toast(ctx, format!("Close this tab once '{b}' finishes (or cancel it)."), true);
@@ -334,11 +341,11 @@ impl App {
 
     fn guard_close(&mut self, ctx: &egui::Context, op_running: bool) {
         if ctx.input(|i| i.viewport().close_requested())
-            && let Some((i, p)) = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|p| (i, p.to_owned())))
+            && let Some((i, w)) = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|w| (i, w)))
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             (self.active, self.quit_pending) = (i, false);
-            self.toast(ctx, format!("Save or discard your edits to {p} before quitting."), true);
+            return self.toast(ctx, format!("{w} before quitting."), true);
         }
         if !op_running && ctx.input(|i| i.viewport().close_requested()) {
             let n: usize = self.tabs.iter().map(|t| t.term.running()).sum();
@@ -485,10 +492,18 @@ impl eframe::App for App {
         }
         self.focused = focused;
         let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
-        if hold_close(&ctx, busy.as_deref(), &mut self.quit_pending) {
+        let unsaved = self.tabs.iter().any(|t| t.unsaved().is_some());
+        if hold_close(&ctx, busy.as_deref().filter(|_| !unsaved), &mut self.quit_pending) {
             self.toast(&ctx, format!("Quitting once '{}' finishes (or cancel it).", busy.as_deref().unwrap_or_default()), false);
         }
         self.guard_close(&ctx, busy.is_some());
+        let menu = self.tabs.get_mut(self.active).filter(|t| t.drop_menu.is_some() || t.commit_drop.is_some());
+        if (menu.is_some() || egui::Popup::is_any_open(&ctx)) && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            egui::Popup::close_all(&ctx);
+            if let Some(t) = menu {
+                (t.drop_menu, t.commit_drop) = (None, None);
+            }
+        }
         self.shortcuts(&ctx);
 
         theme::canvas(ui.painter(), ui.max_rect(), self.glass_backdrop);
@@ -556,6 +571,7 @@ impl eframe::App for App {
 
 fn replaceable(t: &RepoTab) -> bool {
     t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.split.is_none() && t.rebase.is_none() && t.merge.is_none() && t.compose.is_none() && !t.amend
+        && !t.ai_busy().is_some_and(|p| matches!(p, crate::ai::Purpose::CommitMessage { .. }))
 }
 
 fn draft(t: &RepoTab) -> Option<Draft> {
@@ -765,6 +781,90 @@ mod close_tests {
         assert_eq!(app.tabs.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn close(ctx: &egui::Context, app: &mut super::App) -> Vec<ViewportCommand> {
+        use eframe::App as _;
+        let mut raw = RawInput::default();
+        raw.viewports.entry(ViewportId::ROOT).or_default().events.push(ViewportEvent::Close);
+        let mut out = ctx.run_ui(raw, |ui| app.ui(ui, &mut eframe::Frame::_new_kittest()));
+        out.textures_delta.clear();
+        out.viewport_output.get(&ViewportId::ROOT).map(|v| v.commands.clone()).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quitting_with_unsaved_edits_asks_only_for_them() {
+        use crate::repo::{Action, Op};
+        let dir = std::env::temp_dir().join(format!("glasir-quit-unsaved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let mut ed = crate::repo::file_edit::FileEdit::load(&dir, "a.txt").unwrap();
+        ed.text.push_str("two\n");
+        app.tabs[0].edit = Some(ed);
+        app.tabs[0].term.add(&ctx, &dir);
+        let s = &app.tabs[0].term.tabs[0];
+        s.write(&b"echo sta''rted; sleep 30\r"[..]);
+        let t = std::time::Instant::now();
+        while !(screen(s).contains("started") && s.busy()) {
+            assert!(t.elapsed().as_secs() < 120, "timed out waiting for the shell");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let n = app.toasts.len();
+        assert!(close(&ctx, &mut app).contains(&ViewportCommand::CancelClose));
+        assert_eq!((app.quit_ask, app.toasts.len()), (None, n + 1), "just the toast: Quit anyway would end the shells and still not quit");
+        app.tabs[0].apply(&ctx, Action::Git(Op::new("Slow", &["-c", "alias.slow=!sleep 1", "slow"])));
+        assert!(app.tabs[0].busy().is_some());
+        assert!(close(&ctx, &mut app).contains(&ViewportCommand::CancelClose));
+        assert_eq!((app.quit_pending, app.toasts.len()), (false, n + 2), "no 'Quitting once Slow finishes' beside it");
+        app.tabs[0].term.tabs[0].write(&b"\x03"[..]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn closing_or_quitting_keeps_work_only_the_tab_holds() {
+        use crate::repo::{Task, compose, merge_editor, rebase};
+        let dir = std::env::temp_dir().join(format!("glasir-held-work-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        git(&["init", "-q"]);
+        for m in ["one", "two"] {
+            std::fs::write(dir.join("f"), m).unwrap();
+            git(&["add", "f"]);
+            git(&["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", m]);
+        }
+        std::fs::write(dir.join("f"), "three").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let mut m = merge_editor::Editor::open(&ctx, &dir, "f");
+        crate::repo::testutil::wait_for("the merge editor", || {
+            if let Some(d) = Task::poll(&mut m.task) {
+                (m.output, m.data) = (merge_editor::decode(&d.original), Some(d));
+            }
+            m.data.is_some()
+        });
+        let t = &mut app.tabs[0];
+        (t.merge, t.rebase) = (Some(m), Some(rebase::Editor::load(&dir, "HEAD~1", "one").unwrap()));
+        t.compose = Some(compose::Plan::load(&dir, None).unwrap().0);
+        assert_eq!(t.unsaved(), None, "a file and a plan as loaded, Claude's commits not in yet: nothing to lose");
+        t.merge.as_mut().unwrap().output.push('x');
+        assert!(t.unsaved().is_some_and(|w| w.contains("resolution of f")));
+        t.merge = None;
+        t.rebase.as_mut().unwrap().items[0].act = rebase::Act::Drop;
+        assert!(t.unsaved().is_some_and(|w| w.contains("rebase plan")));
+        t.rebase = None;
+        t.compose.as_mut().unwrap().commits.push(compose::Commit { message: "x".into(), units: vec![0] });
+        assert!(t.unsaved().is_some_and(|w| w.contains("Commit Composer")));
+        let n = app.toasts.len();
+        app.close_tab(&ctx, 0);
+        assert_eq!((app.tabs.len(), app.toasts.len()), (1, n + 1), "the tab stays, saying why");
+        assert!(close(&ctx, &mut app).contains(&ViewportCommand::CancelClose), "quitting waits too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]
@@ -815,7 +915,9 @@ mod shell_tests {
         step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Num1]);
         step(&ctx, &mut app, Modifiers::COMMAND, &[Key::W]);
         step(&ctx, &mut app, Modifiers::CTRL, &[Key::Tab]);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Comma]);
         assert_eq!((app.tabs.len(), app.active), (2, 1), "nothing behind the shortcut sheet reacts");
+        assert!(app.settings.is_none(), "Settings don't open over it either");
         app.shortcuts = false;
         step(&ctx, &mut app, Modifiers::NONE, &[]);
         step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Num1]);
@@ -1043,6 +1145,7 @@ mod shell_tests {
         let mut sim = Sim::new(900.0, 500.0);
         let t = tab(&sim.ctx, "hist-keys", &["one"]);
         let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        fv.go(&sim.ctx, "f".into(), Mode::Blame(None));
         let mut nav = |sim: &mut Sim, key: Option<Key>, dialog: bool| {
             let mods = if key.is_some() { Modifiers::COMMAND } else { Modifiers::NONE };
             let events = [Event::ModifiersChanged(mods)].into_iter().chain(key.map(|key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods })).collect();
@@ -1077,6 +1180,7 @@ mod shell_tests {
         };
         app.palette = Some(go(app.tabs[0].dir.clone()));
         assert_eq!(app.active, 1, "the active tab moved on while the palette was open");
+        frame(&ctx, Modifiers::NONE, &[], |ui| app.command_palette(ui.ctx()));
         frame(&ctx, Modifiers::NONE, &[Key::Enter], |ui| app.command_palette(ui.ctx()));
         assert!(app.palette.is_none());
         assert!(app.tabs[0].open_tab.is_some() && app.tabs[1].open_tab.is_none());
@@ -1112,6 +1216,9 @@ mod shell_tests {
         assert!(!replaceable(&t), "an amend's text belongs to the old HEAD");
         t.amend = false;
         (t.summary, t.body) = Default::default();
+        t.ai = Some(crate::ai::start(&ctx, Default::default(), c.clone(), crate::ai::Purpose::CommitMessage { amend: false }, String::new()));
+        assert!(!replaceable(&t), "a commit message Claude is still writing replaces the one typed");
+        t.ai = None;
         for m in ["one", "two"] {
             crate::git::run(&c, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", m]).unwrap();
         }
@@ -1167,5 +1274,147 @@ mod shell_tests {
         for d in [a, b] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    fn commit(dir: &Path, m: &str) {
+        crate::git::run(dir, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", m]).unwrap();
+    }
+
+    fn esc() -> Vec<Event> {
+        vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }]
+    }
+
+    #[test]
+    fn escape_closes_a_menu_and_not_the_view_under_it() {
+        use crate::ui::testkit::{Sim, load};
+        use eframe::App as _;
+        let dir = repo("esc-menu");
+        commit(&dir, "menu target");
+        let mut sim = Sim::new(1200.0, 800.0);
+        let mut app = app(&sim.ctx, &dir);
+        let mut frame = eframe::Frame::_new_kittest();
+        load(&mut app.tabs[0], &sim.ctx);
+        app.tabs[0].apply(&sim.ctx, Action::Reflog);
+        crate::repo::testutil::wait_for("the reflog", || app.tabs[0].reflog.as_mut().is_some_and(|r| {
+            r.poll();
+            r.entries.is_some()
+        }));
+        sim.open_menu("menu target", |ui| app.ui(ui, &mut frame));
+        assert!(egui::Popup::is_any_open(&sim.ctx));
+        sim.frame(esc(), |ui| app.ui(ui, &mut frame));
+        assert!(!egui::Popup::is_any_open(&sim.ctx) && app.tabs[0].reflog.is_some(), "Esc closes the menu, not the reflog under it");
+        app.tabs[0].commit_drop = Some(("Drop".into(), vec![], egui::pos2(20.0, 20.0)));
+        sim.frame(vec![], |ui| app.ui(ui, &mut frame));
+        sim.frame(esc(), |ui| app.ui(ui, &mut frame));
+        assert!(app.tabs[0].commit_drop.is_none() && app.tabs[0].reflog.is_some(), "a drop menu takes Esc the same way");
+        sim.frame(esc(), |ui| app.ui(ui, &mut frame));
+        assert!(app.tabs[0].reflog.is_none(), "the next Esc is the reflog's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn escape_that_leaves_a_field_only_leaves_the_field() {
+        use crate::ui::testkit::Sim;
+        let dir = repo("esc-field");
+        commit(&dir, "one");
+        commit(&dir, "two");
+        let mut ed = crate::repo::rebase::Editor::load(&dir, "HEAD~1", "one").unwrap();
+        let (mut sim, other) = (Sim::new(900.0, 600.0), egui::Id::new("other_field"));
+        let git_dir = dir.join(".git");
+        let frame = |sim: &mut Sim, ed: &mut crate::repo::rebase::Editor, keys: Vec<Event>| {
+            let (mut view, mut rebase) = (false, false);
+            sim.frame(keys, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut String::new()).id(other));
+                view = super::super::format::esc_pressed(ui);
+                rebase = super::super::rebase_editor::show(ui, ed, &git_dir, &mut vec![]);
+                super::super::format::note_focus(ui.ctx());
+            });
+            (view, rebase)
+        };
+        frame(&mut sim, &mut ed, vec![]);
+        sim.ctx.memory_mut(|m| m.request_focus(other));
+        frame(&mut sim, &mut ed, vec![]);
+        assert!(sim.ctx.memory(|m| m.has_focus(other)));
+        assert_eq!(frame(&mut sim, &mut ed, esc()), (false, false), "Esc leaves the field; the view and the rebase plan stay");
+        assert!(sim.ctx.memory(|m| m.focused().is_none()));
+        assert_eq!(frame(&mut sim, &mut ed, esc()), (true, true), "the next Esc is theirs");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn only_the_top_dialog_takes_enter<S>(state: &mut S, mut draw: impl FnMut(&mut S, &egui::Context), done: impl Fn(&S) -> bool) {
+        let (mut sim, field) = (crate::ui::testkit::Sim::new(1200.0, 800.0), egui::Id::new("upper_field"));
+        let mut frame = |sim: &mut crate::ui::testkit::Sim, state: &mut S, upper: bool, enter: bool| {
+            let events = if enter { vec![Event::Key { key: Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }] } else { vec![] };
+            sim.frame(events, |ui| {
+                draw(state, ui.ctx());
+                if upper {
+                    egui::Modal::new(egui::Id::new("upper")).show(ui.ctx(), |ui| ui.add(egui::TextEdit::singleline(&mut String::new()).id(field)));
+                }
+            });
+        };
+        frame(&mut sim, state, false, false);
+        frame(&mut sim, state, false, false);
+        frame(&mut sim, state, true, false);
+        frame(&mut sim, state, true, false);
+        sim.ctx.memory_mut(|m| m.request_focus(field));
+        frame(&mut sim, state, true, false);
+        assert!(sim.ctx.memory(|m| m.has_focus(field)), "the dialog below leaves the keyboard to the one on top");
+        frame(&mut sim, state, true, true);
+        assert!(!done(state), "Enter is the top dialog's");
+        frame(&mut sim, state, false, false);
+        frame(&mut sim, state, false, false);
+        frame(&mut sim, state, false, true);
+        assert!(done(state), "alone, it takes Enter");
+    }
+
+    #[test]
+    fn only_the_top_dialog_takes_enter_and_the_keyboard() {
+        use super::super::palette::{Cmd, Item, Palette};
+        let dir = repo("enter-top");
+        let mut a = app(&egui::Context::default(), &dir);
+        a.palette = Some(Palette { items: vec![Item { icon: "", label: "Log".into(), detail: String::new(), cmd: Cmd::CommandLog }], ..Default::default() });
+        only_the_top_dialog_takes_enter(&mut a, |a, ctx| a.command_palette(ctx), |a| a.show_log);
+        a.rename = Some((dir.clone(), "renamed".into()));
+        only_the_top_dialog_takes_enter(&mut a, |a, ctx| a.rename_dialog(ctx), |a| a.rename.is_none());
+        let mut t = crate::ui::testkit::tab(&egui::Context::default(), "enter-top-prompt", &["one"]);
+        t.prompt = Some(crate::repo::Prompt { title: "Name".into(), value: "x".into(), op: crate::repo::Op::new("Create branch", &["branch", "{}"]), second: None, sign: None });
+        only_the_top_dialog_takes_enter(&mut t, |t, ctx| super::super::dialogs::prompt_dialog(t, ctx, &mut vec![]), |t| t.prompt.is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn undo_steps_come_back_with_their_worktree() {
+        use crate::repo::{Op, Undo};
+        use crate::ui::testkit::load;
+        let (a, b) = (repo("undo-a"), repo("undo-b"));
+        commit(&a, "one");
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        load(&mut app.tabs[0], &ctx);
+        app.tabs[0].apply(&ctx, Action::Git(Op::new("Create branch", &["branch", "x"]).undo(Undo::Keep)));
+        load(&mut app.tabs[0], &ctx);
+        let step = app.tabs[0].undo_top();
+        assert!(step.is_some());
+        app.switch(&ctx, 0, &b);
+        assert_eq!((app.tabs.len(), app.tabs[0].undo_top()), (1, None));
+        app.switch(&ctx, 0, &a);
+        assert_eq!(app.tabs[0].undo_top(), step, "⌘Z still undoes what was done in that worktree");
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn find_opens_only_over_the_graph() {
+        let dir = repo("find-pane");
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &dir);
+        app.tabs[0].apply(&ctx, Action::Reflog);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::F]);
+        assert!(app.tabs[0].search.is_none() && app.tabs[0].reflog.is_some(), "the search bar only draws over the graph");
+        app.tabs[0].reflog = None;
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::F]);
+        assert!(app.tabs[0].search.is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

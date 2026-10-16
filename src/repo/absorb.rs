@@ -72,8 +72,8 @@ impl Plan {
         }
         let head = git::run(dir, &["rev-parse", "HEAD"])?.trim().to_owned();
         let index = git::run(dir, &["write-tree"]).map_err(|_| "Resolve the conflicts first.".to_string())?.trim().to_owned();
-        // Unpushed commits (no upstream: the last 20 on no remote), stopping at a merge or the root.
-        let range = git::run(dir, &["log", "--format=%H%x1f%P%x1f%s", "@{upstream}..HEAD", "--"])
+        // Unpushed commits: on neither the upstream nor any remote (no upstream: the last 20), stopping at a merge or the root.
+        let range = git::run(dir, &["log", "--format=%H%x1f%P%x1f%s", "@{upstream}..HEAD", "--not", "--remotes", "--"])
             .or_else(|_| git::run(dir, &["log", "--format=%H%x1f%P%x1f%s", "-n", "20", "HEAD", "--not", "--remotes", "--"]))?;
         let cands: Vec<(String, String)> = range
             .lines()
@@ -345,6 +345,9 @@ mod tests {
         let plan = Plan::load(&dir).unwrap();
         assert_eq!(plan.cands.len(), 2);
         assert!(plan.rows[1].target.as_ref().is_err_and(|e| e.contains("pushed")));
+        // c2 on another remote branch (pushed without -u, a fork's): no target either.
+        g(&["update-ref", "refs/remotes/origin/feature", &ids[1]]);
+        assert_eq!(Plan::load(&dir).unwrap().cands.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

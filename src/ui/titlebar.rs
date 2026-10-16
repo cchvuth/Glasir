@@ -1,7 +1,7 @@
 //! Title bar: the repo tabs (drag to move the window, double-click to zoom)
 //! and the global buttons on the right (theme, palette, command log, settings).
 
-use crate::ui::format::{dismissed, keys};
+use crate::ui::format::{dismissed, keys, on_top};
 use super::app::App;
 use super::settings::toggle_flavor;
 use crate::theme::{self, icon};
@@ -187,9 +187,13 @@ impl App {
         egui::Modal::new(Id::new("rename_tab")).show(ctx, |ui| {
             ui.set_width(320.0);
             ui.heading("Rename tab");
-            ui.add(egui::TextEdit::singleline(name).margin(theme::INPUT_MARGIN).desired_width(f32::INFINITY)).request_focus();
+            let top = on_top(ui);
+            let field = ui.add(egui::TextEdit::singleline(name).margin(theme::INPUT_MARGIN).desired_width(f32::INFINITY));
+            if top {
+                field.request_focus();
+            }
             ui.horizontal(|ui| {
-                if ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                if ui.button("OK").clicked() || (top && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     done = Some(true);
                 }
                 if dismissed(ui, "Cancel") {
