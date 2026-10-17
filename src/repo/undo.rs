@@ -89,19 +89,21 @@ fn stash_paths(dir: &Path, id: &str) -> Res<Vec<String>> {
     Ok(ps.into_iter().collect())
 }
 
-/// What backup `b` covers, and the commits whose content needs no backup (HEAD and the commits
-/// a tree names: a reset writes what they hold; none for paths, which go back as they were).
-pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
+/// What backup `b` covers, the commits whose content needs no backup (a tree's HEAD, where ⌘Z
+/// puts it back, and a split's commit; none for paths, which go back as they were), and the
+/// commits a tree names.
+pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>, Vec<String>)> {
     let (revs, untracked) = match b {
-        Backup::Paths(ps) => return Ok((ps.clone(), vec![])),
-        Backup::Stash(id) => return Ok((stash_paths(dir, id)?, vec![])),
+        Backup::Paths(ps) => return Ok((ps.clone(), vec![], vec![])),
+        Backup::Stash(id) => return Ok((stash_paths(dir, id)?, vec![], vec![])),
         Backup::Staged(ps) => {
             let staged: BTreeSet<String> = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().collect();
             let want: HashSet<&String> = ps.iter().collect();
             let both = git::run(dir, &["diff", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().filter(|p| staged.contains(p) && (ps.is_empty() || want.contains(p)));
-            return Ok((both.collect(), vec![]));
+            return Ok((both.collect(), vec![], vec![]));
         }
-        Backup::Tree { revs, untracked } => (revs, *untracked),
+        Backup::Tree { revs, untracked } => (&revs[..], *untracked),
+        Backup::Split(id) => (std::slice::from_ref(id), false),
     };
     let z = |args: &[&str]| git::run(dir, args).map(split_z);
     let head = git::head(dir);
@@ -142,16 +144,17 @@ pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>)> {
     let index: HashSet<String> = if way.is_empty() { HashSet::new() } else { z(&["ls-files", "-z"])?.into_iter().collect() };
     let there = |p: &str| std::fs::symlink_metadata(dir.join(p)).is_ok() || git::ancestors(p).any(|a| std::fs::symlink_metadata(dir.join(a)).is_ok_and(|m| !m.is_dir()));
     ps.extend(way.into_iter().filter(|p| !index.contains(p) && there(p)));
-    let like = head.into_iter().chain(found.iter().filter(|c| c.1).map(|c| c.0.to_owned()));
-    Ok((ps.into_iter().collect(), like.collect()))
+    let named: Vec<String> = found.iter().filter(|c| c.1).map(|c| c.0.to_owned()).collect();
+    let like = head.into_iter().chain(named.iter().filter(|_| matches!(b, Backup::Split(_))).cloned());
+    Ok((ps.into_iter().collect(), like.collect(), named))
 }
 
 /// Backs up what `b` covers before an op runs (None: nothing there). Err refuses the op:
 /// nothing has run yet.
 pub(super) fn backup(dir: &Path, b: &Backup, label: &str) -> Res<Option<Snap>> {
     let refuse = |e: String| format!("Nothing was changed: couldn't back up your files first ({e}).");
-    let (scope, like) = scope(dir, b).map_err(refuse)?;
-    if scope.is_empty() { Ok(None) } else { git::snap(dir, &scope, &like, &format!("Glasir backup: {label}")).map_err(refuse) }
+    let (scope, like, named) = scope(dir, b).map_err(refuse)?;
+    if scope.is_empty() { Ok(None) } else { git::snap(dir, &scope, &like, &named, &format!("Glasir backup: {label}")).map_err(refuse) }
 }
 
 /// Why `op` can't run: with `submodule.recurse` on, one that forces the tree (a discard, a hard
@@ -167,9 +170,9 @@ pub(super) fn recursed(dir: &Path, op: &Op) -> Option<String> {
 }
 
 /// The op's files once it ran (`before`: from [`backup`] of `b`, taken at HEAD `head`): None
-/// when it changed none of them (it failed, say), and their backups go. A tree backup of an op
-/// that left HEAD there (a squash merge) also covers the tracked files it changed: those were
-/// clean then (None: all were). Err: a note, what it replaced is in the stash list.
+/// when it changed none of them and left HEAD there (it failed, say), and their backups go. A
+/// tree backup of an op that left HEAD there (a squash merge) also covers the tracked files it
+/// changed: those were clean then (None: all were). Err: a note, what it replaced is in the stash list.
 pub(super) fn backed_up(dir: &Path, b: &Backup, before: Option<Snap>, head: Option<&str>, label: &str) -> Result<Option<Files>, String> {
     let still = head.filter(|h| matches!(b, Backup::Tree { .. }) && git::head(dir).as_deref() == Some(h) && git::git_dir(dir).is_ok_and(|g| git::state(&g) == git::State::Clean));
     let more = still.map_or(Ok(BTreeSet::new()), |h| dirty(dir, h)).unwrap_or_default();
@@ -183,8 +186,8 @@ pub(super) fn backed_up(dir: &Path, b: &Backup, before: Option<Snap>, head: Opti
     };
     let scope: Vec<String> = before.paths.iter().cloned().chain(more).collect::<BTreeSet<_>>().into_iter().collect();
     let before = Snap { paths: scope.clone(), ..before };
-    match git::snap(dir, &scope, &[], &format!("Glasir backup: after {label}")) {
-        Ok(Some(after)) if git::view(dir, &before, &scope).is_ok_and(|b| git::view(dir, &after, &scope).is_ok_and(|a| a == b)) => {
+    match git::snap(dir, &scope, &[], &[], &format!("Glasir backup: after {label}")) {
+        Ok(Some(after)) if head.is_none_or(|h| git::head(dir).as_deref() == Some(h)) && unchanged(dir, &before, &after) => {
             git::drop_backups(dir, &[before.refname, after.refname]);
             Ok(None)
         }
@@ -196,6 +199,11 @@ pub(super) fn backed_up(dir: &Path, b: &Backup, before: Option<Snap>, head: Opti
             Err(format!("{label} can't be undone ({e}); what it replaced is in the stash list as \"{msg}\"."))
         }
     }
+}
+
+/// Whether backup `after` holds `before`'s paths as `before` does, each against its own HEAD.
+pub(super) fn unchanged(dir: &Path, before: &Snap, after: &Snap) -> bool {
+    git::view(dir, before, &before.paths).is_ok_and(|b| git::view(dir, after, &before.paths).is_ok_and(|a| a == b))
 }
 
 type Half<'a> = (Option<&'a (u32, String)>, bool);
@@ -327,6 +335,13 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
     // Where HEAD ends up: the refs it moves as in `to`, the others as they are now.
     let mut end = cur_refs.clone();
     refs.iter().for_each(|(mv, t, _)| mv.iter().for_each(|r| copy(&mut end, t, r)));
+    if let Some((mv, t, _)) = &refs
+        && mv.contains(&end.head)
+        && !end.refs.contains_key(&end.head)
+        && tip(t).is_some()
+    {
+        return Err(format!("{} is checked out here; switch to another branch first, then try again.", end.head.strip_prefix("refs/heads/").unwrap_or(&end.head)));
+    }
     let final_head = tip(&end).map_or_else(|| git::empty_tree(dir), Ok)?;
     let scope: Vec<String> = legs.iter().flat_map(|l| l.2.iter().cloned()).collect::<BTreeSet<_>>().into_iter().collect();
     let cur = if legs.is_empty() { git::View::new() } else { git::current(dir, &scope)? };
@@ -342,6 +357,8 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
     {
         // An index entry that follows HEAD follows the new one: every path written gets one.
         index.extend(files.iter().filter(|f| !index.iter().any(|i| i.name == f.name)).cloned().collect::<Vec<_>>());
+        let back: Vec<Entry> = views.iter().flat_map(|(f, t)| t.iter().filter(|(k, e)| f.get(*k) == Some(e) && cur.get(*k) == Some(e)).map(|(_, e)| e.clone())).collect();
+        index.extend(back.into_iter().filter(|b| !index.iter().any(|i| i.name == b.name)).collect::<Vec<_>>());
         let kept = git::move_files(dir, &head_now, &final_head, mode.mode(), &index)?;
         if !kept.is_empty() {
             notes.push(format!("Kept your changes to {} (they now differ from {}).", kept.join(", "), &final_head[..final_head.len().min(7)]));
@@ -744,15 +761,15 @@ mod tests {
         let f = std::fs::File::create(dir.join("big")).unwrap();
         f.set_len(300 << 20).unwrap();
         let scope: Vec<String> = ["run.sh", "lnk", "big"].map(String::from).to_vec();
-        let s = git::snap(&dir, &scope, &[], "m").unwrap().unwrap();
+        let s = git::snap(&dir, &scope, &[], &[], "m").unwrap().unwrap();
         let ls = sh(&dir, &["ls-tree", &format!("{}^3", s.commit)]);
         assert!(ls.contains("100755 blob") && ls.contains("120000 blob"), "{ls}");
         assert_eq!(sh(&dir, &["cat-file", "-s", &format!("{}^3:big", s.commit)]).trim(), (300u64 << 20).to_string());
         assert!(sh(&dir, &["for-each-ref", "refs/glasir/backups/"]).contains(&s.commit));
         std::fs::write(dir.join("git~1"), "x").unwrap();
-        assert!(git::snap(&dir, &["git~1".into()], &[], "m").is_err_and(|e| e.contains("git~1")));
+        assert!(git::snap(&dir, &["git~1".into()], &[], &[], "m").is_err_and(|e| e.contains("git~1")));
         // Nothing uncommitted, measured against HEAD: no backup.
-        assert!(git::snap(&dir, &["keep".into()], &["HEAD".into()], "m").unwrap().is_none());
+        assert!(git::snap(&dir, &["keep".into()], &["HEAD".into()], &[], "m").unwrap().is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -971,6 +988,20 @@ mod tests {
         let msgs = step(&ctx, &mut t, Action::Undo);
         assert_eq!(rev(&dir, "main"), c, "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("outside Glasir")), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_new_branch_refuses_while_it_is_checked_out() {
+        let dir = repo("undo-new-branch-head");
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, branch("x"));
+        sh(&dir, &["switch", "-q", "x"]);
+        step(&ctx, &mut t, Action::Undo);
+        let c = t.choice.take().expect("offers a way out");
+        assert!(c.text.contains("x is checked out here"), "{}", c.text);
+        assert_eq!((sh(&dir, &["symbolic-ref", "HEAD"]).trim(), read(&dir, "keep").as_deref()), ("refs/heads/x", Some("k\n")));
+        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/heads/x"]).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1809,6 +1840,20 @@ mod tests {
         let msgs = step(&ctx, &mut t, Action::Undo);
         assert!(safe(&dir, "d", "NEW FILE D\n") && safe(&dir, "d/x", "MINE-X\n"), "{msgs:?}");
         assert!(t.undo.is_empty() && t.choice.is_none(), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hard_reset_undo_keeps_an_edit_that_matches_the_target() {
+        let dir = repo("undo-like-target");
+        commit(&dir, "f", "1\n");
+        let c1 = rev(&dir, "HEAD");
+        commit(&dir, "f", "2\n");
+        std::fs::write(dir.join("f"), "1\n").unwrap();
+        let (ctx, mut t) = tab(&dir);
+        hard_reset(&ctx, &mut t, &c1);
+        let msgs = step(&ctx, &mut t, Action::Undo);
+        assert_eq!(read(&dir, "f").as_deref(), Some("1\n"), "{msgs:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

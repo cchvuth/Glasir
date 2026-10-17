@@ -60,9 +60,6 @@ impl App {
         let mut s: Settings = cc.storage.and_then(|st| eframe::get_value(st, "settings")).unwrap_or_default();
         theme::install_fonts(&cc.egui_ctx);
         theme::set_transparency(s.transparency);
-        if s.max_commits == 50_000 {
-            s.max_commits = crate::repo::PAGE;
-        }
         if std::mem::take(&mut s.light) && s.flavor == theme::Flavor::Midnight {
             s.flavor = theme::Flavor::Daylight;
         }
@@ -230,7 +227,7 @@ impl App {
                 self.active = n;
             }
         }
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(Key::Tab)) && !self.tabs.is_empty() {
+        if (eat(Modifiers::CTRL, Key::Tab) | eat(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab)) && !self.tabs.is_empty() {
             let n = self.tabs.len();
             self.active = match (self.active >= n, shift) {
                 (true, false) => 0,
@@ -241,7 +238,7 @@ impl App {
         }
         let Some(t) = self.tabs.get_mut(self.active) else { return };
         let mut act = None;
-        if pressed(Key::F5) || (cmd && pressed(Key::R)) {
+        if (pressed(Key::F5) && !ctx.memory(|m| m.has_focus(super::terminal::id()))) || (cmd && pressed(Key::R)) {
             act = Some(Action::Reload);
         }
         if let (true, Some(d)) = (fetch, &t.data) {
@@ -294,6 +291,11 @@ impl App {
         if let Some(o) = self.tabs.get(i).and_then(|t| t.ext_tools.first()) {
             return self.toast(ctx, format!("The external {} tool is still open on {}: close it, then close the tab.", o.kind, o.path), true);
         }
+        if let Some(draft) = draft(&self.tabs[i]) {
+            self.drafts.insert(self.tabs[i].dir.clone(), draft);
+        }
+        let steps = self.tabs[i].take_steps();
+        self.steps.insert(self.tabs[i].dir.clone(), steps);
         drop_data_off_thread(&mut self.tabs[i]);
         self.tabs.remove(i);
         if self.active > i || self.active >= self.tabs.len() {

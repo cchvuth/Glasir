@@ -280,8 +280,8 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<F
     if f.binary {
         let old = c.old_path.as_deref().unwrap_or(&c.path);
         f.sizes = Some(match staged {
-            true => (blob_size(dir, &format!("HEAD:{old}")), blob_size(dir, &format!(":{}", c.path))),
-            false => (blob_size(dir, &format!(":{old}")), file_size(dir, &c.path)),
+            true => (blob_size(dir, &format!("HEAD:{old}")), blob_size(dir, &format!(":0:{}", c.path))),
+            false => (blob_size(dir, &format!(":0:{old}")), file_size(dir, &c.path)),
         });
     }
     Ok(f)
@@ -561,6 +561,26 @@ mod tests {
         let c = Change { path: "f".into(), old_path: None, code: 'M' };
         let f = commit_diff(&dir, "HEAD", Some("HEAD~"), &c, DiffOpts::default()).unwrap();
         assert!(f.lossy && partial_patch(&f, |_, _| true, true).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binary_sizes_of_a_path_that_looks_like_a_stage() {
+        let dir = std::env::temp_dir().join(format!("glasir-stage-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        std::fs::write(dir.join("2:x.bin"), [0u8, 1]).unwrap();
+        g(&["add", "."]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("2:x.bin"), [0u8, 1, 2]).unwrap();
+        g(&["add", "."]);
+        std::fs::write(dir.join("2:x.bin"), [0u8, 1, 2, 3]).unwrap();
+        let c = Change { path: "2:x.bin".into(), old_path: None, code: 'M' };
+        assert_eq!(worktree_diff(&dir, &c, true, DiffOpts::default()).unwrap().sizes, Some((Some(2), Some(3))));
+        assert_eq!(worktree_diff(&dir, &c, false, DiffOpts::default()).unwrap().sizes, Some((Some(3), Some(4))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

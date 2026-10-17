@@ -256,7 +256,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                 }
             });
             if c.target != before {
-                c.rows = None;
+                c.rescan();
                 acts.push(Action::Cleanup);
             }
             ui.add_space(12.0);
@@ -318,7 +318,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
             .changed()
             && c.remote
         {
-            c.rows = None;
+            c.rescan();
             acts.push(Action::Cleanup);
         }
         ui.horizontal(|ui| {

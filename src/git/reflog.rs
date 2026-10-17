@@ -39,7 +39,7 @@ pub fn reflog(dir: &Path) -> Res<Vec<ReflogEntry>> {
     // Commits reachable from the reflog's commits but from no ref: the lost ones.
     let ids: HashSet<&str> = v.iter().map(|e| e.id.as_str()).collect();
     let input = ids.into_iter().collect::<Vec<_>>().join("\n");
-    let args = ["rev-list", "--ignore-missing", "--stdin", "--not", "--branches", "--tags", "--remotes", "HEAD"];
+    let args = ["rev-list", "--ignore-missing", "--stdin", "--not", "--exclude=refs/glasir/*", "--all"];
     let lost: HashSet<String> = run_input(dir, &args, Some(input.as_bytes())).unwrap_or_default().lines().map(String::from).collect();
     for e in &mut v {
         e.lost = lost.contains(&e.id);
@@ -50,6 +50,33 @@ pub fn reflog(dir: &Path) -> Res<Vec<ReflogEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detached_in_another_worktree_is_not_lost() {
+        let base = std::env::temp_dir().join(format!("glasir-reflog-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir, wt) = (base.join("main"), base.join("wt"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |d: &Path, a: &[&str]| run(d, a).unwrap();
+        g(&dir, &["init", "-q"]);
+        let commit = |m: &str| g(&dir, &["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", m]);
+        commit("one");
+        g(&dir, &["checkout", "-q", "-b", "side"]);
+        commit("detached");
+        let detached = g(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        g(&dir, &["checkout", "-q", "--detach", "HEAD"]);
+        g(&dir, &["worktree", "add", "-q", "--detach", wt.to_str().unwrap(), &detached]);
+        g(&dir, &["branch", "-q", "-D", "side"]);
+        commit("backed up");
+        let backed = g(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        g(&dir, &["update-ref", "refs/glasir/backups/x", "HEAD"]);
+        g(&dir, &["reset", "-q", "--hard", &detached]);
+        g(&dir, &["checkout", "-q", "--detach", "HEAD~"]);
+        let v = reflog(&dir).unwrap();
+        let lost = |id: &str| v.iter().find(|e| e.id == id).unwrap().lost;
+        assert!(!lost(&detached) && lost(&backed));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn parses_reflog_records() {

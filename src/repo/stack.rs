@@ -251,10 +251,14 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
         None => git::run(dir, &["checkout", "-q", "--detach", &head, "--"]),
     };
     git::with_autostash(dir, "Glasir: restack stacked branches", || {
-        let mut moved: Vec<(&str, &str)> = vec![];
+        let (mut moved, mut merges): (Vec<(&str, &str)>, Vec<String>) = (vec![], vec![]);
         for e in &edges {
             // Not built on `base` any more: not this stack's to move.
             if !needs(e, &moved) || git::run(dir, &["merge-base", "--is-ancestor", e[3], e[0]]).is_err() {
+                continue;
+            }
+            if git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{}..{}", e[3], e[0])]).is_ok_and(|m| !m.trim().is_empty()) {
+                merges.push(format!("{} has merge commits, so it wasn't restacked onto {}; rebase it yourself.", e[0], e[1]));
                 continue;
             }
             let err = match git::run(dir, &["rebase", "-q", "--no-update-refs", "--onto", &format!("refs/heads/{}", e[1]), e[3], e[0]]) {
@@ -286,7 +290,10 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
             return if follow { Ok(why) } else { Err(why) };
         }
         back()?;
-        Ok(if moved.is_empty() { nothing } else { format!("Restacked {}", moved.iter().map(|m| m.0).collect::<Vec<_>>().join(", ")) })
+        if !moved.is_empty() {
+            merges.insert(0, format!("Restacked {}.", moved.iter().map(|m| m.0).collect::<Vec<_>>().join(", ")));
+        }
+        Ok(if merges.is_empty() { nothing } else { merges.join(" ") })
     })
 }
 
@@ -471,6 +478,31 @@ mod tests {
         assert!(msgs.iter().any(|m| m.error && m.text.contains("b conflicts with the new a")));
         assert_eq!(["b", "c"].map(|b| sh(&dir, &["rev-parse", b])), tips);
         assert_eq!((sh(&dir, &["symbolic-ref", "--short", "HEAD"]).as_str(), sh(&dir, &["status", "--porcelain"]).as_str()), ("a\n", ""));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restack_skips_a_child_with_merges() {
+        let dir = stack_repo("stack-merges");
+        sh(&dir, &["branch", "-q", "-D", "c"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "m1", "m1\n");
+        sh(&dir, &["checkout", "-q", "b"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge main", "main"]);
+        sh(&dir, &["checkout", "-q", "a"]);
+        let b = sh(&dir, &["rev-parse", "b"]);
+        std::fs::write(dir.join("a2"), "a2\n").unwrap();
+        sh(&dir, &["add", "a2"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        assert_eq!(parent(t.data.as_ref().unwrap(), "b"), Some("a"));
+        t.summary = "a2".into();
+        t.apply(&ctx, Action::Git(t.commit_op()));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().any(|m| m.text.contains("b has merge commits")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(sh(&dir, &["rev-parse", "b"]), b);
+        assert_eq!(subjects(&dir, "a"), "a2 a base m0");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

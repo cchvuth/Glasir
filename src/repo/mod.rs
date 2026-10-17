@@ -450,6 +450,9 @@ impl RepoTab {
                     if let Some(fv) = &mut self.file_view {
                         fv.refresh(ctx, head_moved);
                     }
+                    if let Some(r) = &mut self.reflog {
+                        r.refresh(ctx, &self.dir);
+                    }
                     if first {
                         self.prefill_template();
                     }

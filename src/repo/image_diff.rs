@@ -35,8 +35,8 @@ fn sides(src: &DiffSrc) -> [Option<Option<String>>; 2] {
     let old = |rev: &str| (!matches!(c.code, 'A' | '?')).then(|| Some(format!("{rev}:{old_path}")));
     let new = |spec: Option<String>| (c.code != 'D').then_some(spec);
     match src {
-        DiffSrc::Worktree { staged: true, .. } => [old("HEAD"), new(Some(format!(":{}", c.path)))],
-        DiffSrc::Worktree { staged: false, .. } => [old(""), new(None)],
+        DiffSrc::Worktree { staged: true, .. } => [old("HEAD"), new(Some(format!(":0:{}", c.path)))],
+        DiffSrc::Worktree { staged: false, .. } => [old(":0"), new(None)],
         DiffSrc::Commit { id, parent, .. } => [parent.as_deref().and_then(old), new((id != git::WORKTREE).then(|| format!("{id}:{}", c.path)))],
     }
 }

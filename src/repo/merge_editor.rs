@@ -227,7 +227,7 @@ pub(super) fn resolvable(dir: &Path, st: &git::Status) -> Vec<String> {
             let bytes = std::fs::symlink_metadata(&path).ok().filter(|m| m.is_file()).and_then(|_| std::fs::read(&path).ok());
             merged && bytes.is_some_and(|b| {
                 let t = decode(&b);
-                !b[..b.len().min(8000)].contains(&0) && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n))
+                !b[..b.len().min(8000)].contains(&0) && conflicts(&parse(&t, n)).next().is_none() && !t.lines().any(|l| is_marker(l, b'<', n) || is_marker(l, b'>', n) || is_marker(l, b'|', n))
             })
         })
         .collect();
@@ -612,6 +612,27 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "both\n").unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("yarn.lock")).unwrap(), "main\n");
         assert_eq!(resolvable(&dir, &git::status(&dir).unwrap()), ["a.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff3_base_marker_is_not_resolved() {
+        use crate::repo::testutil::{commit, identity, scratch, sh};
+        let dir = scratch("resolvable-diff3");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "merge.conflictStyle", "diff3"]);
+        commit(&dir, "a.txt", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "a.txt", "x\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "a.txt", "main\n");
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        let t = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        assert!(t.contains("|||||||"));
+        let kept: String = t.lines().filter(|l| !l.starts_with("<<<<<<<") && !l.starts_with(">>>>>>>")).map(|l| format!("{l}\n")).collect();
+        std::fs::write(dir.join("a.txt"), kept).unwrap();
+        assert!(resolvable(&dir, &git::status(&dir).unwrap()).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -116,18 +116,27 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
             let mut area = egui::ScrollArea::both().id_salt(("merge_side", s)).max_height(top_h).auto_shrink(false);
             // Wrapped: rows as tall as their lines (a column's width, less the frame and scrollbar).
             let cols = if wrap { (((ui.available_width() - 30.0) / char_w) as usize).max(1) } else { usize::MAX };
-            let tops = tops(row_h, rows.iter().map(|r| match r {
-                Row::Line(t, _) => wrapped(|| t.chars().count(), cols),
-                Row::Head(_) => 1,
-            }));
+            let key = (rows.as_ptr() as usize, rows.len(), d.text.len(), s, cols, row_h.to_bits());
+            let id = egui::Id::new(("merge_tops", s));
+            let cached = ui.data(|m| m.get_temp::<std::sync::Arc<((usize, usize, usize, usize, usize, u32), Vec<f32>)>>(id)).filter(|c| c.0 == key);
+            let tops = cached.unwrap_or_else(|| {
+                let t = tops(row_h, rows.iter().map(|r| match r {
+                    Row::Line(t, _) => wrapped(|| t.chars().count(), cols),
+                    Row::Head(_) => 1,
+                }));
+                let c = std::sync::Arc::new((key, t));
+                ui.data_mut(|m| m.insert_temp(id, c.clone()));
+                c
+            });
+            let tops = &tops.1;
             if scroll && let Some(k) = sel_orig {
                 let at = rows.iter().position(|r| matches!(r, Row::Head(h) if *h == k)).unwrap_or(0);
-                area = area.vertical_scroll_offset(lead_top(&tops, at, row_h));
+                area = area.vertical_scroll_offset(lead_top(tops, at, row_h));
             }
             egui::Frame::new().fill(theme::faint(ui)).corner_radius(10).inner_margin(6).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0; // contiguous conflict tints; rows exactly `row_h` apart
                 area.show_viewport(ui, |ui, view| {
-                    let range = visible(&tops, view.min.y, view.max.y);
+                    let range = visible(tops, view.min.y, view.max.y);
                     let w = if wrap { ui.available_width() } else { (d.width[s] as f32 * char_w + 24.0).max(ui.available_width()) };
                     ui.set_min_height(tops[rows.len()]);
                     ui.add_space(tops[range.start]);

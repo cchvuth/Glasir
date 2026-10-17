@@ -82,7 +82,8 @@ pub fn text(path: &str, text: &str, dark: bool) -> Spans {
     let mut hl = HighlightLines::new(syntax, &ts.themes[if dark { "base16-ocean.dark" } else { "InspiredGitHub" }]);
     let (mut out, mut pos) = (vec![], 0);
     for line in syntect::util::LinesWithEndings::from(text) {
-        for (style, s) in hl.highlight_line(line, ss).unwrap_or_default() {
+        let spans = hl.highlight_line(line, ss).unwrap_or_else(|_| vec![(Default::default(), line)]);
+        for (style, s) in spans {
             let c = style.foreground;
             out.push((Color32::from_rgb(c.r, c.g, c.b), pos..pos + s.len()));
             pos += s.len();

@@ -68,6 +68,9 @@ pub enum Backup {
     /// Every uncommitted change (`untracked`: untracked files too), and untracked or ignored
     /// files where the commits it resets to (`revs`, a stopped rebase's own) put a file.
     Tree { revs: Vec<String>, untracked: bool },
+    /// A tree backup for aborting the split of commit `id`: its content isn't backed up, the
+    /// abort puts it back.
+    Split(String),
     /// The paths stash `id` (a commit) touches: an apply or pop.
     Stash(String),
     /// Those of these paths (none: all) whose staged version differs from HEAD and the file: a
@@ -217,7 +220,10 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::rebase::REWRITE, commit, tip @ ..] => super::rebase::rewrite(dir, commit, tip.first().copied().unwrap_or("HEAD"), op.input.as_deref().unwrap_or_default()),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
-            [_, "add", "-A", "--pathspec-from-file=-", ..] => git::run_input(dir, &a, Some(&without_vanished(dir, op.input.as_deref().unwrap_or_default()))),
+            [_, "add", "-A", "--pathspec-from-file=-", ..] => match without_vanished(dir, op.input.as_deref().unwrap_or_default()) {
+                paths if paths.is_empty() => Ok(String::new()),
+                paths => git::run_input(dir, &a, Some(&paths)),
+            },
             ["--literal-pathspecs", "checkout", "--", paths @ ..] => discard_checkout(dir, &a, paths),
             ["tag", "--sign", "-a", name, ..] => signed_tag(dir, &a, name, op.input.as_deref()),
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
@@ -787,7 +793,7 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
             Some(Action::Git(match d.local(local) {
                 Some(l) if l.head => Op::new(format!("Update {local} to {}", r.name), &["merge", "--ff-only", &r.full]).undo(Undo::Keep),
                 Some(_) => Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
-                None => Op::new(format!("Checkout {}", r.name), &["checkout", "--track", &r.full]).undo(Undo::Keep),
+                None => Op::new(format!("Checkout {}", r.name), &["checkout", "-b", local, "--track", &r.full, "--"]).undo(Undo::Keep),
             }))
         }
         RefKind::Tag => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--detach", &r.full]).undo(Undo::Keep))),
@@ -1505,6 +1511,15 @@ mod tests {
         let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
         let Some(Action::Prompt(p)) = super::branch_checkout(&d, r) else { panic!("asks for a new branch") };
         assert_eq!(p.value, "mate-feat-2");
+        sh(&dir, &["branch", "topic"]);
+        sh(&dir, &["remote", "add", "my/fork", "."]);
+        sh(&dir, &["fetch", "-q", "my/fork"]);
+        sh(&dir, &["branch", "-D", "topic"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "my/fork/topic").unwrap();
+        let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "topic@{u}"]), "my/fork/topic\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1570,6 +1585,23 @@ mod tests {
         let mut staged: Vec<_> = s.staged.iter().map(|c| c.path.as_str()).collect();
         staged.sort();
         assert_eq!(staged, ["a", "del", "new.rs"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_of_only_vanished_files_stages_nothing() {
+        let dir = scratch("stage-all-vanished");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        std::fs::write(dir.join("a"), "b\n").unwrap();
+        std::fs::write(dir.join("tmp.log"), "t\n").unwrap();
+        let s = git::status(&dir).unwrap();
+        let tmp: Vec<_> = s.unstaged.iter().filter(|c| c.path == "tmp.log").cloned().collect();
+        let op = super::stage_files_op("Stage", &tmp).unwrap();
+        std::fs::remove_file(dir.join("tmp.log")).unwrap();
+        exec(&dir, &op).unwrap();
+        assert!(git::status(&dir).unwrap().staged.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -255,8 +255,14 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
         return Err(CANCELLED.into());
     }
     // Background jobs (a shell line's `server &`, a hook's) inherit our pipes: don't wait for them to exit.
-    let _ = ended.recv_timeout(std::time::Duration::from_millis(300));
-    let take = |b: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *b.lock().unwrap());
+    let len = || out.lock().unwrap().len() + err.lock().unwrap().len();
+    let mut seen = len();
+    while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(std::time::Duration::from_millis(300)) {
+        if len() == std::mem::replace(&mut seen, len()) {
+            break;
+        }
+    }
+    let take =|b: Arc<Mutex<Vec<u8>>>| std::mem::take(&mut *b.lock().unwrap());
     let (stdout, stderr) = (take(out), take(err));
     let mut stderr = String::from_utf8_lossy(&stderr).into_owned();
     if squash {

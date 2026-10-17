@@ -50,7 +50,7 @@ pub fn banner(ui: &mut Ui, d: &RepoData, acts: &mut Vec<Action>) {
                     ] {
                         let label = RichText::new(format!("{ic}  {}", if what == "skip" { "Skip" } else if what == "bad" { "Bad" } else { "Good" })).color(mark_color(what));
                         if theme::pill(ui, label).on_hover_text(format!("{hint} ({head})")).clicked() {
-                            acts.push(op(format!("Bisect: {what} {head}"), &["bisect", what]));
+                            acts.push(op(format!("Bisect: {what} {head}"), &["bisect", b.term(what)]));
                         }
                     }
                 });
@@ -82,7 +82,7 @@ pub fn commit_items(ui: &mut Ui, d: &RepoData, c: &Commit, acts: &mut Vec<Action
             ui.menu_button(format!("{}  Bisect", icon::BUG), |ui| {
                 for what in ["good", "bad", "skip"] {
                     if ui.button(RichText::new(format!("Mark {short} as {what}")).color(mark_color(what))).clicked() {
-                        acts.push(Action::Git(Op::new(format!("Bisect: {what} {short}"), &["bisect", what, &c.id])));
+                        acts.push(Action::Git(Op::new(format!("Bisect: {what} {short}"), &["bisect", d.bisect.as_ref().map_or(what, |b| b.term(what)), &c.id])));
                     }
                 }
             });

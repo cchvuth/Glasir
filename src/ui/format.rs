@@ -19,7 +19,7 @@ pub fn on_top(ui: &egui::Ui) -> bool {
 }
 
 pub fn dismissed(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.button(label).clicked() || (on_top(ui) && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+    ui.button(label).clicked() || (on_top(ui) && nothing_was_focused(ui.ctx()) && ui.input(|i| i.key_pressed(egui::Key::Escape)))
 }
 
 pub fn modal_open(ctx: &egui::Context) -> bool {
@@ -264,5 +264,34 @@ mod tests {
         assert_eq!(super::bytes(512), "512 B");
         assert_eq!(super::bytes(1572864), "1.5 MB");
         assert_eq!(super::bytes(3 << 40), "3.0 TB");
+    }
+
+    #[test]
+    fn esc_in_a_focused_field_does_not_dismiss() {
+        use crate::ui::testkit::Sim;
+        use egui::{Event, Key, Modifiers};
+        let mut sim = Sim::new(600.0, 400.0);
+        let mut text = String::new();
+        let (closed, asked) = (std::cell::Cell::new(false), std::cell::Cell::new(false));
+        let esc = || vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }];
+        let mut draw = |sim: &mut Sim, events| {
+            sim.frame(events, |ui| {
+                egui::Modal::new(egui::Id::new("m")).show(ui.ctx(), |ui| {
+                    let r = ui.text_edit_singleline(&mut text);
+                    if !asked.replace(true) {
+                        r.request_focus();
+                    }
+                    closed.set(closed.get() | super::dismissed(ui, "Cancel"));
+                });
+                super::note_focus(ui.ctx());
+            });
+        };
+        draw(&mut sim, vec![]);
+        draw(&mut sim, vec![]);
+        draw(&mut sim, esc());
+        assert!(!closed.get());
+        draw(&mut sim, vec![]);
+        draw(&mut sim, esc());
+        assert!(closed.get());
     }
 }

@@ -131,7 +131,15 @@ impl FileView {
     pub fn poll(&mut self) {
         if let Some(d) = Task::poll(&mut self.task) {
             static LOADS: AtomicU64 = AtomicU64::new(1);
-            (self.data, self.sel, self.data_gen) = (Some(d), None, LOADS.fetch_add(1, Ordering::Relaxed));
+            let prev = match (&self.data, self.sel) {
+                (Some(Ok(Data::History(old))), Some(i)) => old.get(i).map(|e| e.id.clone()),
+                _ => None,
+            };
+            let sel = match (&d, prev) {
+                (Ok(Data::History(v)), Some(id)) => v.iter().position(|e| e.id == id),
+                _ => None,
+            };
+            (self.data, self.sel, self.data_gen) = (Some(d), sel, LOADS.fetch_add(1, Ordering::Relaxed));
         }
     }
 }
@@ -181,7 +189,7 @@ const PAGE: usize = 1000;
 
 fn history(dir: &Path, path: &str, limit: usize) -> Res<Vec<Entry>> {
     // A folder (`dir/`) can't be followed through renames.
-    let follow: &[&str] = if path.ends_with('/') { &[] } else { &["--follow", "-M"] };
+    let follow: &[&str] = if path.ends_with('/') { &["--diff-merges=first-parent"] } else { &["--follow", "-M"] };
     let n = format!("-n{limit}");
     let args = [&["--literal-pathspecs", "log", &n], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT, "--", path]].concat();
     let mut v = parse_history(&git::run(dir, &args)?);
@@ -307,7 +315,7 @@ pub fn parse_blame(out: &str) -> Blame {
 }
 
 fn blame(dir: &Path, path: &str, rev: Option<&str>) -> Res<Blame> {
-    let args = [&["blame", "--porcelain", "-w"][..], rev.as_slice(), &["--", path]].concat();
+    let args = [&["blame", "--porcelain", "-w", "--no-ignore-revs-file"][..], rev.as_slice(), &["--", path]].concat();
     Ok(parse_blame(&git::run(dir, &args)?))
 }
 
@@ -425,6 +433,44 @@ mod tests {
         assert_eq!(h.len(), 2);
         assert_eq!((h[0].change.path.as_str(), h[0].change.old_path.as_deref()), ("new.rs", Some("old.rs")));
         assert_eq!((h[1].change.code, h[1].parent.as_deref()), ('A', None));
+    }
+
+    #[test]
+    fn folder_merges_selection_and_blame_config() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-merge");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        std::fs::create_dir(dir.join("d")).unwrap();
+        commit(&dir, "d/f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "d/f", "x\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "d/f", "main\n");
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        std::fs::write(dir.join("d/f"), "both\n").unwrap();
+        sh(&dir, &["add", "d/f"]);
+        sh(&dir, &["commit", "-qm", "merged"]);
+        let h = history(&dir, "d/", PAGE).unwrap();
+        assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["merged", "main", "x", "base"]);
+
+        let ctx = egui::Context::default();
+        let mut fv = FileView::open(&ctx, &dir, "d/", Mode::History);
+        wait_for("the history", || {
+            fv.poll();
+            fv.data.is_some()
+        });
+        fv.sel = Some(1);
+        fv.more(&ctx);
+        wait_for("the reload", || {
+            fv.poll();
+            fv.data_gen > 1
+        });
+        assert_eq!(fv.sel, Some(1));
+
+        sh(&dir, &["config", "blame.ignoreRevsFile", "missing-revs"]);
+        assert!(blame(&dir, "d/f", None).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

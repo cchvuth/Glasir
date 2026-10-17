@@ -520,8 +520,9 @@ impl RepoTab {
                             if ai_on && ui.button(format!("{}  Resolve…", icon::SPARKLE)).clicked() {
                                 acts.push(Action::Ai(Purpose::Resolve(c.path.clone())));
                             }
-                            if ui.button("Mark resolved").clicked() {
-                                acts.push(Action::Git(crate::repo::merge_editor::stage(&c.path)));
+                            let op = mark_resolved_op("Mark resolved", d, std::slice::from_ref(c));
+                            if ui.add_enabled(op.is_some() && !busy, egui::Button::new("Mark resolved")).on_disabled_hover_text("Conflict markers are left, or a side is still to choose").clicked() {
+                                acts.extend(op.map(Action::Git));
                             }
                             for (i, (side, word)) in [("--ours", "current"), ("--theirs", "incoming")].into_iter().enumerate() {
                                 let label = &d.conflict_sides[i];

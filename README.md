@@ -172,7 +172,8 @@ The name fits a Git client:
   parent in the sidebar. Rebases and history edits move the branches below along
   (`--update-refs`, never main, `release/*`, a protected branch or a backup at
   HEAD), and a commit, amend or rewrite restacks the ones on top. **Restack**
-  brings stale branches onto their moved parent (all or nothing), **Push stack**
+  brings stale branches onto their moved parent (all or nothing; a branch with merges
+  is left for you), **Push stack**
   pushes every branch (force-with-lease + `--force-if-includes` where rewritten,
   never over a teammate's commits),
   and a stacked branch's pull request targets its parent. One undo step each.
@@ -294,6 +295,7 @@ The name fits a Git client:
   selected commits or ⌘P; the banner shows commits and steps left with **Good /
   Bad / Skip** and **Reset**, rows get good / bad / testing marks, the next
   candidate is selected for you and the first bad commit is named at the end.
+  Custom terms (`--term-new` / `--term-old`) work too.
 - **Patches**: copy or save commits as a patch (`git format-patch`); apply a patch
   file as commits (`git am`, with Continue / Skip / Abort) or as working-tree changes (⌘Z takes them back).
 - **Repository maintenance**: **Perform repo maintenance** (toolbar `…` menu and ⌘P)

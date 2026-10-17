@@ -231,7 +231,7 @@ pub(super) fn touches(op: &Op, path: &str) -> bool {
     let named = |p: &str| p == path || p == "." || p == ":/" || path.strip_prefix(p.trim_end_matches('/')).is_some_and(|r| r.starts_with('/'));
     let backup = match &op.backup {
         Some(Backup::Paths(ps) | Backup::Staged(ps)) => ps.iter().any(|p| named(p)),
-        Some(Backup::Tree { .. } | Backup::Stash(_)) => true,
+        Some(Backup::Tree { .. } | Backup::Split(_) | Backup::Stash(_)) => true,
         None => false,
     };
     let input = op.input.as_deref().is_some_and(|i| i.split(|&b| b == 0).any(|p| std::str::from_utf8(p).is_ok_and(named)));

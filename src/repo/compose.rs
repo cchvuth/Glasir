@@ -103,7 +103,7 @@ fn range(dir: &Path, r: &Recompose) -> Res<(String, usize, String)> {
 /// can't commit those. Each commit starts from HEAD's tree, so a staged version
 /// that differs from the working tree would be lost: refused.
 fn changes(dir: &Path, base: &str, wip: bool) -> Res<(String, String)> {
-    let diff = ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--submodule=short", "--ignore-submodules=dirty", "--src-prefix=a/", "--dst-prefix=b/", base];
+    let diff = ["diff", "-U3", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--submodule=short", "--ignore-submodules=dirty", "--src-prefix=a/", "--dst-prefix=b/", base];
     if !wip {
         return Ok((git::run(dir, &[&diff[..], &["HEAD", "--"]].concat())?, String::new()));
     }
@@ -371,6 +371,18 @@ impl RepoTab {
 mod tests {
     use super::*;
     use crate::repo::testutil::{commit, identity, scratch, sh};
+
+    #[test]
+    fn changes_ignore_diff_context_config() {
+        let dir = scratch("compose-ctx");
+        sh(&dir, &["init", "-q"]);
+        identity(&dir);
+        sh(&dir, &["config", "diff.context", "0"]);
+        commit(&dir, "a", "1\n2\n3\n4\n5\n");
+        std::fs::write(dir.join("a"), "1\n2\nx\n4\n5\n").unwrap();
+        assert!(changes(&dir, "HEAD", true).unwrap().0.contains("\n 2\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn huge_untracked_tree_is_refused_early() {

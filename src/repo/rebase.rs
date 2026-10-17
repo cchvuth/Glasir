@@ -41,9 +41,10 @@ pub struct Editor {
 }
 
 impl Editor {
-    /// `base` need not be an ancestor of HEAD: `base..HEAD` is what `rebase -i <base>` replays onto it.
+    /// `base` need not be an ancestor of HEAD: `base..HEAD` is what `rebase -i <base>` replays onto it,
+    /// less (like there) the commits `base` already has a copy of.
     pub fn load(dir: &Path, base: &str, label: &str) -> Res<Editor> {
-        let items = items(dir, &[&format!("{base}..HEAD")])?;
+        let items = items(dir, &["--cherry-pick", "--right-only", &format!("{base}...HEAD")])?;
         if items.is_empty() {
             return Err(format!("No commits after {label} on this branch."));
         }
@@ -89,10 +90,20 @@ impl Editor {
             true => vec![],
             false => stacked_refs(&self.dir, |oid| self.items.iter().any(|i| i.id == oid), self.head.rsplit(' ').next().unwrap_or_default()),
         };
-        let (mut todo, mut refs) = (String::new(), String::new());
+        let (mut todo, mut refs, mut meld) = (String::new(), String::new(), None);
         for (n, it) in self.items.iter().enumerate().rev() {
+            let melds = matches!(it.act, Act::Squash | Act::Fixup);
             if matches!(it.act, Act::Pick | Act::Reword | Act::Edit) {
                 todo += &std::mem::take(&mut refs);
+                meld = None;
+                if (0..n).rev().find(|&k| self.items[k].act != Act::Drop).is_some_and(|k| matches!(self.items[k].act, Act::Squash | Act::Fixup)) {
+                    let at = sh_quote(&git_dir.join(format!("glasir-meld-{n}")));
+                    todo += &format!("exec git rev-parse HEAD > {at}\n");
+                    meld = Some((at, &it.id[..it.id.len().min(7)]));
+                }
+            }
+            if let Some((at, short)) = meld.take_if(|_| melds) {
+                todo += &format!("exec test \"$(git rev-parse HEAD)\" != \"$(cat {at})\" || {{ echo \"{short} became empty, so the commits squashed into it stop here.\" >&2; false; }}\n");
             }
             refs.extend(stacked.iter().filter(|(_, oid)| *oid == it.id).map(|(r, _)| format!("update-ref {r}\n")));
             let verb = match it.act {
@@ -134,7 +145,7 @@ impl Editor {
         }
         todo += &refs;
         let path = git_dir.join("glasir-rebase-todo");
-        std::fs::write(&path, todo).map_err(|e| e.to_string())?;
+        std::fs::write(&path, &todo).map_err(|e| e.to_string())?;
         let editor = format!("sequence.editor=cat {} >", sh_quote(&path));
         let label = match self.cherry {
             true => format!("Cherry-pick {} commits", self.items.iter().filter(|i| i.act != Act::Drop).count()),
@@ -147,6 +158,9 @@ impl Editor {
         } else {
             // A pick already applied upstream is dropped, as plain `rebase -i` does.
             args.push("--empty=drop");
+        }
+        if todo.contains("glasir-meld-") {
+            args.push("--reschedule-failed-exec");
         }
         args.push(&self.base);
         // Its picks put files where ignored ones may sit: what they hold counts as named.
@@ -220,9 +234,14 @@ pub fn quick(dir: &Path, git_dir: &Path, commit: &str, act: Act, message: Option
     // Squash/fixup meld into the parent, so the parent must be in the todo too.
     let back = if matches!(act, Act::Squash | Act::Fixup) { "~2" } else { "^" };
     on_branch(dir, commit)?;
+    let short = &commit[..commit.len().min(7)];
+    if act == Act::Drop && git::run(dir, &["rev-parse", "HEAD"]).is_ok_and(|h| h.trim() == commit) {
+        git::run(dir, &["rev-parse", "-q", "--verify", "HEAD^"]).map_err(|_| "The branch's only commit can't be dropped.".to_string())?;
+        let op = Op::new(format!("Drop {short}"), &[HEAD_IS, &head_state(dir)]).then(&["reset", "-q", "--keep", "HEAD^"]).undo(Undo::Keep);
+        return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op));
+    }
     let base = git::run(dir, &["rev-parse", "-q", "--verify", &format!("{commit}{back}")])
         .map_err(|_| "Commits next to the root can't be rewritten this way; use the interactive rebase editor.".to_string())?;
-    let short = &commit[..commit.len().min(7)];
     let mut ed = Editor::load(dir, base.trim(), short)?;
     let it = ed.items.iter_mut().find(|i| i.id == commit).ok_or("Commit is not on the current branch.")?;
     it.act = act;
@@ -471,7 +490,7 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     // Backed up: the replayed commits may put files where ignored ones sit.
     let base = format!("{commit}^");
     let op = Op::new(format!("Amend staged into {short}"), &[HEAD_IS, &head_state(dir)])
-        .then(&["commit", "-m", &format!("fixup! {commit}")])
+        .then(&["-c", NO_HOOKS, "commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &base])
         .undo(Undo::Soft)
         .backup(super::Backup::Tree { revs: vec![base], untracked: false });
@@ -509,6 +528,8 @@ pub(super) fn pending_autosquash<'a>(mut messages: impl Iterator<Item = &'a str>
 fn on_branch(dir: &Path, commit: &str) -> Res<()> {
     git::run(dir, &["merge-base", "--is-ancestor", commit, "HEAD"]).map(drop).map_err(|_| "Commit is not on the current branch.".into())
 }
+
+pub(super) const NO_HOOKS: &str = "core.hooksPath=/dev/null";
 
 /// `exec` pseudo-command: `HEAD_IS state` fails unless [`head_state`] is still `state`.
 pub(super) const HEAD_IS: &str = "!head-is";
@@ -568,10 +589,12 @@ mod tests {
         let lines: Vec<&str> = todo.lines().collect();
         assert_eq!(lines[0], "pick c3");
         assert_eq!(lines[1], "drop c2");
-        assert!(lines[2].starts_with("exec git rev-parse HEAD > '") && lines[2].ends_with("glasir-pre-1'"));
-        assert_eq!(lines[3], "pick c1");
-        assert!(lines[4].starts_with("exec if test ") && lines[4].contains("git commit --amend --allow-empty -F '") && lines[4].ends_with("glasir-msg-1'; fi"));
-        assert_eq!(lines[5], "fixup c0");
+        assert!(lines[2].starts_with("exec git rev-parse HEAD > '") && lines[2].ends_with("glasir-meld-1'"));
+        assert!(lines[3].starts_with("exec git rev-parse HEAD > '") && lines[3].ends_with("glasir-pre-1'"));
+        assert_eq!(lines[4], "pick c1");
+        assert!(lines[5].starts_with("exec if test ") && lines[5].contains("git commit --amend --allow-empty -F '") && lines[5].ends_with("glasir-msg-1'; fi"));
+        assert!(lines[6].starts_with("exec test \"$(git rev-parse HEAD)\" != \"$(cat '") && lines[6].contains("glasir-meld-1')\" || "));
+        assert_eq!(lines[7], "fixup c0");
         assert_eq!(std::fs::read_to_string(dir.join("glasir-msg-1")).unwrap(), "new message\n");
         let rebase = op.cmds.last().unwrap();
         assert!(rebase.iter().any(|a| a.starts_with("sequence.editor=cat '")));
@@ -767,6 +790,7 @@ mod tests {
         g(&["cherry-pick", &a]);
         g(&["checkout", "-q", "feat"]);
         let ed = Editor::load(&dir, "main", "main").unwrap();
+        assert_eq!(ed.items.len(), 1);
         // A stopped rebase blocks a second editor before it writes any file.
         std::fs::create_dir_all(gd.join("rebase-merge")).unwrap();
         assert!(ed.op(&gd).is_err());
@@ -971,6 +995,70 @@ mod tests {
         let c2 = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
         run_op(&dir, &quick(&dir, &gd, &c2, Act::Drop, None).unwrap());
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c3", "c1"]);
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        let op = quick(&dir, &gd, &head, Act::Drop, None).unwrap();
+        assert_eq!(op.undo, Undo::Keep);
+        run_op(&dir, &op);
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c1"]);
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        assert!(quick(&dir, &gd, &head, Act::Drop, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn squash_into_an_emptied_pick_stops() {
+        let (dir, g) = repo("meld-empty");
+        let gd = git::git_dir(&dir).unwrap();
+        let file = |f: &str, s: &str| std::fs::write(dir.join(f), s).unwrap();
+        g(&["checkout", "-q", "-b", "feat"]);
+        file("t", "T\n");
+        g(&["add", "t"]);
+        g(&["commit", "-q", "-m", "T"]);
+        file("s", "S\n");
+        g(&["add", "s"]);
+        g(&["commit", "-q", "-m", "S"]);
+        let (t, tip) = (g(&["rev-parse", "HEAD~1"]).trim().to_owned(), g(&["rev-parse", "HEAD"]));
+        g(&["checkout", "-q", "-b", "picked", "main"]);
+        g(&["cherry-pick", &t]);
+        g(&["checkout", "-q", "main"]);
+        file("t", "T\n");
+        file("u", "U\n");
+        g(&["add", "t", "u"]);
+        g(&["commit", "-q", "-m", "T and U"]);
+        file("z", "Z\n");
+        g(&["add", "z"]);
+        g(&["commit", "-q", "-m", "Z"]);
+        g(&["checkout", "-q", "feat"]);
+        let mut ed = Editor::load(&dir, "picked", "picked").unwrap();
+        assert_eq!(ed.items.iter().map(|i| i.message.as_str()).collect::<Vec<_>>(), ["S"]);
+        ed.items[0].act = Act::Squash;
+        assert!(ed.problem().is_some());
+        let mut ed = Editor::load(&dir, "main", "main").unwrap();
+        assert_eq!(ed.items.len(), 2);
+        ed.items[0].act = Act::Squash;
+        assert!(crate::repo::op::exec(&dir, &ed.op(&gd).unwrap()).is_err());
+        assert!(git::run(&dir, &["-c", "core.editor=true", "rebase", "--continue"]).is_err(), "the check runs again");
+        assert_eq!(g(&["rev-parse", "HEAD"]), g(&["rev-parse", "main"]));
+        g(&["rebase", "--abort"]);
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn amend_into_ignores_message_hooks() {
+        let (dir, g) = repo("amend-hook");
+        let hook = git::git_dir(&dir).unwrap().join("hooks/prepare-commit-msg");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nprintf '[ABC-1] ' | cat - \"$1\" > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let c2 = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        std::fs::write(dir.join("b"), "c2 fixed\n").unwrap();
+        g(&["add", "b"]);
+        run_op(&dir, &amend_into(&dir, &c2, false).unwrap());
+        let log = g(&["log", "--format=%s"]);
+        assert!(log.lines().count() == 3 && !log.contains("fixup!"), "{log}");
+        assert_eq!(g(&["show", "HEAD~1:b"]), "c2 fixed\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

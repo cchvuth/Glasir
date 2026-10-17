@@ -2,7 +2,7 @@
 //! stages and commits the parts, then Continue replays the rest of the branch.
 //! The whole split becomes one undo step.
 
-use super::undo::{Files, Refs, UndoEntry, at, copy, moved};
+use super::undo::{Files, Refs, UndoEntry, at, copy, moved, unchanged};
 use super::{Backup, Choice, Msg, Op, RepoTab, Undo};
 use crate::git;
 
@@ -98,7 +98,7 @@ impl RepoTab {
         if abort {
             let op = match sp.rebase {
                 // Track the commit's files again first: `rebase --abort` won't overwrite its now-untracked added files.
-                true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).undo(Undo::Keep),
+                true => Op::new(ABORT, &["reset", "-q", "--hard", &sp.id]).then(&["rebase", "--abort"]).undo(Undo::Keep).backup(Backup::Split(sp.id.clone())),
                 // Undoable: it also drops whatever was committed on top since, in the app or not.
                 false => {
                     let mut op = Op::new(ABORT, &["reset", "-q", &sp.id, "--"]).backup(Backup::Tree { revs: vec![], untracked: false }).undo(Undo::Mixed);
@@ -194,6 +194,11 @@ impl RepoTab {
             };
         }
         let refs = refs.filter(|r| r.before != r.after);
+        if refs.is_none() {
+            let (same, kept): (Vec<Files>, Vec<Files>) = files.into_iter().partition(|f| unchanged(&self.dir, &f.before, &f.after));
+            git::drop_backups(&self.dir, &same.into_iter().flat_map(|f| [f.before.refname, f.after.refname]).collect::<Vec<_>>());
+            files = kept;
+        }
         if refs.is_some() || !files.is_empty() {
             let label = if abort { ABORT.to_owned() } else { format!("Split {}", &sp.id[..7.min(sp.id.len())]) };
             rest.push(UndoEntry::new(label, refs, files, None));

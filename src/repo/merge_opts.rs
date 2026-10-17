@@ -51,7 +51,7 @@ pub fn merge_op(target: &str, rev: &str, how: Option<Merge>) -> Op {
         Some(Merge::NoFf) => Op::new(format!("Merge {target} (no fast-forward)"), &["merge", "--no-ff", "--no-edit", rev]),
         Some(Merge::FfOnly) => Op::new(format!("Merge {target} (fast-forward only)"), &["merge", "--ff-only", rev]),
         Some(Merge::Squash) => {
-            let mut op = Op::new(format!("Squash merge {target}"), &["merge", "--squash", rev]);
+            let mut op = Op::new(format!("Squash merge {target}"), &["merge", "--squash", "--ff", rev]);
             op.cmds.insert(0, vec![CLEAN.into()]);
             op
         }
@@ -76,9 +76,7 @@ pub fn pick_op(label: impl Into<String>, ids: &[&str], merge: bool, no_commit: b
     if no_commit {
         op.cmds.insert(0, vec![CLEAN.into()]);
     }
-    if !merge {
-        op.cmds.insert(0, std::iter::once(PICK_NEW).chain(ids.iter().copied()).map(String::from).collect());
-    }
+    op.cmds.insert(0, std::iter::once(PICK_NEW).chain(ids.iter().copied()).map(String::from).collect());
     op
 }
 
@@ -93,14 +91,10 @@ pub(super) fn clean(dir: &Path) -> Res<String> {
 pub(super) fn pick_new(dir: &Path, a: &[&str]) -> Res<String> {
     let mut seen = vec![];
     for id in &a[1..] {
-        let parent = format!("{id}^");
-        if git::run(dir, &["rev-parse", "-q", "--verify", &parent]).is_err() {
-            continue; // a root commit
-        }
-        // `-` = a commit with the same patch is in HEAD; nothing at all = already reachable from HEAD.
-        let Ok(out) = git::run(dir, &["cherry", "HEAD", id, &parent]) else { continue };
-        let reachable = out.trim().is_empty();
-        if reachable || out.trim_start().starts_with('-') {
+        let reachable = git::run(dir, &["merge-base", "--is-ancestor", id, "HEAD"]).is_ok();
+        // `-` = a commit with the same patch is in HEAD.
+        let dup = !reachable && git::run(dir, &["cherry", "HEAD", id, &format!("{id}^")]).is_ok_and(|o| o.trim_start().starts_with('-'));
+        if reachable || dup {
             let line = git::run(dir, &["show", "-s", "--format=%h %s", id]).unwrap_or_default();
             seen.push(format!("  •  {}{}", line.trim(), if reachable { " (already in its history)" } else { "" }));
         }
@@ -227,7 +221,20 @@ mod tests {
         let x = pick_op("Cherry-pick", &["feat"], false, false);
         set_pick_x(false);
         assert!(x.cmds[1].contains(&"-x".to_string()));
-        assert!(pick_op("p", &["feat"], true, false).cmds[0].contains(&"-m".to_string()));
+        assert!(pick_op("p", &["feat"], true, false).cmds[1].contains(&"-m".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn squash_and_merge_pick_survive_user_config() {
+        let dir = repo("merge-cfg");
+        sh(&dir, &["config", "merge.ff", "false"]);
+        exec(&dir, &merge_op("feat", "feat", Some(Merge::Squash))).unwrap();
+        sh(&dir, &["reset", "-q", "--hard"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "m", "feat"]);
+        let e = exec(&dir, &pick_op("Cherry-pick", &["HEAD"], true, false)).unwrap_err();
+        assert!(e.contains("already in its history"), "{e}");
+        assert_eq!(git::state(&git::git_dir(&dir).unwrap()), git::State::Clean);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

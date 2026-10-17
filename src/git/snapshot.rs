@@ -262,13 +262,15 @@ fn info<'a>(entries: impl IntoIterator<Item = (&'a str, Option<&'a (u32, String)
 /// Backs up everything uncommitted in `scope` as a stash-shaped commit kept by a new
 /// `refs/glasir/backups/*` ref, before anything is destroyed. `like`: commits whose content needs
 /// no backup (a path whose file and index entry are each in one of them is left out; None when
-/// that leaves nothing); empty: the whole scope. Err: why a path can't be stored (the op must not run).
-pub fn snap(dir: &Path, scope: &[String], like: &[String], msg: &str) -> Res<Option<Snap>> {
+/// that leaves nothing); empty: the whole scope. `targets`: commits the op may check out besides.
+/// Err: why a path can't be stored (the op must not run).
+pub fn snap(dir: &Path, scope: &[String], like: &[String], targets: &[String], msg: &str) -> Res<Option<Snap>> {
     let base = head(dir).map_or_else(|| commit(dir, &empty_tree(dir)?, &[], "unborn"), Ok)?;
-    scratch(dir, |tmp| scratch(dir, |tmp2| snap_in(dir, scope, like, msg, &base, tmp, tmp2)))
+    scratch(dir, |tmp| scratch(dir, |tmp2| snap_in(dir, scope, like, targets, msg, &base, tmp, tmp2)))
 }
 
-fn snap_in(dir: &Path, scope: &[String], like: &[String], msg: &str, base: &str, tmp: &Path, tmp2: &Path) -> Res<Option<Snap>> {
+#[allow(clippy::too_many_arguments)]
+fn snap_in(dir: &Path, scope: &[String], like: &[String], targets: &[String], msg: &str, base: &str, tmp: &Path, tmp2: &Path) -> Res<Option<Snap>> {
     let zero = "0".repeat(base.len());
     let real = run(dir, &["rev-parse", "--path-format=absolute", "--git-path", "index"])?;
     if let Err(e) = std::fs::copy(real.trim(), tmp)
@@ -280,9 +282,10 @@ fn snap_in(dir: &Path, scope: &[String], like: &[String], msg: &str, base: &str,
     let mut all = leaves(dir, scope)?;
     let disk = hash(dir, &all.iter().chain(unmerged.iter().filter(|u| !all.contains(u))).cloned().collect::<Vec<_>>(), &index, true)?;
     let trees = like.iter().map(|c| tree(dir, c)).collect::<Res<Vec<_>>>()?;
+    let others = targets.iter().map(|c| tree(dir, c)).collect::<Res<Vec<_>>>()?;
     // A nested repo or submodule survives a discard, unless a file goes at or above it (one the
     // index or a target tracks): that deletes it, .git and all, and git can't store one.
-    let file = |p: &str| std::iter::once(&index).chain(&trees).any(|t| t.get(p).is_some_and(|e| e.0 != 0o160000));
+    let file = |p: &str| std::iter::once(&index).chain(&trees).chain(&others).any(|t| t.get(p).is_some_and(|e| e.0 != 0o160000));
     let repo = all.iter().filter(|p| disk[*p].as_ref().is_some_and(|e| e.0 == DIR)).map(|p| p.trim_end_matches('/')).find(|p| file(p) || ancestors(p).any(file));
     if let Some(p) = repo {
         return Err(format!("{p} is a git repository of its own, which this would delete; move it out of the way first"));

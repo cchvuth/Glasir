@@ -8,7 +8,7 @@ use egui::{RichText, ScrollArea, Ui};
 impl RepoTab {
     pub(super) fn multi_panel(&mut self, ui: &mut Ui, acts: &mut Vec<Action>) {
         let Some(d) = &self.data else { return };
-        let ids = self.multi.clone();
+        let ids = &self.multi;
         ui.add_space(6.0);
         ui.label(RichText::new(format!("{} commits selected", ids.len())).heading().strong());
         ui.label(RichText::new(keys("⌘-click to add or remove, ⇧-click for a range.")).small().color(theme::dim(ui)));
@@ -38,8 +38,9 @@ impl RepoTab {
             }
         });
         ui.add_space(6.0);
-        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
-            for id in &ids {
+        let row_h = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y;
+        ScrollArea::vertical().auto_shrink(false).show_rows(ui, row_h, ids.len(), |ui, range| {
+            for id in &ids[range] {
                 let c = d.row_of.get(id).and_then(|&r| d.commit(r));
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(&id[..id.len().min(7)]).monospace().color(theme::dim(ui)));

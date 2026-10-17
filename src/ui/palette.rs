@@ -153,7 +153,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             crate::git::State::Clean => v.push(item(icon::BUG, "Start bisect (HEAD is bad)", "then mark a good commit", Cmd::Tab(op("Start bisect", &["bisect", "start", "HEAD"])))),
             crate::git::State::Bisecting => {
                 for what in ["good", "bad", "skip", "reset"] {
-                    v.push(item(icon::BUG, format!("Bisect: {what}"), if what == "reset" { "end the bisect" } else { "the checked-out commit" }, Cmd::Tab(op(format!("Bisect: {what}"), &["bisect", what]))));
+                    v.push(item(icon::BUG, format!("Bisect: {what}"), if what == "reset" { "end the bisect" } else { "the checked-out commit" }, Cmd::Tab(op(format!("Bisect: {what}"), &["bisect", d.bisect.as_ref().map_or(what, |b| b.term(what))]))));
                 }
             }
             _ => {}

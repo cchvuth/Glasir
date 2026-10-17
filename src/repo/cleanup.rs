@@ -44,6 +44,7 @@ pub struct Cleanup {
     pub prune: bool,
     /// Remote-tracking refs whose branch is gone from its remote: `(ref, oid)`; `None` while checking.
     pub stale_refs: Option<Res<Vec<(String, String)>>>,
+    unticked: Vec<String>,
     task: Option<Task<Res<Vec<Cand>>>>,
     prune_task: Option<Task<Res<Vec<(String, String)>>>>,
 }
@@ -61,10 +62,19 @@ pub(super) fn protected(keep: &str, name: &str) -> bool {
 impl Cleanup {
     pub fn poll(&mut self) {
         if let Some(r) = Task::poll(&mut self.task) {
-            self.rows = Some(r);
+            self.rows = Some(r.map(|mut v| {
+                v.iter_mut().filter(|c| self.unticked.contains(&c.name)).for_each(|c| c.on = false);
+                v
+            }));
         }
         if let Some(r) = Task::poll(&mut self.prune_task) {
             self.stale_refs = Some(r);
+        }
+    }
+
+    pub fn rescan(&mut self) {
+        if let Some(Ok(v)) = self.rows.take() {
+            self.unticked = v.into_iter().filter(|c| !c.on).map(|c| c.name).collect();
         }
     }
 
@@ -511,6 +521,22 @@ mod tests {
         assert_eq!((f.name.as_str(), f.ahead, f.behind, f.note.as_str()), ("feature", 1, 0, "1 commit not on any remote"));
         assert_eq!(shown(&t, NOW)[1], ("feature".to_owned(), Why::Stale, "1 commit not on any remote".to_owned(), false));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_rescan_keeps_unticked_branches_unticked() {
+        let cand = |n: &str| Cand { name: n.into(), on: true, ..Default::default() };
+        let mut c = Cleanup { rows: Some(Ok(vec![cand("a"), cand("b")])), ..Default::default() };
+        c.rows.as_mut().unwrap().as_mut().unwrap()[0].on = false;
+        c.rescan();
+        assert!(c.rows.is_none());
+        c.task = Some(Task::spawn(&egui::Context::default(), move || Ok(vec![cand("a"), cand("b"), cand("c")])));
+        super::super::testutil::wait_for("the rescan", || {
+            c.poll();
+            c.rows.is_some()
+        });
+        let on: Vec<_> = c.rows.unwrap().unwrap().iter().map(|c| c.on).collect();
+        assert_eq!(on, [false, true, true]);
     }
 
     #[test]

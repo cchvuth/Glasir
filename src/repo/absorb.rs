@@ -83,7 +83,8 @@ impl Plan {
             .collect();
         let ids: Vec<&str> = cands.iter().map(|c| c.0.as_str()).collect();
         let diff = ["diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/"];
-        let files = git::parse_diff(&git::run(dir, &diff)?);
+        let mut files = git::parse_diff(&git::run(dir, &diff)?);
+        files.iter_mut().for_each(|f| f.header.retain(|h| !h.starts_with("old mode") && !h.starts_with("new mode")));
         let names = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames"])?;
         let mut rows = vec![];
         for (fi, (f, named)) in files.iter().zip(git::file_paths(&files, &names)).enumerate() {
@@ -104,7 +105,7 @@ impl Plan {
                 let start = if n == 0 { h.old_start } else { h.old_start - 1 };
                 (start.max(1), h.old_start + n.max(1))
             };
-            let mut args = vec!["blame".to_owned(), "--porcelain".into()];
+            let mut args = vec!["blame".to_owned(), "--porcelain".into(), "--no-ignore-revs-file".into()];
             for h in &f.hunks {
                 let (a, b) = span(h);
                 args.extend(["-L".into(), format!("{a},{b}")]);
@@ -189,7 +190,7 @@ impl Plan {
             op = op
                 .then(&["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", &file])
                 // `fixup! <sha>`: `--fixup` writes the subject, which autosquash matches to the oldest commit with it.
-                .then(&["commit", "-q", "--no-verify", "-m", &format!("fixup! {}", self.cands[t].0)]);
+                .then(&["-c", super::rebase::NO_HOOKS, "commit", "-q", "--no-verify", "-m", &format!("fixup! {}", self.cands[t].0)]);
         }
         // No commutation check beyond adjacent lines. A failure (a conflicting autosquash)
         // rolls everything back: leftovers' staged versions may exist only in `self.index`.
@@ -441,6 +442,33 @@ mod tests {
         assert_eq!(g(&["show", "HEAD:g"]), "g1 fixed\n");
         assert_eq!(g(&["diff", "--cached", "--name-only"]), "p\n");
         assert_eq!((g(&["ls-files", "-t", "README"]), g(&["status", "--porcelain"])), ("S README\n".into(), "M  p\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absorb_survives_user_config_and_mode_change() {
+        let dir = scratch("absorb-cfg");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "blame.ignoreRevsFile", ".git-blame-ignore-revs"]);
+        commit(&dir, "README", "root\n");
+        commit(&dir, "f", "f1\nf2\n");
+        commit(&dir, "other", "o\n");
+        let hook = git::git_dir(&dir).unwrap().join("hooks/prepare-commit-msg");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\necho \"[x] $(cat \"$1\")\" > \"$1\"\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("f"), "f1 fixed\nf2\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        sh(&dir, &["update-index", "--chmod=+x", "f"]);
+        let plan = Plan::load(&dir).unwrap();
+        assert!(plan.rows.iter().all(|r| r.target.is_ok()), "{:?}", plan.rows.iter().map(|r| &r.target).collect::<Vec<_>>());
+        crate::repo::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
+        assert_eq!(sh(&dir, &["rev-list", "--count", "HEAD"]), "3\n");
+        assert_eq!(sh(&dir, &["ls-tree", "HEAD~1", "f"]).split(' ').next(), Some("100644"));
+        assert_eq!(sh(&dir, &["show", "HEAD~1:f"]), "f1 fixed\nf2\n");
+        assert_eq!(sh(&dir, &["diff", "--cached", "--summary"]).trim(), "mode change 100644 => 100755 f");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

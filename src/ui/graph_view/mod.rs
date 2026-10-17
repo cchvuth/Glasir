@@ -279,13 +279,14 @@ pub fn show(
                 }
             }
 
+            let multi_set: std::collections::HashSet<&str> = multi.iter().map(String::as_str).collect();
             let mut hovered = None;
             for r in range.clone() {
                 let rect = Rect::from_min_size(pos2(left, top + r as f32 * ROW), vec2(full.width(), ROW));
                 let commit = d.commit(r);
                 let resp = ui.interact(rect, ui.id().with(("row", commit.map_or("wip", |c| c.id.as_str()))), if commit.is_some() { Sense::click_and_drag() } else { Sense::click() });
                 let pill = rect.shrink2(vec2(2.0, 1.5));
-                let in_multi = commit.is_some_and(|c| multi.contains(&c.id));
+                let in_multi = commit.is_some_and(|c| multi_set.contains(c.id.as_str()));
                 if Some(r) == sel_row || in_multi {
                     ui.painter().rect_filled(pill, 9.0, theme::selection(ui));
                 } else if resp.hovered() {

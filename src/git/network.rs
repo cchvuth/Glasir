@@ -69,9 +69,7 @@ pub fn fetch_quiet(dir: &Path) -> Res<String> {
     // fetch adding or pruning one would invalidate the undo history. A manual Fetch gets them.
     let mut errs = vec![];
     for (remote, specs) in tracking(&super::config(dir)).0 {
-        let mut a = vec!["fetch", "--prune", "--no-tags", "--no-prune-tags", "--no-write-fetch-head", "--quiet", "--refmap=", &remote];
-        a.extend(specs.iter().map(String::as_str));
-        match quiet(dir, &a, None) {
+        match fetch_specs(dir, &remote, &specs, true) {
             Err(e) if e == super::CANCELLED => return Err(e),
             Err(e) => errs.push(e),
             Ok(_) => {}
@@ -80,8 +78,17 @@ pub fn fetch_quiet(dir: &Path) -> Res<String> {
     if errs.is_empty() { Ok(String::new()) } else { Err(errs.join("\n")) }
 }
 
+fn fetch_specs(dir: &Path, remote: &str, specs: &[String], prune: bool) -> Res<String> {
+    let mut a = vec!["fetch", "--no-tags", "--no-prune-tags", "--no-write-fetch-head", "--quiet"];
+    a.extend(if prune && !specs.is_empty() { &["--prune", "--refmap="][..] } else { &["--no-prune"][..] });
+    a.push(remote);
+    a.extend(specs.iter().map(String::as_str));
+    quiet(dir, &a, None)
+}
+
 pub fn fetch_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
-    quiet(dir, &["fetch", "--no-tags", "--quiet", remote], None)
+    let specs = tracking(&super::config(dir)).0.into_iter().find(|r| r.0 == remote).map(|r| r.1).unwrap_or_default();
+    fetch_specs(dir, remote, &specs, false)
 }
 
 /// Talks to `remote` the way the background fetch does (never prompting): its HEAD.
@@ -200,6 +207,26 @@ mod tests {
         assert_eq!(fetch_failure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), "Sign in required");
         assert_eq!(fetch_failure("git@github.com: Permission denied (publickey)."), "Sign in required");
         assert_eq!(fetch_failure("ssh: Could not resolve hostname x: nodename nor servname provided"), "Fetch failed");
+    }
+
+    #[test]
+    fn single_remote_fetch_keeps_local_tags() {
+        let base = std::env::temp_dir().join(format!("glasir-fetch-tags-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (up, dir) = (base.join("up"), base.join("work"));
+        std::fs::create_dir_all(&up).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |d: &Path, a: &[&str]| run(d, a).unwrap();
+        g(&up, &["init", "-q"]);
+        g(&up, &["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "one"]);
+        g(&dir, &["clone", "-q", up.to_str().unwrap(), "."]);
+        g(&dir, &["tag", "local-only"]);
+        for k in ["fetch.prune", "fetch.pruneTags"] {
+            g(&dir, &["config", k, "true"]);
+        }
+        fetch_remote_quiet(&dir, "origin").unwrap();
+        assert_eq!(g(&dir, &["tag", "-l"]).trim(), "local-only");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
