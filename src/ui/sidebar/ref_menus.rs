@@ -100,7 +100,10 @@ pub(crate) fn pull_request_url(d: &RepoData, head: &str, base: &str) -> Option<S
 }
 
 pub(crate) fn pr_base(d: &RepoData, name: &str) -> String {
-    if let Some(p) = d.local(name).and_then(|_| crate::repo::stack::parent(d, name)) {
+    let on = remote_branch(d, name).0;
+    if let Some(p) = d.local(name).and_then(|_| crate::repo::stack::parent(d, name))
+        && d.refs.iter().any(|x| x.kind == RefKind::Remote && x.name == format!("{on}/{}", remote_branch(d, p).1))
+    {
         return p.to_owned();
     }
     let def = d.default_branch();
@@ -112,7 +115,8 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
     let (remote, branch) = remote_branch(d, &r.name);
     ui.separator();
     if crate::ai::enabled() && ui.button(format!("{}  Write pull request…", icon::SPARKLE)).clicked() {
-        acts.push(Action::Ai(Purpose::PullRequest { branch: d.rev(r).into(), base: pr_base(d, &r.name) }));
+        let base = pr_base(d, &r.name);
+        acts.push(Action::Ai(Purpose::PullRequest { branch: d.rev(r).into(), base: d.local(&base).map_or(base.clone(), |l| d.rev(l).to_owned()) }));
     }
     let Some(web) = d.web_of(&remote) else { return };
     let base = pr_base(d, &r.name);
@@ -306,7 +310,8 @@ mod tests {
     fn pull_request_base_is_the_stack_parent() {
         let sim = Sim::new(500.0, 900.0);
         let mut t = tab(&sim.ctx, "pr-base", &["one"]);
-        let git = |args: &[&str]| crate::git::run(&t.dir, args).unwrap();
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
         for b in ["a", "b"] {
             git(&["checkout", "-q", "-b", b]);
             std::fs::write(t.dir.join(b), b).unwrap();
@@ -316,7 +321,14 @@ mod tests {
         t.reload(&sim.ctx, true);
         load(&mut t, &sim.ctx);
         let d = t.data.as_ref().unwrap();
-        assert_eq!((pr_base(d, "b"), pr_base(d, "a")), ("a".to_owned(), d.default_branch().to_owned()));
+        assert_eq!((pr_base(d, "b"), pr_base(d, "a")), (d.default_branch().to_owned(), d.default_branch().to_owned()));
+        git(&["update-ref", "refs/remotes/origin/a", "a"]);
+        git(&["tag", "a", "HEAD~2"]);
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!(pr_base(d, "b"), "a");
+        assert_eq!(d.rev(d.local("a").unwrap()), "refs/heads/a");
     }
 
     #[test]

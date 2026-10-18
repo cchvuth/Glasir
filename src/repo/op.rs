@@ -722,7 +722,7 @@ fn apply_stash(dir: &Path, id: &str, target: &str, pop: bool) -> Res<String> {
 /// files for that as it found and left them (`SEQ_STATE head unmerged n from.. to..`: those
 /// still as the op left them go, then the others come back, the conflicts too, at that HEAD).
 pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
-    let watch = !op.light && op.revert.is_none() && (op.undo != Undo::No || op.backup.is_some());
+    let watch = !op.light && !op.custom && op.revert.is_none() && (op.undo != Undo::No || op.backup.is_some());
     let g = watch.then(|| git::git_dir(dir).ok()).flatten();
     let found = g.as_deref().and_then(|g| seq_files(dir, g, false));
     let saving = op.cmds.iter().any(|c| c.iter().skip_while(|a| a.starts_with("--")).take(2).eq(["stash", "push"]));
@@ -779,7 +779,7 @@ fn seq_files(dir: &Path, g: &Path, head: bool) -> Option<State> {
 
 fn state_files(g: &Path) -> Vec<String> {
     let seq = std::fs::read_dir(g.join("sequencer")).into_iter().flatten().flatten().map(|e| format!("sequencer/{}", e.file_name().to_string_lossy()));
-    let mut names: Vec<String> = ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "CHERRY_PICK_HEAD", "REVERT_HEAD", "SQUASH_MSG"].map(String::from).into_iter().chain(seq).collect();
+    let mut names: Vec<String> = ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "MERGE_AUTOSTASH", "CHERRY_PICK_HEAD", "REVERT_HEAD", "SQUASH_MSG"].map(String::from).into_iter().chain(seq).collect();
     names.sort();
     names.into_iter().filter_map(|n| Some([std::fs::read_to_string(g.join(&n)).ok()?, n])).flat_map(|[c, n]| [n, c]).collect()
 }
@@ -804,7 +804,7 @@ fn seq_state(dir: &Path, a: &[&str]) -> Res<String> {
     if to.is_empty() {
         return Ok(String::new());
     }
-    if git::state(&g) != git::State::Clean {
+    if !matches!(git::state(&g), git::State::Clean | git::State::Bisecting) {
         return Err("Another merge, cherry-pick or rebase is in progress now: finish or abort it first, then try again.".into());
     }
     for p in to.chunks(2) {
@@ -1130,7 +1130,8 @@ impl RepoTab {
                                 Err(e) => Msg { text: format!("What {} discarded is backed up only in {} ({e}).", op.label, f.before.refname), error: true },
                             });
                         }
-                        let stray = |h: &str| !h.starts_with("refs/") && git::run(&self.dir, &["for-each-ref", "--count=1", "--contains", h]).is_ok_and(|o| o.trim().is_empty());
+                        let made_at_stop = |h: &str| git::run(&self.dir, &["reflog", "-n", "200", "--format=%H%x1f%gs"]).is_ok_and(|l| l.lines().filter_map(|l| l.split_once('\x1f')).find(|(id, _)| *id == h).is_some_and(|(_, s)| s.starts_with("commit")));
+                        let stray = |h: &str| !h.starts_with("refs/") && git::run(&self.dir, &["for-each-ref", "--count=1", "--contains", h]).is_ok_and(|o| o.trim().is_empty()) && made_at_stop(h);
                         let refs = refs.filter(|r| r.after.head.starts_with("refs/")).map(|r| if stray(&r.before.head) { r } else { Refs { before: Snapshot { head: r.after.head.clone(), ..r.before }, ..r } }).filter(|r| r.before != r.after);
                         (refs.map(|r| Refs { on_remote: on_remotes(&self.dir, &r.before, &r.after), ..r }), None)
                     }
@@ -2208,6 +2209,113 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undoing_an_abort_at_an_edit_stop_with_no_new_commit_offers_nothing() {
+        let dir = scratch("rebase-abort-stop-picked");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "b", "b\n");
+        commit(&dir, "c", "c\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "m", "m\n");
+        sh(&dir, &["checkout", "-q", "feat"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        sh(&dir, &["-c", "sequence.editor=sed -i.bak 2s/^pick/edit/", "rebase", "-q", "-i", "main"]);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(super::sequencer_op("rebase", true)));
+        let mut op = t.confirm.take().expect("asks first");
+        op.confirm = None;
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(t.undo_label(), None);
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/feat\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_an_abort_after_an_autostashed_pull_keeps_the_edits() {
+        let up = scratch("pull-autostash-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "f", "base\n");
+        commit(&up, "u", "u\n");
+        let dir = scratch("pull-autostash");
+        sh(&dir, &["clone", "-q", up.to_str().unwrap(), "."]);
+        identity(&dir);
+        commit(&up, "f", "upstream\n");
+        commit(&dir, "f", "local\n");
+        std::fs::write(dir.join("u"), "mine\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        run(&ctx, &mut t, Action::Git(super::pull_op(super::PullMode::Merge)));
+        assert!(dir.join(".git/MERGE_AUTOSTASH").exists());
+        t.apply(&ctx, Action::Git(super::sequencer_op("merge", true)));
+        if let Some(mut op) = t.confirm.take() {
+            op.confirm = None;
+            t.apply(&ctx, Action::Git(op));
+        }
+        settle(&ctx, &mut t);
+        run(&ctx, &mut t, Action::Undo);
+        assert!(dir.join(".git/MERGE_AUTOSTASH").exists());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        sh(&dir, &["-c", "core.editor=true", "commit", "-q", "--no-edit"]);
+        assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "mine\n");
+        let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&up));
+    }
+
+    #[test]
+    fn a_custom_merge_records_no_merge_state_undo() {
+        let dir = scratch("custom-merge-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "n", "new\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let mut op = Op { custom: true, ..Op::new("My merge", &["merge", "--no-ff", "--no-commit", "feat"]).undo(super::Undo::Keep) };
+        super::exec_stash(&dir, &mut op).unwrap();
+        assert!(op.revert.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_concluded_pick_works_while_bisecting() {
+        let dir = scratch("undo-pick-bisect");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "feat\n");
+        let pick = sh(&dir, &["rev-parse", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        commit(&dir, "x", "1\n");
+        commit(&dir, "x", "2\n");
+        sh(&dir, &["bisect", "start", "HEAD", "HEAD~2"]);
+        assert!(git::run(&dir, &["cherry-pick", pick.trim()]).is_err());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let before = sh(&dir, &["rev-parse", "HEAD"]);
+        t.summary = "picked".into();
+        let op = t.commit_op();
+        run(&ctx, &mut t, Action::Git(op));
+        run(&ctx, &mut t, Action::Undo);
+        assert!(t.choice.is_none(), "{:?}", t.choice.as_ref().map(|c| c.text.clone()));
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
+        assert!(dir.join(".git/CHERRY_PICK_HEAD").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
