@@ -95,9 +95,16 @@ fn remote_branch(d: &RepoData, name: &str) -> (String, String) {
 /// remote-tracking branch), on the remote `head` is on.
 pub(crate) fn pull_request_url(d: &RepoData, head: &str, base: &str) -> Option<String> {
     let (remote, branch) = remote_branch(d, head);
-    let base = crate::git::short_ref(base);
-    let base = d.split_remote(base).map_or(base, |(_, b)| b);
-    Some(format!("{}/compare/{}...{}?expand=1", d.web_of(&remote)?, crate::git::url_path(base), crate::git::url_path(&branch)))
+    let base = remote_branch(d, base).1;
+    Some(format!("{}/compare/{}...{}?expand=1", d.web_of(&remote)?, crate::git::url_path(&base), crate::git::url_path(&branch)))
+}
+
+pub(crate) fn pr_base(d: &RepoData, name: &str) -> String {
+    if let Some(p) = d.local(name).and_then(|_| crate::repo::stack::parent(d, name)) {
+        return p.to_owned();
+    }
+    let def = d.default_branch();
+    if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def.to_owned() }
 }
 
 /// `r` is the branch (local or remote-tracking) whose PR / web pages these open.
@@ -105,16 +112,15 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
     let (remote, branch) = remote_branch(d, &r.name);
     ui.separator();
     if crate::ai::enabled() && ui.button(format!("{}  Write pull request…", icon::SPARKLE)).clicked() {
-        let def = d.default_branch().to_owned();
-        let base = if d.refs.iter().any(|x| x.name == format!("origin/{def}")) { format!("origin/{def}") } else { def };
-        acts.push(Action::Ai(Purpose::PullRequest { branch: d.rev(r).into(), base }));
+        acts.push(Action::Ai(Purpose::PullRequest { branch: d.rev(r).into(), base: pr_base(d, &r.name) }));
     }
     let Some(web) = d.web_of(&remote) else { return };
-    let enc = crate::git::url_path;
-    // A stacked branch's pull request goes into its parent's.
-    let into = crate::repo::stack::parent(d, &r.name).filter(|_| r.kind == RefKind::Local).map_or_else(|| d.default_branch().to_owned(), str::to_owned);
-    if ui.button("Create pull request…").on_hover_text(format!("Opens the compare page into {into} on GitHub / GitHub Enterprise")).clicked() {
-        acts.push(Action::Url(format!("{web}/compare/{}...{}?expand=1", enc(&into), enc(&branch))));
+    let base = pr_base(d, &r.name);
+    let into = remote_branch(d, &base).1;
+    if ui.button("Create pull request…").on_hover_text(format!("Opens the compare page into {into} on GitHub / GitHub Enterprise")).clicked()
+        && let Some(url) = pull_request_url(d, &r.name, &base)
+    {
+        acts.push(Action::Url(url));
     }
     if ui.button("Open branch on remote").clicked() {
         acts.push(Action::Url(Page::Branch(&branch).url(&web)));
@@ -295,6 +301,23 @@ mod tests {
     use super::*;
     use crate::ui::testkit::{Sim, load, tab};
     use egui::PointerButton;
+
+    #[test]
+    fn pull_request_base_is_the_stack_parent() {
+        let sim = Sim::new(500.0, 900.0);
+        let mut t = tab(&sim.ctx, "pr-base", &["one"]);
+        let git = |args: &[&str]| crate::git::run(&t.dir, args).unwrap();
+        for b in ["a", "b"] {
+            git(&["checkout", "-q", "-b", b]);
+            std::fs::write(t.dir.join(b), b).unwrap();
+            git(&["add", b]);
+            git(&["commit", "-q", "-m", b]);
+        }
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!((pr_base(d, "b"), pr_base(d, "a")), ("a".to_owned(), d.default_branch().to_owned()));
+    }
 
     #[test]
     fn push_works_for_a_branch_that_shares_its_name_with_a_tag() {

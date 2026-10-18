@@ -180,7 +180,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
         if let Some(web) = d.web() {
             v.push(item(icon::GLOBE, "Open repository on remote", web.clone(), Cmd::Tab(Action::Url(web.clone()))));
             if let Some(b) = &d.status.branch
-                && let Some(url) = crate::ui::sidebar::ref_menus::pull_request_url(d, b, d.default_branch())
+                && let Some(url) = crate::ui::sidebar::ref_menus::pull_request_url(d, b, &crate::ui::sidebar::ref_menus::pr_base(d, b))
             {
                 v.push(item(icon::GIT_PULL_REQUEST, format!("Create pull request for {b}"), "opens compare page", Cmd::Tab(Action::Url(url))));
             }

@@ -204,7 +204,8 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::tools::SHELL, line] => git::run_shell(dir, line),
             [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP | STASH_APPLY | STASH_RENAME | STASH_UNPOP, ..] => stash_cmd(dir, &a),
             [super::restore::APPLY_STASH_FILE, stash, path] => super::restore::apply_stash(dir, stash, path),
-            [BRANCH_DELETE | BRANCH_RESTORE, ..] => branch_cmd(dir, &a),
+            [BRANCH_DELETE | BRANCH_RESTORE | BRANCH_CONFIG, ..] => branch_cmd(dir, &a),
+            [SEQ_STATE, ..] => seq_state(dir, &a),
             [super::cleanup::REMOTE_DELETE, rest @ ..] => super::cleanup::remote_delete(dir, rest),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
@@ -351,6 +352,7 @@ fn discard_many(cs: &[git::Change]) -> Op {
         }
     }
     let mut o = Op::new(format!("Discard {} files", cs.len()), &[]);
+    o.revert = (!rm.is_empty()).then(|| Box::new(intent(&rm)));
     o.cmds.clear();
     for (sub, paths) in [(&["rm", "-fq"][..], rm), (&["checkout"], checkout), (&["clean", "-fq"], clean)] {
         let mut rest = paths.as_slice();
@@ -401,7 +403,7 @@ pub fn discard_op(c: &git::Change) -> Op {
         ('?', _) => Op::new("Discard", &["--literal-pathspecs", "clean", "-fq", "--", &c.path]),
         // Intent-to-add (`add -N`): `checkout` would empty the file instead of removing it.
         ('A' | 'R' | 'C', old) => {
-            let o = Op::new("Discard", &["--literal-pathspecs", "rm", "-fq", "--", &c.path]);
+            let o = Op::new("Discard", &["--literal-pathspecs", "rm", "-fq", "--", &c.path]).revert(intent(&[&c.path]));
             match old.as_deref().filter(|_| c.code == 'R') {
                 Some(old) => o.then(&["--literal-pathspecs", "checkout", "--", old]),
                 None => o,
@@ -412,6 +414,13 @@ pub fn discard_op(c: &git::Change) -> Op {
     // A rename's old path too, so undo deletes it again.
     let paths = c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path]).cloned().collect();
     o.light().backup(Backup::Paths(paths)).confirm(format!("Discard changes to {}? (Undo with ⌘Z.)", c.path))
+}
+
+fn intent(paths: &[&str]) -> Op {
+    let list: String = paths.iter().map(|p| format!("{p}\0")).collect();
+    let from = |a: &[&'static str]| [a, &["--pathspec-from-file=-", "--pathspec-file-nul"]].concat();
+    let redo = Op::new("Discard", &from(&["--literal-pathspecs", "rm", "--cached", "-q", "--ignore-unmatch"])).input(list.clone());
+    Op::new("Intent to add", &from(&["--literal-pathspecs", "add", "-N"])).input(list).revert(redo)
 }
 
 /// Unstage one file; a staged rename needs its old path reset too, or its deletion stays
@@ -435,15 +444,30 @@ pub fn sequencer_op(cmd: &str, abort: bool) -> Op {
     // Backed up as every op that moves HEAD is (`run`).
     let op = Op::new(label, &[cmd, flag]).undo(Undo::Keep);
     match (cmd, abort) {
-        ("rebase", false) => op.confirm("Skip discards all uncommitted changes, not just this commit's (⌘Z restores them)."),
-        ("rebase", true) => op.confirm("Abort discards all uncommitted changes (⌘Z restores them)."),
+        ("rebase", false) => op.confirm("Skip discards all uncommitted changes, not just this commit's (they're backed up first)."),
+        ("rebase", true) => op.confirm("Abort discards all uncommitted changes (they're backed up first)."),
         _ => op,
     }
 }
 
+fn ends_rebase(op: &Op) -> bool {
+    op.cmds.iter().any(|c| c.len() == 2 && c[0] == "rebase" && matches!(c[1].as_str(), "--abort" | "--skip"))
+}
+
+pub fn checkout_args(name: &str, quiet: bool) -> Vec<&str> {
+    let mut a = vec!["checkout"];
+    if quiet {
+        a.push("-q");
+    }
+    if name.starts_with('-') {
+        a.push("--end-of-options");
+    }
+    a.extend([name, "--"]);
+    a
+}
+
 pub fn continue_op(cmd: &str) -> Op {
-    let op = Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep);
-    if cmd == "merge" { op.backup(Backup::Paths(vec![])) } else { op }
+    Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(if cmd == "merge" { Undo::Soft } else { Undo::Keep })
 }
 
 /// `git reset <mode>` of the checked-out branch to commit `id` (commit, branch and tag menus).
@@ -523,9 +547,11 @@ pub fn delete_branches(d: &RepoData, label: String, names: &[&str], force: bool)
 /// `exec` pseudo-commands of a branch delete, one per branch so a partly failed delete
 /// knows what it deleted: `BRANCH_DELETE name oid flag` deletes the branch only if it is
 /// still at `oid` (undo would bring back that commit); `BRANCH_RESTORE name oid key value..`
-/// recreates it with its config.
+/// recreates it with its config; `BRANCH_CONFIG name key value..` makes the config follow the
+/// branch an undo or redo deleted or recreated.
 const BRANCH_DELETE: &str = "!branch-delete";
 pub(super) const BRANCH_RESTORE: &str = "!branch-restore";
+const BRANCH_CONFIG: &str = "!branch-config";
 
 fn branch_cmd(dir: &Path, a: &[&str]) -> Res<String> {
     match a {
@@ -548,6 +574,18 @@ fn branch_cmd(dir: &Path, a: &[&str]) -> Res<String> {
                 }
             }
             Ok(out)
+        }
+        [BRANCH_CONFIG, n, kv @ ..] => {
+            if git::run(dir, &["rev-parse", "--verify", "-q", &format!("refs/heads/{n}")]).is_err() {
+                let _ = git::run(dir, &["config", "--local", "--remove-section", &format!("branch.{n}")]);
+            } else if kv.first().is_some_and(|k| git::run(dir, &["config", "--local", "--get", k]).is_err()) {
+                for p in kv.chunks(2) {
+                    if let [k, v] = p {
+                        git::run(dir, &["config", "--add", k, v])?;
+                    }
+                }
+            }
+            Ok(String::new())
         }
         _ => Err(format!("bad branch command {a:?}")),
     }
@@ -679,8 +717,14 @@ fn apply_stash(dir: &Path, id: &str, target: &str, pop: bool) -> Res<String> {
 
 /// Runs `op` like `exec`, and gives a stash save, pop or rename its undo, which needs what
 /// only the run knows: the stash commit a save made, a popped stash's message (its files go
-/// back with the op's backup), a renamed stash's old message.
+/// back with the op's backup), a renamed stash's old message; and to an undoable op that
+/// starts or ends a merge, cherry-pick or revert (or leaves a squash message), the git dir's
+/// files for that as it found and left them (`SEQ_STATE head unmerged n from.. to..`: those
+/// still as the op left them go, then the others come back, the conflicts too, at that HEAD).
 pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
+    let watch = !op.light && op.revert.is_none() && (op.undo != Undo::No || op.backup.is_some());
+    let g = watch.then(|| git::git_dir(dir).ok()).flatten();
+    let found = g.as_deref().and_then(|g| seq_files(dir, g, false));
     let saving = op.cmds.iter().any(|c| c.iter().skip_while(|a| a.starts_with("--")).take(2).eq(["stash", "push"]));
     let top = || git::Cancel::default().scope(|| git::run(dir, &["rev-parse", "-q", "--verify", "refs/stash"])).map(|s| s.trim().to_owned()).unwrap_or_default();
     let before = saving.then(top);
@@ -709,7 +753,80 @@ pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
     if let Some(s) = renamed {
         op.revert = revert("Rename stash back", vec![STASH_RENAME.into(), s.id, s.message]);
     }
+    if let (Some(g), Some(found)) = (g, found)
+        && op.revert.is_none()
+        && state_files(&g) != found.2
+        && let Some(left) = seq_files(dir, &g, true)
+    {
+        let step = |from: &State, to: &State| -> Vec<String> { [SEQ_STATE.into(), to.0.clone(), to.1.clone(), (from.2.len() / 2).to_string()].into_iter().chain(from.2.iter().chain(&to.2).cloned()).collect() };
+        op.revert = revert("Restore the operation in progress", step(&left, &found));
+        op.revert.as_mut().into_iter().for_each(|r| r.revert = revert("Restore the operation in progress", step(&found, &left)));
+    }
     out
+}
+
+type State = (String, String, Vec<String>);
+
+fn seq_files(dir: &Path, g: &Path, head: bool) -> Option<State> {
+    if matches!(git::state(g), git::State::Rebasing | git::State::Applying) {
+        return None;
+    }
+    let files = state_files(g);
+    let head = if head || !files.is_empty() { git::head(dir).unwrap_or_default() } else { String::new() };
+    let unmerged = if files.is_empty() { String::new() } else { git::run(dir, &["ls-files", "-u", "-z"]).ok()? };
+    Some((head, unmerged, files))
+}
+
+fn state_files(g: &Path) -> Vec<String> {
+    let seq = std::fs::read_dir(g.join("sequencer")).into_iter().flatten().flatten().map(|e| format!("sequencer/{}", e.file_name().to_string_lossy()));
+    let mut names: Vec<String> = ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "CHERRY_PICK_HEAD", "REVERT_HEAD", "SQUASH_MSG"].map(String::from).into_iter().chain(seq).collect();
+    names.sort();
+    names.into_iter().filter_map(|n| Some([std::fs::read_to_string(g.join(&n)).ok()?, n])).flat_map(|[c, n]| [n, c]).collect()
+}
+
+pub(super) const SEQ_STATE: &str = "!seq-state";
+
+fn seq_state(dir: &Path, a: &[&str]) -> Res<String> {
+    let [_, head, unmerged, n, rest @ ..] = a else { return Err(format!("bad state command {a:?}")) };
+    if !head.is_empty() && git::head(dir).unwrap_or_default() != *head {
+        return Ok("HEAD moved since, so the merge or cherry-pick wasn't put back in progress.".into());
+    }
+    let g = git::git_dir(dir)?;
+    let (from, to) = rest.split_at((n.parse::<usize>().unwrap_or(0) * 2).min(rest.len()));
+    for p in from.chunks(2) {
+        if let [f, c] = p
+            && std::fs::read_to_string(g.join(f)).is_ok_and(|s| s == *c)
+        {
+            std::fs::remove_file(g.join(f)).map_err(|e| format!("{f}: {e}"))?;
+        }
+    }
+    let _ = std::fs::remove_dir(g.join("sequencer"));
+    if to.is_empty() {
+        return Ok(String::new());
+    }
+    if git::state(&g) != git::State::Clean {
+        return Err("Another merge, cherry-pick or rebase is in progress now: finish or abort it first, then try again.".into());
+    }
+    for p in to.chunks(2) {
+        if let [f, c] = p {
+            let path = g.join(f);
+            path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, c)).map_err(|e| format!("{f}: {e}"))?;
+        }
+    }
+    let staged: Vec<String> = super::undo::split_z(git::run(dir, &["diff-index", "--cached", "--name-only", "-z", "HEAD"]).unwrap_or_default());
+    let back: Vec<(&str, &str)> = unmerged.split('\0').filter_map(|e| Some((e, e.split_once('\t')?.1))).filter(|(_, p)| !staged.iter().any(|s| s == p)).collect();
+    if let Some((e, _)) = back.first() {
+        let zero = "0".repeat(e.split(' ').nth(1).map_or(40, str::len));
+        let paths: std::collections::BTreeSet<&str> = back.iter().map(|b| b.1).collect();
+        let input = paths.iter().map(|p| format!("0 {zero}\t{p}\0")).collect::<String>() + &back.iter().map(|b| format!("{}\0", b.0)).collect::<String>();
+        git::run_input(dir, &["update-index", "-z", "--index-info"], Some(input.as_bytes()))?;
+    }
+    Ok(String::new())
+}
+
+pub(super) fn own_state(git_dir: &Path, op: &Op) -> Option<bool> {
+    let [cmd, _, _, n, rest @ ..] = op.cmds.first()?.as_slice() else { return None };
+    (cmd == SEQ_STATE).then(|| n != "0" && state_files(git_dir)[..] == rest[..(n.parse::<usize>().unwrap_or(0) * 2).min(rest.len())])
 }
 
 /// Pop this stash wherever it is in the list now.
@@ -783,8 +900,8 @@ fn amend_rewrites_pushed(d: &RepoData) -> Option<String> {
     pushed.then(|| super::rebase::rewrites_pushed(1, None))
 }
 
-/// Check out a ref: local branch, remote branch (the local branch tracking it, else its local
-/// twin, fast-forwarded; a new tracking branch; or, when the twin tracks something else, a new
+/// Check out a ref: local branch, remote branch (the local branch tracking it, fast-forwarded, else
+/// its local twin; a new tracking branch; or, when the twin tracks something else, a new
 /// branch named in a prompt), or a tag (detached). A branch checked out in another worktree
 /// opens that worktree instead.
 pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
@@ -792,7 +909,7 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
         RefKind::Local if r.head => None,
         // Checked out in another worktree: git refuses a second checkout, so open that one.
         RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::Switch),
-        RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--end-of-options", &r.name, "--"]).undo(Undo::Keep))),
+        RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &checkout_args(&r.name, false)).undo(Undo::Keep))),
         RefKind::Remote => {
             let split = d.split_remote(&r.name);
             let twin = split.map_or(r.name.as_str(), |s| s.1);
@@ -809,13 +926,38 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
             }
             Some(Action::Git(match d.local(local) {
                 Some(l) if l.head => Op::new(format!("Update {local} to {}", r.name), &["merge", "--ff-only", &r.full]).undo(Undo::Keep),
-                Some(l) if l.ahead > 0 && l.behind > 0 => Op::new(format!("Checkout {local}"), &["checkout", "--end-of-options", local, "--"]).undo(Undo::Keep),
-                Some(_) => Op::new(format!("Checkout {local}"), &["checkout", "--end-of-options", local, "--"]).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
+                Some(l) if l.upstream == r.name && !(l.ahead > 0 && l.behind > 0) => Op::new(format!("Checkout {local}"), &checkout_args(local, false)).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
+                Some(_) => Op::new(format!("Checkout {local}"), &checkout_args(local, false)).undo(Undo::Keep),
                 None => Op::new(format!("Checkout {}", r.name), &["checkout", "-b", local, "--track", &r.full, "--"]).undo(Undo::Keep),
             }))
         }
         RefKind::Tag => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--detach", &r.full]).undo(Undo::Keep))),
     }
+}
+
+pub fn in_progress(s: git::State) -> Option<String> {
+    let busy = match s {
+        git::State::Clean => return None,
+        git::State::Merging => "merge",
+        git::State::Rebasing => "rebase",
+        git::State::CherryPicking => "cherry-pick",
+        git::State::Reverting => "revert",
+        git::State::Bisecting => "bisect",
+        git::State::Applying => "patch (git am)",
+    };
+    Some(format!("Finish or abort the {busy} in progress first"))
+}
+
+fn switches_head(c: &[String]) -> bool {
+    let mut a = c.iter().skip_while(|a| a.starts_with('-'));
+    a.next().is_some_and(|s| s == "checkout") && a.skip_while(|x| *x != "--").nth(1).is_none()
+}
+
+fn switch_refused(dir: &Path, op: &Op) -> Option<String> {
+    if !op.cmds.iter().any(|c| switches_head(c)) {
+        return None;
+    }
+    git::git_dir(dir).ok().map(|g| git::state(&g)).filter(|s| *s != git::State::Bisecting).and_then(in_progress)
 }
 
 impl RepoTab {
@@ -882,7 +1024,7 @@ impl RepoTab {
                 if let (None, Some(_), Some(f)) = (&op.backup, &b, fetch) {
                     let _ = cancel.scope(|| git::run(&dir, &f));
                 }
-                if let Some(e) = super::undo::recursed(&dir, &op) {
+                if let Some(e) = switch_refused(&dir, &op).or_else(|| super::undo::recursed(&dir, &op)) {
                     return Done::Op(op, Err(e), None, Ok(None));
                 }
                 let saved = match b.as_ref().map(|b| backup(&dir, b, &op.label)).transpose() {
@@ -976,6 +1118,40 @@ impl RepoTab {
                     redo.cmds.retain(|c| c[0] != super::cleanup::REMOTE_DELETE);
                     (u, redo)
                 });
+                let (refs, files) = match ends_rebase(&op) && !op.custom && self.split.is_none() {
+                    true => {
+                        if let Some(f) = files {
+                            let msg = format!("Glasir: {}", op.label);
+                            msgs.push(match git::keep(&self.dir, &f.before.commit, &msg) {
+                                Ok(()) => {
+                                    git::drop_backups(&self.dir, &[f.before.refname, f.after.refname]);
+                                    Msg { text: format!("What {} discarded is in the stash list as \"{msg}\": ⌘Z can't take a rebase back to where it stopped.", op.label), error: false }
+                                }
+                                Err(e) => Msg { text: format!("What {} discarded is backed up only in {} ({e}).", op.label, f.before.refname), error: true },
+                            });
+                        }
+                        let stray = |h: &str| !h.starts_with("refs/") && git::run(&self.dir, &["for-each-ref", "--count=1", "--contains", h]).is_ok_and(|o| o.trim().is_empty());
+                        let refs = refs.filter(|r| r.after.head.starts_with("refs/")).map(|r| if stray(&r.before.head) { r } else { Refs { before: Snapshot { head: r.after.head.clone(), ..r.before }, ..r } }).filter(|r| r.before != r.after);
+                        (refs.map(|r| Refs { on_remote: on_remotes(&self.dir, &r.before, &r.after), ..r }), None)
+                    }
+                    false => (refs, files),
+                };
+                let made = refs.iter().flat_map(|r| r.after.refs.keys().filter(|k| !r.before.refs.contains_key(*k))).filter_map(|k| k.strip_prefix("refs/heads/")).collect::<Vec<_>>();
+                let cfg = if made.is_empty() { String::new() } else { git::run(&self.dir, &["config", "--local", "-z", "--get-regexp", r"^branch\."]).unwrap_or_default() };
+                let follow: Vec<Vec<String>> = made.iter().filter_map(|n| {
+                    let p = format!("branch.{n}.");
+                    let kv: Vec<String> = cfg.split('\0').filter_map(|r| r.split_once('\n')).filter(|(k, _)| k.strip_prefix(&p).is_some_and(|v| !v.contains('.'))).flat_map(|(k, v)| [k.to_owned(), v.to_owned()]).collect();
+                    (!kv.is_empty()).then(|| [BRANCH_CONFIG.to_owned(), n.to_string()].into_iter().chain(kv).collect())
+                }).collect();
+                let ops = match ops {
+                    _ if follow.is_empty() => ops,
+                    Some((mut u, mut r)) => {
+                        u.cmds.extend(follow.iter().cloned());
+                        r.cmds.extend(follow);
+                        Some((u, r))
+                    }
+                    None => Some((Box::new(Op { cmds: follow.clone(), ..Op::new("Branch config", &[]) }), Box::new(Op { cmds: follow, ..Op::new("Branch config", &[]) }))),
+                };
                 // Light ops toast nothing, but a discard deserves a visible way back.
                 if files.is_some() && op.light && res.is_ok() {
                     msgs.push(Msg { text: format!("{} ✔ changes backed up", op.label), error: false });
@@ -1179,11 +1355,7 @@ impl RepoTab {
         }
         // Not after an amend: that push would need a force. `poll_op` pushes once it's committed.
         let push = self.push_after && !self.amend && self.push_op(false).is_some();
-        let concludes = self.data.as_ref().is_some_and(|d| ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].iter().any(|f| d.git_dir.join(f).exists()));
         let mut op = Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
-        if concludes {
-            op = op.undo(Undo::Keep).backup(Backup::Paths(vec![]));
-        }
         if let Some((_, _, head)) = self.amend_prev.as_ref().filter(|_| self.amend) {
             op.cmds.insert(0, vec![super::rebase::HEAD_IS.into(), head.clone()]);
         }
@@ -1503,8 +1675,8 @@ mod tests {
 
     #[test]
     fn only_a_concluding_commit_or_merge_continue_skips_the_file_backup() {
-        assert!(matches!(super::continue_op("merge").backup, Some(super::Backup::Paths(ref p)) if p.is_empty()));
-        assert!(super::continue_op("cherry-pick").backup.is_none() && super::continue_op("revert").backup.is_none());
+        assert!(super::continue_op("merge").undo == super::Undo::Soft && super::continue_op("merge").backup.is_none());
+        assert!(["cherry-pick", "revert"].iter().all(|c| super::continue_op(c).undo == super::Undo::Keep && super::continue_op(c).backup.is_none()));
         let dir = scratch("commit-during-sequence");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
@@ -1531,43 +1703,50 @@ mod tests {
     }
 
     #[test]
-    fn undoing_a_commit_that_concludes_a_merge_undoes_the_merge() {
-        let dir = scratch("undo-merge-commit");
-        sh(&dir, &["init", "-q", "-b", "main"]);
-        identity(&dir);
-        commit(&dir, "f", "base\n");
-        sh(&dir, &["checkout", "-q", "-b", "feat"]);
-        commit(&dir, "f", "theirs\n");
-        sh(&dir, &["checkout", "-q", "main"]);
-        commit(&dir, "f", "ours\n");
-        let before = sh(&dir, &["rev-parse", "HEAD"]);
-        assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
-        std::fs::write(dir.join("f"), "both\n").unwrap();
-        sh(&dir, &["add", "f"]);
-        let ctx = egui::Context::default();
-        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
-        settle(&ctx, &mut t);
-        t.summary = "Merge feat".into();
-        let op = t.commit_op();
-        run(&ctx, &mut t, Action::Git(op));
-        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "HEAD^2"]).is_ok());
-        run(&ctx, &mut t, Action::Undo);
-        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
-        let d = t.data.as_ref().unwrap();
-        assert!(d.state == git::State::Clean && !d.status.is_dirty());
-        run(&ctx, &mut t, Action::Redo);
-        assert_eq!(sh(&dir, &["show", "-s", "--format=%s %p", "HEAD"]).split(' ').count(), 4);
-        sh(&dir, &["reset", "-q", "--hard", before.trim()]);
-        assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
-        std::fs::write(dir.join("f"), "both\n").unwrap();
-        sh(&dir, &["add", "f"]);
-        run(&ctx, &mut t, Action::Git(super::continue_op("merge")));
-        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "HEAD^2"]).is_ok());
-        run(&ctx, &mut t, Action::Undo);
-        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
-        let d = t.data.as_ref().unwrap();
-        assert!(d.state == git::State::Clean && !d.status.is_dirty());
-        let _ = std::fs::remove_dir_all(&dir);
+    fn undoing_a_commit_that_concludes_a_merge_resumes_the_merge() {
+        for (n, cmd) in ["merge", "merge", "cherry-pick"].into_iter().enumerate() {
+            let dir = scratch(&format!("undo-merge-commit-{n}"));
+            sh(&dir, &["init", "-q", "-b", "main"]);
+            identity(&dir);
+            commit(&dir, "f", "base\n");
+            commit(&dir, "s", "s\n");
+            sh(&dir, &["checkout", "-q", "-b", "feat"]);
+            commit(&dir, "f", "theirs\n");
+            sh(&dir, &["checkout", "-q", "main"]);
+            commit(&dir, "f", "ours\n");
+            let before = sh(&dir, &["rev-parse", "HEAD"]);
+            assert!(git::run(&dir, &[cmd, "feat"]).is_err());
+            std::fs::write(dir.join("f"), "both\n").unwrap();
+            std::fs::write(dir.join("s"), "staged\n").unwrap();
+            sh(&dir, &["add", "f", "s"]);
+            std::fs::write(dir.join("s"), "staged, then edited\n").unwrap();
+            let marks = if cmd == "merge" { vec!["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE"] } else { vec!["CHERRY_PICK_HEAD", "MERGE_MSG"] };
+            let state = || marks.iter().map(|m| std::fs::read_to_string(dir.join(".git").join(m)).ok()).collect::<Vec<_>>();
+            let started = (state(), sh(&dir, &["ls-files", "-s"]), sh(&dir, &["status", "--porcelain"]));
+            assert!(started.0.iter().all(Option::is_some));
+            let ctx = egui::Context::default();
+            let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+            settle(&ctx, &mut t);
+            t.summary = "Concluded".into();
+            let op = if n == 1 { super::continue_op("merge") } else { t.commit_op() };
+            run(&ctx, &mut t, Action::Git(op));
+            let concluded = sh(&dir, &["rev-parse", "HEAD"]);
+            assert_ne!(concluded, before);
+            for redo in [true, false] {
+                run(&ctx, &mut t, Action::Undo);
+                assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
+                assert_eq!((state(), sh(&dir, &["ls-files", "-s"]), sh(&dir, &["status", "--porcelain"])), started);
+                assert_ne!(t.data.as_ref().unwrap().state, git::State::Clean);
+                if redo {
+                    run(&ctx, &mut t, Action::Redo);
+                    assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), concluded);
+                    assert!(state().iter().all(Option::is_none));
+                }
+            }
+            sh(&dir, &["commit", "-q", "--no-edit"]);
+            assert_eq!(sh(&dir, &["show", "-s", "--format=%P", "HEAD"]).split_whitespace().count(), if cmd == "merge" { 2 } else { 1 });
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[cfg(unix)]
@@ -1621,8 +1800,50 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
-        assert_eq!(op.cmds, [["checkout", "--end-of-options", "feat", "--"]]);
+        assert_eq!(op.cmds, [["checkout", "feat", "--"]]);
+        sh(&dir, &["branch", "--unset-upstream", "feat"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
+        let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
+        assert_eq!(op.cmds, [["checkout", "feat", "--"]]);
         exec(&dir, &op).unwrap();
+    }
+
+    #[test]
+    fn a_checkout_waits_for_the_operation_in_progress() {
+        let dir = scratch("checkout-in-progress");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        commit(&dir, "f", "feature\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        sh(&dir, &["checkout", "-q", "feature"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        let state = || git::state(&git::git_dir(&dir).unwrap());
+        let refs = || sh(&dir, &["for-each-ref", "--format=%(refname) %(objectname)"]) + &sh(&dir, &["rev-parse", "HEAD"]);
+        let checkout_main = |t: &RepoTab| {
+            let r = t.data.as_ref().unwrap().refs.iter().find(|r| r.name == "main").unwrap();
+            super::branch_checkout(t.data.as_ref().unwrap(), r).unwrap()
+        };
+        for (start, busy) in [(["rebase", "main"], git::State::Rebasing), (["merge", "main"], git::State::Merging)] {
+            assert!(git::run(&dir, &start).is_err());
+            settle(&ctx, &mut t);
+            let msgs = run(&ctx, &mut t, Action::Git(Op::new("Use ours", &["checkout", "--ours", "--", "f"]).then(&["add", "--", "f"]).light()));
+            assert!(msgs.iter().all(|m| !m.error));
+            let before = refs();
+            let a = checkout_main(&t);
+            let msgs = run(&ctx, &mut t, a);
+            assert!(msgs.iter().any(|m| m.error && m.text.contains("Finish or abort")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+            assert_eq!((state(), refs()), (busy, before));
+            if busy == git::State::Rebasing {
+                sh(&dir, &["rebase", "--abort"]);
+            }
+        }
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "feature\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1660,7 +1881,7 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "main"]), sh(&dir, &["rev-parse", "origin/main"]));
         let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
-        assert_eq!(op.cmds[0], ["checkout", "--end-of-options", "feat", "--"]);
+        assert_eq!(op.cmds[0], ["checkout", "feat", "--"]);
 
         sh(&dir, &["branch", "-u", "origin/feat", "feat"]);
         sh(&dir, &["remote", "add", "mate", "."]);
@@ -1677,7 +1898,7 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!("checks out the branch made for it") };
-        assert_eq!(op.cmds[0], ["checkout", "--end-of-options", "mate-feat", "--"]);
+        assert_eq!(op.cmds[0], ["checkout", "mate-feat", "--"]);
         sh(&dir, &["branch", "--unset-upstream", "mate-feat"]);
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
@@ -1920,7 +2141,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Skipping or aborting a stopped rebase resets hard: unrelated edits come back with ⌘Z.
+    /// Skipping or aborting a stopped rebase resets hard: unrelated edits go to the stash list, as
+    /// ⌘Z can't resume a rebase.
     #[test]
     fn rebase_skip_and_abort_back_up_unrelated_edits() {
         let dir = scratch("rebase-skip");
@@ -1946,15 +2168,75 @@ mod tests {
             settle(&ctx, &mut t);
             assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "u\n");
             assert_eq!(t.data.as_ref().unwrap().state, crate::git::State::Clean);
-            t.apply(&ctx, Action::Undo);
-            settle(&ctx, &mut t);
-            assert_eq!(std::fs::read_to_string(dir.join("u")).unwrap(), "wip\n");
-            // One step: restored before the refs, the conflicted `f` would block moving them back.
-            assert_eq!(t.undo_label(), None);
+            assert_eq!(t.undo_label(), (!abort).then_some("Skip this commit"));
+            assert_eq!(sh(&dir, &["show", "stash@{0}:u"]), "wip\n");
+            assert!(sh(&dir, &["stash", "list", "-1", "--format=%gs"]).contains(&format!("Glasir: {}", if abort { "Abort rebase" } else { "Skip this commit" })));
+            if !abort {
+                t.apply(&ctx, Action::Undo);
+                settle(&ctx, &mut t);
+                assert_eq!((sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["symbolic-ref", "HEAD"])), (feat.clone(), "refs/heads/feat\n".into()));
+                assert_eq!(t.data.as_ref().unwrap().state, crate::git::State::Clean);
+            }
             sh(&dir, &["checkout", "-q", "-f", "main"]);
             sh(&dir, &["branch", "-f", "feat", feat.trim()]);
         }
         assert!(super::sequencer_op("cherry-pick", true).backup.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aborting_a_rebase_keeps_commits_made_at_its_stop_undoable() {
+        let dir = scratch("rebase-abort-stop-commit");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "a\n");
+        commit(&dir, "b", "b\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        sh(&dir, &["-c", "sequence.editor=sed -i.bak 1s/^pick/edit/", "rebase", "-q", "-i", "HEAD~1"]);
+        commit(&dir, "c", "c\n");
+        let c = sh(&dir, &["rev-parse", "HEAD"]);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(super::sequencer_op("rebase", true)));
+        let mut op = t.confirm.take().expect("asks first");
+        op.confirm = None;
+        t.apply(&ctx, Action::Git(op));
+        settle(&ctx, &mut t);
+        assert_eq!(t.undo_label(), Some("Abort rebase"));
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), c);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undo_waits_for_a_rebase_started_elsewhere() {
+        let dir = scratch("undo-under-outside-rebase");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "feat\n");
+        let pick = sh(&dir, &["rev-parse", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "main\n");
+        assert!(git::run(&dir, &["cherry-pick", pick.trim()]).is_err());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        run(&ctx, &mut t, Action::Git(super::continue_op("cherry-pick")));
+        let main = sh(&dir, &["rev-parse", "main"]);
+        sh(&dir, &["-c", "sequence.editor=printf 'break\\n' >", "rebase", "-q", "-i", "HEAD~1"]);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["rev-parse", "main"]), main);
+        assert!(dir.join(".git/rebase-merge").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

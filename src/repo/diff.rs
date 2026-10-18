@@ -27,6 +27,7 @@ pub struct DiffState {
     /// Changes whenever `file`'s lines may have (another file, other hunks, an error): keys the
     /// view's cached row layout and line drags.
     pub stamp: u64,
+    dark: bool,
 }
 
 fn stamp() -> u64 {
@@ -86,7 +87,15 @@ impl RepoTab {
             Some(d) => (d.file, d.hl, d.image, d.opts, d.picked, d.stamp),
             None => (None, vec![], None, o, BTreeSet::new(), stamp()),
         };
-        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), cancel, picked, stamp });
+        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), cancel, picked, stamp, dark });
+    }
+
+    pub fn refresh_diff_theme(&mut self, ctx: &egui::Context) {
+        if let Some(d) = &self.diff
+            && d.dark != ctx.global_style().visuals.dark_mode
+        {
+            self.open_diff(ctx, d.src.clone());
+        }
     }
 
     pub(super) fn poll_diff(&mut self) {
@@ -282,6 +291,34 @@ mod tests {
         std::fs::write(dir.join("f"), file("EDIT", "x")).unwrap();
         super::super::op::exec(&dir, &stage).unwrap();
         assert_eq!(sh(&dir, &["show", ":f"]), file("EDIT", "x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_diff_is_recolored_when_the_theme_flips() {
+        let dir = scratch("diff-theme");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f.rs", "fn a() {}\n");
+        std::fs::write(dir.join("f.rs"), "fn b() { let x = 1; }\n").unwrap();
+        let ctx = egui::Context::default();
+        ctx.set_theme(egui::Theme::Dark);
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let change = t.data.as_ref().unwrap().status.unstaged[0].clone();
+        t.apply(&ctx, Action::Diff(DiffSrc::Worktree { change, staged: false }));
+        let load = |t: &mut RepoTab| {
+            while t.diff.as_ref().unwrap().loading() {
+                t.poll_diff();
+            }
+        };
+        load(&mut t);
+        let dark = t.diff.as_ref().unwrap().hl.clone();
+        assert!(!dark.is_empty());
+        ctx.set_theme(egui::Theme::Light);
+        t.refresh_diff_theme(&ctx);
+        load(&mut t);
+        assert_ne!(t.diff.as_ref().unwrap().hl, dark);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -89,16 +89,25 @@ fn trunk(d: &RepoData, r: &git::Ref) -> bool {
 }
 
 /// After a reload: an edge whose parent moved on (new or rewritten commits) while the child
-/// stayed put is still a stack, just stale, until it is restacked.
+/// stayed built on the old base (even with commits of its own since) is still a stack, just
+/// stale, until it is restacked.
 pub(super) fn keep_stale(old: &RepoData, new: &mut RepoData) {
     let tip = |d: &RepoData, b: &str| d.local(b).map(|r| r.target.clone());
     let mut st = (*new.stack).clone();
     for (c, (p, base)) in old.stack.iter() {
-        if tip(old, c).is_some() && tip(old, c) == tip(new, c) && tip(new, p).is_some_and(|t| t != *base) && !trunk_name(new, p) {
+        let on_base = |t: &str| t == base || reaches(new, t, base);
+        if !st.contains_key(c) && tip(new, c).is_some_and(|t| on_base(&t)) && tip(new, p).is_some_and(|t| t != *base) && !trunk_name(new, p) {
             st.insert(c.clone(), (p.clone(), base.clone()));
         }
     }
     new.stack = std::sync::Arc::new(st);
+}
+
+fn reaches(d: &RepoData, from: &str, to: &str) -> bool {
+    match (d.row_of.get(from), d.row_of.get(to)) {
+        (Some(&f), Some(&t)) if !d.view.first_parent => d.reachable(f)[t],
+        _ => git::run(&d.git_dir, &["merge-base", "--is-ancestor", to, from]).is_ok(),
+    }
 }
 
 pub fn parent<'a>(d: &'a RepoData, b: &str) -> Option<&'a str> {
@@ -182,12 +191,12 @@ fn subcommand(args: &[String]) -> Option<&str> {
     None
 }
 
-/// A commit, rebase or reword ([`super::rebase::REWRITE`]) in a repo with stacks: rebases move the stacked branches below
+/// A commit, rebase, pull, merge or reword ([`super::rebase::REWRITE`]) in a repo with stacks: rebases move the stacked branches below
 /// along (`--update-refs`), and then the branches stacked on a moved one are restacked.
 /// Once: an op that has its restack already (a retry of a followed op) is left as it is.
 pub(super) fn follow(mut op: Op, d: Option<&RepoData>) -> Op {
     let Some(d) = d.filter(|d| follows() && !d.stack.is_empty() && !op.custom && op.undo != Undo::No) else { return op };
-    let moves = |c: &Vec<String>| matches!(subcommand(c), Some("commit" | "rebase" | super::rebase::REWRITE));
+    let moves = |c: &Vec<String>| matches!(subcommand(c), Some("commit" | "rebase" | "pull" | "merge" | super::rebase::REWRITE));
     if !op.cmds.iter().any(moves) || op.cmds.iter().any(|c| c.first().is_some_and(|a| a == RESTACK)) {
         return op;
     }
@@ -247,7 +256,7 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
         return if follow { Ok(why.into()) } else { Err(why.into()) };
     }
     let back = || match head.strip_prefix("refs/heads/") {
-        Some(b) => git::run(dir, &["checkout", "-q", "--end-of-options", b, "--"]),
+        Some(b) => git::run(dir, &super::op::checkout_args(b, true)),
         None => git::run(dir, &["checkout", "-q", "--detach", &head, "--"]),
     };
     git::with_autostash(dir, "Glasir: restack stacked branches", || {
@@ -315,10 +324,7 @@ pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
             None => (fork.unwrap_or(first), name.as_str()),
         };
         let tracking = d.refs.iter().find(|x| x.kind == RefKind::Remote && x.name == format!("{remote}/{rb}")).filter(|x| x.target != r.target);
-        let reaches = |from: &str, to: &str| match (d.row_of.get(from), d.row_of.get(to)) {
-            (Some(&f), Some(&t)) if !d.view.first_parent => d.reachable(f)[t],
-            _ => git::run(&d.git_dir, &["merge-base", "--is-ancestor", to, from]).is_ok(),
-        };
+        let reaches = |from: &str, to: &str| reaches(d, from, to);
         if tracking.is_some_and(|t| reaches(&t.target, &r.target)) {
             continue; // behind: nothing to push, and forcing would drop the remote's commits
         }
@@ -479,6 +485,46 @@ mod tests {
         assert_eq!(["b", "c"].map(|b| sh(&dir, &["rev-parse", b])), tips);
         assert_eq!((sh(&dir, &["symbolic-ref", "--short", "HEAD"]).as_str(), sh(&dir, &["status", "--porcelain"]).as_str()), ("a\n", ""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_link_survives_a_commit_on_the_child() {
+        let dir = stack_repo("stack-stale-commit");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        commit(&dir, "a2", "more a\n");
+        sh(&dir, &["checkout", "-q", "b"]);
+        commit(&dir, "b2", "more b\n");
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!(parent(d, "b"), Some("a"));
+        assert!(stale(d, "b"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pull_rebase_on_the_parent_restacks_children() {
+        let dir = stack_repo("stack-pull");
+        let (remote, other) = (scratch("stack-pull-remote"), scratch("stack-pull-other"));
+        sh(&remote, &["init", "-q", "--bare"]);
+        sh(&dir, &["remote", "add", "origin", &remote.to_string_lossy()]);
+        sh(&dir, &["push", "-q", "-u", "origin", "a"]);
+        sh(&other, &["clone", "-q", &remote.to_string_lossy(), "."]);
+        identity(&other);
+        sh(&other, &["checkout", "-q", "a"]);
+        commit(&other, "a2", "more a\n");
+        sh(&other, &["push", "-q", "origin", "a"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(crate::repo::op::pull_op(crate::repo::op::PullMode::Rebase)));
+        settle(&ctx, &mut t);
+        assert_eq!(subjects(&dir, "c"), "c b more a a base m0");
+        for p in [&dir, &remote, &other] {
+            let _ = std::fs::remove_dir_all(p);
+        }
     }
 
     #[test]

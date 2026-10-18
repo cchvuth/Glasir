@@ -396,11 +396,14 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
     if let Some((mv, to, _)) = &refs {
         git::move_refs(dir, &cur_refs, to, mv, label)?;
     }
-    // A resolution undone gets its conflict back (git's resolve-undo), while that merge still runs.
+    // A resolution undone gets its conflict back (git's resolve-undo), while that merge still runs
+    // or HEAD is where the conflict was (a stash pop's, redone).
     let written: HashSet<&str> = index.iter().map(|e| e.name.as_str()).collect();
-    let whole = legs.iter().enumerate().filter(|(i, _)| !partial.iter().any(|(p, _)| p == i));
+    let running = git::git_dir(dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting));
+    let there = |s: &Snap| git::run(dir, &["rev-parse", &format!("{}^1", s.commit)]).is_ok_and(|b| b.trim() == final_head);
+    let whole = legs.iter().enumerate().filter(|(i, l)| !partial.iter().any(|(p, _)| p == i) && !l.1.unmerged.is_empty() && (running || there(&l.1)));
     let unresolve: Vec<&str> = whole.flat_map(|(_, l)| l.1.unmerged.iter().map(String::as_str)).filter(|p| written.contains(p)).collect();
-    if !unresolve.is_empty() && git::git_dir(dir).is_ok_and(|g| !matches!(git::state(&g), git::State::Clean | git::State::Bisecting)) {
+    if !unresolve.is_empty() {
         // One path per run: before 2.43 one path git can't unresolve (resolved by deletion) made
         // it write none. No `--`: `--unresolve` takes every argument after it as a path.
         for p in unresolve {
@@ -531,9 +534,11 @@ impl RepoTab {
             self.confirm = Some(op);
             return;
         }
-        // Moving refs mid merge/rebase would corrupt it; a guided split's own steps are fine.
-        let busy = self.data.as_ref().is_some_and(|d| !matches!(git::state(&d.git_dir), git::State::Clean | git::State::Bisecting));
-        if busy && self.split.as_ref().is_none_or(|sp| sp.replaying) && e.refs.is_some() {
+        // Moving refs mid merge/rebase would corrupt it; a guided split's own steps are fine, and
+        // so is a step whose op state (a merge it concluded or started) is the one in progress.
+        let d = self.data.as_ref().filter(|d| !matches!(git::state(&d.git_dir), git::State::Clean | git::State::Bisecting));
+        let own = d.and_then(|d| e.ops.as_ref().and_then(|(u, r)| super::op::own_state(&d.git_dir, if undo { u } else { r })));
+        if d.is_some() && self.split.as_ref().is_none_or(|sp| sp.replaying) && (e.refs.is_some() || own.is_some()) && own != Some(true) {
             return self.notes.push(Msg { text: "Finish or abort the operation in progress first, then undo.".into(), error: true });
         }
         let dir = self.dir.clone();
@@ -2004,6 +2009,124 @@ mod tests {
         assert_eq!(read(&dir, "f").as_deref(), Some("M\n"));
         let msgs = step(&ctx, &mut t, Action::Undo);
         assert_eq!(read(&dir, "f").as_deref(), Some("RESOLVED BY HAND\n"), "{msgs:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_an_abort_or_discard_all_resumes_the_merge_or_pick() {
+        for (n, cmd) in ["merge", "cherry-pick", "discard"].into_iter().enumerate() {
+            let dir = repo(&format!("undo-abort-resumes-{n}"));
+            commit(&dir, "f", "base\n");
+            commit(&dir, "g", "base\n");
+            sh(&dir, &["checkout", "-q", "-b", "feat"]);
+            std::fs::write(dir.join("f"), "theirs\n").unwrap();
+            std::fs::write(dir.join("g"), "theirs\n").unwrap();
+            sh(&dir, &["commit", "-q", "-am", "theirs"]);
+            sh(&dir, &["checkout", "-q", "main"]);
+            std::fs::write(dir.join("f"), "ours\n").unwrap();
+            std::fs::write(dir.join("g"), "ours\n").unwrap();
+            sh(&dir, &["commit", "-q", "-am", "ours"]);
+            assert!(git::run(&dir, &[if cmd == "cherry-pick" { cmd } else { "merge" }, "feat"]).is_err());
+            std::fs::write(dir.join("f"), "both\n").unwrap();
+            sh(&dir, &["add", "f"]);
+            let git_dir = dir.join(".git");
+            let now = || {
+                let marks = ["MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "CHERRY_PICK_HEAD"].map(|m| std::fs::read_to_string(git_dir.join(m)).ok());
+                (marks, sh(&dir, &["ls-files", "-s"]), sh(&dir, &["status", "--porcelain"]), read(&dir, "g"))
+            };
+            let started = now();
+            assert!(started.2.contains("UU g"), "{started:?}");
+            let (ctx, mut t) = tab(&dir);
+            step(&ctx, &mut t, if cmd == "discard" { discard_all() } else { Action::Git(super::super::sequencer_op(cmd, true)) });
+            assert_eq!(git::state(&git_dir), git::State::Clean);
+            for redo in [true, false] {
+                let msgs = step(&ctx, &mut t, Action::Undo);
+                assert_eq!(now(), started, "{cmd} {msgs:?}");
+                if redo {
+                    step(&ctx, &mut t, Action::Redo);
+                    assert_eq!(git::state(&git_dir), git::State::Clean, "{cmd}");
+                    assert!(sh(&dir, &["ls-files", "-u"]).is_empty());
+                }
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_tracking_branch_undone_takes_its_config_and_redo_brings_it_back() {
+        let dir = repo("undo-tracking-config");
+        sh(&dir, &["remote", "add", "origin", "https://example.invalid/r.git"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/rem", "HEAD"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, Action::Git(Op::new("Checkout origin/rem", &["checkout", "-b", "rem", "--track", "origin/rem", "--"]).undo(Undo::Keep)));
+        let cfg = || git::run(&dir, &["config", "--get-regexp", r"^branch\.rem\."]).unwrap_or_default();
+        let tracked = cfg();
+        assert!(tracked.contains("branch.rem.merge refs/heads/rem"), "{tracked}");
+        for _ in 0..2 {
+            step(&ctx, &mut t, Action::Undo);
+            assert!(sh(&dir, &["branch", "--list", "rem"]).is_empty() && cfg().is_empty());
+            step(&ctx, &mut t, Action::Redo);
+            assert_eq!(cfg(), tracked);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_squash_merge_drops_its_message() {
+        let dir = repo("undo-squash-msg");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "feat\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, Action::Git(super::super::merge_opts::merge_op("feat", "feat", Some(super::super::merge_opts::Merge::Squash))));
+        let msg = dir.join(".git/SQUASH_MSG");
+        assert!(msg.exists());
+        step(&ctx, &mut t, Action::Undo);
+        assert!(!msg.exists() && read(&dir, "f").is_none());
+        step(&ctx, &mut t, Action::Redo);
+        assert!(msg.exists() && read(&dir, "f").is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_discarded_intent_to_add_comes_back_as_one() {
+        let dir = repo("undo-intent");
+        std::fs::write(dir.join("ita"), "intent\n").unwrap();
+        sh(&dir, &["add", "-N", "ita"]);
+        let (ctx, mut t) = tab(&dir);
+        let c = t.data.as_ref().unwrap().status.unstaged.iter().find(|c| c.path == "ita").unwrap().clone();
+        let mut op = super::super::discard_op(&c);
+        op.confirm = None;
+        step(&ctx, &mut t, Action::Git(op));
+        assert!(read(&dir, "ita").is_none() && sh(&dir, &["status", "--porcelain"]).is_empty());
+        for redo in [true, false] {
+            step(&ctx, &mut t, Action::Undo);
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), " A ita\n");
+            assert_eq!(read(&dir, "ita").as_deref(), Some("intent\n"));
+            if redo {
+                step(&ctx, &mut t, Action::Redo);
+                assert!(read(&dir, "ita").is_none() && sh(&dir, &["status", "--porcelain"]).is_empty());
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn redoing_a_conflicted_stash_pop_brings_the_conflict_back() {
+        let dir = repo("redo-pop-conflict");
+        commit(&dir, "a", "base\n");
+        std::fs::write(dir.join("a"), "stashed\n").unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        commit(&dir, "a", "committed\n");
+        let (ctx, mut t) = tab(&dir);
+        let s = t.data.as_ref().unwrap().stashes[0].clone();
+        step(&ctx, &mut t, Action::Git(super::super::pop_stash(&s)));
+        let popped = (sh(&dir, &["ls-files", "-s"]), read(&dir, "a"));
+        assert!(sh(&dir, &["ls-files", "-u"]).contains("\ta"), "{popped:?}");
+        step(&ctx, &mut t, Action::Undo);
+        assert!(sh(&dir, &["ls-files", "-u"]).is_empty() && read(&dir, "a").as_deref() == Some("committed\n"));
+        step(&ctx, &mut t, Action::Redo);
+        assert_eq!((sh(&dir, &["ls-files", "-s"]), read(&dir, "a")), popped);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

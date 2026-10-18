@@ -16,7 +16,7 @@ pub fn reveal(path: &Path) {
 /// Append `/<path>` to the repo's .gitignore (refuses anything but a regular file),
 /// escaped so it matches only that file, not a glob of others.
 pub fn append_gitignore(dir: &Path, path: &str) -> std::io::Result<()> {
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
     if path.contains(['\n', '\r']) {
         return Err(std::io::Error::other("the file name contains a line break; edit .gitignore manually"));
     }
@@ -35,9 +35,13 @@ pub fn append_gitignore(dir: &Path, path: &str) -> std::io::Result<()> {
     if pattern.ends_with(' ') {
         pattern.insert(pattern.len() - 1, '\\');
     }
-    let existing = crate::git::read_small(&p).unwrap_or_default();
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
-    if existing.last().is_some_and(|&b| b != b'\n') {
+    let mut f = std::fs::OpenOptions::new().create(true).read(true).append(true).open(p)?;
+    let mut last = [b'\n'];
+    if f.metadata()?.len() > 0 {
+        f.seek(SeekFrom::End(-1))?;
+        f.read_exact(&mut last)?;
+    }
+    if last[0] != b'\n' {
         writeln!(f)?;
     }
     writeln!(f, "/{pattern}")

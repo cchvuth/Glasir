@@ -16,6 +16,9 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
     let save = ui.input_mut(|i| !i.modifiers.shift && i.consume_key(Modifiers::COMMAND, Key::S));
     let dirty = ed.dirty();
     let text_id = ui.id().with(("file_edit_text", dir, &ed.path));
+    if std::mem::take(&mut ed.fresh) {
+        ui.data_mut(|m| m.remove::<egui::text_edit::TextEditState>(text_id));
+    }
     let mut leave = ed.ask.is_none() && super::format::esc_pressed_in(ui, text_id);
     if save && dirty && !ed.saving {
         acts.push(Action::EditSave);
@@ -159,5 +162,36 @@ pub fn show(ui: &mut Ui, ed: &mut FileEdit, dir: &Path, wrap: &mut bool, acts: &
         Some(1) => acts.push(Action::EditClose),
         Some(_) => ed.ask = None,
         None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::text::{CCursor, CCursorRange};
+    use egui::text_edit::TextEditState;
+
+    #[test]
+    fn a_reopened_editor_drops_the_old_text_state() {
+        let dir = std::env::temp_dir().join(format!("glasir-fe-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        let ctx = egui::Context::default();
+        let (mut wrap, mut acts) = (false, vec![]);
+        let mut ed = FileEdit::load(&dir, "a.txt").unwrap();
+        let mut id = None;
+        ctx.run_ui(Default::default(), |ui| {
+            let text_id = ui.id().with(("file_edit_text", &dir, &ed.path));
+            id = Some(text_id);
+            let mut st = TextEditState::default();
+            st.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(3))));
+            ui.data_mut(|m| m.insert_temp(text_id, st));
+            show(ui, &mut ed, &dir, &mut wrap, &mut acts);
+        })
+        .textures_delta
+        .clear();
+        let kept = ctx.data(|d| d.get_temp::<TextEditState>(id.unwrap())).and_then(|s| s.cursor.char_range());
+        assert_eq!(kept, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

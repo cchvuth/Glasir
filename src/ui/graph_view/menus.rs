@@ -292,16 +292,7 @@ pub fn reset_menu(ui: &mut Ui, d: &RepoData, id: &str, what: &str, acts: &mut Ve
 
 /// Why resetting is off now (an operation in progress), if it is.
 pub fn reset_busy(d: &RepoData) -> Option<String> {
-    let busy = match d.state {
-        State::Clean => return None,
-        State::Merging => "merge",
-        State::Rebasing => "rebase",
-        State::CherryPicking => "cherry-pick",
-        State::Reverting => "revert",
-        State::Bisecting => "bisect",
-        State::Applying => "patch (git am)",
-    };
-    Some(format!("Finish or abort the {busy} in progress first"))
+    crate::repo::in_progress(d.state)
 }
 
 /// The soft / mixed / keep / hard choices of resetting the current branch to `id`.

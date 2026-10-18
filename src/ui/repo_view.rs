@@ -29,7 +29,8 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
             });
         });
     } else {
-        let budget = (ui.available_width() - 440.0).max(480.0);
+        t.refresh_diff_theme(ui.ctx());
+        let budget =(ui.available_width() - 440.0).max(480.0);
         egui::Panel::left("sidebar")
             .show_separator_line(false)
             .default_size(250.0)

@@ -546,9 +546,8 @@ mod tests {
     #[test]
     fn tests_never_read_the_users_git_config() {
         let dir = std::env::temp_dir();
-        for scope in ["--global", "--system"] {
-            assert_eq!(run(&dir, &["config", scope, "--list"]).unwrap_or_default(), "", "{scope}");
-        }
+        let loaded = run(&dir, &["config", "--list", "--show-scope"]).unwrap_or_default();
+        assert!(!loaded.lines().any(|l| l.starts_with("global") || l.starts_with("system")), "{loaded}");
         assert_eq!(run_shell(&dir, "git config --global --list").unwrap_or_default(), "");
     }
 

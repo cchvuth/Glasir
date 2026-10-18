@@ -105,7 +105,11 @@ impl App {
             if p.join(".git").exists() {
                 app.add_tab(&cc.egui_ctx, p);
             } else if p.exists() {
-                app.open(&cc.egui_ctx, &p);
+                let top = git::run(&p, &["rev-parse", "--show-toplevel"]).ok().map(|t| PathBuf::from(t.trim()));
+                match top.filter(|t| t.canonicalize().ok() == p.canonicalize().ok()) {
+                    Some(t) => app.add_tab(&cc.egui_ctx, t),
+                    None => app.toast(&cc.egui_ctx, format!("{} is no longer a repository", p.display()), true),
+                }
             }
         }
         // Saved repos that are gone shift the indices: find the active one by path.
@@ -323,9 +327,12 @@ impl App {
 
     fn poll_tabs(&mut self, ctx: &egui::Context) {
         let mut msgs: Vec<(Msg, Option<(PathBuf, u64)>)> = vec![];
-        for t in &mut self.tabs {
-            let (top, mut m) = (t.undo_top(), vec![]);
+        for (i, t) in self.tabs.iter_mut().enumerate() {
+            let (top, mut m, had) = (t.undo_top(), vec![], t.choice.is_some());
             t.poll(ctx, &mut m);
+            if i != self.active && !had && let Some(c) = &t.choice {
+                m.push(Msg { text: format!("{}: {} — open the tab to choose", t.name, c.title), error: true });
+            }
             m.append(&mut t.notes);
             let undo = t.undo_top().filter(|&id| Some(id) > top).map(|id| (t.dir.clone(), id));
             let n = m.len();
@@ -983,6 +990,35 @@ mod shell_tests {
                 app.shortcuts = super::super::shortcuts::show(ui.ctx());
             }
         });
+    }
+
+    #[test]
+    fn a_failed_op_in_a_background_tab_is_toasted() {
+        let (a, b) = (repo("bgfail-a"), repo("bgfail-b"));
+        for kv in [["gpg.program", "/nonexistent-gpg"], ["commit.gpgsign", "true"], ["user.email", "t@t"], ["user.name", "T"]] {
+            crate::git::run(&a, &["config", kv[0], kv[1]]).unwrap();
+        }
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        app.open(&ctx, &b);
+        assert_eq!(app.active, 1);
+        let wait = |app: &mut App, done: &dyn Fn(&RepoTab) -> bool| {
+            for _ in 0..2000 {
+                app.poll_tabs(&ctx);
+                if done(&app.tabs[0]) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("timed out");
+        };
+        wait(&mut app, &|t| t.data.is_some());
+        app.tabs[0].apply(&ctx, Action::Git(crate::repo::Op::new("Commit", &["commit", "--allow-empty", "-m", "x"])));
+        wait(&mut app, &|t| t.choice.is_some());
+        assert!(app.toasts.iter().any(|t| t.text.contains("Signing failed") && t.text.contains("open the tab")), "{:?}", app.toasts.iter().map(|t| &t.text).collect::<Vec<_>>());
+        for d in [a, b] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]

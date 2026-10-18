@@ -35,6 +35,7 @@ pub struct FileEdit {
     pub then: Option<Action>,
     /// Syntax colors of `text` (key: its fingerprint and the theme).
     pub hl: Option<((u64, bool), crate::highlight::Spans)>,
+    pub fresh: bool,
 }
 
 fn fingerprint(b: &[u8]) -> u64 {
@@ -95,6 +96,7 @@ impl FileEdit {
             ask: None,
             then: None,
             hl: None,
+            fresh: true,
         })
     }
 

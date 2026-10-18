@@ -8,7 +8,7 @@ use egui::{Align2, Frame, Id, Margin, RichText, UiBuilder};
 use std::path::PathBuf;
 
 pub(super) struct Toast {
-    text: String,
+    pub(super) text: String,
     error: bool,
     /// Set by the first frame that shows it: one made while the window is hidden waits for it.
     until: Option<f64>,

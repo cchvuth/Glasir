@@ -22,8 +22,12 @@ fn cherry_pick_anyway(op: &Op, guard_at: usize, err: &str) -> Choice {
     }
 }
 
-fn autostash_checkout(op: &Op, err: &str) -> Choice {
-    let target = op.label.strip_prefix("Checkout ").unwrap_or(&op.label);
+fn autostash_checkout(op: &Op, args: &[String], err: &str) -> Choice {
+    let target = match args.iter().position(|a| a == "--end-of-options") {
+        Some(i) => args.get(i + 1),
+        None => args[1..].iter().take_while(|a| *a != "--").find(|a| !a.starts_with('-')),
+    };
+    let target = target.map_or(op.label.as_str(), String::as_str);
     let files: Vec<String> = err.lines().filter(|l| l.starts_with('\t')).map(|l| format!("  •  {}", l.trim())).collect();
     let mut o = op.clone();
     o.label = format!("{} (autostash)", op.label);
@@ -78,7 +82,7 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
     }
     match args.first()?.as_str() {
         // Not for untracked files: the target's copy would be checked out and the stash couldn't pop.
-        "checkout" if err.contains("would be overwritten by checkout") && !err.contains("untracked working tree files") => Some(autostash_checkout(op, err)),
+        "checkout" if err.contains("would be overwritten by checkout") && !err.contains("untracked working tree files") => Some(autostash_checkout(op, args, err)),
         "pull" if has("--ff-only") && err.contains("Not possible to fast-forward") => Some(Choice {
             title: "Branches have diverged".into(),
             text: "Your branch and its upstream both have new commits, so a fast-forward isn't possible. Combine them by rebasing your commits on top, or with a merge commit.".into(),
@@ -270,6 +274,15 @@ mod tests {
             assert_eq!(tip(remote_branch), sh(&a, &["rev-parse", "HEAD"]), "{branch} forced");
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn autostash_names_the_checked_out_branch() {
+        let err = "error: Your local changes to the following files would be overwritten by checkout:\n\ta.txt\nAborting";
+        for (args, to) in [(&["checkout", "dst", "--"][..], "dst"), (&["checkout", "--end-of-options", "-x", "--"], "-x")] {
+            let op = Op::new("Merge src into dst", args).then(&["merge", "src"]);
+            assert!(offer(&op, err, None).unwrap().text.starts_with(&format!("Switching to {to} would")));
+        }
     }
 
     #[test]

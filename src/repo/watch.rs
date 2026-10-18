@@ -46,6 +46,7 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
     })
     .ok()?;
     if w.watch(dir, notify::RecursiveMode::Recursive).is_err() {
+        let _ = w.unwatch(dir);
         git_dirs.iter().try_for_each(|g| w.watch(g, notify::RecursiveMode::Recursive)).ok()?;
     } else if !common.starts_with(dir) {
         w.watch(&common, notify::RecursiveMode::Recursive).ok()?;

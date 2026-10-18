@@ -498,7 +498,7 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 for how in hows.into_iter().filter(|h| dr.head || *h != Some(Merge::Squash)) {
                     let mut merge = merge_op(src, src_rev, how);
                     if !dr.head {
-                        let mut o = Op::new(format!("Merge {src} into {dst}"), &["checkout", "--end-of-options", dst, "--"]).undo(Undo::Keep);
+                        let mut o = Op::new(format!("Merge {src} into {dst}"), &crate::repo::checkout_args(dst, false)).undo(Undo::Keep);
                         o.cmds.extend(merge.cmds);
                         merge = o;
                     }

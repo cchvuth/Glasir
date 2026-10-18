@@ -30,7 +30,7 @@ pub(super) fn apply_op(path: &Path, text: &[u8]) -> Op {
         let keep: &[&str] = if crlf_mbox { &[] } else { &["--keep-cr"] };
         Op::new("Apply patch as commits", &[&["am", "--3way"][..], keep, &[&p]].concat()).undo(Undo::Keep)
     } else {
-        Op::new("Apply patch", &["update-index", "-q", "--refresh"]).then(&["apply", "--3way", &p]).backup(Backup::Tree { revs: vec![], untracked: false })
+        Op::new("Apply patch", &["update-index", "-q", "--unmerged", "--refresh"]).then(&["apply", "--3way", &p]).backup(Backup::Tree { revs: vec![], untracked: false })
     }
 }
 
