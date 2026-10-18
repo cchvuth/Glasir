@@ -148,7 +148,7 @@ impl App {
         let mut t = RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default());
         if let Some(draft) = self.drafts.remove(&top) {
             (t.summary, t.body, t.template, t.coauthors) = draft;
-        } else if let Some(saved) = git::git_dir(&top).ok().and_then(|g| std::fs::read_to_string(g.join(DRAFT_FILE)).ok()) {
+        } else if let Some(saved) = draft_file(&top).and_then(|f| std::fs::read_to_string(f).ok()) {
             let (summary, body) = saved.split_once("\n\n").unwrap_or((&saved, ""));
             (t.summary, t.body) = (summary.to_owned(), body.to_owned());
         }
@@ -168,8 +168,9 @@ impl App {
             self.add_tab(ctx, top.clone());
             return self.remember(top);
         }
-        if let Some(draft) = draft(&self.tabs[i]) {
-            self.drafts.insert(self.tabs[i].dir.clone(), draft);
+        match draft(&self.tabs[i]) {
+            Some(draft) => _ = self.drafts.insert(self.tabs[i].dir.clone(), draft),
+            None => forget_draft(&self.tabs[i].dir),
         }
         let steps = self.tabs[i].take_steps();
         self.steps.insert(self.tabs[i].dir.clone(), steps);
@@ -298,8 +299,9 @@ impl App {
         if let Some(o) = self.tabs.get(i).and_then(|t| t.ext_tools.first()) {
             return self.toast(ctx, format!("The external {} tool is still open on {}: close it, then close the tab.", o.kind, o.path), true);
         }
-        if let Some(draft) = draft(&self.tabs[i]) {
-            self.drafts.insert(self.tabs[i].dir.clone(), draft);
+        match draft(&self.tabs[i]) {
+            Some(draft) => _ = self.drafts.insert(self.tabs[i].dir.clone(), draft),
+            None => forget_draft(&self.tabs[i].dir),
         }
         let steps = self.tabs[i].take_steps();
         self.steps.insert(self.tabs[i].dir.clone(), steps);
@@ -597,16 +599,32 @@ const DRAFT_FILE: &str = "GLASIR_DRAFT";
 
 impl App {
     fn persist_drafts(&self) {
-        let open = self.tabs.iter().map(|t| (t.dir.as_path(), draft(t).map(|d| (d.0, d.1))));
-        let closed = self.drafts.iter().map(|(dir, d)| (dir.as_path(), Some((d.0.clone(), d.1.clone()))));
+        let open = self.tabs.iter().filter(|t| !t.amend).map(|t| (t.dir.as_path(), draft(t)));
+        let closed = self.drafts.iter().map(|(dir, d)| (dir.as_path(), Some(d.clone())));
         for (dir, d) in open.chain(closed) {
-            let Ok(g) = git::git_dir(dir) else { continue };
-            let _ = match d {
-                Some((summary, body)) => std::fs::write(g.join(DRAFT_FILE), format!("{summary}\n\n{body}")),
-                None => std::fs::remove_file(g.join(DRAFT_FILE)),
-            };
+            match d {
+                Some(d) => _ = draft_file(dir).map(|f| std::fs::write(f, saved_text(&d))),
+                None => forget_draft(dir),
+            }
         }
     }
+}
+
+fn draft_file(dir: &Path) -> Option<PathBuf> {
+    let g = dir.join(".git");
+    let g = if g.is_dir() { g } else { git::git_dir(dir).ok()? };
+    Some(g.join(DRAFT_FILE))
+}
+
+fn forget_draft(dir: &Path) {
+    if let Some(f) = draft_file(dir).filter(|f| f.exists()) {
+        let _ = std::fs::remove_file(f);
+    }
+}
+
+fn saved_text(d: &Draft) -> String {
+    let msg = format!("{}\n\n{}", d.0, d.1);
+    d.2.as_ref().map_or(msg.clone(), |t| crate::repo::message::strip_comments(&msg, t))
 }
 
 fn replaceable(t: &RepoTab) -> bool {
@@ -911,6 +929,29 @@ mod close_tests {
         app.persist_drafts();
         assert!(!dir.join(".git").join(super::DRAFT_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_committed_message_in_a_closed_tab_does_not_come_back() {
+        let dir = std::env::temp_dir().join(format!("glasir-closed-draft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        app.tabs[0].summary = "fix it".into();
+        app.persist_drafts();
+        app.tabs[0].summary.clear();
+        app.close_tab(&ctx, 0);
+        app.persist_drafts();
+        assert!(!dir.join(".git").join(super::DRAFT_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_draft_drops_the_template_comments() {
+        let t = crate::repo::message::Template { prefix: "#".into(), body: "# explain".into(), summary: "feat: ".into() };
+        assert_eq!(super::saved_text(&("feat: add".into(), "# explain".into(), Some(t), vec![])), "feat: add");
     }
 
     fn close(ctx: &egui::Context, app: &mut super::App) -> Vec<ViewportCommand> {

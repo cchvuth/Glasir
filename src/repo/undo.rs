@@ -656,7 +656,7 @@ mod tests {
     }
 
     fn discard_all() -> Action {
-        Action::Git(Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true }))
+        Action::Git(Op::new("Discard all", &[crate::repo::DISCARD_ALL]).backup(Backup::Tree { revs: vec![], untracked: true }))
     }
 
     fn labels(t: &RepoTab) -> Vec<String> {
@@ -829,7 +829,7 @@ mod tests {
         commit(&dir, "f", "ours\n");
         assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
         let conflicted = read(&dir, "f");
-        let op = Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true });
+        let op = Op::new("Discard all", &[crate::repo::DISCARD_ALL]).backup(Backup::Tree { revs: vec![], untracked: true });
         let f = run_backed(&dir, &op).unwrap().unwrap();
         assert!(!dir.join("u").exists());
         undo_files(&dir, &f).unwrap();
@@ -1045,7 +1045,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "edited\n").unwrap();
         std::fs::create_dir_all(dir.join("new")).unwrap();
         std::fs::write(dir.join("new/b.txt"), "fresh\n").unwrap();
-        let op = Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true });
+        let op = Op::new("Discard all", &[crate::repo::DISCARD_ALL]).backup(Backup::Tree { revs: vec![], untracked: true });
         let f = run_backed(&dir, &op).unwrap().unwrap();
         assert_eq!(read(&dir, "a.txt").as_deref(), Some("one\n"));
         assert!(!dir.join("new/b.txt").exists());
@@ -1305,7 +1305,7 @@ mod tests {
         std::fs::write(dir.join("new"), "n\n").unwrap();
         sh(&dir, &["add", "new"]);
         let before = sh(&dir, &["status", "--porcelain"]);
-        let op = Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true });
+        let op = Op::new("Discard all", &[crate::repo::DISCARD_ALL]).backup(Backup::Tree { revs: vec![], untracked: true });
         let f = run_backed(&dir, &op).unwrap().unwrap();
         undo_files(&dir, &f).unwrap();
         assert_eq!(std::fs::read(dir.join("b")).unwrap(), b"one\ntwo\n");
@@ -1539,7 +1539,7 @@ mod tests {
             sh(&dir, &["add", "d/x"]);
             let (ctx, mut t) = tab(&dir);
             let op = match all {
-                true => Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true }),
+                true => Op::new("Discard all", &[crate::repo::DISCARD_ALL]).backup(Backup::Tree { revs: vec![], untracked: true }),
                 false => Op::new("Discard", &["--literal-pathspecs", "rm", "-fq", "--", "d/x"]).light().backup(Backup::Paths(vec!["d/x".into()])),
             };
             step(&ctx, &mut t, Action::Git(op));

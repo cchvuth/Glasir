@@ -207,6 +207,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::restore::APPLY_STASH_FILE, stash, path] => super::restore::apply_stash(dir, stash, path),
             [BRANCH_DELETE | BRANCH_RESTORE | BRANCH_CONFIG, ..] => branch_cmd(dir, &a),
             [SEQ_STATE, ..] => seq_state(dir, &a),
+            [DISCARD_ALL] => discard_all(dir),
             [super::cleanup::REMOTE_DELETE, rest @ ..] => super::cleanup::remote_delete(dir, rest),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::RESET, name] => super::remotes::reset(dir, name),
@@ -787,6 +788,20 @@ fn state_files(g: &Path) -> Vec<String> {
 }
 
 pub(super) const SEQ_STATE: &str = "!seq-state";
+
+pub const DISCARD_ALL: &str = "!discard-all";
+
+fn discard_all(dir: &Path) -> Res<String> {
+    let untracked = || git::run(dir, &["ls-files", "-z", "-o", "--exclude-standard", "--directory"]).map(super::undo::split_z);
+    let before: std::collections::HashSet<String> = untracked()?.into_iter().collect();
+    git::run(dir, &["reset", "--hard", "-q"])?;
+    let gone: Vec<String> = untracked()?.into_iter().filter(|p| before.contains(p)).collect();
+    for chunk in gone.chunks(200) {
+        let args: Vec<&str> = ["--literal-pathspecs", "clean", "-fdq", "--"].into_iter().chain(chunk.iter().map(String::as_str)).collect();
+        git::run(dir, &args)?;
+    }
+    Ok(String::new())
+}
 
 fn seq_state(dir: &Path, a: &[&str]) -> Res<String> {
     let [_, head, unmerged, n, rest @ ..] = a else { return Err(format!("bad state command {a:?}")) };

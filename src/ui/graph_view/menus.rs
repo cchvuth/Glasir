@@ -326,8 +326,7 @@ fn discard_all_op(state: State) -> Op {
         State::Reverting => " This also ends the revert in progress.",
         _ => "",
     };
-    Op::new("Discard all", &["clean", "-fdq"])
-        .then(&["reset", "--hard", "-q"])
+    Op::new("Discard all", &[crate::repo::DISCARD_ALL])
         .backup(crate::repo::Backup::Tree { revs: vec![], untracked: true })
         .confirm(format!("Discard ALL uncommitted changes, including untracked files?{ends} (Undo with ⌘Z.)"))
 }
@@ -367,6 +366,28 @@ mod tests {
         load(&mut t, &ctx);
         assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), "*.log\n.env\n");
         assert_eq!(std::fs::read_to_string(dir.join("u")).ok().as_deref(), Some("u\n"));
+    }
+
+    #[test]
+    fn discard_all_keeps_files_the_committed_gitignore_ignores() {
+        let ctx = egui::Context::default();
+        let mut t = tab(&ctx, "discard-all-unignored", &["a"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        std::fs::write(dir.join(".gitignore"), ".env\nnode_modules/\n").unwrap();
+        git(&["add", ".gitignore"]);
+        git(&["commit", "-q", "-m", "ignore"]);
+        std::fs::create_dir_all(dir.join("node_modules/x")).unwrap();
+        std::fs::write(dir.join("node_modules/x/i.js"), "js\n").unwrap();
+        std::fs::write(dir.join(".env"), "SECRET\n").unwrap();
+        std::fs::remove_file(dir.join(".gitignore")).unwrap();
+        std::fs::write(dir.join("u"), "u\n").unwrap();
+        let mut op = super::discard_all_op(crate::git::State::Clean);
+        op.confirm = None;
+        t.apply(&ctx, crate::repo::Action::Git(op));
+        load(&mut t, &ctx);
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).ok().as_deref(), Some("SECRET\n"));
+        assert!(dir.join("node_modules/x/i.js").exists() && dir.join(".gitignore").exists() && !dir.join("u").exists());
     }
 
     fn click(sim: &mut Sim, item: &str, mut draw: impl FnMut(&mut Ui)) {

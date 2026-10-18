@@ -59,7 +59,7 @@ pub struct Session {
     /// The last child-process answer and when it was taken; listing processes is too
     /// slow to do every frame.
     #[cfg(any(unix, windows))]
-    seen: std::cell::Cell<Option<(std::time::Instant, bool)>>,
+    seen: std::sync::Arc<std::sync::Mutex<(Option<std::time::Instant>, bool)>>,
 }
 
 impl Session {
@@ -132,17 +132,23 @@ impl Session {
             }
         }
         let now = std::time::Instant::now();
-        match self.seen.get() {
-            Some((at, b)) if now - at < std::time::Duration::from_millis(500) => b,
-            _ => {
-                #[cfg(unix)]
-                let b = has_child(self.shell.0);
-                #[cfg(windows)]
-                let b = has_child(self.shell);
-                self.seen.set(Some((now, b)));
-                b
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        if seen.0.is_none_or(|at| now - at >= std::time::Duration::from_millis(500)) {
+            seen.0 = Some(now);
+            #[cfg(unix)]
+            {
+                let (cache, pid) = (self.seen.clone(), self.shell.0);
+                std::thread::spawn(move || {
+                    let b = has_child(pid);
+                    cache.lock().unwrap_or_else(|e| e.into_inner()).1 = b;
+                });
+            }
+            #[cfg(windows)]
+            {
+                seen.1 = has_child(self.shell);
             }
         }
+        seen.1
     }
 
     /// Handles the shell's requests; false once it exited.
@@ -177,12 +183,14 @@ fn created(h: windows_sys::Win32::Foundation::HANDLE) -> u64 {
 
 #[cfg(unix)]
 fn has_child(shell: i32) -> bool {
-    std::process::Command::new("pgrep")
-        .args(["-P", &shell.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .is_ok_and(|o| !o.stdout.is_empty())
+    let out = |args: &[&str]| {
+        let mut c = std::process::Command::new(args[0]);
+        c.args(&args[1..]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+        crate::git::spawn(&mut c).and_then(|c| c.wait_with_output()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default()
+    };
+    let pid = shell.to_string();
+    let tty = out(&["ps", "-o", "tty=", "-p", &pid]);
+    !tty.is_empty() && out(&["ps", "-t", &tty, "-o", "ppid="]).lines().any(|p| p.trim() == pid)
 }
 
 /// ConPTY has no foreground process group: look for a child of the shell instead.
