@@ -342,7 +342,8 @@ impl RepoTab {
                     if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
                         restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
-                    file_items(ui, &c.path, &c.path, Some(&info.id), blame_rev.as_deref(), acts);
+                    let at = if stash.is_some() { info.parents.first() } else { Some(&info.id) };
+                    file_items(ui, &c.path, &c.path, at.map(String::as_str), blame_rev.as_deref(), acts);
                     if let Some(d) = self.data.as_ref().filter(|_| !wt) {
                         open_items(ui, d, &info.id, &c.path, c.code == 'D', acts);
                     }
@@ -363,7 +364,8 @@ impl RepoTab {
                         Item::Dir { path, resp, .. } => {
                             resp.context_menu(|ui| {
                                 if ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {path}/")).clicked() {
-                                    acts.push(Action::FileView(format!("{path}/"), crate::repo::history::Mode::History(None)));
+                                    let at = if stash.is_some() { info.parents.first() } else { Some(&info.id) };
+                                    acts.push(Action::FileView(format!("{path}/"), crate::repo::history::Mode::History(at.filter(|_| !wt).cloned())));
                                 }
                                 if ui.button("Copy path").clicked() {
                                     acts.push(Action::Copy(path.into()));

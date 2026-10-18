@@ -57,7 +57,10 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
             // Folders above the shown file or folder open their history.
             if seg.ends_with('/') && end < fv.path.len() {
                 if ui.add(egui::Button::new(text).frame(false)).on_hover_text(format!("History of {}", &fv.path[..end])).clicked() {
-                    acts.push(Action::FileView(fv.path[..end].into(), fv.mode.clone()));
+                    let rev = match &fv.mode {
+                        Mode::History(r) | Mode::Blame(r) | Mode::Lines { rev: r, .. } => r.clone(),
+                    };
+                    acts.push(Action::FileView(fv.path[..end].into(), Mode::History(rev)));
                 }
             } else {
                 ui.add(egui::Label::new(text).truncate());
@@ -295,6 +298,18 @@ mod tests {
             sim.frame(vec![], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
         }
         assert!(!egui::Popup::is_any_open(&sim.ctx), "the menu doesn't turn into the other commit's");
+    }
+
+    #[test]
+    fn a_folder_in_the_header_opens_its_history_from_a_blame() {
+        let mut sim = Sim::new(520.0, 500.0);
+        let t = tab(&sim.ctx, "history-crumb", &["x"]);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "d/f", Mode::Blame(Some("abc".into())));
+        let (mut wrap, mut acts) = (false, vec![]);
+        sim.frame(vec![], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        let at = sim.text(|s| s == "d/").expect("the folder is drawn");
+        sim.click(at, egui::PointerButton::Primary, |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        assert!(acts.iter().any(|a| matches!(a, Action::FileView(p, Mode::History(Some(r))) if p == "d/" && r == "abc")));
     }
 
     #[test]

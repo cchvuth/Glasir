@@ -696,7 +696,7 @@ fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
         },
         [STASH_RESTAGE, id] => {
             let s = git::stashes(dir)?.into_iter().find(|s| s.id == *id).ok_or_else(|| format!("Stash {} is no longer in the stash list.", short(id)))?;
-            let patch = git::run_raw(dir, &["diff", "-U1", "--binary", "--no-color", "--no-ext-diff", "--submodule=short", &format!("{id}^1"), &format!("{id}^2")], None)?;
+            let patch = git::run_raw(dir, &["diff", "-U1", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--submodule=short", &format!("{id}^1"), &format!("{id}^2")], None)?;
             let apply = |extra: &[&str]| git::run_raw(dir, &[&["apply", "--whitespace=nowarn"], extra].concat(), Some(&patch));
             apply(&["--check"])?;
             apply(&["--check", "--cached"])?;
@@ -3213,6 +3213,9 @@ mod tests {
     #[test]
     fn stash_staged_undo_keeps_unstaged_edits() {
         let (dir, ctx, mut t) = stash_repo("stash-staged");
+        std::fs::create_dir_all(dir.join(".git/info")).unwrap();
+        std::fs::write(dir.join(".git/info/attributes"), "a diff=up\n").unwrap();
+        sh(&dir, &["config", "diff.up.textconv", "tr a-z A-Z <"]);
         std::fs::write(dir.join("a"), "1x\n2\n3\n").unwrap();
         std::fs::write(dir.join("added"), "n\n").unwrap();
         sh(&dir, &["add", "a", "added"]);
