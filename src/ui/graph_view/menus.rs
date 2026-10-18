@@ -172,7 +172,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
         acts.push(Action::Prompt(Prompt {
             title: format!("Annotated tag at {short}"),
             value: String::new(),
-            op: Op::new("Create tag", &["tag", "-a", "{}", "-m", "{2}", &c.id]).undo(Undo::Keep),
+            op: Op::new("Create tag", &["tag", "-a", "--cleanup=whitespace", "-m", "{2}", "--", "{}", &c.id]).undo(Undo::Keep),
             second: Some(("Tag message (⌘↩ to create)".into(), String::new())),
             sign: Some(d.cfg_bool("tag.gpgsign")),
         }));

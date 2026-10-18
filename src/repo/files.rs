@@ -6,9 +6,9 @@ use std::path::Path;
 /// could be a script or executable.
 pub fn reveal(path: &Path) {
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("/usr/bin/open").arg("-R").arg(path).spawn();
+    let _ = crate::git::spawn(std::process::Command::new("/usr/bin/open").arg("-R").arg(path));
     #[cfg(windows)]
-    let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display().to_string().replace('/', "\\"))).spawn();
+    let _ = crate::git::spawn(std::process::Command::new("explorer.exe").arg(format!("/select,{}", path.display().to_string().replace('/', "\\"))));
     #[cfg(not(any(target_os = "macos", windows)))]
     let _ = open::that_detached(path.parent().unwrap_or(path));
 }

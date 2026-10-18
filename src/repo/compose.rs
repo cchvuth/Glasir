@@ -244,7 +244,7 @@ impl Plan {
         let s = if n == 1 { "" } else { "s" };
         let mut op = Op::new(format!("Compose {n} commit{s}"), &["read-tree", "--reset", &self.base]);
         // What's staged now: put back at the end (not `wip`) and by a rollback.
-        let index = git::run(dir, &["write-tree"]).map_err(|_| "Resolve the conflicts first.".to_string())?.trim().to_owned();
+        let index = git::index_tree(dir)?;
         if self.replaces > 0 {
             op.label = format!("Recompose {} commits into {n}", self.replaces);
             op.cmds.splice(0..0, [vec![super::rebase::HEAD_IS.to_owned(), state], ["reset", "-q", "--soft", &self.base].map(String::from).to_vec()]);

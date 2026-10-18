@@ -311,8 +311,15 @@ pub(super) fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
 }
 
 pub(super) fn own(op: &Op, before: &Snapshot, mut after: Snapshot) -> Snapshot {
+    if op.custom {
+        return after;
+    }
     let text = op.cmds.iter().flatten().fold(String::from_utf8_lossy(op.input.as_deref().unwrap_or_default()).into_owned(), |t, a| t + "\n" + a);
-    let names: HashSet<&str> = text.split(|c: char| c.is_whitespace() || c == ':' || c == '=').map(|t| t.trim_matches(['+', '"', '\''])).collect();
+    let names: HashSet<&str> = text
+        .split(|c: char| c.is_whitespace() || c == ':')
+        .flat_map(|t| [Some(t), t.strip_prefix('+'), t.split_once('=').map(|(_, v)| v)])
+        .flatten()
+        .collect();
     let head = after.head.clone();
     after.refs.retain(|r, _| {
         let short = r.strip_prefix("refs/heads/").or_else(|| r.strip_prefix("refs/tags/")).unwrap_or(r);
@@ -859,9 +866,9 @@ mod tests {
         let dir = repo("undo-policy-durable");
         std::fs::write(dir.join("keep"), "edit\n").unwrap();
         let (ctx, mut t) = tab(&dir);
-        let probe = Op::new("Probe", &[super::super::tools::SHELL, "git for-each-ref refs/glasir/backups/ > ../probe-refs.txt; git checkout -- keep"]).light().backup(Backup::Paths(vec!["keep".into()]));
+        let probe = Op::new("Probe", &[super::super::tools::SHELL, "git for-each-ref refs/glasir/backups/ > .git/probe-refs.txt; git checkout -- keep"]).light().backup(Backup::Paths(vec!["keep".into()]));
         step(&ctx, &mut t, Action::Git(probe));
-        let out = dir.parent().unwrap().join("probe-refs.txt");
+        let out = dir.join(".git/probe-refs.txt");
         // Windows PowerShell writes UTF-16.
         let refs: Vec<u8> = std::fs::read(&out).unwrap().into_iter().filter(|b| *b != 0).collect();
         assert_eq!(String::from_utf8_lossy(&refs).matches("refs/glasir/backups/").count(), 1);
@@ -1054,6 +1061,22 @@ mod tests {
         assert_ne!(rev(&dir, "HEAD"), first);
         step(&ctx, &mut t, Action::Undo);
         assert_eq!((rev(&dir, "HEAD"), rev(&dir, "foo"), rev(&dir, "v1^{commit}")), (first.clone(), first.clone(), first));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn own_keeps_refs_named_with_plus_or_equals_and_all_refs_of_custom_commands() {
+        let dir = repo("undo-own");
+        let before = git::snapshot(&dir).unwrap();
+        for b in ["c++", "a=b", "x", "other"] {
+            sh(&dir, &["branch", b]);
+        }
+        let after = git::snapshot(&dir).unwrap();
+        let op = Op::new("Make", &["branch", "c++"]).then(&["branch", "a=b"]).then(&["push", "origin", "+x"]);
+        let kept = own(&op, &before, after.clone()).refs.into_keys().collect::<Vec<_>>();
+        assert_eq!(kept, ["refs/heads/a=b", "refs/heads/c++", "refs/heads/main", "refs/heads/x"]);
+        let custom = Op { custom: true, ..Op::new("Tag today", &[super::super::tools::SHELL, "git branch \"rel-$(date +%F)\""]) };
+        assert!(own(&custom, &before, after.clone()) == after);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

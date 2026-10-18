@@ -1138,6 +1138,7 @@ mod shell_tests {
                 if upper {
                     egui::Modal::new(egui::Id::new("upper")).show(ui.ctx(), |ui| took |= super::super::format::dismissed(ui, "Cancel"));
                 }
+                super::super::format::note_focus(ui.ctx());
             });
             took
         };
@@ -1171,6 +1172,74 @@ mod shell_tests {
         let mut t = tab(&sim.ctx, "esc-top-form", &["one"]);
         t.remote_form = Some(crate::repo::remotes::Form::add(t.data.as_ref().unwrap()));
         only_the_top_dialog_takes_escape(&mut sim, &mut t, |t, ctx| super::super::sidebar::remotes::form_dialog(t, ctx, &mut vec![]), |t| t.remote_form.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn one_escape_closes_a_prompt_whose_field_is_focused_and_two_leave_a_composer_message() {
+        use crate::ui::testkit::{Sim, tab};
+        let esc = || vec![Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }];
+        let dir = repo("esc-field-dialogs");
+        commit(&dir, "one");
+        let mut a = app(&egui::Context::default(), &dir);
+        a.rename = Some((dir.clone(), "renamed".into()));
+        let mut sim = Sim::new(1200.0, 800.0);
+        for _ in 0..4 {
+            sim.frame(vec![], |ui| {
+                a.rename_dialog(ui.ctx());
+                super::super::format::note_focus(ui.ctx());
+            });
+        }
+        sim.frame(esc(), |ui| a.rename_dialog(ui.ctx()));
+        assert!(a.rename.is_none(), "Esc closes Rename tab");
+        let mut t = tab(&sim.ctx, "esc-field-prompt", &["one"]);
+        t.prompt = Some(crate::repo::Prompt { title: "Name".into(), value: "x".into(), op: crate::repo::Op::new("Create branch", &["branch", "{}"]), second: None, sign: None });
+        for _ in 0..4 {
+            sim.frame(vec![], |ui| {
+                super::super::dialogs::prompt_dialog(&mut t, ui.ctx(), &mut vec![]);
+                super::super::format::note_focus(ui.ctx());
+            });
+        }
+        sim.frame(esc(), |ui| super::super::dialogs::prompt_dialog(&mut t, ui.ctx(), &mut vec![]));
+        assert!(t.prompt.is_none(), "Esc closes a simple prompt");
+        t.remote_form = Some(crate::repo::remotes::Form::add(t.data.as_ref().unwrap()));
+        for _ in 0..4 {
+            sim.frame(vec![], |ui| {
+                super::super::sidebar::remotes::form_dialog(&mut t, ui.ctx(), &mut vec![]);
+                super::super::format::note_focus(ui.ctx());
+            });
+        }
+        sim.frame(esc(), |ui| super::super::sidebar::remotes::form_dialog(&mut t, ui.ctx(), &mut vec![]));
+        assert!(t.remote_form.is_none(), "Esc closes Add remote");
+        std::fs::write(dir.join("f"), "changed\n").unwrap();
+        let mut t = tab(&sim.ctx, "esc-field-compose", &["one"]);
+        t.compose = Some(crate::repo::compose::Plan::load(&dir, None).unwrap().0);
+        t.compose.as_mut().unwrap().commits.push(crate::repo::compose::Commit { message: "composer message".into(), units: vec![0] });
+        let mut draw = |sim: &mut Sim, events: Vec<Event>| {
+            sim.frame(events, |ui| {
+                super::super::compose::compose_dialog(&mut t, ui.ctx(), &mut vec![]);
+                super::super::format::note_focus(ui.ctx());
+            })
+        };
+        draw(&mut sim, vec![]);
+        draw(&mut sim, vec![]);
+        let at = sim.text(|s| s.contains("composer message")).expect("message drawn");
+        sim.click(at, egui::PointerButton::Primary, |ui| {
+            super::super::compose::compose_dialog(&mut t, ui.ctx(), &mut vec![]);
+            super::super::format::note_focus(ui.ctx());
+        });
+        assert!(sim.ctx.memory(|m| m.focused().is_some()), "the message is focused");
+        sim.frame(esc(), |ui| {
+            super::super::compose::compose_dialog(&mut t, ui.ctx(), &mut vec![]);
+            super::super::format::note_focus(ui.ctx());
+        });
+        assert!(t.compose.is_some(), "the first Esc leaves the field");
+        sim.frame(vec![], |ui| {
+            super::super::compose::compose_dialog(&mut t, ui.ctx(), &mut vec![]);
+            super::super::format::note_focus(ui.ctx());
+        });
+        sim.frame(esc(), |ui| super::super::compose::compose_dialog(&mut t, ui.ctx(), &mut vec![]));
+        assert!(t.compose.is_none(), "the second closes");
         let _ = std::fs::remove_dir_all(dir);
     }
 

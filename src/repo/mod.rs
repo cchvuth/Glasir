@@ -48,7 +48,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt}
 pub use data::{RepoData, View};
 pub use diff::{DiffState, patch_op};
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, remove_worktree_op, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_all_op, unstage_files_op, unstage_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, continue_op, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, remove_worktree_op, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_all_op, unstage_files_op, unstage_op};
 pub use msgedit::MsgEdit;
 pub use search::{MAX_HITS, Search};
 pub use task::Task;

@@ -189,7 +189,7 @@ const PAGE: usize = 1000;
 
 fn history(dir: &Path, path: &str, limit: usize) -> Res<Vec<Entry>> {
     // A folder (`dir/`) can't be followed through renames.
-    let follow: &[&str] = if path.ends_with('/') { &["--diff-merges=first-parent"] } else { &["--follow", "-M"] };
+    let follow: &[&str] = if path.ends_with('/') { &["--diff-merges=first-parent"] } else { &["--follow", "-M", "--diff-merges=dense-combined"] };
     let n = format!("-n{limit}");
     let args = [&["--literal-pathspecs", "log", &n], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT, "--", path]].concat();
     let mut v = parse_history(&git::run(dir, &args)?);
@@ -467,6 +467,9 @@ mod tests {
             fv.data_gen > 1
         });
         assert_eq!(fv.sel, Some(1));
+
+        let h = history(&dir, "d/f", PAGE).unwrap();
+        assert_eq!(h.iter().map(|e| (e.summary.as_str(), e.change.code)).collect::<Vec<_>>(), [("merged", 'M'), ("main", 'M'), ("x", 'M'), ("base", 'A')]);
 
         sh(&dir, &["config", "blame.ignoreRevsFile", "missing-revs"]);
         assert!(blame(&dir, "d/f", None).is_ok());

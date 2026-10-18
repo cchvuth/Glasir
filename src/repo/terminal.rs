@@ -65,8 +65,10 @@ pub struct Session {
 impl Session {
     pub fn spawn(ctx: &egui::Context, dir: &Path) -> std::io::Result<Session> {
         // `$SHELL -l` (not macOS' default `login -f` wrapper) keeps the shell our direct child.
-        #[cfg(unix)]
+        #[cfg(all(unix, not(test)))]
         let shell = Some(tty::Shell::new(std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or("/bin/sh".into()), vec!["-l".into()]));
+        #[cfg(all(unix, test))]
+        let shell = Some(tty::Shell::new("/bin/sh".into(), vec![]));
         #[cfg(not(unix))]
         let shell = None; // PowerShell
         let opts = tty::Options {
@@ -76,7 +78,7 @@ impl Session {
             ..Default::default()
         };
         let size = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
-        let pty = tty::new(&opts, size, 0)?;
+        let pty = crate::git::spawning(|| tty::new(&opts, size, 0))?;
         #[cfg(unix)]
         let shell = (pty.child().id() as i32, pty.file().try_clone()?);
         #[cfg(windows)]

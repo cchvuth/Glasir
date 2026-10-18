@@ -446,7 +446,7 @@ fn launch(template: &str, path: &Path, cwd: &Path, append: bool) -> std::io::Res
     if !console {
         c.args(&words[1..]);
     }
-    let mut child = c.spawn()?;
+    let mut child = git::spawn(&mut c)?;
     std::thread::spawn(move || child.wait()); // reap it
     Ok(())
 }

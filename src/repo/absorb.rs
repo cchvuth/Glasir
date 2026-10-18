@@ -71,7 +71,7 @@ impl Plan {
             return Err("Finish or abort the merge, rebase or other operation in progress first.".into());
         }
         let head = git::run(dir, &["rev-parse", "HEAD"])?.trim().to_owned();
-        let index = git::run(dir, &["write-tree"]).map_err(|_| "Resolve the conflicts first.".to_string())?.trim().to_owned();
+        let index = git::index_tree(dir)?;
         // Unpushed commits: on neither the upstream nor any remote (no upstream: the last 20), stopping at a merge or the root.
         let range = git::run(dir, &["log", "--format=%H%x1f%P%x1f%s", "@{upstream}..HEAD", "--not", "--remotes", "--"])
             .or_else(|_| git::run(dir, &["log", "--format=%H%x1f%P%x1f%s", "-n", "20", "HEAD", "--not", "--remotes", "--"]))?;
@@ -165,7 +165,7 @@ impl Plan {
     /// the hunks so far), autosquash, then the staged tree back as the index.
     /// Undo (`--soft`) restores HEAD and leaves the original index.
     pub fn op(&self, dir: &Path, git_dir: &Path) -> Res<Op> {
-        let changed = git::run(dir, &["rev-parse", "HEAD"])?.trim() != self.head || git::run(dir, &["write-tree"]).unwrap_or_default().trim() != self.index;
+        let changed = git::run(dir, &["rev-parse", "HEAD"])?.trim() != self.head || git::index_tree(dir).ok().as_deref() != Some(self.index.as_str());
         if changed {
             return Err("HEAD or the staged changes changed since the preview; run Absorb again.".into());
         }
@@ -443,6 +443,21 @@ mod tests {
         assert_eq!(g(&["show", "HEAD:g"]), "g1 fixed\n");
         assert_eq!(g(&["diff", "--cached", "--name-only"]), "p\n");
         assert_eq!((g(&["ls-files", "-t", "README"]), g(&["status", "--porcelain"])), ("S README\n".into(), "M  p\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_loads_while_index_lock_is_held() {
+        let dir = scratch("absorb-lock");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "README", "root\n");
+        commit(&dir, "f", "f1\nf2\n");
+        std::fs::write(dir.join("f"), "f1\nf2 fixed\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        std::fs::write(git::git_dir(&dir).unwrap().join("index.lock"), "").unwrap();
+        let plan = Plan::load(&dir).unwrap();
+        assert_eq!(plan.index, git::index_tree(&dir).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

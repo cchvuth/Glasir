@@ -244,7 +244,7 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     in_view(ui, &mut step, |ui| local_row(ui, d, r, &r.name, depth, acts));
                 }
             }
-            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name)).collect();
+            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name) && !names.contains(&d.refs[i].name.as_str())).collect();
             let seed = d.refs.iter().find(|r| r.head && r.kind == RefKind::Local).map(|r| r.name.as_str());
             folders::show(ui, d, ui.id().with((dir, "local")), &nested, 0, f, seed, acts, |ui, r, name, acts| local_row(ui, d, r, name, 0, acts));
         });
@@ -340,6 +340,27 @@ mod tests {
             _ => None,
         }).collect();
         assert_eq!(picked, ["Checkout b3", "/wt/w3", "Update (recursive) s3"]);
+    }
+
+    #[test]
+    fn a_stacked_branch_with_a_slash_shows_once() {
+        let mut sim = Sim::new(300.0, 600.0);
+        let t = tab(&sim.ctx, "sidebar-stack-slash", &["x"]);
+        let dir = t.dir.clone();
+        for (b, msg) in [("base", "y"), ("feature/b", "z")] {
+            crate::git::run(&dir, &["checkout", "-q", "-b", b]).unwrap();
+            crate::git::run(&dir, &["commit", "-q", "--allow-empty", "-m", msg]).unwrap();
+        }
+        crate::git::run(&dir, &["checkout", "-q", "@{-2}"]).unwrap();
+        let mut t = crate::repo::RepoTab::new(&sim.ctx, dir.clone(), 100, Default::default());
+        crate::ui::testkit::load(&mut t, &sim.ctx);
+        let d = t.data.take().unwrap();
+        for _ in 0..3 {
+            sim.frame(vec![], |ui| sidebar(ui, &d, &dir, &None, &mut String::new(), &mut vec![]));
+        }
+        assert_eq!(stack::parent(&d, "feature/b"), Some("base"));
+        assert!(sim.text(|s| s.contains("feature/b")).is_some());
+        assert!(sim.text(|s| s.contains("feature") && !s.contains("feature/b")).is_none());
     }
 
     fn tags_and_remote_branches(sim: &Sim, name: &str) -> (Tab, RepoData) {

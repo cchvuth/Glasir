@@ -6,7 +6,7 @@ use super::tree::{self, Item};
 use super::{file_items, file_row, lfs_track_item, open_items, permalink_items, row_button};
 use crate::ai::Purpose;
 use crate::git::{Change, State};
-use crate::repo::{Action, DiffSrc, Op, RepoData, RepoTab, Undo, discard_files_op, identity, prompt, sequencer_op, stage_files_op, unstage_files_op};
+use crate::repo::{Action, DiffSrc, Op, RepoData, continue_op, RepoTab, Undo, discard_files_op, identity, prompt, sequencer_op, stage_files_op, unstage_files_op};
 use crate::theme::{self, icon};
 use egui::{Align, Layout, RichText, ScrollArea, TextEdit, Ui};
 use std::collections::HashMap;
@@ -304,7 +304,7 @@ impl RepoTab {
                 ui.horizontal(|ui| {
                     let cont = ui.add_enabled(s.conflicted.is_empty(), egui::Button::new("Continue"));
                     if cont.on_disabled_hover_text(format!("{} file(s) still have unresolved conflicts: resolve them (or mark them resolved) first", s.conflicted.len())).clicked() {
-                        acts.push(Action::Git(Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep)));
+                        acts.push(Action::Git(continue_op(cmd)));
                     }
                     // An empty step (its changes are already in HEAD) can't --continue.
                     // At an `edit` stop the commit is already applied: skip would only discard work.
@@ -393,7 +393,7 @@ impl RepoTab {
             });
             // An untouched template counts as empty.
             let untouched = self.template.as_ref().is_some_and(|t| (&t.summary, &t.body) == (&self.summary, &self.body));
-            if self.amend && !was && (self.summary.is_empty() || untouched) {
+            if self.amend && !was {
                 acts.push(Action::AmendToggled(true));
             } else if was && !self.amend {
                 acts.push(Action::AmendToggled(false));
@@ -530,7 +530,7 @@ impl RepoTab {
                                 let b = ui.add_enabled(has[i], egui::Button::new(&name));
                                 if b.on_disabled_hover_text(format!("{kind}: this side has no version of the file. Open the merge editor to keep or delete it.")).clicked() {
                                     let file = std::fs::symlink_metadata(self.dir.join(&c.path)).map_or(true, |m| m.is_file());
-                                    acts.push(Action::Git(crate::repo::merge_editor::take_side(&name, side, &c.path, file)));
+                                    acts.push(Action::Git(crate::repo::merge_editor::take_side(&name, side, &c.path, file, crate::repo::merge_editor::gitlinks(&crate::git::run(&self.dir, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", &c.path]).unwrap_or_default())[i].clone())));
                                 }
                             }
                             let tool = crate::repo::tools::tool(d, false);

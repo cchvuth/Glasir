@@ -466,6 +466,7 @@ mod tests {
         assert_eq!(d.push_dest("feat", "origin/master"), Some(("origin", "feat")));
         assert_eq!(d.push_dest("develop", "origin/main"), Some(("origin", "develop")));
         assert_eq!(d.push_dest("master", "origin/main"), Some(("origin", "main")));
+        assert_eq!(d.push_dest("main", "origin/trunk"), Some(("origin", "trunk")));
         assert_eq!(d.default_remote(), Some("origin"));
         assert_eq!(d.push_target("feat", "origin/master"), Some(("origin", "feat")));
         sh(&dir, &["config", "remote.pushdefault", "fork"]);

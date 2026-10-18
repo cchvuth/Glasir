@@ -225,7 +225,10 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
                 paths => git::run_input(dir, &a, Some(&paths)),
             },
             ["--literal-pathspecs", "checkout", "--", paths @ ..] => discard_checkout(dir, &a, paths),
-            ["tag", "--sign", "-a", name, ..] => signed_tag(dir, &a, name, op.input.as_deref()),
+            ["tag", "--sign", rest @ ..] if rest.contains(&"-a") => {
+                let at = rest.iter().position(|x| *x == "--").map_or(1, |i| i + 1);
+                signed_tag(dir, &a, rest.get(at).copied().unwrap_or_default(), op.input.as_deref())
+            }
             [super::rebase::ABORT_ANY] => match git::state(&git::git_dir(dir)?) {
                 git::State::Rebasing => git::run(dir, &["rebase", "--abort"]),
                 _ => Ok(String::new()),
@@ -436,6 +439,11 @@ pub fn sequencer_op(cmd: &str, abort: bool) -> Op {
         ("rebase", true) => op.confirm("Abort discards all uncommitted changes (⌘Z restores them)."),
         _ => op,
     }
+}
+
+pub fn continue_op(cmd: &str) -> Op {
+    let op = Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep);
+    if cmd == "rebase" || cmd == "am" { op } else { op.backup(Backup::Paths(vec![])) }
 }
 
 /// `git reset <mode>` of the checked-out branch to commit `id` (commit, branch and tag menus).
@@ -800,6 +808,7 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
             }
             Some(Action::Git(match d.local(local) {
                 Some(l) if l.head => Op::new(format!("Update {local} to {}", r.name), &["merge", "--ff-only", &r.full]).undo(Undo::Keep),
+                Some(l) if l.ahead > 0 && l.behind > 0 => Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep),
                 Some(_) => Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
                 None => Op::new(format!("Checkout {}", r.name), &["checkout", "-b", local, "--track", &r.full, "--"]).undo(Undo::Keep),
             }))
@@ -1150,7 +1159,7 @@ impl RepoTab {
     pub fn commit_op(&self) -> Op {
         let body = message::body(&self.body);
         let mut msg = if body.trim().is_empty() { self.summary.trim().to_owned() } else { format!("{}\n\n{body}", self.summary.trim()) };
-        if let (Some(t), false) = (&self.template, self.amend) {
+        if let Some(t) = &self.template {
             msg = message::strip_comments(&msg, t);
         }
         let msg = message::add_coauthors(&msg, &self.coauthors);
@@ -1168,7 +1177,11 @@ impl RepoTab {
         }
         // Not after an amend: that push would need a force. `poll_op` pushes once it's committed.
         let push = self.push_after && !self.amend && self.push_op(false).is_some();
+        let concludes = self.data.as_ref().is_some_and(|d| matches!(d.state, git::State::Merging | git::State::CherryPicking | git::State::Reverting));
         let mut op = Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
+        if concludes {
+            op = op.undo(Undo::Keep).backup(Backup::Paths(vec![]));
+        }
         if let Some((_, _, head)) = self.amend_prev.as_ref().filter(|_| self.amend) {
             op.cmds.insert(0, vec![super::rebase::HEAD_IS.into(), head.clone()]);
         }
@@ -1192,15 +1205,17 @@ impl RepoTab {
         self.prefill_template();
     }
 
-    /// Amend ticked on an empty box: fetch HEAD's message off the UI thread, remembering what was
-    /// there and which HEAD that is (as loaded).
+    /// Amend ticked: remembers what the box held and which HEAD that is (as loaded); an empty box
+    /// (or the untouched template) gets HEAD's message, fetched off the UI thread.
     pub(super) fn fill_amend(&mut self, ctx: &egui::Context) {
         let Some(s) = self.data.as_ref().map(|d| &d.status) else { return };
         let head = s.head.clone().unwrap_or_default();
         let pin = format!("{} {head}", s.branch.as_deref().map(|b| format!("refs/heads/{b}")).unwrap_or_default());
+        let prev = (self.summary.clone(), self.body.clone());
+        let empty = self.summary.is_empty() || self.template.as_ref().is_some_and(|t| (&t.summary, &t.body) == (&prev.0, &prev.1));
+        self.amend_prev = Some((prev.clone(), if empty { Default::default() } else { prev }, pin));
         let dir = self.dir.clone();
-        self.amend_prev = Some(((self.summary.clone(), self.body.clone()), Default::default(), pin));
-        self.amend_task = Some(super::Task::spawn(ctx, move || git::run(&dir, &["log", "-1", "--format=%B", &head]).ok()));
+        self.amend_task = empty.then(|| super::Task::spawn(ctx, move || git::run(&dir, &["log", "-1", "--format=%B", &head]).ok()));
     }
 
     /// Amend unticked: the message it prefilled goes, unless it was edited.
@@ -1440,6 +1455,90 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn amend_ticked_after_typing_keeps_the_text_and_pins_head() {
+        let dir = scratch("amend-typed");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        sh(&dir, &["branch", "other"]);
+        commit(&dir, "a", "two");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.summary = "typed".into();
+        t.amend = true;
+        t.apply(&ctx, Action::AmendToggled(true));
+        settle(&ctx, &mut t);
+        assert!(t.amend_task.is_none() && t.summary == "typed");
+        sh(&dir, &["checkout", "-q", "other"]);
+        let other = sh(&dir, &["rev-parse", "other"]);
+        let op = t.commit_op();
+        let msgs = run(&ctx, &mut t, Action::Git(op));
+        assert_eq!(sh(&dir, &["rev-parse", "other"]), other);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("changed since")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn amend_strips_the_template_comments() {
+        let dir = scratch("amend-template");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "one");
+        std::fs::write(dir.join(".git/tpl"), "feat: \n\n# explain\n").unwrap();
+        sh(&dir, &["config", "commit.template", ".git/tpl"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        assert_eq!(t.body, "# explain");
+        (t.summary, t.amend) = ("feat: one".into(), true);
+        let op = t.commit_op();
+        run(&ctx, &mut t, Action::Git(op));
+        assert_eq!(sh(&dir, &["log", "--format=%B"]).trim_end(), "feat: one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undoing_a_commit_that_concludes_a_merge_undoes_the_merge() {
+        let dir = scratch("undo-merge-commit");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "theirs\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "ours\n");
+        let before = sh(&dir, &["rev-parse", "HEAD"]);
+        assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.summary = "Merge feat".into();
+        let op = t.commit_op();
+        run(&ctx, &mut t, Action::Git(op));
+        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "HEAD^2"]).is_ok());
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
+        let d = t.data.as_ref().unwrap();
+        assert!(d.state == git::State::Clean && !d.status.is_dirty());
+        run(&ctx, &mut t, Action::Redo);
+        assert_eq!(sh(&dir, &["show", "-s", "--format=%s %p", "HEAD"]).split(' ').count(), 4);
+        sh(&dir, &["reset", "-q", "--hard", before.trim()]);
+        assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        run(&ctx, &mut t, Action::Git(super::continue_op("merge")));
+        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "HEAD^2"]).is_ok());
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), before);
+        let d = t.data.as_ref().unwrap();
+        assert!(d.state == git::State::Clean && !d.status.is_dirty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_parked_plan_comes_back_when_its_rewrite_is_skipped() {
@@ -1471,6 +1570,39 @@ mod tests {
             assert_eq!(sh(&dir, &["log", "--format=%s"]), "three\ntwo\none\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_diverged_twin_is_checked_out_without_a_merge() {
+        let dir = scratch("diverged-twin");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n");
+        sh(&dir, &["branch", "feat"]);
+        sh(&dir, &["checkout", "-q", "feat"]);
+        commit(&dir, "b", "1\n");
+        sh(&dir, &["remote", "add", "origin", "."]);
+        sh(&dir, &["fetch", "-q", "origin"]);
+        sh(&dir, &["branch", "-u", "origin/feat", "feat"]);
+        sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        commit(&dir, "c", "1\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
+        let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
+        assert_eq!(op.cmds, [["checkout", "feat", "--"]]);
+        exec(&dir, &op).unwrap();
+    }
+
+    #[test]
+    fn an_annotated_tag_keeps_markdown_headings_in_its_message() {
+        let dir = scratch("tag-message");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a", "1\n");
+        let op = Op::new("Create tag", &["tag", "-a", "--cleanup=whitespace", "-m", "# v1\n- fix #4\n\n", "--", "v1", "HEAD"]);
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["tag", "-l", "--format=%(contents)", "v1"]), "# v1\n- fix #4\n\n");
     }
 
     /// Double-clicking R/x fast-forwards the local x that tracks it (or nothing). One tracking something else

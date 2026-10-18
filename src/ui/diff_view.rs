@@ -422,8 +422,12 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         return;
     }
     if f.hunks.is_empty() {
+        let has = |p: &str| f.header.iter().any(|h| h.starts_with(p));
         let text = match (mode, ds.opts.ignore_ws) {
             (Some(m), _) => m,
+            _ if has("new file mode") => "Empty file added".into(),
+            _ if has("deleted file mode") => "Empty file deleted".into(),
+            _ if has("rename from") => "Renamed, content unchanged".into(),
             (None, true) => "Only whitespace changed".into(),
             (None, false) => "No changes".into(),
         };

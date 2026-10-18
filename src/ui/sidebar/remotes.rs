@@ -5,7 +5,7 @@ use crate::git;
 use crate::repo::remotes::{self, Form};
 use crate::repo::{Action, RepoData, RepoTab, op, prompt};
 use crate::theme::{self, icon};
-use crate::ui::format::dismissed;
+use crate::ui::format::{dismissed_in, on_top};
 use egui::{Id, Key, RichText, TextEdit};
 
 pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
@@ -53,7 +53,7 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
 /// Add / edit remote: name, fetch URL and an optional separate push URL.
 pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Action>) {
     let (Some(f), Some(d)) = (&mut t.remote_form, &t.data) else { return };
-    let mut done = None;
+    let (mut done, mut name_id) = (None, None);
     egui::Modal::new(Id::new("remote_form")).show(ctx, |ui| {
         ui.set_width(460.0);
         ui.heading(match &f.old {
@@ -64,7 +64,8 @@ pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mu
         egui::Grid::new("remote_form_grid").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
             ui.label("Name");
             let name = ui.add(TextEdit::singleline(&mut f.name).margin(crate::theme::INPUT_MARGIN).hint_text("upstream").desired_width(f32::INFINITY));
-            if f.old.is_none() && ui.memory(|m| m.focused().is_none()) {
+            name_id = f.old.is_none().then_some(name.id);
+            if f.old.is_none() && on_top(ui) && ui.memory(|m| m.focused().is_none()) {
                 name.request_focus();
             }
             ui.end_row();
@@ -89,7 +90,7 @@ pub(in crate::ui) fn form_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mu
             if theme::primary(ui, problem.is_none(), label, 140.0).clicked() || (problem.is_none() && ui.input(|i| i.key_pressed(Key::Enter))) {
                 done = Some(true);
             }
-            if dismissed(ui, "Cancel") {
+            if dismissed_in(ui, "Cancel", name_id) {
                 done = Some(false);
             }
         });

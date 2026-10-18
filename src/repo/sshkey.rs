@@ -80,7 +80,7 @@ pub fn list() -> Vec<KeyInfo> {
             let (p, name) = (e.path(), e.file_name().to_string_lossy().into_owned());
             let public = dir.join(format!("{name}.pub"));
             (!name.ends_with(".pub") && public.is_file() && p.is_file()).then(|| {
-                let out = quiet("ssh-keygen").arg("-lf").arg(&public).output().ok().filter(|o| o.status.success());
+                let out = crate::git::spawn(quiet("ssh-keygen").arg("-lf").arg(&public).stdout(Stdio::piped()).stderr(Stdio::null())).and_then(|c| c.wait_with_output()).ok().filter(|o| o.status.success());
                 let line = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
                 let fingerprint = line.split_once(' ').map_or(line.clone(), |(_, r)| r.to_owned());
                 KeyInfo { path: slashed(&p.to_string_lossy()), name, fingerprint }

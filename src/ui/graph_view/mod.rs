@@ -533,7 +533,7 @@ pub fn show(
                 match commit {
                     None => {
                         let s = &d.status;
-                        let n = s.staged.len() + s.unstaged.len() + s.conflicted.len();
+                        let n = s.changed_count();
                         painter.with_clip_rect(msg_clip).text(
                             pos2(x_msg + 8.0, ty),
                             Align2::LEFT_CENTER,

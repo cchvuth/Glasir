@@ -73,6 +73,13 @@ impl Status {
     pub fn is_dirty(&self) -> bool {
         !(self.staged.is_empty() && self.unstaged.is_empty() && self.conflicted.is_empty())
     }
+
+    pub fn changed_count(&self) -> usize {
+        let mut paths: Vec<&str> = self.staged.iter().chain(&self.unstaged).chain(&self.conflicted).map(|c| c.path.as_str()).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths.len()
+    }
 }
 
 #[derive(Clone, Debug)]

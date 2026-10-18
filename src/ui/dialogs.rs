@@ -2,7 +2,7 @@
 //! branch cleanup, absorb preview, failed-op choices and the branch drop menu. Each reads its
 //! request from the `RepoTab` and pushes the resulting `Action`s.
 
-use crate::ui::format::{dismissed, keys, on_top, plural};
+use crate::ui::format::{dismissed, dismissed_in, keys, on_top, plural};
 use crate::ai;
 use crate::git;
 use crate::repo::{Action, Op, Prompt, RepoTab, Undo};
@@ -32,7 +32,7 @@ pub(super) fn prompt_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec
             if ui.button("OK").clicked() || enter {
                 done = Some(true);
             }
-            if dismissed(ui, "Cancel") {
+            if dismissed_in(ui, "Cancel", p.second.is_none().then_some(first.id)) {
                 done = Some(false);
             }
         });

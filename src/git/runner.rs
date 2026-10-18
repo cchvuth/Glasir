@@ -16,6 +16,7 @@ pub fn cmd(dir: &Path) -> Command {
     c.args(["-c", "log.showSignature=false", "-c", "log.showRoot=true", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false"])
         .args(["-c", "diff.srcPrefix=a/", "-c", "diff.dstPrefix=b/"])
         .args(["-c", "core.quotepath=off", "-c", "color.ui=never", "-c", "color.diff=never"])
+        .args(["-c", "column.ui=never", "-c", "column.branch=never", "-c", "column.tag=never"])
         .args(["-c", "i18n.logOutputEncoding=UTF-8", "-c", "i18n.commitEncoding=UTF-8"])
         .env("LANGUAGE", "en");
     c
@@ -55,6 +56,8 @@ fn base(prog: &str, dir: &Path) -> Command {
         .env_remove("GIT_EDITOR")
         .env_remove("GIT_SEQUENCE_EDITOR")
         .stdin(Stdio::null());
+    #[cfg(test)]
+    c.env("GIT_CONFIG_GLOBAL", std::env::temp_dir().join("glasir-tests-no-global-config")).env("GIT_CONFIG_NOSYSTEM", "1");
     // Credential prompts go through our own askpass window; never block on a TTY.
     if let Ok(exe) = std::env::current_exe() {
         c.env("GIT_ASKPASS", &exe)
@@ -76,6 +79,16 @@ fn base(prog: &str, dir: &Path) -> Command {
         std::os::unix::process::CommandExt::pre_exec(&mut c, || if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
     }
     c
+}
+
+pub fn spawning<T>(f: impl FnOnce() -> T) -> T {
+    static SPAWN: Mutex<()> = Mutex::new(());
+    let _g = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
+pub fn spawn(c: &mut Command) -> std::io::Result<std::process::Child> {
+    spawning(|| c.spawn())
 }
 
 pub fn run(dir: &Path, args: &[&str]) -> Res<String> {
@@ -119,7 +132,7 @@ impl Cancel {
             c.args(["/T", "/F", "/PID", &pid]).creation_flags(0x0800_0000);
         }
         // Off the caller's thread: search cancels on every keystroke, and taskkill is slow.
-        std::thread::spawn(move || c.stdout(Stdio::null()).stderr(Stdio::null()).status());
+        std::thread::spawn(move || spawn(c.stdout(Stdio::null()).stderr(Stdio::null()))?.wait());
     }
 
     fn active() -> Cancel {
@@ -235,7 +248,7 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
     if input.is_some() {
         c.stdin(Stdio::piped());
     }
-    let mut child = c.spawn().map_err(|e| format!("could not run {prog}: {e}"))?;
+    let mut child = spawn(&mut c).map_err(|e| format!("could not run {prog}: {e}"))?;
     if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
         let data = data.to_vec();
         std::thread::spawn(move || stdin.write_all(&data));
@@ -256,9 +269,9 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
     }
     // Background jobs (a shell line's `server &`, a hook's) inherit our pipes: don't wait for them to exit.
     let len = || out.lock().unwrap().len() + err.lock().unwrap().len();
-    let mut seen = len();
+    let (mut seen, until) = (len(), Instant::now() + std::time::Duration::from_secs(2));
     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = ended.recv_timeout(std::time::Duration::from_millis(300)) {
-        if len() == std::mem::replace(&mut seen, len()) {
+        if len() == std::mem::replace(&mut seen, len()) || Instant::now() > until || cancel.is_cancelled() {
             break;
         }
     }
@@ -293,7 +306,7 @@ pub fn stream(dir: &Path, args: &[&str], input: &str, mut each: impl FnMut(&str)
     if !input.is_empty() {
         c.stdin(Stdio::piped());
     }
-    let mut child = c.spawn().map_err(|e| format!("could not run git: {e}"))?;
+    let mut child = spawn(&mut c).map_err(|e| format!("could not run git: {e}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         let data = input.as_bytes().to_vec();
         std::thread::spawn(move || stdin.write_all(&data));
@@ -340,7 +353,7 @@ pub fn stream(dir: &Path, args: &[&str], input: &str, mut each: impl FnMut(&str)
 #[cfg(any(windows, test))]
 fn drop_locks(dir: &Path, since: std::time::SystemTime) {
     use std::path::PathBuf;
-    let Ok(o) = cmd(dir).args(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]).output() else { return };
+    let Ok(o) = spawn(cmd(dir).args(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]).stdout(Stdio::piped()).stderr(Stdio::null())).and_then(|c| c.wait_with_output()) else { return };
     let mut dirs: Vec<(PathBuf, bool)> = String::from_utf8_lossy(&o.stdout).lines().map(|l| (PathBuf::from(l), false)).collect();
     dirs.dedup();
     while let Some((d, refs)) = dirs.pop() {
@@ -494,6 +507,32 @@ mod tests {
         assert_eq!(run_shell(&std::env::temp_dir(), "sleep 3 &").unwrap(), "");
         assert!(t.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(run_shell(&std::env::temp_dir(), "echo hi").unwrap(), "hi\n");
+    }
+
+    #[test]
+    fn tests_never_read_the_users_git_config() {
+        let dir = std::env::temp_dir();
+        for scope in ["--global", "--system"] {
+            assert_eq!(run(&dir, &["config", scope, "--list"]).unwrap_or_default(), "", "{scope}");
+        }
+        assert_eq!(run_shell(&dir, "git config --global --list").unwrap_or_default(), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chatty_background_job_does_not_hold_the_command() {
+        let t = Instant::now();
+        assert!(run_shell(&std::env::temp_dir(), "echo hi; (for i in $(seq 100); do echo x; sleep 0.1; done) &").unwrap().starts_with("hi\n"));
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "{:?}", t.elapsed());
+        let cancel = Cancel::default();
+        let c2 = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            c2.cancel();
+        });
+        let t = Instant::now();
+        let _ = cancel.scope(|| run_shell(&std::env::temp_dir(), "(for i in $(seq 100); do echo x; sleep 0.1; done) &"));
+        assert!(t.elapsed() < std::time::Duration::from_millis(1500), "{:?}", t.elapsed());
     }
 
     #[cfg(unix)]

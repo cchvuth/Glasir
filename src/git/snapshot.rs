@@ -106,6 +106,17 @@ pub fn empty_tree(dir: &Path) -> Res<String> {
     run_input(dir, &["mktree"], Some(b"")).map(|t| t.trim().to_owned())
 }
 
+pub fn index_tree(dir: &Path) -> Res<String> {
+    if !run(dir, &["ls-files", "-u"])?.trim().is_empty() {
+        return Err("Resolve the conflicts first.".into());
+    }
+    let index = super::git_dir(dir)?.join("index");
+    scratch(dir, |tmp| {
+        let _ = std::fs::copy(&index, tmp);
+        on_index(dir, tmp, &["write-tree"], "").map(|t| t.trim().to_owned())
+    })
+}
+
 /// HEAD's commit, or None on an unborn branch.
 pub fn head(dir: &Path) -> Option<String> {
     run(dir, &["rev-parse", "-q", "--verify", "HEAD^{commit}"]).ok().map(|h| h.trim().to_owned())
@@ -420,7 +431,7 @@ fn put_raw(dir: &Path, put: &[(&str, &(u32, String))]) -> Res<()> {
         return Ok(());
     }
     let (start, args) = (std::time::Instant::now(), ["cat-file", "--batch", "--buffer"]);
-    let mut child = super::cmd(dir).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().map_err(|e| format!("could not run git: {e}"))?;
+    let mut child = super::spawn(super::cmd(dir).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())).map_err(|e| format!("could not run git: {e}"))?;
     let (mut stdin, input) = (child.stdin.take().unwrap(), put.iter().map(|(_, (_, o))| format!("{o}\n")).collect::<String>());
     std::thread::spawn(move || stdin.write_all(input.as_bytes()));
     let mut out = std::io::BufReader::new(child.stdout.take().unwrap());

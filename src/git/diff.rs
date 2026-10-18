@@ -336,6 +336,14 @@ fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
     let mut f = FileDiff { header: vec![format!("new file {path}"), "--- /dev/null".into(), format!("+++ {}", b_path(path))], ..Default::default() };
     let meta = std::fs::symlink_metadata(dir.join(path)).map_err(|e| e.to_string())?;
     // Past 8 MB only the start is read (text: the "too big" stand-in, unless asked for), so a huge file isn't loaded.
+    if meta.is_symlink() {
+        let target = std::fs::read_link(dir.join(path)).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
+        f.header.insert(0, "new file mode 120000".into());
+        f.whole_only = true;
+        let lines = vec![Line { kind: b'+', text: target, old: 0, new: 1 }, Line { kind: b'\\', text: " No newline at end of file".into(), old: 0, new: 0 }];
+        f.hunks.push(Hunk { header: "@@ -0,0 +1 @@".into(), old_start: 0, new_start: 1, lines });
+        return Ok(f);
+    }
     let big = meta.len() > 8 << 20 && !o.all;
     let bytes = if !meta.is_file() {
         vec![0]
@@ -396,6 +404,12 @@ mod tests {
         assert!(!all.binary && all.hunks.len() == 1);
         let bin = untracked_diff(&dir, "bin", DiffOpts::default()).unwrap();
         assert!(bin.binary && !bin.lossy);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("target/x", dir.join("ln")).unwrap();
+            let ln = untracked_diff(&dir, "ln", DiffOpts::default()).unwrap();
+            assert!(!ln.binary && ln.hunks[0].lines[0].text == "target/x");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

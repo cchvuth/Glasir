@@ -266,8 +266,12 @@ fn scan(dir: &Path, target: &str, fetch: bool, mut rows: Vec<(Cand, bool)>) -> R
     let failed: HashMap<String, String> = remotes.iter().filter(|_| fetch).filter_map(|r| Some((r.clone(), git::fetch_remote_quiet(dir, r).err()?))).collect();
     let tips = git::run(dir, &["for-each-ref", "--format=%(refname)%1f%(objectname)", "refs/remotes"])?;
     let tips: HashMap<&str, &str> = tips.lines().filter_map(|l| l.split_once('\x1f')).collect();
+    let gone: HashSet<String> = match fetch {
+        true => stale_refs(dir, &remotes.iter().filter(|r| !failed.contains_key(*r)).cloned().collect::<Vec<_>>()).unwrap_or_default().into_iter().map(|s| s.0).collect(),
+        false => HashSet::new(),
+    };
     for (c, _) in &mut rows {
-        let tip = c.remote.as_ref().and_then(|(r, b, _)| tips.get(format!("refs/remotes/{r}/{b}").as_str()));
+        let tip = c.remote.as_ref().and_then(|(r, b, _)| tips.get(format!("refs/remotes/{r}/{b}").as_str()).filter(|_| !gone.contains(&format!("refs/remotes/{r}/{b}"))));
         match (tip, &mut c.remote) {
             (Some(t), Some(x)) => x.2 = t.to_string(),
             _ => c.remote = None,
@@ -713,6 +717,31 @@ mod tests {
         t.apply(&ctx, Action::Redo);
         settle(&ctx, &mut t);
         assert_eq!((heads(), there()), ("main\n".to_owned(), "feat\nmain\n".to_owned()));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remote_branch_already_deleted_is_not_offered() {
+        let root = scratch("cleanup-gone-remote");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "remote.git"]);
+        sh(&root, &["clone", "-q", "remote.git", "a"]);
+        let a = root.join("a");
+        identity(&a);
+        commit(&a, "f.txt", "one\n");
+        sh(&a, &["push", "-q", "-u", "origin", "main"]);
+        sh(&a, &["remote", "set-head", "origin", "main"]);
+        sh(&a, &["push", "-q", "-u", "origin", "main:feat", "main:old"]);
+        sh(&a, &["branch", "-q", "--track", "feat", "origin/feat"]);
+        sh(&a, &["branch", "-q", "--track", "old", "origin/old"]);
+        sh(&root.join("remote.git"), &["branch", "-D", "old"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.cleanup.get_or_insert_default().remote = true;
+        scanned(&ctx, &mut t);
+        let c = t.cleanup.as_ref().unwrap();
+        let dels = c.remote_deletes(90, now());
+        assert_eq!(dels.iter().map(|d| d.1.as_str()).collect::<Vec<_>>(), ["feat"]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

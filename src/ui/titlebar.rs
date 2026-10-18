@@ -1,7 +1,7 @@
 //! Title bar: the repo tabs (drag to move the window, double-click to zoom)
 //! and the global buttons on the right (theme, palette, command log, settings).
 
-use crate::ui::format::{dismissed, keys, on_top};
+use crate::ui::format::{dismissed_in, keys, on_top};
 use super::app::App;
 use super::settings::toggle_flavor;
 use crate::theme::{self, icon};
@@ -196,7 +196,7 @@ impl App {
                 if ui.button("OK").clicked() || (top && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
                     done = Some(true);
                 }
-                if dismissed(ui, "Cancel") {
+                if dismissed_in(ui, "Cancel", Some(field.id)) {
                     done = Some(false);
                 }
             });

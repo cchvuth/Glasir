@@ -341,7 +341,7 @@ fn sig_code(code: &str, raw: impl FnOnce() -> String) -> char {
 
 /// `git verify-tag`: whether the signature is good, and what gpg / ssh-keygen said (on stderr).
 pub fn verify_tag(dir: &Path, full: &str) -> (bool, String) {
-    match cmd(dir).args(["verify-tag", full]).stdin(Stdio::null()).output() {
+    match super::spawn(cmd(dir).args(["verify-tag", full]).stdout(Stdio::null()).stderr(Stdio::piped())).and_then(|c| c.wait_with_output()) {
         Ok(o) => (o.status.success(), String::from_utf8_lossy(&o.stderr).trim().into()),
         Err(e) => (false, e.to_string()),
     }
@@ -399,11 +399,8 @@ pub fn worktrees(dir: &Path) -> Res<Vec<Worktree>> {
 /// Files that would conflict if `other` were merged into HEAD, via an in-memory
 /// `merge-tree` (git ≥ 2.38). `None` when it can't be determined.
 pub fn predict_conflicts(dir: &Path, other: &str) -> Option<Vec<String>> {
-    let out = cmd(dir)
-        .args(["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "HEAD", other])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
+    let out = super::spawn(cmd(dir).args(["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", "HEAD", other]).stdout(Stdio::piped()).stderr(Stdio::null()))
+        .and_then(|c| c.wait_with_output())
         .ok()?;
     match out.status.code() {
         Some(0) => Some(vec![]),
@@ -422,7 +419,7 @@ pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &s
     let wt = to == WORKTREE;
     let base = match three_dot && !wt {
         true => run(dir, &["merge-base", from, to])?,
-        false => match run(dir, &["rev-parse", "-q", "--verify", from]) {
+        false => match run(dir, &["rev-parse", "-q", "--verify", &format!("{from}^{{commit}}")]) {
             // The root commit's `^`: compare against the empty tree.
             Err(_) if from.ends_with('^') => super::run_input(dir, &["hash-object", "-t", "tree", "--stdin"], Some(b""))?,
             r => r?,
@@ -432,7 +429,7 @@ pub fn compare_info(dir: &Path, from: &str, to: &str, three_dot: bool, label: &s
     let (to_id, out) = match wt {
         true => (to.to_owned(), run(dir, &["diff", "-z", "--name-status", "-M", &base])?),
         false => {
-            let id = run(dir, &["rev-parse", to])?.trim().to_owned();
+            let id = run(dir, &["rev-parse", &format!("{to}^{{commit}}")])?.trim().to_owned();
             let out = run(dir, &["diff-tree", "-r", "-z", "--name-status", "-M", &base, &id])?;
             (id, out)
         }
@@ -574,7 +571,7 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
 
     #[test]
     fn compare_info_lists_branch_changes() {
-        let dir = std::env::temp_dir().join(format!("glasir-compare-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("glasir-read-compare-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let g = |args: &[&str]| run(&dir, args).unwrap();
@@ -601,6 +598,8 @@ u UU N... 100644 100644 100644 100644 a b c conf.rs\0? new file.txt\0";
         // Annotated tag messages ride along with the refs; lightweight tags and branches have none.
         g(&["tag", "-a", "v1", "-m", "Release one\n\nWith notes", "main"]);
         g(&["tag", "light", "main"]);
+        let info = compare_info(&dir, "v1", "feat", false, "label").unwrap();
+        assert_eq!(info.parents[0], g(&["rev-parse", "main"]).trim());
         let refs = refs(&dir).unwrap();
         let msg = |n: &str| refs.iter().find(|r| r.name == n).map(|r| r.message.clone()).unwrap();
         assert_eq!((msg("v1").as_str(), msg("light").as_str(), msg("main").as_str()), ("Release one\n\nWith notes", "", ""));

@@ -19,7 +19,11 @@ pub fn on_top(ui: &egui::Ui) -> bool {
 }
 
 pub fn dismissed(ui: &mut egui::Ui, label: &str) -> bool {
-    ui.button(label).clicked() || (on_top(ui) && nothing_was_focused(ui.ctx()) && ui.input(|i| i.key_pressed(egui::Key::Escape)))
+    dismissed_in(ui, label, None)
+}
+
+pub fn dismissed_in(ui: &mut egui::Ui, label: &str, field: Option<egui::Id>) -> bool {
+    ui.button(label).clicked() || (on_top(ui) && ui.input(|i| i.key_pressed(egui::Key::Escape)) && (nothing_focused_here(ui) || field.is_some_and(|f| ui.memory(|m| m.had_focus_last_frame(f)))))
 }
 
 pub fn modal_open(ctx: &egui::Context) -> bool {
@@ -32,8 +36,16 @@ pub fn note_focus(ctx: &egui::Context) {
 }
 
 pub fn nothing_was_focused(ctx: &egui::Context) -> bool {
+    focused_last_frame(ctx).is_none()
+}
+
+fn focused_last_frame(ctx: &egui::Context) -> Option<egui::Id> {
     let last = ctx.data(|d| d.get_temp::<Option<egui::Id>>(egui::Id::new("focus_last_frame"))).flatten();
-    last.is_none_or(|id| !ctx.memory(|m| m.had_focus_last_frame(id)))
+    last.filter(|id| ctx.memory(|m| m.had_focus_last_frame(*id)))
+}
+
+fn nothing_focused_here(ui: &egui::Ui) -> bool {
+    focused_last_frame(ui.ctx()).is_none_or(|id| ui.ctx().read_response(id).is_none_or(|r| r.layer_id != ui.layer_id()))
 }
 
 pub fn view_key(ui: &egui::Ui, key: egui::Key) -> bool {

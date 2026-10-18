@@ -93,7 +93,8 @@ pub(super) fn pick_new(dir: &Path, a: &[&str]) -> Res<String> {
     for id in &a[1..] {
         let reachable = git::run(dir, &["merge-base", "--is-ancestor", id, "HEAD"]).is_ok();
         // `-` = a commit with the same patch is in HEAD.
-        let dup = !reachable && git::run(dir, &["cherry", "HEAD", id, &format!("{id}^")]).is_ok_and(|o| o.trim_start().starts_with('-'));
+        let merge = git::run(dir, &["rev-parse", "--verify", "-q", &format!("{id}^2")]).is_ok();
+        let dup = !reachable && !merge && git::run(dir, &["cherry", "HEAD", id, &format!("{id}^")]).is_ok_and(|o| o.trim_start().starts_with('-'));
         if reachable || dup {
             let line = git::run(dir, &["show", "-s", "--format=%h %s", id]).unwrap_or_default();
             seen.push(format!("  •  {}{}", line.trim(), if reachable { " (already in its history)" } else { "" }));
@@ -142,6 +143,19 @@ mod tests {
         commit(&dir, "diverge", "d\n");
         let e = exec(&dir, &merge_op("feat", "feat", Some(Merge::FfOnly))).unwrap_err();
         assert!(e.contains("fast-forward"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_pick_ignores_patch_copies_of_its_side_commits() {
+        let dir = repo("merge-pick-new");
+        sh(&dir, &["checkout", "-q", "-b", "other", "main"]);
+        commit(&dir, "o", "o\n");
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "M", "feat"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["cherry-pick", "feat~1"]);
+        pick_new(&dir, &[PICK_NEW, "feat~1"]).unwrap_err();
+        pick_new(&dir, &[PICK_NEW, "other"]).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

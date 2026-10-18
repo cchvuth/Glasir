@@ -56,7 +56,7 @@ pub(super) fn record(dir: &Path, prog: &str, args: &[&str], start: Instant, code
         eprintln!("perf: {} ms  {}", entry.ms, entry.shell());
     }
     let mut log = LOG.lock().unwrap();
-    if log.len() >= 500 {
+    if log.len() >= 500 && !cfg!(test) {
         log.pop_front();
     }
     log.push_back(entry);

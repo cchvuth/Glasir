@@ -175,6 +175,7 @@ pub(crate) struct Loaded {
     pub(crate) file: bool,
     /// The index has a current, incoming version (false: that side deleted the file).
     pub(crate) stages: [bool; 2],
+    pub(crate) links: [Option<String>; 2],
     /// Conflict marker length.
     pub(crate) size: usize,
     /// Current, incoming.
@@ -287,6 +288,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
     let unmerged = git::run(dir, &["--literal-pathspecs", "ls-files", "-u", "-z", "--", path]).unwrap_or_default();
     let has = |n: &str| unmerged.is_empty() || unmerged.split('\0').any(|e| e.split_once('\t').is_some_and(|(m, _)| m.ends_with(n)));
     let stages = [has(" 2"), has(" 3")];
+    let links = gitlinks(&unmerged);
     let size = marker_size(dir, path);
     let mut whole = match (&meta, &text) {
         // git leaves the modified version in the tree: it has no markers to edit.
@@ -322,7 +324,7 @@ fn load(dir: &Path, path: &str) -> Loaded {
         whole = Some("No conflict markers found in this file.");
     }
     let file = meta.as_ref().map_or(true, |m| m.is_file());
-    Loaded { original, text: decoded, whole, stages, file, size, labels: labels(dir), orig, sides, width }
+    Loaded { original, text: decoded, whole, stages, links, file, size, labels: labels(dir), orig, sides, width }
 }
 
 /// Writes the resolved file, refusing symlinks and files changed since they were loaded.
@@ -333,6 +335,9 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
     }
     if std::fs::read(&p).map_err(|e| format!("{path}: {e}"))? != original {
         return Err(format!("{path} changed on disk since it was read here. Open it again and resolve it from there."));
+    }
+    if new_stray(original, output, marker_size(dir, path)) {
+        return Err(format!("{path} has a conflict marker line outside a complete conflict; remove it before saving."));
     }
     // A file that isn't UTF-8 is written back byte for byte (see `decode`).
     let bytes = if std::str::from_utf8(original).is_ok() { output.as_bytes().to_vec() } else { output.chars().map(|c| u8::try_from(c as u32).map_err(|_| format!("{path} is not UTF-8 and the output has {c:?}, which it can't hold."))).collect::<Res<_>>()? };
@@ -345,14 +350,17 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
 pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> Res<Op> {
     let out = like(original, reply)?;
     let n = marker_size(dir, path);
-    // Every marker line the reply keeps must be one the file already had outside its conflicts.
-    let mut had = stray(&decode(original), n);
-    let new = stray(&out, n).into_iter().any(|l| had.iter().position(|h| *h == l).map(|i| had.swap_remove(i)).is_none());
-    if conflicts(&parse(&out, n)).next().is_some() || new {
+    if conflicts(&parse(&out, n)).next().is_some() || new_stray(original, &out, n) {
         return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
     }
     save(dir, path, original, &out)?;
     Ok(stage(path))
+}
+
+/// Whether `out` has a marker line outside its conflicts that `original` didn't already have there.
+fn new_stray(original: &[u8], out: &str, n: usize) -> bool {
+    let mut had = stray(&decode(original), n);
+    stray(out, n).into_iter().any(|l| had.iter().position(|h| *h == l).map(|i| had.swap_remove(i)).is_none())
 }
 
 /// Marker lines outside well-formed conflict blocks.
@@ -416,13 +424,27 @@ pub(crate) fn whole_ops(path: &str, d: &Loaded) -> [Op; 2] {
         } else if gone {
             Op::new("Keep file", &["--literal-pathspecs", "add", "--", path]).light()
         } else {
-            take_side(name, side, path, d.file)
+            take_side(name, side, path, d.file, d.links[i].clone())
         }
     })
 }
 
-/// `checkout --ours|--theirs` and stage.
-pub fn take_side(name: &str, side: &str, path: &str, file: bool) -> Op {
+pub(crate) fn gitlinks(unmerged: &str) -> [Option<String>; 2] {
+    let at = |n: &str| {
+        unmerged.split('\0').find_map(|e| {
+            let (m, _) = e.split_once('\t')?;
+            let f: Vec<&str> = m.split(' ').collect();
+            (f.len() == 3 && f[0] == "160000" && f[2] == n).then(|| f[1].to_owned())
+        })
+    };
+    [at("2"), at("3")]
+}
+
+/// `checkout --ours|--theirs` and stage; a submodule (`link`: its chosen commit) is pointed at that commit.
+pub fn take_side(name: &str, side: &str, path: &str, file: bool, link: Option<String>) -> Op {
+    if let Some(oid) = link {
+        return Op::new(name, &["--literal-pathspecs", "update-index", "--cacheinfo", &format!("160000,{oid},{path}")]).light();
+    }
     overwrites(Op::new(name, &["--literal-pathspecs", "checkout", side, "--", path]).then(&["--literal-pathspecs", "add", "--", path]).light(), path, file)
 }
 
@@ -835,6 +857,7 @@ mod tests {
         ed.fill("resolved by Claude");
         assert_eq!((ed.output.as_str(), ed.orig_of.len()), ("resolved by Claude\n", 0));
 
+        assert!(save(&dir, "f.txt", &d.original, "a\n<<<<<<< HEAD\nx\n=======\n").unwrap_err().contains("outside a complete conflict"));
         // Edits made elsewhere since loading are never overwritten; symlinks are refused.
         std::fs::write(dir.join("f.txt"), "changed\n").unwrap();
         assert!(save(&dir, "f.txt", &d.original, &out).unwrap_err().contains("changed on disk"));
@@ -1014,5 +1037,44 @@ mod tests {
             assert!(whole_ops("l", &d).iter().all(|op| op.confirm.is_some()));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn submodule_conflict_takes_the_chosen_commit() {
+        use crate::repo::testutil::*;
+        let up = scratch("submodule-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "f", "base\n");
+        let dir = scratch("submodule-conflict");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "r", "r\n");
+        sh(&dir, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", up.to_str().unwrap(), "sub"]);
+        sh(&dir, &["commit", "-qm", "sub"]);
+        let sub = dir.join("sub");
+        identity(&sub);
+        let head = |m: &str| {
+            sh(&sub, &["commit", "-q", "--allow-empty", "-m", m]);
+            sh(&sub, &["rev-parse", "HEAD"]).trim().to_owned()
+        };
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        sh(&sub, &["checkout", "-q", "--detach"]);
+        let theirs = head("x");
+        sh(&dir, &["commit", "-qam", "x"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&sub, &["checkout", "-q", "main"]);
+        let ours = head("main");
+        sh(&dir, &["commit", "-qam", "main"]);
+        assert!(git::run(&dir, &["merge", "x"]).is_err());
+        let d = load(&dir, "sub");
+        assert_eq!(d.links, [Some(ours.clone()), Some(theirs.clone())]);
+        let run = |op: &Op| op.cmds.iter().for_each(|c| _ = sh(&dir, &c.iter().map(String::as_str).collect::<Vec<_>>()));
+        let [_, inc] = whole_ops("sub", &d);
+        run(&inc);
+        assert_eq!(sh(&dir, &["ls-files", "-s", "sub"]).split(' ').nth(1), Some(theirs.as_str()));
+        assert!(git::status(&dir).unwrap().conflicted.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
     }
 }

@@ -170,7 +170,7 @@ mod keychain {
     const SECURITY: &str = "/usr/bin/security";
 
     pub fn get(service: &str, account: &str) -> Option<String> {
-        let o = Command::new(SECURITY).args(["find-generic-password", "-s", service, "-a", account, "-w"]).stderr(Stdio::null()).output().ok()?;
+        let o = crate::git::spawn(Command::new(SECURITY).args(["find-generic-password", "-s", service, "-a", account, "-w"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())).and_then(|c| c.wait_with_output()).ok()?;
         let t = String::from_utf8(o.stdout).ok()?.trim().to_owned();
         (o.status.success() && !t.is_empty()).then_some(t)
     }
@@ -181,7 +181,7 @@ mod keychain {
         }
         delete(service, account)?; // a fresh item, owned by `security`
         // The secret goes over stdin (`security -i`), never on a command line.
-        let mut c = Command::new(SECURITY).arg("-i").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+        let mut c = crate::git::spawn(Command::new(SECURITY).arg("-i").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped())).map_err(|e| e.to_string())?;
         let cmd = format!("add-generic-password -s {service} -a {account} -w \"{}\"\n", token.replace('\\', "\\\\").replace('"', "\\\""));
         c.stdin.take().ok_or("no stdin")?.write_all(cmd.as_bytes()).map_err(|e| e.to_string())?;
         let o = c.wait_with_output().map_err(|e| e.to_string())?;
@@ -193,7 +193,7 @@ mod keychain {
     }
 
     pub fn delete(service: &str, account: &str) -> Result<(), String> {
-        let o = Command::new(SECURITY).args(["delete-generic-password", "-s", service, "-a", account]).output().map_err(|e| e.to_string())?;
+        let o = crate::git::spawn(Command::new(SECURITY).args(["delete-generic-password", "-s", service, "-a", account]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())).and_then(|c| c.wait_with_output()).map_err(|e| e.to_string())?;
         // 44: no such item.
         match o.status.code() {
             Some(0 | 44) => Ok(()),
