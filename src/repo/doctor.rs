@@ -4,7 +4,7 @@
 use super::Task;
 use super::sshkey::{KeyInfo, is_ssh};
 use crate::git;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct Report {
     /// The remote URL with any credentials hidden (shown and copied).
@@ -129,9 +129,9 @@ impl Doctor {
         }
     }
 
-    pub fn test(&mut self, ctx: &egui::Context, key: Option<String>, url: String) {
+    pub fn test(&mut self, ctx: &egui::Context, dir: PathBuf, key: Option<String>, url: String) {
         self.tested = None;
-        self.testing = Some(Task::spawn(ctx, move || super::sshkey::test(key.as_deref(), &url)));
+        self.testing = Some(Task::spawn(ctx, move || super::sshkey::test(&dir, key.as_deref(), &url)));
     }
 }
 

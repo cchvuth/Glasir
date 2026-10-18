@@ -48,7 +48,7 @@ pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt}
 pub use data::{RepoData, View};
 pub use diff::{DiffState, patch_op};
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_all_op, unstage_files_op, unstage_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, remove_worktree_op, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_all_op, unstage_files_op, unstage_op};
 pub use msgedit::MsgEdit;
 pub use search::{MAX_HITS, Search};
 pub use task::Task;
@@ -395,11 +395,10 @@ impl RepoTab {
         }
         if let Some((_, rx)) = &self.watcher {
             let now = ctx.input(|i| i.time);
-            let ours = self.running.is_some() || self.load.is_some();
             for c in rx.try_iter() {
-                // An index write during an op or its reload is our own: the op's reload already shows it.
-                // A worktree edit may land after that reload's `git status`: kept for after it.
-                if ours && c == watch::Change::Index {
+                // An index write during an op is our own: the op's reload shows it. Plain loads never
+                // write the index, so one during them is external and may follow their `git status`.
+                if self.running.is_some() && c == watch::Change::Index {
                     continue;
                 }
                 self.changed = Some((self.changed.is_some_and(|c| c.0) || c == watch::Change::Refs, now));
@@ -862,7 +861,7 @@ impl RepoTab {
                     _ => None,
                 };
                 if let (Some(d), Some(url)) = (&mut self.doctor, url) {
-                    d.test(ctx, key, url);
+                    d.test(ctx, self.dir.clone(), key, url);
                 }
             }
             Action::Patch { ids, save } => self.export_patch(ctx, ids, save),
@@ -1141,6 +1140,13 @@ mod tests {
         t.watcher = Some((notify::recommended_watcher(|_| {}).unwrap(), rx));
         t.watcher_task = None;
         t.reload(&ctx, false);
+        tx.send(watch::Change::Index).unwrap();
+        t.poll(&ctx, &mut vec![]);
+        assert!(t.changed.is_some_and(|c| !c.0), "an external `git add` during a reload was dropped");
+        settle(&ctx, &mut t);
+        identity(&dir);
+        t.apply(&ctx, Action::Git(Op::new("Commit", &["commit", "-q", "--allow-empty", "-m", "c"]).undo(Undo::Soft)));
+        t.changed = None;
         tx.send(watch::Change::Index).unwrap();
         t.poll(&ctx, &mut vec![]);
         assert!(t.changed.is_none(), "our own index write");

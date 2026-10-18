@@ -184,13 +184,14 @@ impl Plan {
             let file = git_dir.join(format!("glasir-absorb-{k}.patch"));
             std::fs::write(&file, patch).map_err(|e| e.to_string())?;
             let file = file.to_string_lossy();
+            let no_hooks = super::rebase::no_hooks(git_dir);
             if k > 0 {
                 op = op.then(&["read-tree", "--reset", &self.head]);
             }
             op = op
                 .then(&["apply", "--cached", "--unidiff-zero", "--whitespace=nowarn", &file])
                 // `fixup! <sha>`: `--fixup` writes the subject, which autosquash matches to the oldest commit with it.
-                .then(&["-c", super::rebase::NO_HOOKS, "commit", "-q", "--no-verify", "-m", &format!("fixup! {}", self.cands[t].0)]);
+                .then(&["-c", &no_hooks, "commit", "-q", "--no-verify", "-m", &format!("fixup! {}", self.cands[t].0)]);
         }
         // No commutation check beyond adjacent lines. A failure (a conflicting autosquash)
         // rolls everything back: leftovers' staged versions may exist only in `self.index`.

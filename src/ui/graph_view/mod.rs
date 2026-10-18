@@ -306,7 +306,7 @@ pub fn show(
                     acts.extend(checkout_action(d, c));
                 }
                 // Dropping a branch onto a row targets that row's branch.
-                if let Some(dst) = commit.and_then(|c| d.refs_at.get(&c.id)).and_then(|v| v.iter().map(|&i| &d.refs[i]).find(|r| r.kind != RefKind::Tag)) {
+                if let Some(dst) = commit.and_then(|c| d.refs_at.get(&c.id)).and_then(|v| v.iter().map(|&i| &d.refs[i]).filter(|r| r.kind != RefKind::Tag).min_by_key(|r| (!(r.head && r.kind == RefKind::Local), r.kind != RefKind::Local))) {
                     if resp.dnd_hover_payload::<BranchDrag>().is_some_and(|p| p.1 != dst.full) {
                         ui.painter().rect_stroke(rect.shrink2(vec2(2.0, 1.5)), 9.0, Stroke::new(2.0, theme::accent()), egui::StrokeKind::Inside);
                     }
@@ -334,7 +334,7 @@ pub fn show(
                 theme::context_menu(&resp, |ui| match commit {
                     Some(_) if in_multi && multi.len() > 1 => multi_menu(ui, all, d, multi, acts),
                     Some(c) => commit_menu(ui, all, c, on_branch(ui, all, search, &c.id), acts),
-                    None => wip_menu(ui, acts),
+                    None => wip_menu(ui, all.state, acts),
                 });
             }
             let _ = hovered;

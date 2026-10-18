@@ -254,10 +254,10 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
         let (mut moved, mut merges): (Vec<(&str, &str)>, Vec<String>) = (vec![], vec![]);
         for e in &edges {
             // Not built on `base` any more: not this stack's to move.
-            if !needs(e, &moved) || git::run(dir, &["merge-base", "--is-ancestor", e[3], e[0]]).is_err() {
+            if !needs(e, &moved) || git::run(dir, &["merge-base", "--is-ancestor", e[3], &format!("refs/heads/{}", e[0])]).is_err() {
                 continue;
             }
-            if git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{}..{}", e[3], e[0])]).is_ok_and(|m| !m.trim().is_empty()) {
+            if git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{}..refs/heads/{}", e[3], e[0])]).is_ok_and(|m| !m.trim().is_empty()) {
                 merges.push(format!("{} has merge commits, so it wasn't restacked onto {}; rebase it yourself.", e[0], e[1]));
                 continue;
             }
@@ -483,14 +483,26 @@ mod tests {
 
     #[test]
     fn restack_skips_a_child_with_merges() {
-        let dir = stack_repo("stack-merges");
+        restack_merges("stack-merges", false);
+    }
+
+    #[test]
+    fn restack_skips_a_child_with_merges_despite_a_same_named_tag() {
+        restack_merges("stack-merges-tag", true);
+    }
+
+    fn restack_merges(name: &str, tag: bool) {
+        let dir = stack_repo(name);
         sh(&dir, &["branch", "-q", "-D", "c"]);
         sh(&dir, &["checkout", "-q", "main"]);
         commit(&dir, "m1", "m1\n");
         sh(&dir, &["checkout", "-q", "b"]);
         sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge main", "main"]);
+        if tag {
+            sh(&dir, &["tag", "b", "a"]);
+        }
         sh(&dir, &["checkout", "-q", "a"]);
-        let b = sh(&dir, &["rev-parse", "b"]);
+        let b = sh(&dir, &["rev-parse", "refs/heads/b"]);
         std::fs::write(dir.join("a2"), "a2\n").unwrap();
         sh(&dir, &["add", "a2"]);
         let ctx = egui::Context::default();
@@ -501,7 +513,7 @@ mod tests {
         t.apply(&ctx, Action::Git(t.commit_op()));
         let msgs = settle(&ctx, &mut t);
         assert!(msgs.iter().any(|m| m.text.contains("b has merge commits")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
-        assert_eq!(sh(&dir, &["rev-parse", "b"]), b);
+        assert_eq!(sh(&dir, &["rev-parse", "refs/heads/b"]), b);
         assert_eq!(subjects(&dir, "a"), "a2 a base m0");
         let _ = std::fs::remove_dir_all(&dir);
     }

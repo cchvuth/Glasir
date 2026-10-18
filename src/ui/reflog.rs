@@ -23,7 +23,7 @@ fn action_color(action: &str) -> Color32 {
 fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action>) {
     let short = &e.id[..e.id.len().min(7)];
     if theme::pill(ui, format!("{}  Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at this commit; your checkout stays as it is").clicked() {
-        acts.push(prompt(format!("New branch at {short}"), "", Op::new("Create branch", &["branch", "{}", &e.id]).undo(Undo::Keep)));
+        acts.push(prompt(format!("New branch at {short}"), "", Op::new("Create branch", &["branch", "--", "{}", &e.id]).undo(Undo::Keep)));
     }
     if let Some(head) = d.status.branch.as_deref().filter(|_| d.status.head.as_deref() != Some(&e.id)) {
         // The branch name goes in the hover text: a long one would push the other buttons off-screen.

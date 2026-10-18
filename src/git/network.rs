@@ -20,10 +20,14 @@ fn batch_ssh(ssh: &str, variant: &str) -> String {
 /// A git command that can never prompt (no askpass, no terminal, ssh in batch
 /// mode), so missing credentials fail fast instead of hanging or popping up a window.
 fn quiet(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Res<String> {
+    quiet_ssh(dir, args, input, None)
+}
+
+fn quiet_ssh(dir: &Path, args: &[&str], input: Option<&[u8]>, ssh_override: Option<&str>) -> Res<String> {
     let cfg = |k: &str| run(dir, &["config", "--get", k]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
     let env = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
     // git's own precedence: GIT_SSH_COMMAND > core.sshCommand > GIT_SSH.
-    let ssh = env("GIT_SSH_COMMAND").or_else(|| cfg("core.sshCommand")).or_else(|| env("GIT_SSH").map(|p| shell_quote(&p)));
+    let ssh = ssh_override.map(str::to_owned).or_else(|| env("GIT_SSH_COMMAND")).or_else(|| cfg("core.sshCommand")).or_else(|| env("GIT_SSH").map(|p| shell_quote(&p)));
     let variant = env("GIT_SSH_VARIANT").or_else(|| cfg("ssh.variant")).unwrap_or_default();
     let mut c = cmd(dir);
     for k in ["GIT_ASKPASS", "SSH_ASKPASS", "GLASIR_ASKPASS", "GIT_SSH"] {
@@ -94,6 +98,10 @@ pub fn fetch_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
 /// Talks to `remote` the way the background fetch does (never prompting): its HEAD.
 pub fn ls_remote_quiet(dir: &Path, remote: &str) -> Res<String> {
     quiet(dir, &["ls-remote", remote, "HEAD"], None)
+}
+
+pub fn ls_remote_via(dir: &Path, url: &str, ssh: Option<&str>) -> Res<String> {
+    quiet_ssh(dir, &["ls-remote", url, "HEAD"], None, ssh)
 }
 
 /// The token (password) git's credential helper holds for `https://<host>`, without
@@ -167,16 +175,18 @@ pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) ->
     let top = || Cancel::default().scope(|| run(dir, &["rev-parse", "-q", "--verify", "refs/stash"])).unwrap_or_default();
     let before = top();
     let pushed = run(dir, &["stash", "push", "-u", "-m", msg]);
-    if top() == before {
+    let mine = top();
+    if mine == before {
         return pushed.and_then(|_| f()); // nothing was stashed: never pop someone else's entry
     }
     let failed = pushed.is_err();
     let res = pushed.and_then(|_| f());
     // Outside any cancel scope: a cancelled op must still give the changes back.
     let pop = Cancel::default().scope(|| {
-        run(dir, &["stash", "pop", "--index"]).or_else(|e| {
+        let name = super::stashes(dir)?.into_iter().find(|s| s.id == mine.trim()).ok_or("The stash holding your changes is gone from the stash list.")?.name;
+        run(dir, &["stash", "pop", "--index", &name]).or_else(|e| {
             // Staged changes that don't fit the new HEAD come back unstaged.
-            if e.contains("--index") { run(dir, &["stash", "pop"]) } else { Err(e) }
+            if e.contains("--index") { run(dir, &["stash", "pop", &name]) } else { Err(e) }
         })
     });
     match (res, pop) {
@@ -290,6 +300,33 @@ mod tests {
         let fills: Vec<_> = log.iter().filter(|l| l.cwd == dir && l.args.iter().any(|a| a == "fill")).collect();
         assert!(!fills.is_empty() && !fills.iter().any(|l| l.stderr.contains("tok-123")));
         drop(log);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autostash_pops_its_own_stash() {
+        let dir = std::env::temp_dir().join(format!("glasir-autostash-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "T"]);
+        g(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("f"), "one\n").unwrap();
+        std::fs::write(dir.join("g"), "one\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join("f"), "mine\n").unwrap();
+        let res = with_autostash(&dir, "auto", || {
+            std::fs::write(dir.join("g"), "theirs\n").unwrap();
+            g(&["stash", "push", "-q", "-m", "other"]);
+            Ok(String::new())
+        });
+        assert!(res.is_ok(), "{res:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "mine\n");
+        assert_eq!(std::fs::read_to_string(dir.join("g")).unwrap(), "one\n");
+        assert!(g(&["stash", "list"]).contains("other"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

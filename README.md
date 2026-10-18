@@ -216,10 +216,10 @@ The name fits a Git client:
 - **Per-repository SSH key**: in the connection check, pick one of your `~/.ssh` keys
   (with its fingerprint), browse for another or go back to the default; stored as the
   repo-local `core.sshCommand` (⌘Z restores it, a custom command asks first), with a
-  non-prompting **Test connection**. Open it from a remote's right-click menu (**SSH key…**),
+  non-prompting **Test connection** (through git, so it uses the same ssh and agent as a fetch). Open it from a remote's right-click menu (**SSH key…**),
   ⌘P, or the toolbar when a fetch is refused.
 - Push goes to the branch's upstream even under another name; a branch started
-  from `origin/main` gets its own remote branch instead.
+  from `origin/main` (`develop` included) gets its own remote branch instead.
 
 ### GitHub and GitHub Enterprise (no API, no token)
 - Open the repository, branch or commit page; copy commit links.
@@ -253,7 +253,7 @@ The name fits a Git client:
 - **Worktrees**: list with change counts and lock state, create (new or existing
   branch), switch in place (the commit message draft and ⌘Z steps stay with each
   worktree) or open in a new tab, lock / unlock, remove (with force / with its
-  branch), prune.
+  branch; a detached one's commit is kept under a backup ref), prune (asks first).
 - **Stashes**: stash all (with your own message, or git's default), staged only,
   a single file (right-click it in the WIP lists), or with an AI-written message;
   ⌘Z pops a fresh stash back. Apply and pop bring staged changes back staged

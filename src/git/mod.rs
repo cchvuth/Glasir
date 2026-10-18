@@ -32,7 +32,7 @@ pub fn short_ref(r: &str) -> &str {
     ["refs/heads/", "refs/remotes/", "refs/tags/"].iter().find_map(|p| r.strip_prefix(p)).unwrap_or(r)
 }
 
-pub use network::{credential_token, diagnose, fetch_failure, fetch_quiet, fetch_remote_quiet, ls_remote_quiet, tracking, with_autostash};
+pub use network::{credential_token, diagnose, fetch_failure, fetch_quiet, fetch_remote_quiet, ls_remote_quiet, ls_remote_via, tracking, with_autostash};
 pub use read::{DATE_FORMAT, LOG_FORMAT, WORKTREE, author, coauthor_line, commit_info, compare_info, config, conflict_kind, git_dir, log, numstat, parse_log, predict_conflicts, refs, remotes, stash_info, stashes, state, status, verify_tag, worktrees};
 pub use reflog::{ReflogEntry, reflog};
 pub use runner::{CANCELLED, Cancel, cmd, exec, progress_label, run, run_input, run_raw, run_shell, run_stderr, run_tool, stream};

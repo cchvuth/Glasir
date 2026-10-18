@@ -310,6 +310,17 @@ pub(super) fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
     m.into_iter().cloned().chain((a.head != b.head).then(|| "HEAD".to_owned())).collect()
 }
 
+pub(super) fn own(op: &Op, before: &Snapshot, mut after: Snapshot) -> Snapshot {
+    let text = op.cmds.iter().flatten().fold(String::from_utf8_lossy(op.input.as_deref().unwrap_or_default()).into_owned(), |t, a| t + "\n" + a);
+    let names: HashSet<&str> = text.split(|c: char| c.is_whitespace() || c == ':' || c == '=').map(|t| t.trim_matches(['+', '"', '\''])).collect();
+    let head = after.head.clone();
+    after.refs.retain(|r, _| {
+        let short = r.strip_prefix("refs/heads/").or_else(|| r.strip_prefix("refs/tags/")).unwrap_or(r);
+        before.refs.contains_key(r) || *r == before.head || *r == head || names.contains(r.as_str()) || names.contains(short)
+    });
+    after
+}
+
 /// One undo or redo: `refs` (from, to, mode) move if each ref they move is still at either
 /// side (and HEAD is still on the branch a soft or mixed one moves), then `legs` (from, to,
 /// scope) apply in order. Files go first and refs last, in one transaction: a failure leaves
@@ -1018,6 +1029,31 @@ mod tests {
         assert!(!dir.join("new/b.txt").exists());
         undo_files(&dir, &f).unwrap();
         assert_eq!((read(&dir, "a.txt"), read(&dir, "new/b.txt")), (Some("edited\n".into()), Some("fresh\n".into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_keeps_refs_made_elsewhere_while_the_op_ran() {
+        let dir = repo("undo-elsewhere");
+        let hooks = dir.join(".git/hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        std::fs::write(hooks.join("pre-commit"), "#!/bin/sh\ntouch .git/started\nwhile [ ! -f .git/go ]; do sleep 0.05; done\n").unwrap();
+        #[cfg(unix)]
+        chmod(&dir, ".git/hooks/pre-commit", 0o755);
+        std::fs::write(dir.join("keep"), "second\n").unwrap();
+        sh(&dir, &["add", "keep"]);
+        let (ctx, mut t) = tab(&dir);
+        let first = rev(&dir, "HEAD");
+        t.summary = "second".into();
+        t.run(&ctx, t.commit_op());
+        super::super::testutil::wait_for("the hook", || dir.join(".git/started").exists());
+        sh(&dir, &["tag", "-a", "v1", "-m", "elsewhere"]);
+        sh(&dir, &["branch", "foo"]);
+        std::fs::write(dir.join(".git/go"), "").unwrap();
+        settle(&ctx, &mut t);
+        assert_ne!(rev(&dir, "HEAD"), first);
+        step(&ctx, &mut t, Action::Undo);
+        assert_eq!((rev(&dir, "HEAD"), rev(&dir, "foo"), rev(&dir, "v1^{commit}")), (first.clone(), first.clone(), first));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -18,9 +18,12 @@ pub enum Active {
 const SUFFIX: &str = "' -o IdentitiesOnly=yes";
 const PREFIX: &str = "ssh -i '";
 
+fn slashed(path: &str) -> String {
+    if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() }
+}
+
 pub fn build(path: &str) -> String {
-    let p = if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() };
-    format!("{PREFIX}{}{SUFFIX}", p.replace('\'', "'\\''"))
+    format!("{PREFIX}{}{SUFFIX}", slashed(path).replace('\'', "'\\''"))
 }
 
 pub fn parse(cmd: Option<&str>) -> Active {
@@ -80,7 +83,7 @@ pub fn list() -> Vec<KeyInfo> {
                 let out = quiet("ssh-keygen").arg("-lf").arg(&public).output().ok().filter(|o| o.status.success());
                 let line = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
                 let fingerprint = line.split_once(' ').map_or(line.clone(), |(_, r)| r.to_owned());
-                KeyInfo { path: p.to_string_lossy().into_owned(), name, fingerprint }
+                KeyInfo { path: slashed(&p.to_string_lossy()), name, fingerprint }
             })
         })
         .collect();
@@ -92,41 +95,13 @@ pub fn is_ssh(url: &str) -> bool {
     url.starts_with("ssh://") || (!url.contains("://") && url.split_once(':').is_some_and(|(h, _)| h.len() > 1 && !h.contains(['/', '\\'])))
 }
 
-pub fn target(url: &str) -> Option<(String, String, Option<u16>)> {
+pub fn test(dir: &Path, key: Option<&str>, url: &str) -> (bool, String) {
     if !is_ssh(url) {
-        return None;
+        return (false, "Not an SSH remote".into());
     }
-    let (auth, port) = match url.strip_prefix("ssh://") {
-        Some(r) => {
-            let a = r.split('/').next()?;
-            let (a, port) = match a.rsplit_once(':') {
-                Some((h, p)) if p.parse::<u16>().is_ok() => (h, p.parse().ok()),
-                _ => (a, None),
-            };
-            (a, port)
-        }
-        None => (url.split_once(':')?.0, None),
-    };
-    let (user, host) = auth.split_once('@').unwrap_or(("git", auth));
-    Some((user.into(), host.into(), port))
-}
-
-pub fn test(key: Option<&str>, url: &str) -> (bool, String) {
-    let Some((user, host, port)) = target(url) else { return (false, "Not an SSH remote".into()) };
-    let mut c = quiet("ssh");
-    c.args(["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
-    if let Some(k) = key {
-        c.args(["-i", k, "-o", "IdentitiesOnly=yes"]);
-    }
-    if let Some(p) = port {
-        c.args(["-p", &p.to_string()]);
-    }
-    match c.arg(format!("{user}@{host}")).output() {
-        Ok(o) => {
-            let text = format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)).trim().to_owned();
-            (o.status.success() || text.to_lowercase().contains("successfully authenticated"), text)
-        }
-        Err(e) => (false, format!("Could not run ssh: {e}")),
+    match crate::git::ls_remote_via(dir, url, key.map(build).as_deref()) {
+        Ok(_) => (true, "Authenticated: git could reach the remote over SSH".into()),
+        Err(e) => (false, e.trim().to_owned()),
     }
 }
 
@@ -145,14 +120,6 @@ mod tests {
         for c in ["ssh -i ~/.ssh/k", "ssh -i '/a' -o IdentitiesOnly=yes -o Foo=1", "ssh -i '/a'b' -o IdentitiesOnly=yes", "plink -i k"] {
             assert_eq!(parse(Some(c)), Active::Custom(c.into()), "{c}");
         }
-    }
-
-    #[test]
-    fn finds_the_ssh_target() {
-        assert_eq!(target("git@github.com:o/r.git"), Some(("git".into(), "github.com".into(), None)));
-        assert_eq!(target("ssh://me@ghe.corp:2222/o/r"), Some(("me".into(), "ghe.corp".into(), Some(2222))));
-        assert_eq!(target("ssh://ghe.corp/o/r"), Some(("git".into(), "ghe.corp".into(), None)));
-        assert_eq!(target("https://github.com/o/r"), None);
     }
 
     #[test]

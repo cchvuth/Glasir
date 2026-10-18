@@ -316,7 +316,7 @@ pub fn unstage_files_op(cs: &[git::Change]) -> Option<Op> {
 
 /// Unstage everything (WIP list, ⇧⌘U, palette).
 pub fn unstage_all_op() -> Op {
-    Op::new("Unstage all", &["reset", "-q"]).light().backup(Backup::Staged(vec![]))
+    Op::new("Unstage all", &["reset", "-q", "--", "."]).light().backup(Backup::Staged(vec![]))
 }
 
 /// Discard several unstaged changes as one op: a single confirmation and one backup, so one ⌘Z
@@ -556,6 +556,14 @@ fn keep_deleted(dir: &Path, op: &mut Op) {
     } else {
         op.cmds.retain(|c| gone.contains(&c[1]));
     }
+}
+
+pub fn remove_worktree_op(w: &git::Worktree, remove: &[&str], warn: &str) -> Op {
+    if w.branch.is_some() || w.head.is_empty() || w.head.bytes().all(|b| b == b'0') {
+        return Op::new("Remove worktree", remove).confirm(warn);
+    }
+    let keep = format!("refs/glasir/backups/worktree-x-{}", w.head);
+    Op::new("Remove worktree", &["update-ref", &keep, &w.head]).then(remove).confirm(format!("{warn}\nIts detached HEAD {} is kept in {keep}.", &w.head[..w.head.len().min(7)]))
 }
 
 /// Remove a worktree (`remove`: the `worktree remove` command), then force-delete its branch
@@ -880,6 +888,7 @@ impl RepoTab {
                 let files = b.map_or(Ok(None), |b| backed_up(&dir, &b, saved, head.as_deref(), &op.label));
                 // Even a partly failed op may have moved refs: always offer undo.
                 let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| {
+                    let a = super::undo::own(&op, &b, a);
                     let n = if a == b { 0 } else { on_remotes(&dir, &b, &a) };
                     (b, a, n)
                 }));
@@ -2460,6 +2469,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn removing_a_detached_worktree_keeps_its_commit() {
+        let root = scratch("wt-detached");
+        let a = root.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        sh(&a, &["init", "-q", "-b", "main"]);
+        identity(&a);
+        commit(&a, "f", "one");
+        let wt = root.join("wt").to_string_lossy().into_owned();
+        sh(&a, &["worktree", "add", "-q", "--detach", &wt]);
+        identity(std::path::Path::new(&wt));
+        commit(std::path::Path::new(&wt), "g", "two");
+        let head = sh(std::path::Path::new(&wt), &["rev-parse", "HEAD"]).trim().to_owned();
+        let d = super::super::data::load_all(&a, 100, View::default()).unwrap();
+        let w = d.worktrees.iter().find(|w| w.path.ends_with("wt")).unwrap();
+        let op = super::remove_worktree_op(w, &["worktree", "remove", &wt], "Remove?");
+        assert!(op.confirm.as_deref().unwrap().contains("refs/glasir/backups/"));
+        super::exec(&a, &op).unwrap();
+        assert!(!std::path::Path::new(&wt).exists());
+        assert_eq!(sh(&a, &["for-each-ref", "--format=%(objectname)", "refs/glasir/backups/"]).trim(), head);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Force delete waiting for confirmation while the branch moves: refuses, so the new tip
     /// isn't lost (⌘Z would recreate the branch at the old one).
     #[test]
@@ -2711,6 +2743,22 @@ mod tests {
         let msgs = run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["a"], true)));
         assert!(msgs.iter().any(|m| m.error && m.text.contains("stash was saved anyway")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
         assert!(t.undo_label().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unstage_all_keeps_the_merge() {
+        let dir = scratch("unstage-all-merge");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        let head = sh(&dir, &["rev-parse", "HEAD"]);
+        std::fs::write(git::git_dir(&dir).unwrap().join("MERGE_HEAD"), &head).unwrap();
+        std::fs::write(dir.join("f"), "b\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        super::exec(&dir, &super::unstage_all_op()).unwrap();
+        assert!(sh(&dir, &["diff", "--cached", "--name-only"]).is_empty());
+        assert!(git::git_dir(&dir).unwrap().join("MERGE_HEAD").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

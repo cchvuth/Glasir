@@ -247,10 +247,10 @@ impl RepoData {
 
     /// Where pushing `branch` goes as `(remote, branch)`: its upstream, unless that is a
     /// differently named long-lived branch it was started from (`checkout -b feat origin/main`),
-    /// which must not get its commits: then a branch of its own name.
+    /// which must not get its commits: then a branch of its own name (only main <-> master is a rename).
     pub fn push_dest<'a>(&self, branch: &'a str, upstream: &'a str) -> Option<(&'a str, &'a str)> {
         let (remote, rb) = self.split_remote(upstream)?;
-        Some(if rb != branch && self.branch_rank(rb) < 2 && self.branch_rank(branch) == 2 { (remote, branch) } else { (remote, rb) })
+        Some(if rb != branch && self.branch_rank(rb) < 2 && !(matches!(rb, "main" | "master") && matches!(branch, "main" | "master")) { (remote, branch) } else { (remote, rb) })
     }
 
     /// `origin/feature/x` -> `("origin", "feature/x")`. A remote's name may contain `/`

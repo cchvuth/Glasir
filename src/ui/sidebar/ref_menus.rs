@@ -85,7 +85,7 @@ fn remote_branch(d: &RepoData, name: &str) -> (String, String) {
     let r = d.refs.iter().find(|r| (r.name == name || r.full == name) && matches!(r.kind, RefKind::Local | RefKind::Remote));
     let name = r.map_or(crate::git::short_ref(name), |r| r.name.as_str());
     let dest = match r {
-        Some(r) if r.kind == RefKind::Local => d.push_dest(name, &r.upstream),
+        Some(r) if r.kind == RefKind::Local => d.push_target(name, &r.upstream),
         _ => d.split_remote(name),
     };
     dest.map_or(("origin".into(), name.to_owned()), |(a, b)| (a.to_owned(), b.to_owned()))
@@ -189,7 +189,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", d.rev(r)]).undo(Undo::Keep)));
     }
     if ui.button("Rename…").clicked() {
-        acts.push(prompt(format!("Rename {name}"), name, Op::new("Rename branch", &["branch", "-m", name, "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "{}", name]))));
+        acts.push(prompt(format!("Rename {name}"), name, Op::new("Rename branch", &["branch", "-m", "--", name, "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "--", "{}", name]))));
     }
     let default_up = if r.upstream.is_empty() {
         format!("{}/{name}", d.default_remote().unwrap_or("origin"))
@@ -359,12 +359,15 @@ mod tests {
         }
         git(&["branch", "-q", "fix"]);
         git(&["branch", "-q", "--set-upstream-to=origin/bugfix-123", "fix"]);
+        git(&["branch", "-q", "--track", "forked", "origin/main"]);
+        git(&["config", "branch.forked.pushRemote", "upstream"]);
         t.reload(&ctx, true);
         load(&mut t, &ctx);
         let d = t.data.as_ref().unwrap();
         assert_eq!(pull_request_url(d, "fix", "origin/main").as_deref(), Some("https://github.com/o/r/compare/main...bugfix-123?expand=1"));
         assert_eq!(pull_request_url(d, "upstream/feature", "origin/main").as_deref(), Some("https://github.com/u/r/compare/main...feature?expand=1"));
         assert_eq!(pull_request_url(d, "refs/heads/fix", "origin/main").as_deref(), Some("https://github.com/o/r/compare/main...bugfix-123?expand=1"));
+        assert_eq!(pull_request_url(d, "forked", "origin/main").as_deref(), Some("https://github.com/u/r/compare/main...forked?expand=1"));
     }
 
     #[test]

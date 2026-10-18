@@ -166,7 +166,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
         ));
     }
     if ui.button("Create tag here…").clicked() {
-        acts.push(prompt(format!("New tag at {short}"), "", Op::new("Create tag", &["tag", "--no-sign", "{}", &c.id]).undo(Undo::Keep)));
+        acts.push(prompt(format!("New tag at {short}"), "", Op::new("Create tag", &["tag", "--no-sign", "--", "{}", &c.id]).undo(Undo::Keep)));
     }
     if ui.button("Create annotated tag here…").clicked() {
         acts.push(Action::Prompt(Prompt {
@@ -256,7 +256,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
         acts.push(Action::Copy(c.id.clone()));
     }
     if ui.button("Copy commit message").clicked() {
-        acts.push(Action::Copy(c.summary.clone()));
+        acts.push(Action::Copy(crate::git::run(&d.git_dir, &["log", "-1", "--format=%B", &c.id]).map_or_else(|_| c.summary.clone(), |m| m.trim_end().to_owned())));
     }
     if !is_head && ui.button("Compare with HEAD").clicked() {
         acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: "HEAD".into(), three_dot: false }));
@@ -319,24 +319,39 @@ pub fn reset_items(ui: &mut Ui, d: &RepoData, id: &str, acts: &mut Vec<Action>) 
     }
 }
 
-pub(super) fn wip_menu(ui: &mut Ui, acts: &mut Vec<Action>) {
+pub(super) fn wip_menu(ui: &mut Ui, state: State, acts: &mut Vec<Action>) {
     if ui.button("Stash all changes").clicked() {
         acts.push(stash_prompt());
     }
     if ui.button("Discard all changes").clicked() {
-        acts.push(Action::Git(
-            Op::new("Discard all", &["reset", "--hard", "-q"])
-                .then(&["clean", "-fdq"])
-                .backup(crate::repo::Backup::Tree { revs: vec![], untracked: true })
-                .confirm("Discard ALL uncommitted changes, including untracked files? (Undo with ⌘Z.)"),
-        ));
+        acts.push(Action::Git(discard_all_op(state)));
     }
+}
+
+fn discard_all_op(state: State) -> Op {
+    let ends = match state {
+        State::Merging => " This also ends the merge in progress.",
+        State::CherryPicking => " This also ends the cherry-pick in progress.",
+        State::Reverting => " This also ends the revert in progress.",
+        _ => "",
+    };
+    Op::new("Discard all", &["reset", "--hard", "-q"])
+        .then(&["clean", "-fdq"])
+        .backup(crate::repo::Backup::Tree { revs: vec![], untracked: true })
+        .confirm(format!("Discard ALL uncommitted changes, including untracked files?{ends} (Undo with ⌘Z.)"))
 }
 
 #[cfg(test)]
 mod tests {
     use crate::ui::testkit::{Sim, load, tab};
     use egui::{PointerButton, Ui};
+
+    #[test]
+    fn discard_all_says_it_ends_a_merge() {
+        let text = |s| super::discard_all_op(s).confirm.unwrap_or_default();
+        assert!(text(crate::git::State::Merging).contains("ends the merge"));
+        assert!(!text(crate::git::State::Clean).contains("ends"));
+    }
 
     fn click(sim: &mut Sim, item: &str, mut draw: impl FnMut(&mut Ui)) {
         sim.frame(vec![], &mut draw);

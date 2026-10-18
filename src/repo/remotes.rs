@@ -43,6 +43,12 @@ impl Form {
         if self.old.as_ref().is_none_or(|o| o.0 != name) && d.remotes.iter().any(|r| r.0 == name) {
             return Some("A remote with this name already exists");
         }
+        if let Some((old, old_url, old_push)) = &self.old {
+            let many = |k: &str| d.cfg_all(&format!("remote.{old}.{k}")).count() > 1;
+            if (self.url.trim() != old_url && many("url")) || (self.push.trim() != old_push && many("pushurl")) {
+                return Some("This remote has several URLs; change them with git remote set-url");
+            }
+        }
         None
     }
 
@@ -263,6 +269,12 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "fork/feat");
         exec(&dir, op.revert.as_ref().unwrap()).unwrap();
         assert_eq!(cfg(), before);
+        sh(&dir, &["config", "--add", "remote.origin.url", "/second.git"]);
+        let mut multi = Form::edit(&load(), "origin");
+        assert_eq!(multi.problem(&load()), None);
+        (multi.name, multi.url) = ("fork".into(), "/new.git".into());
+        assert!(multi.problem(&load()).is_some_and(|p| p.contains("several URLs")));
+        sh(&dir, &["config", "--unset", "remote.origin.url", "/second.git"]);
         // A name the form allows but git rejects changes nothing (no half-applied edit).
         let mut bad = Form::edit(&d, "origin");
         (bad.name, bad.url) = ("a..b".into(), "/new.git".into());
@@ -452,6 +464,8 @@ mod tests {
         assert_eq!(d.default_branch(), "master");
         assert_eq!(d.push_dest("main", "origin/master"), Some(("origin", "master")));
         assert_eq!(d.push_dest("feat", "origin/master"), Some(("origin", "feat")));
+        assert_eq!(d.push_dest("develop", "origin/main"), Some(("origin", "develop")));
+        assert_eq!(d.push_dest("master", "origin/main"), Some(("origin", "main")));
         assert_eq!(d.default_remote(), Some("origin"));
         assert_eq!(d.push_target("feat", "origin/master"), Some(("origin", "feat")));
         sh(&dir, &["config", "remote.pushdefault", "fork"]);

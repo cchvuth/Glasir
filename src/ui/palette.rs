@@ -179,8 +179,9 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
         }
         if let Some(web) = d.web() {
             v.push(item(icon::GLOBE, "Open repository on remote", web.clone(), Cmd::Tab(Action::Url(web.clone()))));
-            if let Some(b) = &d.status.branch {
-                let url = format!("{web}/compare/{}...{}?expand=1", crate::git::url_path(&d.default_branch()), crate::git::url_path(b));
+            if let Some(b) = &d.status.branch
+                && let Some(url) = crate::ui::sidebar::ref_menus::pull_request_url(d, b, d.default_branch())
+            {
                 v.push(item(icon::GIT_PULL_REQUEST, format!("Create pull request for {b}"), "opens compare page", Cmd::Tab(Action::Url(url))));
             }
         }
@@ -197,11 +198,11 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
             if r.kind != RefKind::Tag && !head.is_empty() && r.name != head {
                 for how in [None, Some(Merge::Squash), Some(Merge::NoFf), Some(Merge::FfOnly)] {
                     let how_label = how.map_or(String::new(), |h| format!(" ({})", h.name()));
-                    let m = merge_op(&r.name, &r.name, how);
+                    let m = merge_op(&r.name, d.rev(r), how);
                     v.push(item(icon::GIT_MERGE, format!("Merge {} into {head}{how_label}", r.name), kind, Cmd::Tab(Action::Git(m))));
                 }
-                let rb = Op::new(format!("Rebase onto {}", r.name), &["rebase", &r.name]).undo(Undo::Keep);
-                let rb = Action::RunRebase { op: rb, onto: r.name.clone(), branch: None, first: None };
+                let rb = Op::new(format!("Rebase onto {}", r.name), &["rebase", d.rev(r)]).undo(Undo::Keep);
+                let rb = Action::RunRebase { op: rb, onto: d.rev(r).into(), branch: None, first: None };
                 v.push(item(icon::GIT_COMMIT, format!("Rebase {head} onto {}", r.name), kind, Cmd::Tab(rb)));
             }
         }
@@ -316,7 +317,9 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{elide, score};
+    use super::{Cmd, elide, items, score};
+    use crate::repo::{Action, PullMode};
+    use crate::ui::testkit::{load, tab};
 
     #[test]
     fn long_details_keep_their_end() {
@@ -332,5 +335,23 @@ mod tests {
         // word starts and consecutive runs beat scattered matches
         assert!(score("fa", "Fetch all remotes").unwrap() > score("fa", "Unstage all changes").unwrap_or(i32::MIN));
         assert!(score("push", "Push").unwrap() > score("push", "Force push (with lease)").unwrap());
+    }
+
+    #[test]
+    fn merge_and_rebase_target_the_branch_not_a_tag_of_the_same_name() {
+        let ctx = egui::Context::default();
+        let mut t = tab(&ctx, "palette-tagged", &["one", "two"]);
+        let run = |args: &[&str]| crate::git::run(&t.dir, args).unwrap();
+        run(&["branch", "release", "HEAD~1"]);
+        run(&["tag", "release", "HEAD"]);
+        t.reload(&ctx, true);
+        load(&mut t, &ctx);
+        let list = items(Some(&t), &[], PullMode::Merge, false);
+        let head = t.data.as_ref().unwrap().status.branch.clone().unwrap();
+        let find = |label: String| list.iter().find(|i| i.label == label && i.detail == "local branch").unwrap();
+        let Cmd::Tab(Action::Git(m)) = &find(format!("Merge release into {head}")).cmd else { panic!() };
+        assert_eq!(m.cmds[0][2], "refs/heads/release");
+        let Cmd::Tab(Action::RunRebase { op, onto, .. }) = &find(format!("Rebase {head} onto release")).cmd else { panic!() };
+        assert_eq!((op.cmds[0][1].as_str(), onto.as_str()), ("refs/heads/release", "refs/heads/release"));
     }
 }

@@ -25,6 +25,7 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
     let git = |what| crate::git::run(dir, &["rev-parse", "--path-format=absolute", what]).ok().map(|p| std::path::PathBuf::from(p.trim()));
     let (own, common) = (git("--git-dir")?, git("--git-common-dir")?);
     let gits = [own, common.clone()];
+    let git_dirs = gits.clone();
     // `ignored` verdicts: a build dir's churn must not trigger status reloads.
     let (mut ignored, mut tree_at) = (std::collections::HashMap::new(), None);
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -44,8 +45,9 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
         }
     })
     .ok()?;
-    w.watch(dir, notify::RecursiveMode::Recursive).ok()?;
-    if !common.starts_with(dir) {
+    if w.watch(dir, notify::RecursiveMode::Recursive).is_err() {
+        git_dirs.iter().try_for_each(|g| w.watch(g, notify::RecursiveMode::Recursive)).ok()?;
+    } else if !common.starts_with(dir) {
         w.watch(&common, notify::RecursiveMode::Recursive).ok()?;
     }
     Some((w, rx))

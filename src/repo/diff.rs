@@ -152,7 +152,7 @@ pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch:
     let op = op.then(&a).input(patch).light();
     match label.starts_with("Discard") {
         true => op.backup(Backup::Paths(vec![c.path.clone()])).confirm("Discard the selected changes? (Undo with ⌘Z.)"),
-        false => op,
+        false => op.backup(Backup::Staged(vec![c.path.clone()])),
     }
 }
 
@@ -275,6 +275,33 @@ mod tests {
         std::fs::write(dir.join("f"), file("EDIT", "x")).unwrap();
         super::super::op::exec(&dir, &stage).unwrap();
         assert_eq!(sh(&dir, &["show", ":f"]), file("EDIT", "x"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unstaging_a_hunk_undoes() {
+        let dir = scratch("unstage-hunk-undo");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        std::fs::write(dir.join("f"), "b\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        std::fs::write(dir.join("f"), "c\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let change = t.data.as_ref().unwrap().status.staged[0].clone();
+        let o = DiffOpts::default();
+        let f = git::worktree_diff(&dir, &change, true, o).unwrap();
+        let src = DiffSrc::Worktree { change, staged: true };
+        let p = git::partial_patch(&f, |_, _| true, true).unwrap();
+        t.apply(&ctx, Action::Git(patch_op("Unstage hunk", &src, o, &f, p, &["--cached", "--reverse"])));
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["show", ":f"]), "a\n");
+        t.apply(&ctx, Action::Undo);
+        settle(&ctx, &mut t);
+        assert_eq!(sh(&dir, &["show", ":f"]), "b\n");
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "c\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -233,7 +233,7 @@ mod tests {
         exec(&a, &del).unwrap();
         exec(&a, del.revert.as_ref().unwrap()).unwrap();
         assert_eq!(sh(&a, &["rev-parse", "--abbrev-ref", "fix@{u}"]).trim(), "origin/chan/fix");
-        let mut ren = Op::new("Rename branch", &["branch", "-m", "fix", "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "{}", "fix"]));
+        let mut ren = Op::new("Rename branch", &["branch", "-m", "--", "fix", "{}"]).revert(Op::new("Rename branch back", &["branch", "-m", "--", "{}", "fix"]));
         let revert = ren.revert.as_deref_mut().into_iter().flat_map(|r| r.cmds.iter_mut().flatten());
         for x in ren.cmds.iter_mut().flatten().chain(revert) {
             *x = x.replace("{}", "fix2"); // what the prompt does

@@ -98,8 +98,10 @@ pub fn secret(path: &str) -> bool {
 fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
     let mut stat = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=200"];
     stat.extend_from_slice(range);
+    stat.push("--");
     let mut added = vec!["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A"];
     added.extend_from_slice(range);
+    added.push("--");
     let hidden: Vec<String> = git::run(dir, &added)?.split('\0').filter(|p| secret(p)).map(|p| format!(":(exclude,literal){p}")).collect();
     let mut patch = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"];
     patch.extend_from_slice(range);

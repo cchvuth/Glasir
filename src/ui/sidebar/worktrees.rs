@@ -25,7 +25,9 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
                 ));
             }
             if d.worktrees.iter().any(|w| w.prunable) && theme::small(ui, true, "Prune stale").clicked() {
-                acts.push(op("Prune worktrees", &["worktree", "prune"]));
+                let stale: Vec<&str> = d.worktrees.iter().filter(|w| w.prunable).map(|w| w.path.as_str()).collect();
+                let warn = format!("Forget {} worktree(s) whose folder is missing?\n{}\nIf one is only on an unplugged drive, pruning drops its HEAD, index and any rebase in progress.", stale.len(), stale.join("\n"));
+                acts.push(Action::Git(Op::new("Prune worktrees", &["worktree", "prune"]).confirm(warn)));
             }
         });
     });
@@ -87,7 +89,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
             }
             args.push(&w.path);
             if ui.button("Remove worktree").clicked() {
-                acts.push(Action::Git(Op::new("Remove worktree", &args).confirm(warn.clone())));
+                acts.push(Action::Git(crate::repo::remove_worktree_op(w, &args, &warn)));
             }
             if let Some(b) = &w.branch
                 && ui.button(format!("Remove worktree and delete {b}")).clicked()

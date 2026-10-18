@@ -382,7 +382,7 @@ pub(super) fn rewrite(dir: &Path, commit: &str, tip: &str, message: &[u8]) -> Re
             false => out.extend(msg),
         }
         // ponytail: one hash-object per commit; a fast-import stream if rewording far back gets slow.
-        let oid = git::run_input(dir, &["hash-object", "-t", "commit", "-w", "--stdin"], Some(&out))?;
+        let oid = git::run_input(dir, &["hash-object", "-t", "commit", "-w", "--literally", "--stdin"], Some(&out))?;
         new.insert(id.to_owned(), oid.trim().to_owned());
     }
     new.get(&head).ok_or("Commit is not on the current branch.")?;
@@ -489,8 +489,9 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     // Soft: undo puts the folded-in changes back in the index (`--keep` would drop them).
     // Backed up: the replayed commits may put files where ignored ones sit.
     let base = format!("{commit}^");
+    let no_hooks = no_hooks(&git::git_dir(dir)?);
     let op = Op::new(format!("Amend staged into {short}"), &[HEAD_IS, &head_state(dir)])
-        .then(&["-c", NO_HOOKS, "commit", "-m", &format!("fixup! {commit}")])
+        .then(&["-c", &no_hooks, "commit", "-m", &format!("fixup! {commit}")])
         .then(&["-c", "sequence.editor=true", "-c", "core.editor=true", "rebase", "-i", "--autosquash", "--autostash", &base])
         .undo(Undo::Soft)
         .backup(super::Backup::Tree { revs: vec![base], untracked: false });
@@ -529,7 +530,9 @@ fn on_branch(dir: &Path, commit: &str) -> Res<()> {
     git::run(dir, &["merge-base", "--is-ancestor", commit, "HEAD"]).map(drop).map_err(|_| "Commit is not on the current branch.".into())
 }
 
-pub(super) const NO_HOOKS: &str = "core.hooksPath=/dev/null";
+pub(super) fn no_hooks(git_dir: &Path) -> String {
+    format!("core.hooksPath={}", git_dir.join("glasir-no-hooks").display())
+}
 
 /// `exec` pseudo-command: `HEAD_IS state` fails unless [`head_state`] is still `state`.
 pub(super) const HEAD_IS: &str = "!head-is";
@@ -1002,6 +1005,19 @@ mod tests {
         assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c1"]);
         let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
         assert!(quick(&dir, &gd, &head, Act::Drop, None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reword_recreates_descendants_with_malformed_headers() {
+        let (dir, g) = repo("reword-malformed");
+        let gd = git::git_dir(&dir).unwrap();
+        let (head, tree) = (g(&["rev-parse", "HEAD"]).trim().to_owned(), g(&["rev-parse", "HEAD^{tree}"]).trim().to_owned());
+        let raw = format!("tree {tree}\nparent {head}\nauthor Old Tool<old@x> 1 +0000\ncommitter Old Tool <old@x> 1 +0000\n\nlegacy\n");
+        let bad = git::run_input(&dir, &["hash-object", "-t", "commit", "-w", "--literally", "--stdin"], Some(raw.as_bytes())).unwrap();
+        g(&["update-ref", "refs/heads/main", bad.trim()]);
+        run_op(&dir, &reword(&dir, &gd, &head, false, Some("main"), "c3 better".into()).unwrap());
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["legacy", "c3 better", "c2", "c1"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
