@@ -42,7 +42,7 @@ pub struct Ref {
     pub annotated: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Change {
     pub path: String,
     pub old_path: Option<String>,

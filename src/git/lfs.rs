@@ -1,7 +1,7 @@
 //! Git LFS: is git-lfs installed, does the repo use it, which files it tracks,
 //! and pointer-file parsing. Content goes through git's own filter process.
 
-use super::{FileDiff, run, run_input};
+use super::{FileDiff, read_small, run, run_input};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -25,7 +25,7 @@ fn lfs_installed() -> bool {
 /// (`ls-files ':(attr:filter=lfs)'` would be one, but it skips new untracked folders.)
 // Only the top-level .gitattributes is checked; nested ones with filter=lfs go unnoticed.
 pub fn lfs(dir: &Path) -> Lfs {
-    let used = std::fs::read_to_string(dir.join(".gitattributes")).is_ok_and(|a| a.contains("filter=lfs"));
+    let used = read_small(&dir.join(".gitattributes")).is_some_and(|a| String::from_utf8_lossy(&a).contains("filter=lfs"));
     let files = if used {
         let all = run(dir, &["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).unwrap_or_default();
         lfs_paths(&run_input(dir, &["check-attr", "--stdin", "-z", "filter"], Some(all.as_bytes())).unwrap_or_default())
@@ -88,6 +88,17 @@ mod tests {
         let d = "diff --git a/n b/n\nnew file mode 100644\n--- /dev/null\n+++ b/n\n@@ -0,0 +1,3 @@\n+version https://git-lfs.github.com/spec/v1\n+oid sha256:cc\n+size 1\n";
         assert_eq!(pointer_diff(&parse_diff(d)[0]), Some((None, Some(LfsPointer { oid: "sha256:cc".into(), size: 1 }))));
         assert!(pointer_diff(&parse_diff("diff --git a/f b/f\n@@ -1 +1 @@\n-a\n+b\n")[0]).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_gitattributes_symlink_to_an_endless_file_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("glasir-lfs-zero-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", dir.join(".gitattributes")).unwrap();
+        assert!(!lfs(&dir).used);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

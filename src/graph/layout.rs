@@ -154,12 +154,13 @@ impl Graph {
         }
     }
 
-    /// Rows reachable from row `tip` by parent links (`tip` included).
+    /// Rows reachable from any of rows `tips` by parent links (`tips` included).
     /// One pass: edges are stored in `from` order and parents sit below children.
-    pub fn reachable(&self, tip: usize) -> Vec<bool> {
+    pub fn reachable(&self, tips: &[usize]) -> Vec<bool> {
         let mut seen = vec![false; self.nodes.len()];
-        seen[tip] = true;
-        let start = self.edges.partition_point(|e| (e.from as usize) < tip);
+        tips.iter().for_each(|&t| seen[t] = true);
+        let first = tips.iter().copied().min().unwrap_or(usize::MAX);
+        let start = self.edges.partition_point(|e| (e.from as usize) < first);
         for e in &self.edges[start..] {
             if seen[e.from as usize] && e.to != NONE {
                 seen[e.to as usize] = true;
@@ -265,11 +266,13 @@ mod tests {
     fn reachable_follows_both_parents() {
         // 0: merge(1, 2)  1: main  2: feature  3: base  4: unrelated tip  5: its parent (not loaded)
         let g = Graph::layout(&[vec![1, 2], vec![3], vec![3], vec![], vec![NONE]], &[5; 5], &seeds(5));
-        assert_eq!(g.reachable(0), [true, true, true, true, false]);
-        assert_eq!(g.reachable(2), [false, false, true, true, false]);
-        assert_eq!(g.reachable(4), [false, false, false, false, true]);
-        assert!(!g.has_unloaded_parent(&g.reachable(0)));
-        assert!(g.has_unloaded_parent(&g.reachable(4)));
+        assert_eq!(g.reachable(&[0]), [true, true, true, true, false]);
+        assert_eq!(g.reachable(&[2]), [false, false, true, true, false]);
+        assert_eq!(g.reachable(&[4]), [false, false, false, false, true]);
+        assert_eq!(g.reachable(&[4, 2]), [false, false, true, true, true]);
+        assert_eq!(g.reachable(&[]), [false; 5]);
+        assert!(!g.has_unloaded_parent(&g.reachable(&[0])));
+        assert!(g.has_unloaded_parent(&g.reachable(&[4])));
     }
 
     #[test]

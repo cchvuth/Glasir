@@ -349,8 +349,16 @@ pub(super) fn post(url: &str, headers: &[(&str, String)], payload: &str, api: &s
     Ok(body)
 }
 
+fn supports_effort(model: &str) -> bool {
+    let Some(i) = model.find("claude-") else { return false };
+    let id = &model[i..];
+    let mut ver = id.split('-').filter_map(|p| p.parse::<u32>().ok()).filter(|n| *n < 100);
+    let (major, minor) = (ver.next().unwrap_or(0), ver.next().unwrap_or(0));
+    major >= 5 || (major == 4 && (minor >= 6 || (minor == 5 && id.contains("opus"))))
+}
+
 /// Streams one completion from the selected provider; `on_text` returns false
-/// to cancel. `schema`: the reply is JSON matching this JSON Schema (structured output).
+/// to cancel (it is also called with empty text on other events, e.g. while thinking). `schema`: the reply is JSON matching this JSON Schema (structured output).
 /// `base`: the token's own API base URL (an environment gateway), else the Settings one.
 pub(super) fn complete(
     cfg: &Config,
@@ -376,7 +384,7 @@ pub(super) fn complete(
         "messages": [{"role": "user", "content": prompt}],
     });
     let mut output = serde_json::Map::new();
-    if !model.starts_with("claude-3") && !model.contains("4-5") {
+    if supports_effort(model) {
         output.insert("effort".into(), effort.into());
     }
     if let Some(s) = schema {
@@ -418,6 +426,7 @@ pub(super) fn complete(
                 }
             }
             Some("error") => return Err(v["error"]["message"].as_str().unwrap_or("stream error").into()),
+            _ if !on_text(String::new()) => return Ok(()),
             _ => {}
         }
     }
@@ -499,6 +508,29 @@ pub(crate) mod tests {
 
     const DELTA: &str = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Fix bug"}}"#;
     const THINK: &str = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}"#;
+
+    #[test]
+    fn effort_only_for_models_that_take_it() {
+        for m in ["claude-opus-4-5", "claude-opus-4-5-20251101", "us.anthropic.claude-opus-4-5-20251101-v1:0", "claude-opus-4-6", "claude-sonnet-4-7", "claude-opus-4-8-20260101", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5", "anthropic/claude-opus-5-1"] {
+            assert!(supports_effort(m), "{m}");
+        }
+        for m in ["claude-sonnet-4-20250514", "claude-opus-4-1", "claude-opus-4-1-20250805", "us.anthropic.claude-sonnet-4-20250514-v1:0", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-3-7-sonnet-latest", "claude-3-5-haiku", "gpt-5", "custom"] {
+            assert!(!supports_effort(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn cancel_is_noticed_while_thinking() {
+        let (url, _h) = serve(sse(&[THINK, THINK, DELTA]));
+        let cfg = Config { base_url: url, ..Default::default() };
+        let mut calls = 0;
+        let r = complete(&cfg, ("k".into(), false, None), "sys", "hi", "low", None, &mut |t| {
+            calls += 1;
+            assert!(t.is_empty());
+            false
+        });
+        assert_eq!((r, calls), (Ok(()), 1));
+    }
 
     #[test]
     fn streams_text_with_api_key() {

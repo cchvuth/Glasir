@@ -7,6 +7,8 @@ use crate::repo::{Action, Op, RepoData, op, prompt};
 use crate::theme::{self, icon};
 use egui::{RichText, Ui};
 
+const REPLACE: &str = "A submodule is checked out at a different commit than the one recorded. Updating replaces it with the recorded commit; commits made on it that aren't on a branch will no longer be reachable.";
+
 pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
     let subs: Vec<_> = d.submodules.iter().filter(|s| matches(f, &s.path)).collect();
     section(ui, "SUBMODULES", subs.len(), |ui| {
@@ -16,7 +18,8 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, f: &str, acts: &mut Vec<Action>) {
         ui.horizontal_wrapped(|ui| {
             if !d.submodules.is_empty() {
                 if theme::small(ui, true, format!("{}  Update all", icon::ARROWS_CLOCKWISE)).on_hover_text("Initialize and check out the recorded commits, recursively").clicked() {
-                    acts.push(op("Update submodules", &["submodule", "update", "--init", "--recursive"]));
+                    let update = Op::new("Update submodules", &["submodule", "update", "--init", "--recursive"]);
+                    acts.push(Action::Git(if d.submodules.iter().any(|s| s.flag == '+') { update.confirm(REPLACE) } else { update }));
                 }
                 if theme::small(ui, true, "Sync URLs").on_hover_text("Copy URLs from .gitmodules into the config").clicked() {
                     acts.push(op("Sync submodule URLs", &["submodule", "sync", "--recursive"]));
@@ -71,7 +74,8 @@ fn row(ui: &mut Ui, d: &RepoData, s: &Submodule, acts: &mut Vec<Action>) {
             let (label, args): (&str, &[&str]) =
                 if init { ("Update (recursive)", &["--literal-pathspecs", "submodule", "update", "--recursive", "--", &s.path]) } else { ("Initialize & update", &["--literal-pathspecs", "submodule", "update", "--init", "--recursive", "--", &s.path]) };
             if ui.button(label).on_hover_text("Check out the recorded commit").clicked() {
-                acts.push(Action::Git(Op::new(format!("{label} {}", s.path), args)));
+                let update = Op::new(format!("{label} {}", s.path), args);
+                acts.push(Action::Git(if s.flag == '+' { update.confirm(REPLACE) } else { update }));
             }
         }
         if init && ui.button("Open in new tab").clicked() {

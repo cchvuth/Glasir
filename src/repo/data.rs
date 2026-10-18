@@ -28,6 +28,8 @@ pub struct RepoData {
     /// History was cut at the commit limit (more can be loaded).
     pub truncated: bool,
     pub status: Status,
+    pub changed: usize,
+    pub status_key: u64,
     pub state: git::State,
     /// While conflicted: names of the current and incoming side (branch / commit).
     pub conflict_sides: [String; 2],
@@ -130,9 +132,10 @@ impl RepoData {
 
     /// `r` as a revision: its short name (that's what merge messages quote), or its full ref when
     /// git would read the short one as something else (tag `x` beats branch `x`, local branch
-    /// `origin/x` beats the remote's, `stash` / `ORIG_HEAD`-style names beat every branch).
+    /// `origin/x` beats the remote's, `stash` / `ORIG_HEAD`-style names beat every branch, and a
+    /// name starting with `-` would be read as an option).
     pub fn rev<'a>(&self, r: &'a Ref) -> &'a str {
-        let special = !r.name.contains('/') && (r.name == "stash" || r.name.ends_with("HEAD"));
+        let special = r.name.starts_with('-') || !r.name.contains('/') && (r.name == "stash" || r.name.ends_with("HEAD"));
         if special || self.refs.iter().any(|o| o.name == r.name && o.full != r.full) { &r.full } else { &r.name }
     }
 
@@ -216,15 +219,11 @@ impl RepoData {
     /// merge edges, and a commit or tip outside it (hidden, past the page) has no row.
     fn on_remote_in_graph(&self, sha: &str, tips: &[&Ref]) -> Option<bool> {
         let row = *self.row_of.get(sha).filter(|_| !self.view.first_parent)?;
-        let mut all = true;
-        for r in tips {
-            match self.row_of.get(&r.target) {
-                Some(&tip) if self.reachable(tip)[row] => return Some(true),
-                Some(_) => {}
-                None => all = false,
-            }
+        let rows: Vec<usize> = tips.iter().filter_map(|r| self.row_of.get(&r.target).copied()).collect();
+        if self.graph.reachable(&rows.iter().copied().filter(|&t| t <= row).collect::<Vec<_>>())[row] {
+            return Some(true);
         }
-        all.then_some(false)
+        (rows.len() == tips.len()).then_some(false)
     }
 
     pub fn web_of(&self, remote: &str) -> Option<String> {
@@ -234,7 +233,7 @@ impl RepoData {
     /// Rows reachable from `tip` among the loaded commits, cached per tip.
     pub fn reachable(&self, tip: usize) -> Arc<Vec<bool>> {
         let mut m = self.reach.lock().unwrap_or_else(|e| e.into_inner());
-        m.entry(tip).or_insert_with(|| Arc::new(self.graph.reachable(tip))).clone()
+        m.entry(tip).or_insert_with(|| Arc::new(self.graph.reachable(&[tip]))).clone()
     }
 
     /// Sidebar order: 0 = the remote's default branch, 1 = other long-lived
@@ -296,7 +295,7 @@ impl RepoData {
 
     pub(super) fn count_worktree_changes(&mut self, dir: &Path) {
         let me = dir.canonicalize().ok();
-        let n = self.status.changed_count();
+        let n = self.changed;
         if let Some(i) = self.worktrees.iter().position(|w| Path::new(&w.path).canonicalize().ok() == me)
             && self.worktrees[i].changes != n
         {
@@ -397,6 +396,13 @@ impl RepoData {
             git_dir,
             origin_head,
             truncated: false,
+            changed: status.changed_count(),
+            status_key: {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (&status.staged, &status.unstaged, &status.conflicted).hash(&mut h);
+                h.finish()
+            },
             status,
             state,
             conflict_sides: Default::default(),
@@ -493,6 +499,24 @@ mod tests {
     use crate::git::Change;
     use crate::repo::op::{Op, exec};
     use crate::repo::testutil::{commit, identity, scratch, sh};
+
+    #[test]
+    fn status_key_follows_the_changed_files() {
+        let dir = scratch("status-key");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "base\n");
+        let load = || load_all(&dir, 100, View::default()).unwrap();
+        let clean = load();
+        assert_eq!((clean.changed, load().status_key), (0, clean.status_key));
+        std::fs::write(dir.join("a.txt"), "edit\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+        let dirty = load();
+        assert_eq!(dirty.changed, 2);
+        assert_ne!(dirty.status_key, clean.status_key);
+        std::fs::write(dir.join("a.txt"), "edit again\n").unwrap();
+        assert_eq!(load().status_key, dirty.status_key);
+    }
 
     #[test]
     fn view_filters_history() {
@@ -620,6 +644,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn on_remote_in_graph_matches_each_tip_alone() {
+        let dir = scratch("onremote-sweep");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        commit(&dir, "a", "1\n");
+        sh(&dir, &["update-ref", "refs/remotes/origin/old", "HEAD"]);
+        commit(&dir, "a", "2\n");
+        sh(&dir, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+        commit(&dir, "b", "1\n");
+        sh(&dir, &["update-ref", "refs/remotes/origin/side", "HEAD"]);
+        commit(&dir, "b", "2\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+        commit(&dir, "a", "3\n");
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let tips: Vec<&Ref> = d.refs.iter().filter(|r| r.kind == RefKind::Remote).collect();
+        assert_eq!(tips.len(), 3);
+        let (mut yes, mut no) = (0, 0);
+        for (sha, &row) in &d.row_of {
+            let want = tips.iter().any(|r| d.graph.reachable(&[d.row_of[&r.target]])[row]);
+            assert_eq!(d.on_remote_in_graph(sha, &tips), Some(want), "{sha}");
+            if want { yes += 1 } else { no += 1 }
+        }
+        assert!(yes > 0 && no > 0);
+        let gone = Ref { target: "f".repeat(40), ..tips[0].clone() };
+        let head = &d.status.head.clone().unwrap();
+        assert_eq!(d.on_remote_in_graph(head, &[tips[0], &gone]), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Bisect from two ends to the first bad commit, as the banner's buttons do it.
     #[test]
     fn bisect_finds_first_bad_commit() {
@@ -724,6 +781,32 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "refs/heads/feat~1"]), tip);
         assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/feat\n");
         let _ = std::fs::remove_dir_all(&up);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dash_named_branches_are_not_options() {
+        let dir = scratch("dash-branches");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        commit(&dir, "b.txt", "b\n");
+        sh(&dir, &["update-ref", "refs/heads/-f", "HEAD"]);
+        sh(&dir, &["update-ref", "refs/heads/--exec=touch${IFS}PWNED", "HEAD"]);
+        commit(&dir, "a.txt", "two\n");
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let local = |n: &str| d.local(n).unwrap();
+        assert_eq!(d.rev(local("-f")), "refs/heads/-f");
+        exec(&dir, &Op::new("Rebase", &["rebase", "--end-of-options", d.rev(local("--exec=touch${IFS}PWNED")), "-f"])).unwrap();
+        exec(&dir, &Op::new("Rebase", &["rebase", "--end-of-options", d.rev(local("--exec=touch${IFS}PWNED"))])).unwrap();
+        assert!(!dir.join("PWNED").exists());
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/-f\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("b.txt"), "dirty\n").unwrap();
+        let Some(crate::repo::Action::Git(op)) = crate::repo::branch_checkout(&d, local("-f")) else { panic!() };
+        exec(&dir, &op).unwrap();
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/-f\n");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "dirty\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

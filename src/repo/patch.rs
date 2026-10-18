@@ -26,9 +26,11 @@ pub(super) fn format_patch(dir: &Path, ids: &[String]) -> Res<Vec<u8>> {
 pub(super) fn apply_op(path: &Path, text: &[u8]) -> Op {
     let p = path.to_string_lossy();
     if text.starts_with(b"From ") {
-        Op::new("Apply patch as commits", &["am", "--3way", &p]).undo(Undo::Keep)
+        let crlf_mbox = text.split(|&b| b == b'\n').next().is_some_and(|l| l.ends_with(b"\r"));
+        let keep: &[&str] = if crlf_mbox { &[] } else { &["--keep-cr"] };
+        Op::new("Apply patch as commits", &[&["am", "--3way"][..], keep, &[&p]].concat()).undo(Undo::Keep)
     } else {
-        Op::new("Apply patch", &["apply", "--3way", &p]).backup(Backup::Tree { revs: vec![], untracked: false })
+        Op::new("Apply patch", &["update-index", "-q", "--refresh"]).then(&["apply", "--3way", &p]).backup(Backup::Tree { revs: vec![], untracked: false })
     }
 }
 
@@ -117,6 +119,31 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "feat 2\n");
         assert_eq!(sh(&dir, &["rev-parse", "HEAD"]), sh(&dir, &["rev-parse", "main"]));
         assert!(format_patch(&dir, &[]).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&files);
+    }
+
+    #[test]
+    fn crlf_commits_round_trip_and_stat_dirty_files_apply() {
+        let dir = scratch("patch-crlf");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["config", "core.autocrlf", "false"]);
+        commit(&dir, "w.txt", "a\r\nb\r\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "w.txt", "a\r\nB\r\n");
+        let mbox = format_patch(&dir, &["feat".into()]).unwrap();
+        let plain = git::run_raw(&dir, &["diff", "--no-ext-diff", "main", "feat"], None).unwrap();
+        let files = scratch("patch-crlf-files");
+        std::fs::write(files.join("p.mbox"), &mbox).unwrap();
+        std::fs::write(files.join("p.diff"), &plain).unwrap();
+        sh(&dir, &["checkout", "-q", "-b", "applied", "main"]);
+        exec(&dir, &apply_op(&files.join("p.mbox"), &mbox)).unwrap();
+        assert_eq!(std::fs::read(dir.join("w.txt")).unwrap(), b"a\r\nB\r\n");
+        sh(&dir, &["checkout", "-q", "-b", "plain", "main"]);
+        std::fs::write(dir.join("w.txt"), "a\r\nb\r\n").unwrap();
+        exec(&dir, &apply_op(&files.join("p.diff"), &plain)).unwrap();
+        assert_eq!(std::fs::read(dir.join("w.txt")).unwrap(), b"a\r\nB\r\n");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&files);
     }

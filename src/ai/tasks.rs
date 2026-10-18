@@ -27,7 +27,7 @@ pub enum Purpose {
     StashMessage,
     Resolve(String),
     /// What changed between two revisions (branch vs base, or a commit range).
-    ExplainRange { from: String, to: String },
+    ExplainRange { from: String, to: String, three_dot: bool },
 }
 
 impl Purpose {
@@ -40,7 +40,7 @@ impl Purpose {
             Purpose::PullRequest { branch, .. } => format!("Pull request for {}", crate::git::short_ref(branch)),
             Purpose::StashMessage => "Stash".into(),
             Purpose::Resolve(p) => format!("Resolve {p}"),
-            Purpose::ExplainRange { from, to } => format!("Changes in {} since {}", crate::git::short_ref(to), crate::git::short_ref(from)),
+            Purpose::ExplainRange { from, to, .. } => format!("Changes in {} since {}", crate::git::short_ref(to), crate::git::short_ref(from)),
         }
     }
 }
@@ -63,10 +63,13 @@ impl Job {
     pub fn poll(&mut self) -> bool {
         let mut changed = false;
         while let Ok(ev) = self.rx.try_recv() {
-            changed = true;
             match ev {
-                Ev::Text(t) => self.text.push_str(&t),
+                Ev::Text(t) => {
+                    changed |= !t.is_empty();
+                    self.text.push_str(&t);
+                }
                 Ev::Done(r) => {
+                    changed = true;
                     if r.is_err() {
                         self.text.clear(); // refusals and errors: discard partial output
                     }
@@ -99,10 +102,10 @@ fn diff_with_stat(dir: &Path, range: &[&str]) -> Res<String> {
     let mut stat = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--stat=200"];
     stat.extend_from_slice(range);
     stat.push("--");
-    let mut added = vec!["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A"];
-    added.extend_from_slice(range);
-    added.push("--");
-    let hidden: Vec<String> = git::run(dir, &added)?.split('\0').filter(|p| secret(p)).map(|p| format!(":(exclude,literal){p}")).collect();
+    let mut names = vec!["diff", "--name-only", "-z", "--no-renames"];
+    names.extend_from_slice(range);
+    names.push("--");
+    let hidden: Vec<String> = git::run(dir, &names)?.split('\0').filter(|p| secret(p)).map(|p| format!(":(exclude,literal){p}")).collect();
     let mut patch = vec!["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M"];
     patch.extend_from_slice(range);
     patch.push("--");
@@ -276,15 +279,19 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
                 "medium",
             )
         }
-        Purpose::ExplainRange { from, to } => {
+        Purpose::ExplainRange { from, to, three_dot } => {
             // `<root>^` (a compare that starts at the root commit) doesn't resolve: everything up to `to`.
             let root = from.strip_suffix('^').filter(|_| git::run(dir, &["rev-parse", "-q", "--verify", from]).is_err());
             let range = if root.is_some() { to.clone() } else { format!("{from}..{to}") };
             let log = git::run(dir, &["log", "--format=- %h %s (%an)", &range, "--"])?;
             let diff = match root {
                 Some(r) => diff_with_stat(dir, &[&parent_or_empty(dir, r)?, to])?,
-                None => diff_with_stat(dir, &[&format!("{from}...{to}")])?,
+                None if *three_dot => diff_with_stat(dir, &[&format!("{from}...{to}")])?,
+                None => diff_with_stat(dir, &[from, to])?,
             };
+            if log.trim().is_empty() && diff.lines().all(|l| l.trim().is_empty()) {
+                return Err(format!("There are no changes between {from} and {to}."));
+            }
             (
                 format!(
                     "Explain what changed in `{to}` compared to `{from}`, for a developer catching up. \
@@ -374,7 +381,9 @@ pub fn start(ctx: &egui::Context, cfg: Config, dir: PathBuf, purpose: Purpose, d
         let res = build(&dir, &p, &draft).and_then(|(prompt, effort)| {
             let system = system_with(&cfg.instructions, &repo_instructions(&dir));
             complete(&cfg, need_token(cfg.provider)?, &system, &prompt, effort, schema.as_ref(), &mut |t| {
-                ctx.request_repaint();
+                if !t.is_empty() {
+                    ctx.request_repaint();
+                }
                 tx.send(Ev::Text(t)).is_ok()
             })
         });
@@ -440,6 +449,52 @@ mod tests {
             let (prompt, ..) = build(&dir, &p, "").unwrap();
             assert!(prompt.contains("hello") && prompt.contains(".env") && !prompt.contains("sk-live"), "{p:?}: {prompt}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn modified_and_deleted_secret_files_stay_hidden() {
+        let dir = std::env::temp_dir().join(format!("glasir-ai-secret-tracked-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| git::run(&dir, args).unwrap();
+        g(&["init", "-q"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            g(&["config", k, v]);
+        }
+        std::fs::write(dir.join("a"), "hello\n").unwrap();
+        std::fs::write(dir.join(".env"), "API_KEY=sk-old\n").unwrap();
+        std::fs::write(dir.join("id_rsa"), "sk-gone\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "init"]);
+        std::fs::write(dir.join(".env"), "API_KEY=sk-new\n").unwrap();
+        std::fs::write(dir.join("a"), "hello world\n").unwrap();
+        g(&["rm", "-q", "id_rsa"]);
+        g(&["add", "."]);
+        let (prompt, ..) = build(&dir, &Purpose::ExplainWip, "").unwrap();
+        assert!(prompt.contains("hello world") && !prompt.contains("sk-"), "{prompt}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explain_two_dot_compare_matches_the_inspector() {
+        let dir = std::env::temp_dir().join(format!("glasir-explain-two-dot-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| git::run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            g(&["config", k, v]);
+        }
+        for f in ["a", "b"] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", f]);
+            g(&["commit", "-q", "-m", &format!("add {f}")]);
+        }
+        let old = g(&["rev-parse", "HEAD~1"]).trim().to_owned();
+        let (prompt, _) = build(&dir, &Purpose::ExplainRange { from: "HEAD".into(), to: old.clone(), three_dot: false }, "").unwrap();
+        assert!(prompt.contains("-b"), "{prompt}");
+        assert!(build(&dir, &Purpose::ExplainRange { from: "HEAD".into(), to: "HEAD".into(), three_dot: false }, "").is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -541,7 +596,7 @@ mod tests {
             g(&["commit", "-q", "-m", &format!("add {f}")]);
         }
         let root = g(&["rev-list", "--max-parents=0", "HEAD"]).trim().to_owned();
-        let (prompt, _) = build(&dir, &Purpose::ExplainRange { from: format!("{root}^"), to: "main".into() }, "").unwrap();
+        let (prompt, _) = build(&dir, &Purpose::ExplainRange { from: format!("{root}^"), to: "main".into(), three_dot: true }, "").unwrap();
         assert!(prompt.contains("add a") && prompt.contains("add b") && prompt.contains("+a"));
         let _ = std::fs::remove_dir_all(&dir);
     }

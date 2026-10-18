@@ -118,7 +118,7 @@ fn sig_badge(ui: &mut Ui, info: &CommitInfo) {
 impl RepoTab {
     pub(super) fn commit_panel(&mut self, ui: &mut Ui, as_tree: &mut bool, acts: &mut Vec<Action>) {
         let compare = match &self.sel {
-            Some(Sel::Compare { from, to, .. }) => Some((from.clone(), to.clone())),
+            Some(Sel::Compare { from, to, three_dot }) => Some((from.clone(), to.clone(), *three_dot)),
             _ => None,
         };
         let wt = compare.as_ref().is_some_and(|c| c.1 == crate::git::WORKTREE);
@@ -215,7 +215,7 @@ impl RepoTab {
             }
             ui.add_space(6.0);
             let explain = match &compare {
-                Some((from, to)) => Purpose::ExplainRange { from: from.clone(), to: to.clone() },
+                Some((from, to, three_dot)) => Purpose::ExplainRange { from: from.clone(), to: to.clone(), three_dot: *three_dot },
                 None => Purpose::Explain(info.id.clone()),
             };
             match self.ai.as_ref().filter(|j| j.purpose == explain) {

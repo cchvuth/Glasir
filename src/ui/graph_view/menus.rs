@@ -120,7 +120,7 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, rev: &str, acts:
         }
     });
     if ui.button(format!("Rebase {head} onto {target}")).clicked() {
-        let op = Op::new(format!("Rebase onto {target}"), &["rebase", rev]).undo(Undo::Keep);
+        let op = Op::new(format!("Rebase onto {target}"), &["rebase", "--end-of-options", rev]).undo(Undo::Keep);
         acts.push(Action::RunRebase { op, onto: rev.into(), branch: None, first: None });
     }
     if ui.button(format!("Interactive rebase {head} onto {target}…")).clicked() {

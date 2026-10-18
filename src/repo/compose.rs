@@ -116,8 +116,8 @@ fn changes(dir: &Path, base: &str, wip: bool) -> Res<(String, String)> {
 }
 
 impl Plan {
-    /// The units and their listing for Claude (`[id] path (what)` + the diff, none for a new
-    /// file named like a key or `.env`); `r`: recompose those commits instead of committing the uncommitted changes.
+    /// The units and their listing for Claude (`[id] path (what)` + the diff, none for a
+    /// file named like a key or `.env`, new, changed or deleted); `r`: recompose those commits instead of committing the uncommitted changes.
     pub fn load(dir: &Path, r: Option<&Recompose>) -> Res<(Plan, String)> {
         let head = git::run(dir, &["rev-parse", "-q", "--verify", "HEAD"]).map_err(|_| "Make a first commit first.".to_string())?.trim().to_owned();
         let (base, replaces, mut listing) = match r {
@@ -143,7 +143,7 @@ impl Plan {
             let status = if typechange { "type changed" } else if has("new file") { "new file" } else if has("deleted file") { "deleted" } else { "modified" };
             // Binary, submodule, type, mode-only or non-UTF-8 changes can't be split into hunks.
             let lossy = f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.text.contains('\u{FFFD}'));
-            let hide = status == "new file" && ai::secret(path);
+            let hide = ai::secret(path);
             if typechange || f.hunks.is_empty() || f.binary || lossy || hide || f.header.iter().any(|h| h.contains(" 160000")) {
                 let kind = if f.binary { "binary, whole file" } else if hide { "whole file, contents not sent: may hold secrets" } else { "whole file" };
                 add(&mut units, &mut listing, path, format!("{status}, {kind}"), None, if lossy || hide { &[] } else { &f.hunks });
@@ -664,7 +664,7 @@ mod tests {
         g(&["rm", "-q", "--cached", "secret.env"]);
         let (mut plan, _) = Plan::load(&dir, None).unwrap();
         let what: Vec<String> = plan.units.iter().map(|u| format!("{} {}", u.path, u.what)).collect();
-        assert_eq!(what, ["secret.env deleted, hunk 1/1"]);
+        assert_eq!(what, ["secret.env deleted, whole file, contents not sent: may hold secrets"]);
         plan.fill(r#"{"commits":[{"message":"Untrack secret","units":[1]}]}"#).unwrap();
         super::super::op::exec(&dir, &plan.op(&dir, &git::git_dir(&dir).unwrap()).unwrap()).unwrap();
         assert_eq!(g(&["ls-tree", "--name-only", "HEAD"]), "");

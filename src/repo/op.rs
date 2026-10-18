@@ -150,7 +150,7 @@ impl From<Res<Op>> for Dropped {
 }
 
 pub(super) enum Done {
-    /// Its ref snapshots before and after, with what [`on_remotes`] says about them, and the
+    /// The refs it moved, before and after ([`super::undo::delta`]), with what [`on_remotes`] says about them, and the
     /// files it changed (Err: a note, they couldn't be backed up after it ran).
     Op(Op, Res<String>, Option<(Snapshot, Snapshot, usize)>, Result<Option<Files>, String>),
     /// Undo or redo of step `id`, and its result: a redone op's fresh undo, a note, whether the
@@ -443,7 +443,7 @@ pub fn sequencer_op(cmd: &str, abort: bool) -> Op {
 
 pub fn continue_op(cmd: &str) -> Op {
     let op = Op::new(format!("Continue {cmd}"), &["-c", "core.editor=true", cmd, "--continue"]).undo(Undo::Keep);
-    if cmd == "rebase" || cmd == "am" { op } else { op.backup(Backup::Paths(vec![])) }
+    if cmd == "merge" { op.backup(Backup::Paths(vec![])) } else { op }
 }
 
 /// `git reset <mode>` of the checked-out branch to commit `id` (commit, branch and tag menus).
@@ -534,7 +534,7 @@ fn branch_cmd(dir: &Path, a: &[&str]) -> Res<String> {
             if now.trim() != *oid {
                 return Err(format!("{n} changed since it was shown, so it wasn't deleted. Check it and try again."));
             }
-            git::run(dir, &["branch", flag, n])
+            git::run(dir, &["branch", flag, "--end-of-options", n])
         }
         [BRANCH_RESTORE, n, oid, kv @ ..] => {
             // Back already (a retry after a partly failed undo, or recreated outside): done.
@@ -775,10 +775,11 @@ fn amend_rewrites_pushed(d: &RepoData) -> Option<String> {
         return Some(super::rebase::rewrites_pushed(1, Some(up)));
     }
     let row = d.row_of.get(head);
-    let on = |r: &Ref| r.target == head || row.zip(d.row_of.get(&r.target)).is_some_and(|(&h, &t)| t <= h && d.reachable(t)[h]);
     let remotes: Vec<&Ref> = d.refs.iter().filter(|r| r.kind == RefKind::Remote).collect();
+    let tips = |h: usize| remotes.iter().filter_map(|r| d.row_of.get(&r.target).copied()).filter(|&t| t <= h).collect::<Vec<_>>();
+    let on = remotes.iter().any(|r| r.target == head) || row.is_some_and(|&h| d.graph.reachable(&tips(h))[h]);
     let unsure = !remotes.is_empty() && (row.is_none() || d.view.first_parent || d.view.filtered());
-    let pushed = remotes.iter().any(|r| on(r)) || (unsure && git::run(&d.git_dir, &["rev-list", "-n1", head, "--not", "--remotes", "--"]).is_ok_and(|o| o.trim().is_empty()));
+    let pushed = on ||(unsure && git::run(&d.git_dir, &["rev-list", "-n1", head, "--not", "--remotes", "--"]).is_ok_and(|o| o.trim().is_empty()));
     pushed.then(|| super::rebase::rewrites_pushed(1, None))
 }
 
@@ -791,7 +792,7 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
         RefKind::Local if r.head => None,
         // Checked out in another worktree: git refuses a second checkout, so open that one.
         RefKind::Local if r.worktree.is_some() => r.worktree.clone().map(Action::Switch),
-        RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", &r.name, "--"]).undo(Undo::Keep))),
+        RefKind::Local => Some(Action::Git(Op::new(format!("Checkout {}", r.name), &["checkout", "--end-of-options", &r.name, "--"]).undo(Undo::Keep))),
         RefKind::Remote => {
             let split = d.split_remote(&r.name);
             let twin = split.map_or(r.name.as_str(), |s| s.1);
@@ -808,8 +809,8 @@ pub fn branch_checkout(d: &RepoData, r: &Ref) -> Option<Action> {
             }
             Some(Action::Git(match d.local(local) {
                 Some(l) if l.head => Op::new(format!("Update {local} to {}", r.name), &["merge", "--ff-only", &r.full]).undo(Undo::Keep),
-                Some(l) if l.ahead > 0 && l.behind > 0 => Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).undo(Undo::Keep),
-                Some(_) => Op::new(format!("Checkout {local}"), &["checkout", local, "--"]).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
+                Some(l) if l.ahead > 0 && l.behind > 0 => Op::new(format!("Checkout {local}"), &["checkout", "--end-of-options", local, "--"]).undo(Undo::Keep),
+                Some(_) => Op::new(format!("Checkout {local}"), &["checkout", "--end-of-options", local, "--"]).then(&["merge", "--ff-only", &r.full]).undo(Undo::Keep),
                 None => Op::new(format!("Checkout {}", r.name), &["checkout", "-b", local, "--track", &r.full, "--"]).undo(Undo::Keep),
             }))
         }
@@ -898,6 +899,7 @@ impl RepoTab {
                 // Even a partly failed op may have moved refs: always offer undo.
                 let snaps = before.and_then(|b| git::snapshot(&dir).ok().map(|a| {
                     let a = super::undo::own(&op, &b, a);
+                    let (b, a) = super::undo::delta(b, a);
                     let n = if a == b { 0 } else { on_remotes(&dir, &b, &a) };
                     (b, a, n)
                 }));
@@ -1177,7 +1179,7 @@ impl RepoTab {
         }
         // Not after an amend: that push would need a force. `poll_op` pushes once it's committed.
         let push = self.push_after && !self.amend && self.push_op(false).is_some();
-        let concludes = self.data.as_ref().is_some_and(|d| matches!(d.state, git::State::Merging | git::State::CherryPicking | git::State::Reverting));
+        let concludes = self.data.as_ref().is_some_and(|d| ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"].iter().any(|f| d.git_dir.join(f).exists()));
         let mut op = Op::new(if push { PUSH_AFTER } else if self.amend { "Commit (amend)" } else { "Commit" }, &args).input(msg).undo(Undo::Soft);
         if concludes {
             op = op.undo(Undo::Keep).backup(Backup::Paths(vec![]));
@@ -1500,6 +1502,35 @@ mod tests {
     }
 
     #[test]
+    fn only_a_concluding_commit_or_merge_continue_skips_the_file_backup() {
+        assert!(matches!(super::continue_op("merge").backup, Some(super::Backup::Paths(ref p)) if p.is_empty()));
+        assert!(super::continue_op("cherry-pick").backup.is_none() && super::continue_op("revert").backup.is_none());
+        let dir = scratch("commit-during-sequence");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "base\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "f", "a\n");
+        let a = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "g", "b\n");
+        let b = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "ours\n");
+        assert!(git::run(&dir, &["cherry-pick", &a, &b]).is_err());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        sh(&dir, &["-c", "core.editor=true", "commit", "-q", "--no-edit"]);
+        std::fs::write(dir.join("mine"), "m\n").unwrap();
+        sh(&dir, &["add", "mine"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.summary = "mine".into();
+        assert_eq!(t.commit_op().undo, super::Undo::Soft);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn undoing_a_commit_that_concludes_a_merge_undoes_the_merge() {
         let dir = scratch("undo-merge-commit");
         sh(&dir, &["init", "-q", "-b", "main"]);
@@ -1590,7 +1621,7 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
-        assert_eq!(op.cmds, [["checkout", "feat", "--"]]);
+        assert_eq!(op.cmds, [["checkout", "--end-of-options", "feat", "--"]]);
         exec(&dir, &op).unwrap();
     }
 
@@ -1629,7 +1660,7 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "main"]), sh(&dir, &["rev-parse", "origin/main"]));
         let r = d.refs.iter().find(|r| r.name == "origin/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!() };
-        assert_eq!(op.cmds[0], ["checkout", "feat", "--"]);
+        assert_eq!(op.cmds[0], ["checkout", "--end-of-options", "feat", "--"]);
 
         sh(&dir, &["branch", "-u", "origin/feat", "feat"]);
         sh(&dir, &["remote", "add", "mate", "."]);
@@ -1646,7 +1677,7 @@ mod tests {
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();
         let Some(Action::Git(op)) = super::branch_checkout(&d, r) else { panic!("checks out the branch made for it") };
-        assert_eq!(op.cmds[0], ["checkout", "mate-feat", "--"]);
+        assert_eq!(op.cmds[0], ["checkout", "--end-of-options", "mate-feat", "--"]);
         sh(&dir, &["branch", "--unset-upstream", "mate-feat"]);
         let d = load_all(&dir, 100, View::default()).unwrap();
         let r = d.refs.iter().find(|r| r.name == "mate/feat").unwrap();

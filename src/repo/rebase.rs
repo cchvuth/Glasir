@@ -67,6 +67,9 @@ impl Editor {
     }
 
     pub(crate) fn problem(&self) -> Option<&'static str> {
+        if self.items.iter().any(|i| i.act == Act::Reword && i.message.trim().is_empty()) {
+            return Some("A reworded commit needs a message.");
+        }
         match self.items.iter().rev().find(|i| i.act != Act::Drop) {
             None => Some("All commits are dropped (use Reset to move the branch instead)."),
             Some(i) if matches!(i.act, Act::Squash | Act::Fixup) => {
@@ -141,7 +144,12 @@ impl Editor {
                 _ => format!("git log -1 --format=%B > {msg} && printf '\\n%s\\n' '{note}' >> {msg} && git commit --amend --allow-empty -F {msg}"),
             };
             todo += &format!("exec git rev-parse HEAD > {pre}\n{verb} {}\n", it.id);
-            todo += &format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then {amend}; fi\n");
+            let empty = it.act == Act::Squash
+                && git::run(&self.dir, &["rev-parse", &format!("{}^{{tree}}", it.id), &format!("{}^^{{tree}}", it.id)]).is_ok_and(|t| t.lines().next() == t.lines().nth(1));
+            todo += &match empty {
+                true => format!("exec {amend}\n"),
+                false => format!("exec if test \"$(git rev-parse HEAD)\" != \"$(cat {pre})\"; then {amend}; fi\n"),
+            };
         }
         todo += &refs;
         let path = git_dir.join("glasir-rebase-todo");
@@ -348,11 +356,14 @@ pub fn reword(dir: &Path, git_dir: &Path, commit: &str, is_head: bool, branch: O
 
 /// `exec` pseudo-command: `REWRITE commit` gives `commit` the message on stdin by writing it and
 /// every commit after it up to HEAD again (same trees, authors and parents, merges too; signatures
-/// dropped), then moving HEAD's branch there, and the stacked branches on rewritten commits to their
+/// dropped, so refused under commit.gpgsign), then moving HEAD's branch there, and the stacked branches on rewritten commits to their
 /// copies ([`stacked_refs`]), in one transaction. No tree changes: the index and working tree stay.
 pub(super) const REWRITE: &str = "!rewrite";
 
 pub(super) fn rewrite(dir: &Path, commit: &str, tip: &str, message: &[u8]) -> Res<String> {
+    if git::run(dir, &["config", "--type=bool", "commit.gpgsign"]).is_ok_and(|v| v.trim() == "true") {
+        return Err("Rewording this way would leave the rewritten commits unsigned (commit.gpgsign is on). Check the branch out, or reword with git rebase -i --rebase-merges in a terminal.".into());
+    }
     let head = git::run(dir, &["rev-parse", tip])?.trim().to_owned();
     // Parents first: `commit` and its descendants up to HEAD.
     let ids = git::run(dir, &["rev-list", "--topo-order", "--reverse", &format!("--ancestry-path={commit}"), &head, &format!("^{commit}^@")])?;
@@ -504,6 +515,11 @@ pub fn amend_into(dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
 pub fn split(dir: &Path, git_dir: &Path, commit: &str, is_head: bool) -> Res<Op> {
     let short = &commit[..commit.len().min(7)];
     if is_head {
+        let gone = git::run(dir, &["diff-tree", "--no-commit-id", "--diff-filter=D", "--no-renames", "-r", "-z", "--name-only", commit])?;
+        let kept: Vec<&str> = gone.split('\0').filter(|p| !p.is_empty() && dir.join(p).symlink_metadata().is_ok_and(|m| !m.is_dir())).collect();
+        if !kept.is_empty() {
+            return Err(format!("{short} stops tracking {}, still on disk: splitting it would track them again with what they hold now.", kept.join(", ")));
+        }
         let sym = git::run(dir, &["symbolic-ref", "-q", "HEAD"]).unwrap_or_default();
         let op = Op::new(format!("Split {short}"), &[HEAD_IS, &format!("{} {commit}", sym.trim())]).then(&["reset", "-q", "HEAD^"]).undo(Undo::Mixed);
         return Ok(confirm_pushed(dir, commit, ("HEAD", "@{u}"), op));
@@ -1282,6 +1298,53 @@ mod tests {
         assert!(ed(&[Act::Squash, Act::Pick]).problem().is_none());
         assert!(ed(&[Act::Pick, Act::Fixup, Act::Drop]).problem().is_some()); // dropped oldest doesn't count
         assert!(ed(&[Act::Drop, Act::Drop]).problem().is_some());
+    }
+
+    #[test]
+    fn rejects_a_blank_reword() {
+        let mut e = ed(&[Act::Reword, Act::Pick]);
+        assert!(e.problem().is_none());
+        e.items[0].message = " \n\t".into();
+        assert!(e.problem().is_some());
+        e.items[0].act = Act::Pick;
+        assert!(e.problem().is_none());
+    }
+
+    #[test]
+    fn squashed_empty_commits_keep_their_messages() {
+        let (dir, g) = repo("squash-empty");
+        g(&["commit", "-q", "--allow-empty", "-m", "E2 note"]);
+        g(&["commit", "-q", "--allow-empty", "-m", "E3 note"]);
+        let ids: Vec<String> = g(&["rev-list", "-3", "HEAD"]).lines().map(String::from).collect();
+        run_op(&dir, &multi(&dir, &git::git_dir(&dir).unwrap(), &ids, Act::Squash).unwrap());
+        assert_eq!(g(&["log", "--format=%s"]).lines().collect::<Vec<_>>(), ["c3", "c2", "c1"]);
+        assert_eq!(g(&["log", "-1", "--format=%B"]).trim(), "c3\n\nE2 note\n\nE3 note");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rewrite_refuses_under_commit_gpgsign() {
+        let (dir, g) = repo("rewrite-gpgsign");
+        g(&["config", "commit.gpgsign", "true"]);
+        let (tip, c2) = (g(&["rev-parse", "HEAD"]), g(&["rev-parse", "HEAD~1"]).trim().to_owned());
+        let op = reword(&dir, &git::git_dir(&dir).unwrap(), &c2, false, Some("main"), "c2 better".into()).unwrap();
+        assert!(crate::repo::op::exec(&dir, &op).unwrap_err().contains("unsigned"));
+        assert_eq!(g(&["rev-parse", "HEAD"]), tip);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_head_refuses_to_track_a_file_it_stopped_tracking() {
+        let (dir, g) = repo("split-untracked");
+        let gd = git::git_dir(&dir).unwrap();
+        g(&["rm", "-q", "--cached", "c"]);
+        g(&["commit", "-q", "-m", "stop tracking c"]);
+        let head = g(&["rev-parse", "HEAD"]).trim().to_owned();
+        assert!(split(&dir, &gd, &head, true).unwrap_err().contains("stops tracking c"));
+        std::fs::remove_file(dir.join("c")).unwrap();
+        run_op(&dir, &split(&dir, &gd, &head, true).unwrap());
+        assert_eq!(g(&["status", "--porcelain"]), " D c\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A drop waiting in its confirm dialog while a commit lands elsewhere: refuses

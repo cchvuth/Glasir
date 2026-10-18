@@ -18,7 +18,8 @@ pub(super) struct Refs {
     pub(super) on_remote: usize,
 }
 
-/// The files an op changed, backed up before and after it ran; `before.paths` is the scope.
+/// The files an op changed, backed up before and after it ran; `before.paths` is the scope
+/// (`after.paths` is left empty).
 #[derive(Clone)]
 pub(super) struct Files {
     pub(super) before: Snap,
@@ -46,14 +47,16 @@ impl UndoEntry {
     }
 }
 
-/// How many of the commits that moving the branches from `after` back to `before` takes off
-/// a remote-tracking branch has.
+/// How many of the commits that moving the branches from `after` back to `before` (a
+/// [`delta`]; the other branches as they are now) takes off a remote-tracking branch has.
 pub(super) fn on_remotes(dir: &Path, before: &Snapshot, after: &Snapshot) -> usize {
     let tips = |s: &Snapshot, not: &str| {
         let heads = s.refs.iter().filter(|(r, _)| r.starts_with("refs/heads/")).map(|(_, o)| o);
         heads.chain(Some(&s.head).filter(|h| !h.starts_with("refs/"))).map(|o| format!("{not}{o}\n")).collect::<String>()
     };
-    let input = tips(after, "") + &tips(before, "^");
+    let now = git::run(dir, &["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads"]).unwrap_or_default();
+    let rest: String = now.lines().filter_map(|l| l.split_once(' ')).filter(|(_, r)| !before.refs.contains_key(*r) && !after.refs.contains_key(*r)).map(|(o, _)| format!("^{o}\n")).collect();
+    let input = tips(after, "") + &tips(before, "^") + &rest;
     let count = |extra: &[&str]| {
         let args: Vec<&str> = ["rev-list", "--count", "--stdin"].into_iter().chain(extra.iter().copied()).collect();
         git::run_input(dir, &args, Some(input.as_bytes())).ok().and_then(|n| n.trim().parse::<usize>().ok()).unwrap_or(0)
@@ -191,7 +194,7 @@ pub(super) fn backed_up(dir: &Path, b: &Backup, before: Option<Snap>, head: Opti
             git::drop_backups(dir, &[before.refname, after.refname]);
             Ok(None)
         }
-        Ok(after) => Ok(after.map(|after| Files { before, after })),
+        Ok(after) => Ok(after.map(|after| Files { before, after: Snap { paths: vec![], ..after } })),
         Err(e) => {
             let msg = format!("Glasir: {label}");
             git::keep(dir, &before.commit, &msg).map_err(|k| format!("{label} can't be undone ({e}), and its backup stays only in {} ({k}).", before.refname))?;
@@ -310,6 +313,13 @@ pub(super) fn moved(a: &Snapshot, b: &Snapshot) -> Vec<String> {
     m.into_iter().cloned().chain((a.head != b.head).then(|| "HEAD".to_owned())).collect()
 }
 
+pub(super) fn delta(mut b: Snapshot, mut a: Snapshot) -> (Snapshot, Snapshot) {
+    let mv: HashSet<String> = moved(&b, &a).into_iter().collect();
+    b.refs.retain(|r, _| mv.contains(r));
+    a.refs.retain(|r, _| mv.contains(r));
+    (b, a)
+}
+
 pub(super) fn own(op: &Op, before: &Snapshot, mut after: Snapshot) -> Snapshot {
     if op.custom {
         return after;
@@ -356,7 +366,7 @@ pub(super) fn transition(dir: &Path, label: &str, refs: Option<(Snapshot, Snapsh
     if let Some((mv, t, _)) = &refs
         && mv.contains(&end.head)
         && !end.refs.contains_key(&end.head)
-        && tip(t).is_some()
+        && (end.refs.contains_key(&t.head) || !t.head.starts_with("refs/"))
     {
         return Err(format!("{} is checked out here; switch to another branch first, then try again.", end.head.strip_prefix("refs/heads/").unwrap_or(&end.head)));
     }
@@ -2565,5 +2575,34 @@ mod tests {
             assert_eq!(labels(&t).len(), 1, "{how}: {m:?}");
             let _ = std::fs::remove_dir_all(&root);
         }
+    }
+
+    #[test]
+    fn a_step_keeps_only_the_refs_it_moved() {
+        let dir = repo("undo-delta");
+        commit(&dir, "keep", "k2\n");
+        for i in 0..20 {
+            sh(&dir, &["branch", &format!("b{i}")]);
+            sh(&dir, &["tag", &format!("t{i}")]);
+        }
+        let start = git::snapshot(&dir).unwrap();
+        let (ctx, mut t) = tab(&dir);
+        step(&ctx, &mut t, branch("new"));
+        hard_reset(&ctx, &mut t, &rev(&dir, "HEAD~1"));
+        let done = git::snapshot(&dir).unwrap();
+        let kept: Vec<(usize, usize)> = t.undo.iter().map(|e| e.refs.as_ref().map_or((9, 9), |r| (r.before.refs.len(), r.after.refs.len()))).collect();
+        assert_eq!(kept, [(0, 1), (1, 1)]);
+        sh(&dir, &["branch", "-f", "b3", "HEAD"]);
+        let moved_b3 = git::snapshot(&dir).unwrap();
+        step(&ctx, &mut t, Action::Undo);
+        step(&ctx, &mut t, Action::Undo);
+        let mut want = start.clone();
+        want.refs.insert("refs/heads/b3".into(), moved_b3.refs["refs/heads/b3"].clone());
+        assert_eq!(git::snapshot(&dir).unwrap(), want);
+        sh(&dir, &["branch", "-f", "b3", &start.refs["refs/heads/b3"]]);
+        step(&ctx, &mut t, Action::Redo);
+        step(&ctx, &mut t, Action::Redo);
+        assert_eq!(git::snapshot(&dir).unwrap(), done);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

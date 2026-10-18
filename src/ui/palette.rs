@@ -201,7 +201,7 @@ pub fn items(tab: Option<&RepoTab>, recent: &[PathBuf], pull: PullMode, terminal
                     let m = merge_op(&r.name, d.rev(r), how);
                     v.push(item(icon::GIT_MERGE, format!("Merge {} into {head}{how_label}", r.name), kind, Cmd::Tab(Action::Git(m))));
                 }
-                let rb = Op::new(format!("Rebase onto {}", r.name), &["rebase", d.rev(r)]).undo(Undo::Keep);
+                let rb = Op::new(format!("Rebase onto {}", r.name), &["rebase", "--end-of-options", d.rev(r)]).undo(Undo::Keep);
                 let rb = Action::RunRebase { op: rb, onto: d.rev(r).into(), branch: None, first: None };
                 v.push(item(icon::GIT_COMMIT, format!("Rebase {head} onto {}", r.name), kind, Cmd::Tab(rb)));
             }
@@ -352,6 +352,6 @@ mod tests {
         let Cmd::Tab(Action::Git(m)) = &find(format!("Merge release into {head}")).cmd else { panic!() };
         assert_eq!(m.cmds[0][2], "refs/heads/release");
         let Cmd::Tab(Action::RunRebase { op, onto, .. }) = &find(format!("Rebase {head} onto release")).cmd else { panic!() };
-        assert_eq!((op.cmds[0][1].as_str(), onto.as_str()), ("refs/heads/release", "refs/heads/release"));
+        assert_eq!((op.cmds[0][2].as_str(), onto.as_str()), ("refs/heads/release", "refs/heads/release"));
     }
 }

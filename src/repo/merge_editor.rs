@@ -336,7 +336,7 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
     if std::fs::read(&p).map_err(|e| format!("{path}: {e}"))? != original {
         return Err(format!("{path} changed on disk since it was read here. Open it again and resolve it from there."));
     }
-    if new_stray(original, output, marker_size(dir, path)) {
+    if new_stray(original, output, marker_size(dir, path), b"<|>") {
         return Err(format!("{path} has a conflict marker line outside a complete conflict; remove it before saving."));
     }
     // A file that isn't UTF-8 is written back byte for byte (see `decode`).
@@ -350,7 +350,7 @@ pub(crate) fn save(dir: &Path, path: &str, original: &[u8], output: &str) -> Res
 pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> Res<Op> {
     let out = like(original, reply)?;
     let n = marker_size(dir, path);
-    if conflicts(&parse(&out, n)).next().is_some() || new_stray(original, &out, n) {
+    if conflicts(&parse(&out, n)).next().is_some() || new_stray(original, &out, n, b"<|=>") {
         return Err(format!("{}'s answer for {path} still has conflict markers; resolve it in the merge editor.", crate::ai::name()));
     }
     save(dir, path, original, &out)?;
@@ -358,15 +358,15 @@ pub(crate) fn apply_ai(dir: &Path, path: &str, original: &[u8], reply: &str) -> 
 }
 
 /// Whether `out` has a marker line outside its conflicts that `original` didn't already have there.
-fn new_stray(original: &[u8], out: &str, n: usize) -> bool {
-    let mut had = stray(&decode(original), n);
-    stray(out, n).into_iter().any(|l| had.iter().position(|h| *h == l).map(|i| had.swap_remove(i)).is_none())
+fn new_stray(original: &[u8], out: &str, n: usize, kinds: &[u8]) -> bool {
+    let mut had = stray(&decode(original), n, kinds);
+    stray(out, n, kinds).into_iter().any(|l| had.iter().position(|h| *h == l).map(|i| had.swap_remove(i)).is_none())
 }
 
 /// Marker lines outside well-formed conflict blocks.
-fn stray(text: &str, n: usize) -> Vec<String> {
+fn stray(text: &str, n: usize, kinds: &[u8]) -> Vec<String> {
     let text = parse(text, n).into_iter().filter_map(|c| if let Chunk::Text(t) = c { Some(t) } else { None }).collect::<String>();
-    text.lines().filter(|l| b"<|=>".iter().any(|&c| is_marker(l, c, n))).map(str::to_owned).collect()
+    text.lines().filter(|l| kinds.iter().any(|&c| is_marker(l, c, n))).map(str::to_owned).collect()
 }
 
 /// `text` ending in a newline, with CRLF line endings when `original` has them
@@ -858,6 +858,7 @@ mod tests {
         assert_eq!((ed.output.as_str(), ed.orig_of.len()), ("resolved by Claude\n", 0));
 
         assert!(save(&dir, "f.txt", &d.original, "a\n<<<<<<< HEAD\nx\n=======\n").unwrap_err().contains("outside a complete conflict"));
+        save(&dir, "f.txt", &d.original, "Install\n=======\n").unwrap();
         // Edits made elsewhere since loading are never overwritten; symlinks are refused.
         std::fs::write(dir.join("f.txt"), "changed\n").unwrap();
         assert!(save(&dir, "f.txt", &d.original, &out).unwrap_err().contains("changed on disk"));

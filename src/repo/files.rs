@@ -13,7 +13,7 @@ pub fn reveal(path: &Path) {
     let _ = open::that_detached(path.parent().unwrap_or(path));
 }
 
-/// Append `/<path>` to the repo's .gitignore (refuses to write through a symlink),
+/// Append `/<path>` to the repo's .gitignore (refuses anything but a regular file),
 /// escaped so it matches only that file, not a glob of others.
 pub fn append_gitignore(dir: &Path, path: &str) -> std::io::Result<()> {
     use std::io::Write;
@@ -21,8 +21,8 @@ pub fn append_gitignore(dir: &Path, path: &str) -> std::io::Result<()> {
         return Err(std::io::Error::other("the file name contains a line break; edit .gitignore manually"));
     }
     let p = dir.join(".gitignore");
-    if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
-        return Err(std::io::Error::other(".gitignore is a symlink; edit it manually"));
+    if std::fs::symlink_metadata(&p).is_ok_and(|m| !m.is_file()) {
+        return Err(std::io::Error::other(".gitignore is not a regular file; edit it manually"));
     }
     let mut pattern = String::new();
     for c in path.chars() {
@@ -35,7 +35,7 @@ pub fn append_gitignore(dir: &Path, path: &str) -> std::io::Result<()> {
     if pattern.ends_with(' ') {
         pattern.insert(pattern.len() - 1, '\\');
     }
-    let existing = std::fs::read(&p).unwrap_or_default();
+    let existing = crate::git::read_small(&p).unwrap_or_default();
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
     if existing.last().is_some_and(|&b| b != b'\n') {
         writeln!(f)?;

@@ -729,10 +729,12 @@ impl RepoTab {
                     self.notes.push(Msg { text: format!("Not opened: {u} is not an http(s) page on a remote's host."), error: true });
                 }
             }
-            // The repo itself opens in the file manager; a file is revealed in its folder.
-            Action::Reveal(p) if p.is_empty() => {
+            // The repo itself opens in the file manager; a file is revealed in its folder. On macOS
+            // the repo is revealed too: `open` would launch a folder named like an app (`X.app`).
+            Action::Reveal(p) if p.is_empty() && !cfg!(target_os = "macos") => {
                 let _ = open::that_detached(&self.dir);
             }
+            Action::Reveal(p) if p.is_empty() => reveal(&self.dir),
             Action::Reveal(p) => reveal(&self.dir.join(p)),
             Action::Editor(p) => {
                 if let Err(e) = tools::open_editor(&self.dir, &self.dir.join(p)) {

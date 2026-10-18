@@ -49,10 +49,8 @@ pub(super) fn complete(
         if choice["delta"]["refusal"].is_string() {
             return Err("ChatGPT declined this request.".into());
         }
-        if let Some(t) = choice["delta"]["content"].as_str().filter(|t| !t.is_empty()) {
-            if !on_text(t.into()) {
-                return Ok(());
-            }
+        if !on_text(choice["delta"]["content"].as_str().unwrap_or("").into()) {
+            return Ok(());
         }
         if let Some(f) = choice["finish_reason"].as_str() {
             finish = Some(f.to_owned());

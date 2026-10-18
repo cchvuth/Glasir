@@ -160,7 +160,9 @@ pub(super) fn save(dir: &Path, a: &[&str], input: &[u8]) -> Res<String> {
         let _ = std::fs::remove_file(&tmp);
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         std::io::Write::write_all(&mut f, input)?;
-        f.set_permissions(std::fs::metadata(&p)?.permissions())?;
+        if let Ok(m) = std::fs::metadata(&p) {
+            f.set_permissions(m.permissions())?;
+        }
         drop(f);
         std::fs::rename(&tmp, &p)
     };
@@ -182,6 +184,22 @@ mod tests {
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
         dir
+    }
+
+    #[test]
+    fn overwrite_recreates_a_file_deleted_meanwhile() {
+        let dir = repo("fe_gone");
+        commit(&dir, "a.txt", "one\n");
+        let mut ed = FileEdit::load(&dir, "a.txt").unwrap();
+        ed.text.push_str("two\n");
+        std::fs::remove_file(dir.join("a.txt")).unwrap();
+        ed.check(&dir);
+        assert!(ed.conflict);
+        ed.overwrite(&dir);
+        let op = ed.save_op(&dir).unwrap();
+        run_backed(&dir, &op).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

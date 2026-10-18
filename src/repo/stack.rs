@@ -247,7 +247,7 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
         return if follow { Ok(why.into()) } else { Err(why.into()) };
     }
     let back = || match head.strip_prefix("refs/heads/") {
-        Some(b) => git::run(dir, &["checkout", "-q", b, "--"]),
+        Some(b) => git::run(dir, &["checkout", "-q", "--end-of-options", b, "--"]),
         None => git::run(dir, &["checkout", "-q", "--detach", &head, "--"]),
     };
     git::with_autostash(dir, "Glasir: restack stacked branches", || {
@@ -261,7 +261,7 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
                 merges.push(format!("{} has merge commits, so it wasn't restacked onto {}; rebase it yourself.", e[0], e[1]));
                 continue;
             }
-            let err = match git::run(dir, &["rebase", "-q", "--no-update-refs", "--onto", &format!("refs/heads/{}", e[1]), e[3], e[0]]) {
+            let err = match git::run(dir, &["rebase", "-q", "--no-update-refs", "--onto", &format!("refs/heads/{}", e[1]), "--end-of-options", e[3], e[0]]) {
                 Ok(_) => {
                     moved.push((e[0], e[2]));
                     continue;

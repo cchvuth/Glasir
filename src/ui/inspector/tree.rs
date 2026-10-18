@@ -111,8 +111,8 @@ pub fn visible(ui: &Ui, step: f32, n: usize) -> (usize, usize) {
 
 type Cached = Arc<(u64, Arc<FileTree>, HashSet<String>, Vec<usize>)>;
 
-/// The tree rows. The tree and its shown rows are cached under `id` while `key` (the data's
-/// generation, a new value for every reload of `changes`) and `closed` stay the same, so a frame
+/// The tree rows. The tree and its shown rows are cached under `id` while `key` (a hash of
+/// `changes`) and `closed` stay the same, so a frame
 /// only walks what's in view: every row is `ROW_H` high, so with `all` off only those are drawn.
 pub fn show<'a>(ui: &mut Ui, changes: impl Iterator<Item = &'a Change>, key: u64, id: Id, closed: &mut HashSet<String>, all: bool, mut row: impl FnMut(&mut Ui, Item) -> bool) {
     let old = ui.data(|d| d.get_temp::<Cached>(id)).filter(|c| c.0 == key);

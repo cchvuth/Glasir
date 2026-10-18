@@ -5,7 +5,7 @@ use super::op::{Backup, Op};
 use super::image_diff::{self, ImageDiff};
 use super::task::Task;
 use super::RepoTab;
-use crate::git::{self, DiffOpts, FileDiff, Res};
+use crate::git::{self, Cancel, DiffOpts, FileDiff, Res};
 use std::collections::BTreeSet;
 
 type Loaded = (FileDiff, Vec<Vec<crate::highlight::Spans>>, Option<ImageDiff>);
@@ -21,6 +21,7 @@ pub struct DiffState {
     pub opts: DiffOpts,
     pub pending: DiffOpts,
     task: Option<Task<Res<Loaded>>>,
+    cancel: Cancel,
     /// Picked change lines `(hunk, line)` for partial staging.
     pub picked: BTreeSet<(usize, usize)>,
     /// Changes whenever `file`'s lines may have (another file, other hunks, an error): keys the
@@ -65,7 +66,9 @@ impl RepoTab {
         let s = src.clone();
         let dark = ctx.global_style().visuals.dark_mode;
         let (c, o) = (ctx.clone(), self.diff_opts);
-        let task = Task::spawn(ctx, move || {
+        let cancel = Cancel::default();
+        let scope = cancel.clone();
+        let task = Task::spawn(ctx, move || scope.scope(|| {
             let f = match &s {
                 DiffSrc::Worktree { change, staged } => git::worktree_diff(&dir, change, *staged, o),
                 DiffSrc::Commit { id, parent, change } => git::commit_diff(&dir, id, parent.as_deref(), change, o),
@@ -74,12 +77,16 @@ impl RepoTab {
             let image = (f.binary && f.lfs.is_none() && image_diff::is_image(path)).then(|| image_diff::load(&c, &dir, &s));
             let hl = crate::highlight::highlight(path, &f, dark);
             Ok((f, hl, image))
-        });
-        let (keep, hl, image, opts, picked, stamp) = match self.diff.take().filter(|d| d.src == src) {
+        }));
+        let old = self.diff.take();
+        if let Some(d) = &old {
+            d.cancel.cancel();
+        }
+        let (keep, hl, image, opts, picked, stamp) = match old.filter(|d| d.src == src) {
             Some(d) => (d.file, d.hl, d.image, d.opts, d.picked, d.stamp),
             None => (None, vec![], None, o, BTreeSet::new(), stamp()),
         };
-        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), picked, stamp });
+        self.diff = Some(DiffState { src, file: keep, hl, image, opts, pending: o, task: Some(task), cancel, picked, stamp });
     }
 
     pub(super) fn poll_diff(&mut self) {

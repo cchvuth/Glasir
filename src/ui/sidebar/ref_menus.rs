@@ -70,7 +70,7 @@ fn compare_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<
         acts.push(Action::Select(Sel::Compare { from: from.into(), to: rev.into(), three_dot: true }));
     }
     if crate::ai::enabled() && ui.button(format!("{}  Explain changes vs {head}", icon::SPARKLE)).clicked() {
-        acts.push(Action::Ai(Purpose::ExplainRange { from: from.into(), to: rev.into() }));
+        acts.push(Action::Ai(Purpose::ExplainRange { from: from.into(), to: rev.into(), three_dot: true }));
     }
     if let Some(base) = d.local(&head) {
         // By commit id: a local branch name need not exist on the remote.
@@ -178,7 +178,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
     if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {
         let path = d.worktree_path(name);
-        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "{}", d.worktree_rev(r)]).then_open("{}")));
+        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "--end-of-options", "{}", d.worktree_rev(r)]).then_open("{}")));
     }
     if let Some(p) = &r.worktree
         && ui.button(format!("{}  Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
@@ -197,10 +197,10 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         r.upstream.clone()
     };
     if ui.button("Set upstream…").clicked() {
-        acts.push(prompt(format!("Upstream for {name}"), default_up, Op::new("Set upstream", &["branch", "--set-upstream-to", "{}", name])));
+        acts.push(prompt(format!("Upstream for {name}"), default_up, Op::new("Set upstream", &["branch", "--set-upstream-to", "{}", "--end-of-options", name])));
     }
     if !r.upstream.is_empty() && ui.button(format!("Unset upstream ({})", r.upstream)).clicked() {
-        acts.push(op("Unset upstream", &["branch", "--unset-upstream", name]));
+        acts.push(op("Unset upstream", &["branch", "--unset-upstream", "--end-of-options", name]));
     }
     if !r.head {
         if ui.button("Delete").clicked() {
@@ -273,7 +273,7 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
         acts.push(Action::VerifyTag(r.full.clone()));
     }
     if ui.button("Delete tag").clicked() {
-        acts.push(Action::Git(Op::new(format!("Delete tag {}", r.name), &["tag", "-d", &r.name]).undo(Undo::Keep)));
+        acts.push(Action::Git(Op::new(format!("Delete tag {}", r.name), &["tag", "-d", "--end-of-options", &r.name]).undo(Undo::Keep)));
     }
     if let Some(remote) = d.default_remote() {
         if ui.button(format!("Delete tag here and from {remote}")).clicked() {

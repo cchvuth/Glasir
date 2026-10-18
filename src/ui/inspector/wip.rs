@@ -492,7 +492,7 @@ impl RepoTab {
                     }
                     // The type label is painted under its row, in the gap: rows keep one height, so the list is culled.
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 16.0);
-                    tree::list(ui, &s.conflicted, d.generation, *as_tree, "conflicts", &mut self.tree_closed, false, |ui, item| {
+                    tree::list(ui, &s.conflicted, d.status_key, *as_tree, "conflicts", &mut self.tree_closed, false, |ui, item| {
                         let (c, depth) = match item {
                             Item::File { c, depth, .. } => (c, depth),
                             Item::Dir { path, files, resp } => {
@@ -582,7 +582,7 @@ impl RepoTab {
                 if s.unstaged.is_empty() {
                     ui.label(RichText::new("No unstaged changes").small().color(theme::dim(ui)));
                 }
-                tree::list(ui, &s.unstaged, d.generation, *as_tree, "unstaged", &mut self.tree_closed, false, |ui, item| {
+                tree::list(ui, &s.unstaged, d.status_key, *as_tree, "unstaged", &mut self.tree_closed, false, |ui, item| {
                     let (c, depth, order) = match item {
                         Item::File { c, depth, order } => (c, depth, order),
                         Item::Dir { path, files, resp } => {
@@ -681,7 +681,7 @@ impl RepoTab {
                 if s.staged.is_empty() {
                     ui.add(egui::Label::new(RichText::new("Nothing staged yet: double-click a file above, or Stage all").small().color(theme::dim(ui))).wrap());
                 }
-                tree::list(ui, &s.staged, d.generation, *as_tree, "staged", &mut self.tree_closed, false, |ui, item| {
+                tree::list(ui, &s.staged, d.status_key, *as_tree, "staged", &mut self.tree_closed, false, |ui, item| {
                     let (c, depth, order) = match item {
                         Item::File { c, depth, order } => (c, depth, order),
                         Item::Dir { path, files, resp } => {

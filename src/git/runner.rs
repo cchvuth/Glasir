@@ -5,6 +5,10 @@ use super::Res;
 use super::log::record;
 use std::io::{Read, Write};
 use std::path::Path;
+
+pub fn read_small(p: &Path) -> Option<Vec<u8>> {
+    std::fs::symlink_metadata(p).ok().filter(|m| m.is_file() && m.len() < 1 << 20).and_then(|_| std::fs::read(p).ok())
+}
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -290,6 +294,36 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
     let msg = format!("{}\n{}", stderr.trim(), String::from_utf8_lossy(&stdout).trim());
     let msg = msg.trim();
     Err(if msg.is_empty() { format!("{prog} {} failed ({status})", super::url::redact(&args.join(" "))) } else { msg.to_owned() })
+}
+
+pub fn run_capped(dir: &Path, args: &[&str], cap: usize) -> Res<(Vec<u8>, bool)> {
+    let cancel = Cancel::active();
+    if cancel.is_cancelled() {
+        return Err(CANCELLED.into());
+    }
+    let start = Instant::now();
+    let mut c = cmd(dir);
+    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = spawn(&mut c).map_err(|e| format!("could not run git: {e}"))?;
+    let (done, _ended) = std::sync::mpsc::channel();
+    let err = read_all(child.stderr.take().unwrap(), None, done);
+    cancel.attach(child.id());
+    let mut out = vec![];
+    let _ = child.stdout.take().unwrap().take(cap as u64 + 1).read_to_end(&mut out);
+    let cut = out.len() > cap;
+    if cut {
+        let _ = child.kill();
+    }
+    let status = child.wait().map_err(|e| e.to_string());
+    let cancelled = cancel.detach();
+    let status = status?;
+    let stderr = String::from_utf8_lossy(&err.lock().unwrap()).into_owned();
+    record(dir, "git", args, start, status.code(), &stderr);
+    match () {
+        _ if cancelled => Err(CANCELLED.into()),
+        _ if cut || status.success() => Ok((out, cut)),
+        _ => Err(if stderr.trim().is_empty() { format!("git {} failed ({status})", super::url::redact(&args.join(" "))) } else { stderr.trim().to_owned() }),
+    }
 }
 
 /// Runs git, handing each NUL-terminated stdout record to `each` as it arrives (a long

@@ -163,7 +163,7 @@ pub(super) fn ai_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
         // From the merge editor, the answer fills its output pane instead.
         ai::Purpose::Resolve(p) => t.merge.as_ref().is_none_or(|m| m.path != *p),
         // The inspector shows it inline only while that same range is selected.
-        ai::Purpose::ExplainRange { from: f, to: tt } => !matches!(&t.sel, Some(crate::repo::Sel::Compare { from, to, .. }) if f == from && tt == to),
+        ai::Purpose::ExplainRange { from: f, to: tt, .. } => !matches!(&t.sel, Some(crate::repo::Sel::Compare { from, to, .. }) if f == from && tt == to),
         ai::Purpose::ExplainWip => true,
         _ => false,
     };
@@ -498,7 +498,7 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 for how in hows.into_iter().filter(|h| dr.head || *h != Some(Merge::Squash)) {
                     let mut merge = merge_op(src, src_rev, how);
                     if !dr.head {
-                        let mut o = Op::new(format!("Merge {src} into {dst}"), &["checkout", dst, "--"]).undo(Undo::Keep);
+                        let mut o = Op::new(format!("Merge {src} into {dst}"), &["checkout", "--end-of-options", dst, "--"]).undo(Undo::Keep);
                         o.cmds.extend(merge.cmds);
                         merge = o;
                     }
@@ -516,7 +516,7 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
             // `git rebase <dst> <remote ref>` (or `refs/heads/<src>`) would rebase a detached HEAD
             // and move no branch; a short `<branch>` argument is looked up as a branch first.
             if local(s) {
-                let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", dst_rev, src]).undo(Undo::Keep);
+                let rebase = Op::new(format!("Rebase {src} onto {dst}"), &["rebase", "--end-of-options", dst_rev, src]).undo(Undo::Keep);
                 let rebase = Action::RunRebase { op: rebase, onto: dst_rev.into(), branch: Some(src.clone()), first: None };
                 pick(ui, format!("{}  Rebase {src} onto {dst}", icon::GIT_COMMIT), rebase);
             }

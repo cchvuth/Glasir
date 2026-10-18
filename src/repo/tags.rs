@@ -44,7 +44,7 @@ fn tag_message(obj: &[u8]) -> (Vec<u8>, bool) {
 
 /// Delete tag `r` here, then on `remote` (only the local half can be undone).
 pub fn delete_everywhere(r: &Ref, remote: &str) -> Op {
-    Op::new(format!("Delete tag {}", r.name), &["tag", "-d", &r.name])
+    Op::new(format!("Delete tag {}", r.name), &["tag", "-d", "--end-of-options", &r.name])
         .then(&["push", remote, "--delete", &r.full])
         .undo(Undo::Keep)
         .confirm(format!("Delete tag {} here and on {remote}? Undo restores only the local tag.", r.name))

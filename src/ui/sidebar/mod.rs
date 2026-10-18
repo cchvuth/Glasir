@@ -202,6 +202,8 @@ fn section(ui: &mut Ui, title: &str, count: usize, add: impl FnOnce(&mut Ui)) {
         .show(ui, add);
 }
 
+type TagLists = std::sync::Arc<(std::sync::Weak<Vec<crate::git::Ref>>, String, Vec<usize>, Vec<usize>)>;
+
 pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Sel>, filter: &mut String, acts: &mut Vec<Action>) {
     // One line per row, cut with "…" (full text on hover): a long name must not
     // wrap or widen the panel.
@@ -244,7 +246,8 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                     in_view(ui, &mut step, |ui| local_row(ui, d, r, &r.name, depth, acts));
                 }
             }
-            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name) && !names.contains(&d.refs[i].name.as_str())).collect();
+            let shown: std::collections::HashSet<&str> = names.iter().copied().collect();
+            let nested: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Local && d.refs[i].name.contains('/') && matches(f, &d.refs[i].name) && !shown.contains(d.refs[i].name.as_str())).collect();
             let seed = d.refs.iter().find(|r| r.head && r.kind == RefKind::Local).map(|r| r.name.as_str());
             folders::show(ui, d, ui.id().with((dir, "local")), &nested, 0, f, seed, acts, |ui, r, name, acts| local_row(ui, d, r, name, 0, acts));
         });
@@ -288,16 +291,27 @@ pub fn sidebar(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, sel: &Option<Se
                 acts.push(Action::RemoteForm(crate::repo::remotes::Form::add(d)));
             }
         });
-        let mut tags: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Tag && matches(f, &d.refs[i].name)).collect();
-        tags.sort_by_key(|&i| std::cmp::Reverse(d.refs[i].date));
-        section(ui, "TAGS", tags.len(), |ui| {
-            let (roots, mut nested): (Vec<usize>, Vec<usize>) = tags.iter().partition(|&&i| !d.refs[i].name.contains('/'));
+        let tags_id = ui.id().with((dir, "tag-lists"));
+        let key = std::sync::Arc::downgrade(&d.refs);
+        let lists = match ui.data(|x| x.get_temp::<TagLists>(tags_id)).filter(|c| c.0.ptr_eq(&key) && c.1 == f) {
+            Some(c) => c,
+            None => {
+                let mut tags: Vec<usize> = (0..d.refs.len()).filter(|&i| d.refs[i].kind == RefKind::Tag && matches(f, &d.refs[i].name)).collect();
+                tags.sort_by_key(|&i| std::cmp::Reverse(d.refs[i].date));
+                let (roots, mut nested): (Vec<usize>, Vec<usize>) = tags.iter().partition(|&&i| !d.refs[i].name.contains('/'));
+                nested.sort_unstable();
+                let c: TagLists = std::sync::Arc::new((key, f.to_owned(), roots, nested));
+                ui.data_mut(|x| x.insert_temp(tags_id, c.clone()));
+                c
+            }
+        };
+        let (roots, nested) = (&lists.2, &lists.3);
+        section(ui, "TAGS", roots.len() + nested.len(), |ui| {
             let mut step = 0.0;
-            for i in roots {
+            for &i in roots {
                 in_view(ui, &mut step, |ui| tag_row(ui, d, &d.refs[i], &d.refs[i].name, acts));
             }
-            nested.sort_unstable();
-            folders::show(ui, d, ui.id().with((dir, "tags")), &nested, 0, f, None, acts, |ui, r, name, acts| tag_row(ui, d, r, name, acts));
+            folders::show(ui, d, ui.id().with((dir, "tags")), nested, 0, f, None, acts, |ui, r, name, acts| tag_row(ui, d, r, name, acts));
         });
         worktrees::list(ui, d, dir, f, acts);
         submodules::list(ui, d, f, acts);

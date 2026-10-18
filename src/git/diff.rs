@@ -1,7 +1,7 @@
 //! Diffs: the parsed model ([`FileDiff`] / [`Hunk`] / [`Line`]), patches for
 //! line-level staging, and per-file worktree / commit / untracked diffs.
 
-use super::{Change, Res, run, run_raw};
+use super::{Change, Res, run, run_capped};
 use std::io::Read;
 use std::path::Path;
 
@@ -271,7 +271,7 @@ pub fn worktree_diff(dir: &Path, c: &Change, staged: bool, o: DiffOpts) -> Res<F
         args.push(o);
     }
     args.push(&c.path);
-    let raw = run_raw(dir, &args, None)?;
+    let raw = run_capped(dir, &args, if o.all { usize::MAX - 1 } else { LARGE_BYTES })?.0;
     if let Some(f) = large(raw.iter().filter(|&&b| b == b'\n').count(), raw.len(), o) {
         return Ok(f);
     }
@@ -301,7 +301,7 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
         args.push(o);
     }
     args.push(&c.path);
-    let raw = run_raw(dir, &args, None)?;
+    let raw = run_capped(dir, &args, if o.all { usize::MAX - 1 } else { LARGE_BYTES })?.0;
     if let Some(f) = large(raw.iter().filter(|&&b| b == b'\n').count(), raw.len(), o) {
         return Ok(f);
     }
@@ -386,6 +386,26 @@ fn untracked_diff(dir: &Path, path: &str, o: DiffOpts) -> Res<FileDiff> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::run_raw;
+
+    #[test]
+    fn huge_tracked_diff_is_cut_short() {
+        let dir = std::env::temp_dir().join(format!("glasir-huge-diff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        g(&["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        g(&["add", "-A"]);
+        g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "one"]);
+        std::fs::write(dir.join("a.txt"), "line of text\n".repeat(400_000)).unwrap();
+        let c = Change { path: "a.txt".into(), old_path: None, code: 'M' };
+        let f = worktree_diff(&dir, &c, false, DiffOpts::default()).unwrap();
+        assert!(f.large.is_some_and(|(_, bytes)| bytes <= LARGE_BYTES + 1) && f.hunks.is_empty());
+        let f = worktree_diff(&dir, &c, false, DiffOpts { all: true, ..Default::default() }).unwrap();
+        assert!(f.large.is_none() && f.hunks.len() == 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Untracked files: a TAB in the name is quoted in the patch header, a big text file is the
     /// "too big" stand-in (not binary), a binary is not flagged as lossy.

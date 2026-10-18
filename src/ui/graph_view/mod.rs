@@ -417,9 +417,15 @@ pub fn show(
                 if let Some((cm, ids)) = commit.and_then(|cm| Some((cm, d.refs_at.get(&cm.id).filter(|v| !v.is_empty())?))) {
                     // A local branch level with its upstream shares one pill; the checked-out branch leads.
                     let at = || ids.iter().map(|&i| &d.refs[i]);
-                    let tracked = |r: &Ref| r.kind == RefKind::Remote && at().any(|l| l.kind == RefKind::Local && l.upstream == r.name);
-                    let mut pills: Vec<(&Ref, Option<&Ref>)> =
-                        at().filter(|r| !tracked(r)).map(|r| (r, at().find(|u| r.kind == RefKind::Local && u.kind == RefKind::Remote && u.name == r.upstream))).collect();
+                    let tracking: std::collections::HashSet<&str> = at().filter(|l| l.kind == RefKind::Local).map(|l| l.upstream.as_str()).collect();
+                    let mut remote_at: std::collections::HashMap<&str, &Ref> = Default::default();
+                    for u in at().filter(|u| u.kind == RefKind::Remote) {
+                        remote_at.entry(u.name.as_str()).or_insert(u);
+                    }
+                    let mut pills: Vec<(&Ref, Option<&Ref>)> = at()
+                        .filter(|r| !(r.kind == RefKind::Remote && tracking.contains(r.name.as_str())))
+                        .map(|r| (r, if r.kind == RefKind::Local { remote_at.get(r.upstream.as_str()).copied() } else { None }))
+                        .collect();
                     pills.sort_by_key(|(r, _)| !(r.head && r.kind == RefKind::Local));
                     let (rf, up) = pills[0];
                     let more = pills.len() - 1;
@@ -532,8 +538,7 @@ pub fn show(
                 let msg_clip = Rect::from_x_y_ranges(x_msg + 6.0..=(x_author - 8.0).max(x_msg + 6.0), ty - ROW..=ty + ROW);
                 match commit {
                     None => {
-                        let s = &d.status;
-                        let n = s.changed_count();
+                        let n = d.changed;
                         painter.with_clip_rect(msg_clip).text(
                             pos2(x_msg + 8.0, ty),
                             Align2::LEFT_CENTER,

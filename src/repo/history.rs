@@ -62,6 +62,7 @@ pub struct FileView {
     pub data_gen: u64,
     task: Option<Task<Res<Data>>>,
     cancel: git::Cancel,
+    stamp: Option<(std::time::SystemTime, u64)>,
     pub sel: Option<usize>,
     /// Most commits a file or folder history lists (more on request: a big folder takes seconds).
     pub limit: usize,
@@ -73,7 +74,7 @@ pub struct FileView {
 
 impl FileView {
     pub fn open(ctx: &egui::Context, dir: &Path, path: &str, mode: Mode) -> Self {
-        let mut fv = FileView { path: path.into(), mode, data: None, data_gen: 0, task: None, cancel: Default::default(), sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
+        let mut fv = FileView { path: path.into(), mode, data: None, data_gen: 0, task: None, cancel: Default::default(), stamp: None, sel: None, limit: PAGE, dir: dir.into(), back: vec![], fwd: vec![] };
         fv.load(ctx, false);
         fv
     }
@@ -86,6 +87,7 @@ impl FileView {
         let (dir, p, mode, limit) = (self.dir.clone(), self.path.clone(), self.mode.clone(), self.limit);
         self.cancel.cancel();
         self.cancel = Default::default();
+        self.stamp = self.file_stamp();
         let cancel = self.cancel.clone();
         self.task = Some(Task::spawn(ctx, move || {
             cancel.scope(|| match mode {
@@ -115,9 +117,19 @@ impl FileView {
         true
     }
 
-    /// After a repo reload: the working-tree blame always, the others when HEAD moved.
+    fn file_stamp(&self) -> Option<(std::time::SystemTime, u64)> {
+        let m = std::fs::metadata(self.dir.join(&self.path)).ok()?;
+        Some((m.modified().ok()?, m.len()))
+    }
+
+    /// After a repo reload: the working-tree blame when HEAD moved or the file changed, the others when HEAD moved.
     pub fn refresh(&mut self, ctx: &egui::Context, head_moved: bool) {
-        if matches!(self.mode, Mode::Blame(None)) || (head_moved && !matches!(self.mode, Mode::Blame(_))) {
+        let stale = match self.mode {
+            Mode::Blame(None) => head_moved || self.file_stamp() != self.stamp,
+            Mode::Blame(_) => false,
+            _ => head_moved,
+        };
+        if stale {
             self.load(ctx, true);
         }
     }
@@ -604,13 +616,17 @@ mod tests {
         let ctx = egui::Context::default();
         let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::Blame(None));
         wait_for("the first blame to start", || gate.exists());
+        let stopped = || git::LOG.lock().unwrap().iter().any(|l| l.cwd == dir && l.args.iter().any(|a| a == "blame") && l.code.is_none());
+        fv.refresh(&ctx, false);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!stopped(), "an unchanged file restarted its blame");
+        std::fs::write(dir.join("f.txt"), "one!\n").unwrap();
         fv.refresh(&ctx, false);
         wait_for("the second blame", || {
             fv.poll();
             fv.data.is_some()
         });
         assert!(matches!(&fv.data, Some(Ok(Data::Blame(b))) if b.lines.len() == 1));
-        let stopped = || git::LOG.lock().unwrap().iter().any(|l| l.cwd == dir && l.args.iter().any(|a| a == "blame") && l.code.is_none());
         for _ in 0..500 {
             if stopped() {
                 break;
