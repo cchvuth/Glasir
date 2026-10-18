@@ -148,6 +148,9 @@ impl App {
         let mut t = RepoTab::new(ctx, top.clone(), self.s.max_commits, self.s.views.get(&top).cloned().unwrap_or_default());
         if let Some(draft) = self.drafts.remove(&top) {
             (t.summary, t.body, t.template, t.coauthors) = draft;
+        } else if let Some(saved) = git::git_dir(&top).ok().and_then(|g| std::fs::read_to_string(g.join(DRAFT_FILE)).ok()) {
+            let (summary, body) = saved.split_once("\n\n").unwrap_or((&saved, ""));
+            (t.summary, t.body) = (summary.to_owned(), body.to_owned());
         }
         if let Some(steps) = self.steps.remove(&top) {
             t.put_steps(steps);
@@ -583,9 +586,26 @@ impl eframe::App for App {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.persist_drafts();
         self.s.open = self.tabs.iter().map(|t| t.dir.clone()).collect();
         self.s.active = self.active;
         eframe::set_value(storage, "settings", &self.s);
+    }
+}
+
+const DRAFT_FILE: &str = "GLASIR_DRAFT";
+
+impl App {
+    fn persist_drafts(&self) {
+        let open = self.tabs.iter().map(|t| (t.dir.as_path(), draft(t).map(|d| (d.0, d.1))));
+        let closed = self.drafts.iter().map(|(dir, d)| (dir.as_path(), Some((d.0.clone(), d.1.clone()))));
+        for (dir, d) in open.chain(closed) {
+            let Ok(g) = git::git_dir(dir) else { continue };
+            let _ = match d {
+                Some((summary, body)) => std::fs::write(g.join(DRAFT_FILE), format!("{summary}\n\n{body}")),
+                None => std::fs::remove_file(g.join(DRAFT_FILE)),
+            };
+        }
     }
 }
 
@@ -870,6 +890,26 @@ mod close_tests {
         assert!(app.tabs[0].busy().is_some());
         app.close_tab(&ctx, 0);
         assert_eq!(app.tabs.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_typed_commit_message_survives_quitting() {
+        let dir = std::env::temp_dir().join(format!("glasir-quit-draft-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        (app.tabs[0].summary, app.tabs[0].body) = ("fix it".into(), "why\n\nmore".into());
+        assert!(!close(&ctx, &mut app).contains(&ViewportCommand::CancelClose));
+        app.persist_drafts();
+        let app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        assert_eq!((app.tabs[0].summary.as_str(), app.tabs[0].body.as_str()), ("fix it", "why\n\nmore"));
+        let mut app = app;
+        (app.tabs[0].summary, app.tabs[0].body) = (String::new(), String::new());
+        app.persist_drafts();
+        assert!(!dir.join(".git").join(super::DRAFT_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -120,7 +120,7 @@ impl Graph {
     /// row here, `None` if not loaded). Everything else keeps its column and color: the WIP row
     /// sits in HEAD's column when that is free above it, else the leftmost free one, and takes
     /// HEAD's color.
-    pub fn with_wip(&self, head: Option<usize>) -> Graph {
+    pub fn with_wip(&self, head: Option<usize>, unborn: bool) -> Graph {
         let h = head.unwrap_or(self.nodes.len());
         let hc = head.map(|r| self.nodes[r].col);
         let above = self.edges.partition_point(|e| (e.from as usize) <= h);
@@ -136,7 +136,9 @@ impl Graph {
         let to = head.map_or(NONE, |r| r as u32 + 1);
         let mut g = Graph { width: self.width.max(w + 1), ..Default::default() };
         g.nodes = std::iter::once(Node { col: w, color }).chain(self.nodes.iter().copied()).collect();
-        g.edges = std::iter::once(Edge { from: 0, to, from_col: w, lane: w, to_col: hc.unwrap_or(w), color })
+        g.edges = (!unborn)
+            .then_some(Edge { from: 0, to, from_col: w, lane: w, to_col: hc.unwrap_or(w), color })
+            .into_iter()
             .chain(self.edges.iter().map(|e| Edge { from: e.from + 1, to: if e.to == NONE { NONE } else { e.to + 1 }, ..*e }))
             .collect();
         g.index();
@@ -247,7 +249,7 @@ mod tests {
     fn wip_row_keeps_every_column_and_color() {
         // 0: feature tip  1: main tip (HEAD)  2: base
         let g = Graph::layout(&[vec![2], vec![2], vec![]], &[5, 1, 5], &seeds(3));
-        let w = g.with_wip(Some(1));
+        let w = g.with_wip(Some(1), false);
         assert_eq!(cols(&w)[1..], cols(&g)[..]);
         assert_eq!(colors(&w), [g.nodes[1].color, g.nodes[0].color, g.nodes[1].color, g.nodes[2].color]);
         assert_eq!(w.nodes[0].col, 1); // right above HEAD: its column is free there
@@ -255,11 +257,14 @@ mod tests {
         assert!(w.edges[1..].iter().zip(&g.edges).all(|(a, b)| (a.from, a.to, a.lane, a.color) == (b.from + 1, b.to + 1, b.lane, b.color)));
         assert_eq!(w.edges_in(0..4).count(), 3);
         // HEAD on the base: both lanes pass above it, so WIP takes the next free column.
-        let w = g.with_wip(Some(2));
+        let w = g.with_wip(Some(2), false);
         assert_eq!((w.nodes[0].col, w.edges[0].to_col, w.width), (2, 1, 3));
         // Unborn branch: WIP alone.
-        let w = Graph::default().with_wip(None);
-        assert_eq!((cols(&w), w.edges[0].to, w.width), (vec![0], NONE, 1));
+        let w = Graph::default().with_wip(None, true);
+        assert_eq!((cols(&w), w.edges.len(), w.width), (vec![0], 0, 1));
+        let w = g.with_wip(None, true);
+        assert_eq!(w.edges.len(), g.edges.len());
+        assert!(w.edges.iter().all(|e| e.from > 0));
     }
 
     #[test]

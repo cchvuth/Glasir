@@ -56,9 +56,9 @@ pub struct Session {
     /// has a child process).
     #[cfg(windows)]
     shell: (u32, u64),
-    /// Windows: the last `busy()` answer and when it was taken; a process snapshot is
-    /// too slow to take every frame.
-    #[cfg(windows)]
+    /// The last child-process answer and when it was taken; listing processes is too
+    /// slow to do every frame.
+    #[cfg(any(unix, windows))]
     seen: std::cell::Cell<Option<(std::time::Instant, bool)>>,
 }
 
@@ -74,7 +74,7 @@ impl Session {
         let opts = tty::Options {
             shell,
             working_directory: Some(dir.to_path_buf()),
-            env: [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")].map(|(k, v)| (k.into(), v.into())).into(),
+            env: [("TERM", "xterm-256color"), ("COLORTERM", "truecolor"), ("TERM_PROGRAM", "Glasir"), ("TERM_SESSION_ID", ""), ("ITERM_SESSION_ID", "")].map(|(k, v)| (k.into(), v.into())).into(),
             ..Default::default()
         };
         let size = WindowSize { num_lines: 24, num_cols: 80, cell_width: 8, cell_height: 16 };
@@ -100,7 +100,7 @@ impl Session {
             idle_since: None,
             #[cfg(any(unix, windows))]
             shell,
-            #[cfg(windows)]
+            #[cfg(any(unix, windows))]
             seen: Default::default(),
         })
     }
@@ -119,25 +119,28 @@ impl Session {
         let _ = self.tx.send(Msg::Resize(self.size));
     }
 
-    /// A command (not just the idle shell) is running in the foreground.
+    /// A command (not just the idle shell) is running: in the foreground, or on Unix
+    /// also suspended or in the background (the shell has a child process).
     pub fn busy(&self) -> bool {
         #[cfg(unix)]
         {
             use std::os::fd::AsRawFd;
             // SAFETY: tcgetpgrp only reads the terminal's foreground process group.
             let fg = unsafe { libc::tcgetpgrp(self.shell.1.as_raw_fd()) };
-            fg > 0 && fg != self.shell.0
+            if fg > 0 && fg != self.shell.0 {
+                return true;
+            }
         }
-        #[cfg(windows)]
-        {
-            let now = std::time::Instant::now();
-            match self.seen.get() {
-                Some((at, b)) if now - at < std::time::Duration::from_millis(500) => b,
-                _ => {
-                    let b = has_child(self.shell);
-                    self.seen.set(Some((now, b)));
-                    b
-                }
+        let now = std::time::Instant::now();
+        match self.seen.get() {
+            Some((at, b)) if now - at < std::time::Duration::from_millis(500) => b,
+            _ => {
+                #[cfg(unix)]
+                let b = has_child(self.shell.0);
+                #[cfg(windows)]
+                let b = has_child(self.shell);
+                self.seen.set(Some((now, b)));
+                b
             }
         }
     }
@@ -170,6 +173,16 @@ fn created(h: windows_sys::Win32::Foundation::HANDLE) -> u64 {
         return 0;
     }
     (t[0].dwHighDateTime as u64) << 32 | t[0].dwLowDateTime as u64
+}
+
+#[cfg(unix)]
+fn has_child(shell: i32) -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-P", &shell.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .is_ok_and(|o| !o.stdout.is_empty())
 }
 
 /// ConPTY has no foreground process group: look for a child of the shell instead.
@@ -341,6 +354,22 @@ mod tests {
             ts.tabs.is_empty()
         });
         assert!(!ts.open);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_job_keeps_the_shell_busy() {
+        let dir = crate::repo::testutil::scratch("terminal-bg");
+        let ctx = egui::Context::default();
+        let mut ts = Terminals::default();
+        ts.toggle(&ctx, &dir);
+        let s = &ts.tabs[0];
+        wait("prompt", || !s.busy());
+        s.write(&b"sleep 60 & echo sta''rted\r"[..]);
+        wait("started", || screen(s).contains("started"));
+        wait("busy", || s.busy());
+        s.write(&b"kill %1\r"[..]);
+        wait("idle", || !s.busy());
     }
 
     #[cfg(unix)]

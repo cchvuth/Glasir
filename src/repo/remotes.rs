@@ -88,10 +88,17 @@ impl Form {
     }
 }
 
+pub(super) const RESET: &str = "!remote-reset";
+
+pub(super) fn reset(dir: &std::path::Path, name: &str) -> crate::git::Res<String> {
+    let _ = crate::git::run(dir, &["config", "--remove-section", &format!("remote.{name}")]);
+    Ok(String::new())
+}
+
 /// `git remote remove`, confirmed. ⌘Z re-adds the remote's config, the upstreams of
-/// branches tracking it and its remote-tracking refs (offline: the objects are still here).
+/// branches tracking it and the remote-tracking refs its fetch refspecs map to (offline: the objects are still here).
 pub fn remove(d: &RepoData, name: &str) -> Op {
-    let mut back: Vec<Vec<String>> = vec![];
+    let mut back: Vec<Vec<String>> = vec![vec![RESET.into(), name.into()]];
     let add = |k: &str, v: &str| vec!["config".to_owned(), "--add".into(), k.into(), v.into()];
     let prefix = format!("remote.{name}.");
     // Not the keys of a remote `<name>.x`, which stay.
@@ -107,9 +114,10 @@ pub fn remove(d: &RepoData, name: &str) -> Op {
     if d.cfg("remote.pushdefault") == Some(name) {
         back.push(add("remote.pushdefault", name));
     }
-    let tracking_prefix = format!("refs/remotes/{name}/");
-    let tracking: Vec<_> = d.refs.iter().filter(|r| r.full.starts_with(&tracking_prefix)).collect();
-    let refs: String = tracking.iter().map(|r| format!("create {} {}\n", r.full, r.target)).collect();
+    let key = format!("remote.{name}.fetch");
+    let specs: Vec<_> = d.cfg_all(&key).collect();
+    let tracking: Vec<_> = d.refs.iter().filter(|r| r.full.starts_with("refs/remotes/") && specs.iter().any(|s| super::cleanup::source(s, &r.full).is_some())).collect();
+    let refs: String = tracking.iter().map(|r| format!("update {} {}\n", r.full, r.target)).collect();
     if !refs.is_empty() {
         back.push(vec!["update-ref".into(), "--stdin".into()]);
     }
@@ -297,6 +305,40 @@ mod tests {
         assert_eq!(sh(&dir, &["rev-parse", "--abbrev-ref", "@{u}"]).trim(), "origin/feat");
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
+    }
+
+    #[test]
+    fn remove_undo_follows_the_fetch_refspecs() {
+        let dir = scratch("remove-refspecs");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        let load = || load_all(&dir, 100, View::default()).unwrap();
+        let tracking = || sh(&dir, &["for-each-ref", "--format=%(refname)", "refs/remotes"]);
+        sh(&dir, &["remote", "add", "-t", "main", "origin", "/o.git"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        let urls = || sh(&dir, &["config", "--get-all", "remote.origin.url"]);
+        let op = remove(&load(), "origin");
+        assert!(op.confirm.as_deref().unwrap().contains("its 1 remote-tracking"));
+        exec(&dir, &op).unwrap();
+        assert_eq!(tracking(), "refs/remotes/origin/feature\n");
+        exec(&dir, op.revert.as_ref().unwrap()).unwrap();
+        exec(&dir, op.revert.as_ref().unwrap()).unwrap();
+        assert_eq!(tracking(), "refs/remotes/origin/feature\nrefs/remotes/origin/main\n");
+        assert_eq!(urls(), "/o.git\n");
+        assert_eq!(sh(&dir, &["config", "--get-all", "remote.origin.fetch"]), "+refs/heads/main:refs/remotes/origin/main\n");
+
+        sh(&dir, &["remote", "add", "up", "/u.git"]);
+        sh(&dir, &["config", "remote.up.fetch", "+refs/heads/*:refs/remotes/mirror/*"]);
+        sh(&dir, &["update-ref", "refs/remotes/mirror/x", "HEAD"]);
+        let op = remove(&load(), "up");
+        assert!(op.confirm.as_deref().unwrap().contains("its 1 remote-tracking"));
+        exec(&dir, &op).unwrap();
+        assert!(!tracking().contains("mirror"));
+        exec(&dir, op.revert.as_ref().unwrap()).unwrap();
+        assert!(tracking().contains("refs/remotes/mirror/x"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A local-only repo gets its first remote (a freshly created, empty one) and

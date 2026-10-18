@@ -73,8 +73,9 @@ pub enum Backup {
     Split(String),
     /// The paths stash `id` (a commit) touches: an apply or pop.
     Stash(String),
-    /// Those of these paths (none: all) whose staged version differs from HEAD and the file: a
-    /// stage or unstage drops it. None such, the common case: no backup.
+    /// These paths (none: all) that are staged, when one's staged version differs from HEAD and
+    /// the file: a stage or unstage drops it (and a rename's old path goes with it). None such,
+    /// the common case: no backup.
     Staged(Vec<String>),
 }
 
@@ -208,6 +209,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [SEQ_STATE, ..] => seq_state(dir, &a),
             [super::cleanup::REMOTE_DELETE, rest @ ..] => super::cleanup::remote_delete(dir, rest),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
+            [super::remotes::RESET, name] => super::remotes::reset(dir, name),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
             [super::file_edit::FILE_SAVE, ..] => super::file_edit::save(dir, &a, op.input.as_deref().unwrap_or_default()),
             [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
@@ -992,9 +994,6 @@ impl RepoTab {
             self.notes.push(Msg { text: format!("'{}' skipped: '{busy}' is still running.", op.label), error: true });
             return if op.parked { self.unpark_rebase() };
         }
-        if op.parked {
-            self.parked_rebase = None;
-        }
         if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
             return self.open_tool(ctx, op, kind);
         }
@@ -1160,6 +1159,12 @@ impl RepoTab {
                 if refs.is_some() || files.is_some() || ops.is_some() {
                     self.undo.push(UndoEntry::new(op.label.clone(), refs, files.into_iter().collect(), ops));
                     self.clear_redo();
+                }
+                if op.parked {
+                    match res.is_err() && self.parked_rebase.as_ref().is_some_and(|ed| ed.current()) {
+                        true => self.unpark_rebase(),
+                        false => self.parked_rebase = None,
+                    }
                 }
                 // A guided split ends (or never started): see `split.rs`.
                 match (op.label.as_str(), res.is_ok()) {
@@ -1780,6 +1785,34 @@ mod tests {
             assert!(t.rebase.take().is_some(), "the plan is back");
             assert_eq!(sh(&dir, &["log", "--format=%s"]), "three\ntwo\none\n");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_refused_rebase_gives_its_plan_back() {
+        use super::super::rebase::{Act, Editor};
+        let dir = scratch("refused-plan");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for f in ["a", "b", "c"] {
+            commit(&dir, f, f);
+        }
+        std::fs::write(dir.join("a"), "unstaged edit\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut ed = Editor::load(&dir, "HEAD~2", "a").unwrap();
+        ed.items[0].act = Act::Reword;
+        ed.items[0].message = "A carefully written message".into();
+        ed.items.swap(0, 1);
+        let start = ed.start(&t.data.as_ref().unwrap().git_dir).unwrap();
+        t.rebase = Some(ed);
+        t.apply(&ctx, start);
+        settle(&ctx, &mut t);
+        let back = t.rebase.take().expect("the plan is back");
+        assert_eq!(back.items[1].message, "A carefully written message");
+        assert!(t.parked_rebase.is_none());
+        assert_eq!(sh(&dir, &["log", "--format=%s"]), "c\nb\na\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

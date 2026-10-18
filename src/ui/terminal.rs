@@ -136,6 +136,7 @@ fn grid(ui: &mut Ui, s: &mut Session, focus: bool) {
         if r.double_clicked() {
             term.selection = Some(Selection::new(SelectionType::Semantic, pt, side));
         } else if r.drag_started() {
+            let (pt, side) = cell_at(ui.input(|i| i.pointer.press_origin()).unwrap_or(p));
             term.selection = Some(Selection::new(SelectionType::Simple, pt, side));
         } else if r.dragged() {
             if let Some(sel) = &mut term.selection {
@@ -258,6 +259,7 @@ struct Snapshot {
 /// of the queue so nothing else (Esc closing a diff, the graph's arrow keys) acts on them.
 fn input(ui: &Ui, s: &Session) {
     let mac = cfg!(target_os = "macos");
+    let shift = ui.input(|i| i.modifiers.shift);
     let mut events: Vec<Event> = ui.input_mut(|i| {
         let (mine, rest) = std::mem::take(&mut i.events).into_iter().partition(|e| match e {
             Event::Text(_) | Event::Paste(_) | Event::Copy | Event::Cut | Event::Ime(_) => true,
@@ -278,11 +280,13 @@ fn input(ui: &Ui, s: &Session) {
     for e in events {
         let bytes: Option<Cow<'static, [u8]>> = match e {
             Event::Text(t) | Event::Ime(ImeEvent::Commit(t)) if !t.is_empty() => Some(t.into_bytes().into()),
+            Event::Paste(_) if !mac && !shift => Some(Cow::Borrowed(b"\x16")),
             Event::Paste(t) => Some(paste(&t, mode.contains(TermMode::BRACKETED_PASTE)).into_bytes().into()),
             // Off macOS, Ctrl+C / Ctrl+X arrive as Copy / Cut: copy a selection, else interrupt.
             Event::Copy => match term.selection_to_string().filter(|t| !t.is_empty()) {
                 Some(t) => {
                     ui.ctx().copy_text(t);
+                    term.selection = None;
                     None
                 }
                 None => (!mac).then_some(Cow::Borrowed(b"\x03")),

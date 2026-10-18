@@ -100,10 +100,10 @@ pub(super) fn scope(dir: &Path, b: &Backup) -> Res<(Vec<String>, Vec<String>, Ve
         Backup::Paths(ps) => return Ok((ps.clone(), vec![], vec![])),
         Backup::Stash(id) => return Ok((stash_paths(dir, id)?, vec![], vec![])),
         Backup::Staged(ps) => {
-            let staged: BTreeSet<String> = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().collect();
             let want: HashSet<&String> = ps.iter().collect();
-            let both = git::run(dir, &["diff", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().filter(|p| staged.contains(p) && (ps.is_empty() || want.contains(p)));
-            return Ok((both.collect(), vec![], vec![]));
+            let staged: BTreeSet<String> = git::run(dir, &["diff", "--cached", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().filter(|p| ps.is_empty() || want.contains(p)).collect();
+            let both = git::run(dir, &["diff", "--name-only", "-z", "--no-renames"]).map(split_z)?.into_iter().any(|p| staged.contains(&p));
+            return Ok((if both { staged.into_iter().collect() } else { vec![] }, vec![], vec![]));
         }
         Backup::Tree { revs, untracked } => (&revs[..], *untracked),
         Backup::Split(id) => (std::slice::from_ref(id), false),
@@ -656,7 +656,7 @@ mod tests {
     }
 
     fn discard_all() -> Action {
-        Action::Git(Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::Tree { revs: vec![], untracked: true }))
+        Action::Git(Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true }))
     }
 
     fn labels(t: &RepoTab) -> Vec<String> {
@@ -829,7 +829,7 @@ mod tests {
         commit(&dir, "f", "ours\n");
         assert!(git::run(&dir, &["merge", "-q", "feat"]).is_err());
         let conflicted = read(&dir, "f");
-        let op = Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::Tree { revs: vec![], untracked: true });
+        let op = Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true });
         let f = run_backed(&dir, &op).unwrap().unwrap();
         assert!(!dir.join("u").exists());
         undo_files(&dir, &f).unwrap();
@@ -1045,7 +1045,7 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "edited\n").unwrap();
         std::fs::create_dir_all(dir.join("new")).unwrap();
         std::fs::write(dir.join("new/b.txt"), "fresh\n").unwrap();
-        let op = Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::Tree { revs: vec![], untracked: true });
+        let op = Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true });
         let f = run_backed(&dir, &op).unwrap().unwrap();
         assert_eq!(read(&dir, "a.txt").as_deref(), Some("one\n"));
         assert!(!dir.join("new/b.txt").exists());
@@ -1305,7 +1305,7 @@ mod tests {
         std::fs::write(dir.join("new"), "n\n").unwrap();
         sh(&dir, &["add", "new"]);
         let before = sh(&dir, &["status", "--porcelain"]);
-        let op = Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::Tree { revs: vec![], untracked: true });
+        let op = Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true });
         let f = run_backed(&dir, &op).unwrap().unwrap();
         undo_files(&dir, &f).unwrap();
         assert_eq!(std::fs::read(dir.join("b")).unwrap(), b"one\ntwo\n");
@@ -1539,7 +1539,7 @@ mod tests {
             sh(&dir, &["add", "d/x"]);
             let (ctx, mut t) = tab(&dir);
             let op = match all {
-                true => Op::new("Discard all", &["reset", "--hard", "-q"]).then(&["clean", "-fdq"]).backup(Backup::Tree { revs: vec![], untracked: true }),
+                true => Op::new("Discard all", &["clean", "-fdq"]).then(&["reset", "--hard", "-q"]).backup(Backup::Tree { revs: vec![], untracked: true }),
                 false => Op::new("Discard", &["--literal-pathspecs", "rm", "-fq", "--", "d/x"]).light().backup(Backup::Paths(vec!["d/x".into()])),
             };
             step(&ctx, &mut t, Action::Git(op));

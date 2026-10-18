@@ -226,8 +226,7 @@ fn elide(s: &str, max: usize) -> String {
     if n <= max { s.to_owned() } else { format!("…{}", s.chars().skip(n + 1 - max).collect::<String>()) }
 }
 
-/// Draws the palette; returns the chosen command, or `Some(None)` to close.
-pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
+fn rank(p: &mut Palette) {
     if p.ranked.0 != p.query || p.ranked.1 != p.items.len() {
         let mut r: Vec<(i32, usize)> = p
             .items
@@ -251,6 +250,11 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
         r.truncate(60);
         p.ranked = (p.query.clone(), p.items.len(), r.into_iter().map(|x| x.1).collect());
     }
+}
+
+/// Draws the palette; returns the chosen command, or `Some(None)` to close.
+pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
+    rank(p);
     let ranked: Vec<&Item> = p.ranked.2.iter().map(|&i| &p.items[i]).collect();
     let n = ranked.len();
     let modal = egui::Modal::new(egui::Id::new("palette"))
@@ -264,10 +268,7 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
         p.sel = (p.sel + n - 1) % n;
     }
     p.sel = p.sel.min(n.saturating_sub(1));
-    let mut out = None;
-    if enter && n > 0 {
-        out = Some(Some(ranked[p.sel].cmd.clone()));
-    }
+    let (mut out, mut typed_enter) = (None, false);
     let screen = ctx.content_rect();
     let width = 640.0f32.min(screen.width() - 40.0);
     let resp = modal.show(ctx, |ui| {
@@ -284,7 +285,10 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
         }
         if te.changed() {
             p.sel = 0;
+        } else if enter && n > 0 {
+            out = Some(Some(ranked[p.sel].cmd.clone()));
         }
+        typed_enter = te.changed() && enter;
         ui.add_space(6.0);
         egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
             for (i, it) in ranked.iter().copied().enumerate() {
@@ -309,6 +313,10 @@ pub fn show(ctx: &egui::Context, p: &mut Palette) -> Option<Option<Cmd>> {
             }
         });
     });
+    if typed_enter {
+        rank(p);
+        out = p.ranked.2.first().map(|&i| Some(p.items[i].cmd.clone()));
+    }
     if resp.should_close() && out.is_none() {
         out = Some(None);
     }
@@ -353,5 +361,20 @@ mod tests {
         assert_eq!(m.cmds[0][2], "refs/heads/release");
         let Cmd::Tab(Action::RunRebase { op, onto, .. }) = &find(format!("Rebase {head} onto release")).cmd else { panic!() };
         assert_eq!((op.cmds[0][2].as_str(), onto.as_str()), ("refs/heads/release", "refs/heads/release"));
+    }
+
+    #[test]
+    fn enter_in_the_frame_of_the_last_keystroke_runs_the_typed_match() {
+        let mut sim = crate::ui::testkit::Sim::new(900.0, 700.0);
+        let it = |l: &str| super::Item { icon: "", label: l.into(), detail: String::new(), cmd: Cmd::Open(l.into()) };
+        let mut p = super::Palette { items: vec![it("feature 1"), it("feature 2")], ..Default::default() };
+        let mut out = None;
+        for _ in 0..3 {
+            sim.frame(vec![], |ui| _ = super::show(ui.ctx(), &mut p));
+        }
+        let key = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        sim.frame(vec![egui::Event::Text("2".into()), key], |ui| out = super::show(ui.ctx(), &mut p));
+        let Some(Some(Cmd::Open(l))) = out else { panic!("{out:?}") };
+        assert_eq!(l.to_str(), Some("feature 2"));
     }
 }

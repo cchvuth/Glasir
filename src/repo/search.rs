@@ -127,6 +127,7 @@ pub struct Search {
     pub(crate) hits: Vec<usize>,
     /// Index into `found`.
     pub(crate) cur: usize,
+    pub(crate) jumped: bool,
     pub(crate) error: Option<String>,
     /// The graph of just the matches while `filter` is on.
     pub(crate) filtered: Option<Arc<RepoData>>,
@@ -169,6 +170,7 @@ impl Search {
             found: vec![],
             hits: vec![],
             cur: 0,
+            jumped: false,
             error: None,
             filtered: None,
             history: vec![],
@@ -295,7 +297,7 @@ impl Search {
         (self.rx, self.cancel, self.error, self.stale) = (None, Default::default(), None, rerun);
         self.run += 1;
         if !rerun {
-            (self.cur, self.filtered, self.building) = (0, None, None);
+            (self.cur, self.jumped, self.filtered, self.building) = (0, false, None, None);
             self.found.clear();
         }
         if !self.active || d.log.is_empty() {

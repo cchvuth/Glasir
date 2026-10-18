@@ -66,6 +66,10 @@ impl Editor {
         self.items.iter().any(|it| it.act != Act::Pick) || !self.items.iter().map(|it| &it.id).eq(&self.orig)
     }
 
+    pub(crate) fn current(&self) -> bool {
+        git::git_dir(&self.dir).is_ok_and(|g| git::state(&g) == git::State::Clean) && head_state(&self.dir) == self.head
+    }
+
     pub(crate) fn problem(&self) -> Option<&'static str> {
         if self.items.iter().any(|i| i.act == Act::Reword && i.message.trim().is_empty()) {
             return Some("A reworded commit needs a message.");

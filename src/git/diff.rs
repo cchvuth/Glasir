@@ -115,9 +115,16 @@ pub fn partial_patch(file: &FileDiff, selected: impl Fn(usize, usize) -> bool, r
     if file.whole_only && !whole {
         return None;
     }
-    let mut out: String = match whole {
+    let has = |p: &str| file.header.iter().any(|h| h.starts_with(p));
+    let lacks = match reverse {
+        false => has("--- /dev/null") || has("rename from "),
+        true => has("+++ /dev/null"),
+    };
+    let mut out: String = match whole || lacks {
         true => file.header.iter().map(|h| format!("{h}\n")).collect(),
-        // Part of a rename / new / deleted file: express it as a plain edit of one path.
+        // Part of a rename / new / deleted file the target has: express it as a plain edit of
+        // one path. Where the target lacks it (a new file, a deletion undone, a rename's new
+        // path), the part keeps the header that creates or renames it.
         false => plain_header(file)?,
     };
     let mut delta: i64 = 0;

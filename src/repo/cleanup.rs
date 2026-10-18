@@ -397,7 +397,7 @@ fn stale_refs(dir: &Path, remotes: &[String]) -> Res<Vec<(String, String)>> {
 }
 
 /// The remote ref a fetch refspec (`+refs/heads/*:refs/remotes/o/*`) maps to the local `full`.
-fn source(spec: &str, full: &str) -> Option<String> {
+pub(super) fn source(spec: &str, full: &str) -> Option<String> {
     let (src, dst) = spec.trim().trim_start_matches('+').split_once(':')?;
     let s = match (src.split_once('*'), dst.split_once('*')) {
         (Some((sp, ss)), Some((dp, ds))) => format!("{sp}{}{ss}", full.strip_prefix(dp)?.strip_suffix(ds)?),

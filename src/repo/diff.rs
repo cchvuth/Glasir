@@ -168,7 +168,7 @@ pub fn patch_op(label: &str, src: &DiffSrc, opts: DiffOpts, f: &FileDiff, patch:
     let op = op.then(&a).input(patch).light();
     match label.starts_with("Discard") {
         true => op.backup(Backup::Paths(vec![c.path.clone()])).confirm("Discard the selected changes? (Undo with ⌘Z.)"),
-        false => op.backup(Backup::Staged(vec![c.path.clone()])),
+        false => op.backup(Backup::Staged(c.old_path.iter().filter(|_| c.code == 'R').chain([&c.path]).cloned().collect())),
     }
 }
 
@@ -346,6 +346,107 @@ mod tests {
         settle(&ctx, &mut t);
         assert_eq!(sh(&dir, &["show", ":f"]), "b\n");
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "c\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unstaging_a_partly_staged_rename_undoes_both_paths() {
+        let text: String = (1..=10).map(|i| format!("l{i}\n")).collect();
+        for how in ["hunk", "file", "all"] {
+            let dir = repo(&format!("unstage-rename-undo-{how}"));
+            commit(&dir, "old", &text);
+            sh(&dir, &["mv", "old", "new"]);
+            std::fs::write(dir.join("new"), text.replace("l5", "FIVE")).unwrap();
+            sh(&dir, &["add", "new"]);
+            std::fs::write(dir.join("new"), text.replace("l5", "FIVE").replace("l9", "NINE")).unwrap();
+            let ctx = egui::Context::default();
+            let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+            settle(&ctx, &mut t);
+            let change = t.data.as_ref().unwrap().status.staged[0].clone();
+            let o = DiffOpts::default();
+            let f = git::worktree_diff(&dir, &change, true, o).unwrap();
+            let op = match how {
+                "hunk" => patch_op("Unstage hunk", &DiffSrc::Worktree { change, staged: true }, o, &f, git::partial_patch(&f, |_, _| true, true).unwrap(), &["--cached", "--reverse"]),
+                "file" => super::super::unstage_op(&change),
+                _ => super::super::unstage_all_op(),
+            };
+            t.apply(&ctx, Action::Git(op));
+            settle(&ctx, &mut t);
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), " D old\n?? new\n", "{how}");
+            t.apply(&ctx, Action::Undo);
+            settle(&ctx, &mut t);
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), "RM old -> new\n", "{how}");
+            assert_eq!(sh(&dir, &["show", ":new"]), text.replace("l5", "FIVE"), "{how}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn staging_part_of_an_intent_to_add_rename() {
+        let dir = repo("ita-rename-part");
+        let text: String = (1..=20).map(|i| format!("l{i}\n")).collect();
+        commit(&dir, "old", &text);
+        std::fs::remove_file(dir.join("old")).unwrap();
+        std::fs::write(dir.join("new"), text.replace("l3\n", "THREE\n").replace("l17\n", "SEVENTEEN\n")).unwrap();
+        sh(&dir, &["add", "-N", "new"]);
+        let c = git::status(&dir).unwrap().unstaged.into_iter().find(|c| c.path == "new").unwrap();
+        assert_eq!(c.code, 'R');
+        let o = DiffOpts::default();
+        let f = git::worktree_diff(&dir, &c, false, o).unwrap();
+        let p = git::partial_patch(&f, |h, _| h == 0, false).unwrap();
+        super::super::op::exec(&dir, &patch_op("Stage hunk", &DiffSrc::Worktree { change: c, staged: false }, o, &f, p, &["--cached"])).unwrap();
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "RM old -> new\n");
+        assert_eq!(sh(&dir, &["show", ":new"]), text.replace("l3\n", "THREE\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn line_actions_create_a_file_the_target_lacks() {
+        let o = DiffOpts::default();
+        let pick = |f: &FileDiff, rev| git::partial_patch(f, |_, l| l == 1, rev).unwrap();
+        let wt = |dir: &std::path::Path, staged| {
+            let s = git::status(dir).unwrap();
+            let c = if staged { s.staged } else { s.unstaged }.remove(0);
+            (git::worktree_diff(dir, &c, staged, o).unwrap(), DiffSrc::Worktree { change: c, staged })
+        };
+
+        let dir = repo("lines-staged-deletion");
+        commit(&dir, "f", "a\nb\nc\n");
+        sh(&dir, &["rm", "-q", "f"]);
+        let (f, src) = wt(&dir, true);
+        super::super::op::exec(&dir, &patch_op("Unstage lines", &src, o, &f, pick(&f, true), &["--cached", "--reverse"])).unwrap();
+        assert_eq!((sh(&dir, &["status", "--porcelain"]), sh(&dir, &["show", ":f"])), ("MD f\n".into(), "b\n".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = repo("lines-unstaged-deletion");
+        commit(&dir, "f", "a\nb\nc\n");
+        std::fs::remove_file(dir.join("f")).unwrap();
+        let (f, src) = wt(&dir, false);
+        let mut op = patch_op("Discard lines", &src, o, &f, pick(&f, true), &["--reverse"]);
+        op.confirm = None;
+        super::super::op::exec(&dir, &op).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "b\n");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let dir = repo("lines-commit-add-del");
+        commit(&dir, "base", "x\n");
+        let base = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "n", "a\nb\nc\n");
+        let add = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        sh(&dir, &["rm", "-q", "n"]);
+        sh(&dir, &["commit", "-qm", "del"]);
+        let del = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        for (id, code, label, rev) in [(&add, 'A', "Cherry-pick lines", false), (&del, 'D', "Revert lines", true)] {
+            sh(&dir, &["checkout", "-q", if rev { &del } else { &base }]);
+            let change = git::Change { path: "n".into(), old_path: None, code };
+            let parent = format!("{id}^");
+            let f = git::commit_diff(&dir, id, Some(&parent), &change, o).unwrap();
+            let src = DiffSrc::Commit { id: id.clone(), parent: Some(parent), change };
+            super::super::op::exec(&dir, &patch_op(label, &src, o, &f, pick(&f, rev), if rev { &["--reverse"] } else { &[] })).unwrap();
+            assert_eq!(std::fs::read_to_string(dir.join("n")).unwrap(), "b\n", "{label}");
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), "?? n\n", "{label}");
+            std::fs::remove_file(dir.join("n")).unwrap();
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -438,8 +438,9 @@ impl RepoTab {
                     // Bisect checked out the next candidate: select and centre it.
                     let head_moved = self.data.as_ref().is_some_and(|o| o.status.head != head);
                     let bisect_moved = d.state == git::State::Bisecting && head_moved;
-                    // Resolved or aborted elsewhere: the editor's markers are stale.
-                    if self.merge.as_ref().is_some_and(|m| !d.status.conflicted.iter().any(|c| c.path == m.path)) {
+                    // Resolved or aborted elsewhere: the editor's markers are stale. An edited
+                    // resolution stays (its save refuses a file changed since it was read).
+                    if self.merge.as_ref().is_some_and(|m| !m.edited() && !d.status.conflicted.iter().any(|c| c.path == m.path)) {
                         self.merge = None;
                     }
                     // Dropping a big log takes tens of ms: off the UI thread.
@@ -765,7 +766,8 @@ impl RepoTab {
             Action::Error(e) => self.notes.push(Msg { text: e, error: true }),
             Action::Cleanup => self.open_cleanup(ctx),
             Action::Multi(ids) => {
-                if let Some(last) = ids.last().cloned() {
+                let anchored = matches!(&self.sel, Some(Sel::Commit(id)) if ids.contains(id));
+                if let (false, Some(last)) = (anchored, ids.last().cloned()) {
                     self.select(ctx, Sel::Commit(last));
                 }
                 self.multi = if ids.len() > 1 { ids } else { vec![] };
@@ -979,6 +981,35 @@ mod tests {
         t.rebase.as_mut().unwrap().items[0].act = rebase::Act::Pick;
         t.apply(&ctx, Action::MergeEditor("f".into()));
         assert!(t.rebase.is_none() && t.merge.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_aborted_merge_keeps_an_edited_resolution() {
+        let dir = scratch("abort-keeps-resolution");
+        conflicted_merge(&dir);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let mut m = merge_editor::Editor::open(&ctx, &dir, "f");
+        crate::repo::testutil::wait_for("the merge editor", || {
+            if let Some(d) = Task::poll(&mut m.task) {
+                (m.output, m.data) = (d.text.clone(), Some(d));
+            }
+            m.data.is_some()
+        });
+        m.output.push('x');
+        t.merge = Some(m);
+        t.apply(&ctx, Action::Git(Op::new("Abort merge", &["merge", "--abort"])));
+        settle(&ctx, &mut t);
+        let m = t.merge.as_ref().expect("the resolution stays");
+        assert!(m.output.ends_with('x') && t.unsaved().is_some());
+        assert!(merge_editor::save(&dir, "f", &m.data.as_ref().unwrap().original, &m.output).is_err());
+        let m = t.merge.as_mut().unwrap();
+        m.output = m.data.as_ref().unwrap().text.clone();
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        assert!(t.merge.is_none(), "an untouched one closes");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

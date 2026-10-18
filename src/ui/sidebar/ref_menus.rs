@@ -332,6 +332,20 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_named_like_a_ref_path_is_addressed_in_full() {
+        let sim = Sim::new(500.0, 900.0);
+        let mut t = tab(&sim.ctx, "rev-ref-path", &["one", "two"]);
+        let dir = t.dir.clone();
+        let run = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        run(&["branch", "tags/v1", "HEAD~1"]);
+        run(&["tag", "v1", "HEAD"]);
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let d = t.data.as_ref().unwrap();
+        assert_eq!(d.rev(d.local("tags/v1").unwrap()), "refs/heads/tags/v1");
+    }
+
+    #[test]
     fn push_works_for_a_branch_that_shares_its_name_with_a_tag() {
         let mut sim = Sim::new(500.0, 900.0);
         let mut t = tab(&sim.ctx, "push-tagged", &["one"]);

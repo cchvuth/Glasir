@@ -326,8 +326,8 @@ fn discard_all_op(state: State) -> Op {
         State::Reverting => " This also ends the revert in progress.",
         _ => "",
     };
-    Op::new("Discard all", &["reset", "--hard", "-q"])
-        .then(&["clean", "-fdq"])
+    Op::new("Discard all", &["clean", "-fdq"])
+        .then(&["reset", "--hard", "-q"])
         .backup(crate::repo::Backup::Tree { revs: vec![], untracked: true })
         .confirm(format!("Discard ALL uncommitted changes, including untracked files?{ends} (Undo with ⌘Z.)"))
 }
@@ -342,6 +342,31 @@ mod tests {
         let text = |s| super::discard_all_op(s).confirm.unwrap_or_default();
         assert!(text(crate::git::State::Merging).contains("ends the merge"));
         assert!(!text(crate::git::State::Clean).contains("ends"));
+    }
+
+    #[test]
+    fn discard_all_keeps_files_an_uncommitted_gitignore_ignores() {
+        let ctx = egui::Context::default();
+        let mut t = tab(&ctx, "discard-all-ignored", &["a"]);
+        let dir = t.dir.clone();
+        let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+        std::fs::write(dir.join(".gitignore"), "*.log\n").unwrap();
+        git(&["add", ".gitignore"]);
+        git(&["commit", "-q", "-m", "ignore"]);
+        std::fs::write(dir.join(".gitignore"), "*.log\n.env\n").unwrap();
+        std::fs::write(dir.join(".env"), "SECRET\n").unwrap();
+        std::fs::write(dir.join("u"), "u\n").unwrap();
+        let mut op = super::discard_all_op(crate::git::State::Clean);
+        op.confirm = None;
+        t.apply(&ctx, crate::repo::Action::Git(op));
+        load(&mut t, &ctx);
+        assert_eq!(std::fs::read_to_string(dir.join(".env")).ok().as_deref(), Some("SECRET\n"));
+        assert!(!dir.join("u").exists());
+        assert_eq!(git(&["status", "--porcelain"]), "?? .env\n");
+        t.apply(&ctx, crate::repo::Action::Undo);
+        load(&mut t, &ctx);
+        assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).unwrap(), "*.log\n.env\n");
+        assert_eq!(std::fs::read_to_string(dir.join("u")).ok().as_deref(), Some("u\n"));
     }
 
     fn click(sim: &mut Sim, item: &str, mut draw: impl FnMut(&mut Ui)) {

@@ -140,14 +140,20 @@ pub fn op(c: &Custom, dir: &Path, v: &Vars) -> Res<Op> {
     let line = c.command.trim();
     let op = match line.strip_prefix("git ") {
         Some(rest) if !rest.contains(['|', '&', ';', '<', '>', '$', '`', '"', '\'', '*', '\\']) => {
-            let args: Vec<String> = rest.split_whitespace().map(|w| fill(w, &vals, str::to_owned)).collect();
+            let lit = c.uses("path").then(|| "--literal-pathspecs".to_owned());
+            let args: Vec<String> = lit.into_iter().chain(rest.split_whitespace().map(|w| fill(w, &vals, str::to_owned))).collect();
             Op::new(c.name.trim(), &args.iter().map(String::as_str).collect::<Vec<_>>())
         }
         _ => {
             if let Some(k) = quoted_key(line, &vals.map(|(k, _)| k)) {
                 return Err(format!("Remove the quotes, backticks, $ or escape around {{{k}}} in custom command '{}' (use $(…) for backticks): Glasir quotes values itself.", c.name.trim()));
             }
-            Op::new(c.name.trim(), &[SHELL, &fill(line, &vals, quote)])
+            let lit = match (c.uses("path"), cfg!(windows)) {
+                (false, _) => "",
+                (true, false) => "export GIT_LITERAL_PATHSPECS=1; ",
+                (true, true) => "$env:GIT_LITERAL_PATHSPECS='1'; ",
+            };
+            Op::new(c.name.trim(), &[SHELL, &format!("{lit}{}", fill(line, &vals, quote))])
         }
     };
     Ok(Op { custom: true, ..op.undo(Undo::Keep) })
@@ -491,7 +497,7 @@ mod tests {
         assert_eq!(o.cmds, vec![vec!["push", "origin", "HEAD:refs/for/feat/x"]]);
         assert_eq!(o.undo, Undo::Keep);
         let o = op(&Custom { name: "Log".into(), command: "git log -1 -- {path}".into() }, dir, &v).unwrap();
-        assert_eq!(o.cmds[0].last().unwrap(), "a b.txt");
+        assert_eq!(o.cmds[0], ["--literal-pathspecs", "log", "-1", "--", "a b.txt"]);
         let o = op(&Custom { name: "Count".into(), command: "git log --oneline | wc -l".into() }, dir, &v).unwrap();
         assert_eq!(o.cmds[0][0], SHELL);
         assert!(!gui_editor("vim") && !gui_editor("/usr/bin/nano -w") && gui_editor("code --wait") && !gui_editor(" "));
@@ -516,6 +522,28 @@ mod tests {
             assert_eq!(std::fs::read_to_string(dir.join("it's here.txt")).unwrap(), "main\n");
             let log = crate::git::LOG.lock().unwrap();
             assert!(log.iter().any(|e| e.cwd == dir && e.prog == "sh" && e.stderr.trim() == "main"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_placeholder_is_literal() {
+        let dir = scratch("custom-literal");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "a.txt", "one\n");
+        commit(&dir, "*", "star\n");
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        let v = Vars { branch: "main".into(), sha: String::new(), path: "*".into() };
+        let o = op(&Custom { name: "Discard".into(), command: "git checkout -- {path}".into() }, &dir, &v).unwrap();
+        assert!(super::super::op::exec(&dir, &o).is_ok());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "changed\n");
+        if !cfg!(windows) {
+            std::fs::write(dir.join("*"), "changed\n").unwrap();
+            let o = op(&Custom { name: "Discard".into(), command: "git checkout -- {path} && true".into() }, &dir, &v).unwrap();
+            super::super::op::exec(&dir, &o).unwrap();
+            assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "changed\n");
+            assert_eq!(std::fs::read_to_string(dir.join("*")).unwrap(), "star\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -554,8 +582,8 @@ mod tests {
     fn values_never_read_as_options() {
         let v = Vars { branch: "main".into(), sha: "abc".into(), path: "--output=README.md".into() };
         let run = |command: &str, v: &Vars| op(&Custom { name: "C".into(), command: command.into() }, Path::new("/r"), v);
-        assert_eq!(run("git log {path}", &v).unwrap().cmds[0], ["log", "./--output=README.md"]);
-        assert_eq!(run("prettier --write {path}", &v).unwrap().cmds[0][1], format!("prettier --write {}", quote("./--output=README.md")));
+        assert_eq!(run("git log {path}", &v).unwrap().cmds[0], ["--literal-pathspecs", "log", "./--output=README.md"]);
+        assert_eq!(run("prettier --write {path}", &v).unwrap().cmds[0][1], format!("{}prettier --write {}", if cfg!(windows) { "$env:GIT_LITERAL_PATHSPECS='1'; " } else { "export GIT_LITERAL_PATHSPECS=1; " }, quote("./--output=README.md")));
         let v = Vars { branch: "--extcmd=touch${IFS}PWNED".into(), ..v };
         assert!(run("git difftool {branch}", &v).is_err_and(|e| e.contains("starts with '-'")));
         assert!(run("echo {branch}", &v).is_err());

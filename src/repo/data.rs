@@ -133,9 +133,10 @@ impl RepoData {
     /// `r` as a revision: its short name (that's what merge messages quote), or its full ref when
     /// git would read the short one as something else (tag `x` beats branch `x`, local branch
     /// `origin/x` beats the remote's, `stash` / `ORIG_HEAD`-style names beat every branch, and a
-    /// name starting with `-` would be read as an option).
+    /// name starting with `-` would be read as an option, `tags/x` and `heads/x` are read as the
+    /// refs `refs/tags/x` and `refs/heads/x`).
     pub fn rev<'a>(&self, r: &'a Ref) -> &'a str {
-        let special = r.name.starts_with('-') || !r.name.contains('/') && (r.name == "stash" || r.name.ends_with("HEAD"));
+        let special = r.name.starts_with(['-']) || ["refs/", "tags/", "heads/", "remotes/"].iter().any(|p| r.name.starts_with(p)) || !r.name.contains('/') && (r.name == "stash" || r.name.ends_with("HEAD"));
         if special || self.refs.iter().any(|o| o.name == r.name && o.full != r.full) { &r.full } else { &r.name }
     }
 
@@ -363,7 +364,7 @@ impl RepoData {
             prev => {
                 let seed = |c: &Commit| c.id.get(..8).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0);
                 let l = prev.map_or_else(|| Arc::new(Graph::layout(&parents, &prio, &log.iter().map(seed).collect::<Vec<_>>())), |p| p.0);
-                let g = if wip { Arc::new(l.with_wip(head_row.map(|r| r - 1))) } else { l.clone() };
+                let g = if wip { Arc::new(l.with_wip(head_row.map(|r| r - 1), status.head.is_none())) } else { l.clone() };
                 (l, g)
             }
         };

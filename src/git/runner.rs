@@ -38,7 +38,7 @@ pub fn run_shell(dir: &Path, line: &str) -> Res<String> {
 
 pub fn run_tool(dir: &Path, args: &[&str]) -> Res<String> {
     let mut c = cmd(dir);
-    for k in ["GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GLASIR_ASKPASS"] {
+    for k in ["GIT_ASKPASS", "SSH_ASKPASS", "SSH_ASKPASS_REQUIRE", "GLASIR_ASKPASS", "LANGUAGE"] {
         match std::env::var_os(k) {
             Some(v) => c.env(k, v),
             None => c.env_remove(k),
@@ -63,8 +63,9 @@ fn base(prog: &str, dir: &Path) -> Command {
     #[cfg(test)]
     c.env("GIT_CONFIG_GLOBAL", std::env::temp_dir().join("glasir-tests-no-global-config")).env("GIT_CONFIG_NOSYSTEM", "1");
     // Credential prompts go through our own askpass window; never block on a TTY.
-    if let Ok(exe) = std::env::current_exe() {
-        c.env("GIT_ASKPASS", &exe)
+    static EXE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    if let Some(exe) = EXE.get_or_init(|| std::env::current_exe().ok()) {
+        c.env("GIT_ASKPASS", exe)
             .env("SSH_ASKPASS", &exe)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("GLASIR_ASKPASS", "1");

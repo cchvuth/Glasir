@@ -109,7 +109,7 @@ The name fits a Git client:
 - **Image diffs** (PNG, JPEG, GIF, WebP, BMP): before / after side by side with
   dimensions and size, or a **swipe** slider; added / deleted images show one preview.
 - Commit and amend, with a 72-character guide; ⌘↩ to commit, ⇧⌘↩ to stage everything
-  and commit, ⇧⌘M to focus the summary. The commit box also has **Skip hooks**
+  and commit, ⇧⌘M to focus the summary; a typed message survives quitting. The commit box also has **Skip hooks**
   (`--no-verify`), **Push after commit** (a rejected push offers pull / force push; ⌘Z
   of a commit that is already pushed asks first, since dropping it from the remote
   needs a force push), a **co-authors** picker (people from the log become

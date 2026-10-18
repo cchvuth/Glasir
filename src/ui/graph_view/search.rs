@@ -93,7 +93,10 @@ pub(super) fn search_bar(ui: &mut Ui, s: &mut Search, d: &RepoData, scroll_to: &
     if step != 0 && !s.found.is_empty() {
         s.remember();
         let n = s.found.len() as i32;
-        s.cur = (s.cur as i32 + step).rem_euclid(n) as usize;
+        if s.jumped || step < 0 {
+            s.cur = (s.cur as i32 + step).rem_euclid(n) as usize;
+        }
+        s.jumped = true;
         let id = s.found[s.cur].id.clone();
         // Outside the loaded history: Jump loads enough of it first.
         match d.row_of.get(&id) {
@@ -129,5 +132,20 @@ mod tests {
         s.history = vec!["fix".into()];
         draw(&mut sim, &mut s);
         assert_eq!(sim.ctx.memory(|m| m.focused()), field);
+    }
+
+    #[test]
+    fn the_first_next_selects_the_first_hit() {
+        let mut sim = Sim::new(700.0, 100.0);
+        let mut t = tab(&sim.ctx, "search-first-next", &["one", "two", "three"]);
+        let d = t.data.take().unwrap();
+        let mut s = Search::open(t.dir.clone());
+        s.found = d.log[..3].to_vec();
+        let (mut scroll, mut acts) = (None, vec![]);
+        let mut next = |sim: &mut Sim, s: &mut Search| {
+            sim.frame(vec![egui::Event::Key { key: Key::F3, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }], |ui| _ = search_bar(ui, s, &d, &mut scroll, &mut acts));
+            s.cur
+        };
+        assert_eq!((next(&mut sim, &mut s), next(&mut sim, &mut s)), (0, 1));
     }
 }

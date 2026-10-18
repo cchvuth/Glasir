@@ -764,4 +764,22 @@ mod tests {
             assert!(10.0 <= c.graph && c.graph <= c.msg && c.msg <= c.author && c.author <= c.date, "{w}: {c:?}");
         }
     }
+
+    #[test]
+    fn shift_click_ranges_keep_their_anchor() {
+        let sim = Sim::new(1000.0, 600.0);
+        let mut t = tab(&sim.ctx, "graph-anchor", &["c1", "c2", "c3", "c4", "c5"]);
+        let d = t.data.take().unwrap();
+        let (id, ctx) = (|r: usize| d.log[r].id.clone(), sim.ctx.clone());
+        t.apply(&ctx, Action::Select(Sel::Commit(id(0))));
+        for row in [4, 2] {
+            let sel_row = match &t.sel {
+                Some(Sel::Commit(c)) => d.row_of.get(c).copied(),
+                _ => None,
+            };
+            let ids = multi_select(&d, sel_row, &t.multi, row, &id(row), true);
+            t.apply(&ctx, Action::Multi(ids));
+        }
+        assert_eq!(t.multi, [id(0), id(1), id(2)]);
+    }
 }
