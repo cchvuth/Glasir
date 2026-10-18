@@ -39,16 +39,17 @@ impl RepoTab {
 }
 
 /// History/Blame entries shared by every file context menu; `rev` blames that
-/// revision (`None` = the working tree). `history`: the path the history is looked up by
+/// revision (`None` = the working tree). `at`: the revision the history starts from (`None` = HEAD). `history`: the path the history is looked up by
 /// (an uncommitted rename's old one: the new path has none yet).
-pub fn file_items(ui: &mut Ui, path: &str, history: &str, rev: Option<&str>, acts: &mut Vec<Action>) {
+pub fn file_items(ui: &mut Ui, path: &str, history: &str, at: Option<&str>, rev: Option<&str>, acts: &mut Vec<Action>) {
+    let at = at.filter(|r| *r != crate::git::WORKTREE);
     if ui.button(format!("{}  File history", icon::CLOCK_COUNTER_CLOCKWISE)).clicked() {
-        acts.push(Action::FileView(history.into(), Mode::History));
+        acts.push(Action::FileView(history.into(), Mode::History(at.map(Into::into))));
     }
     if let Some((dir, _)) = history.rsplit_once('/')
         && ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {dir}/")).clicked()
     {
-        acts.push(Action::FileView(format!("{dir}/"), Mode::History));
+        acts.push(Action::FileView(format!("{dir}/"), Mode::History(at.map(Into::into))));
     }
     // A working-tree compare's "revision" is the file on disk: plain blame.
     let rev = rev.filter(|r| *r != crate::git::WORKTREE);

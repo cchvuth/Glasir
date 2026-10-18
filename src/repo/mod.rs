@@ -962,7 +962,7 @@ mod tests {
         t.merge = Some(m);
         let change = git::Change { path: "other".into(), old_path: None, code: 'M' };
         let interactive = || Action::Rebase { base: "HEAD~1".into(), label: "x".into() };
-        for a in [Action::Diff(DiffSrc::Worktree { change: change.clone(), staged: false }), Action::FileView("f".into(), history::Mode::History), Action::Reflog, Action::MergeEditor("other".into()), interactive()] {
+        for a in [Action::Diff(DiffSrc::Worktree { change: change.clone(), staged: false }), Action::FileView("f".into(), history::Mode::History(None)), Action::Reflog, Action::MergeEditor("other".into()), interactive()] {
             t.apply(&ctx, a);
             assert!(t.merge.as_ref().is_some_and(|m| m.output.ends_with('x')) && t.drop_task.is_none() && t.reflog.is_none() && t.file_view.is_none());
             assert!(t.notes.pop().is_some_and(|n| n.text.contains("resolution of f")));
@@ -1082,7 +1082,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
         settle(&ctx, &mut t);
-        t.apply(&ctx, Action::FileView("f".into(), history::Mode::History));
+        t.apply(&ctx, Action::FileView("f".into(), history::Mode::History(None)));
         t.apply(&ctx, Action::EditFile("f".into()));
         assert!(t.edit.is_some() && t.file_view.is_none());
         let _ = std::fs::remove_dir_all(&dir);

@@ -548,8 +548,20 @@ impl Editor {
     }
 
     pub(crate) fn resolve(&mut self, i: usize, t: Take) {
-        self.output = rebuild(&self.chunks, |n, _| (n == i).then_some(t));
+        self.rewrite(|n, _| (n == i).then_some(t));
+    }
+
+    pub(crate) fn resolve_trivial(&mut self) {
+        self.rewrite(|_, c| c.trivial().then_some(Take::Current));
+    }
+
+    fn rewrite(&mut self, pick: impl Fn(usize, &Conflict) -> Option<Take>) {
+        let kept: Vec<_> = conflicts(&self.chunks).zip(&self.orig_of).enumerate().filter(|(n, (c, _))| pick(*n, c).is_none()).map(|(_, (_, o))| *o).collect();
+        self.output = rebuild(&self.chunks, &pick);
         self.reparse();
+        if kept.len() == self.orig_of.len() {
+            self.orig_of = kept;
+        }
     }
 
     /// Output line where conflict `i` starts.
@@ -576,6 +588,30 @@ mod tests {
 
     fn only(chunks: &[Chunk]) -> Vec<&Conflict> {
         conflicts(chunks).collect()
+    }
+
+    #[test]
+    fn identical_conflicts_keep_their_original_index() {
+        let dir = crate::repo::testutil::scratch("merge-identical");
+        let one = "<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n";
+        std::fs::write(dir.join("f"), format!("{one}a\n{one}b\n{one}")).unwrap();
+        let mut ed = Editor::open(&egui::Context::default(), &dir, "f");
+        crate::repo::testutil::wait_for("the editor", || {
+            if let Some(d) = Task::poll(&mut ed.task) {
+                ed.output = d.text.clone();
+                ed.data = Some(d);
+            }
+            ed.data.is_some()
+        });
+        ed.reparse();
+        assert_eq!(ed.orig_of, [Some(0), Some(1), Some(2)]);
+        ed.resolve(0, Take::Current);
+        assert_eq!(ed.orig_of, [Some(1), Some(2)]);
+        ed.resolve_trivial();
+        assert_eq!(ed.orig_of, [Some(1), Some(2)]);
+        ed.resolve(1, Take::Current);
+        assert_eq!(ed.orig_of, [Some(1)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Claude's resolution from the dialog: refused over newer edits or leftover markers; keeps CRLF.

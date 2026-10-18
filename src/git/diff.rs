@@ -304,9 +304,8 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
     args.extend(opts.iter().map(String::as_str));
     args.push("--no-textconv");
     args.push("--");
-    if let Some(o) = &c.old_path {
-        args.push(o);
-    }
+    let old_path = c.old_path.as_deref().filter(|_| c.code != 'C');
+    args.extend(old_path);
     args.push(&c.path);
     let raw = run_capped(dir, &args, if o.all { usize::MAX - 1 } else { LARGE_BYTES })?.0;
     if let Some(f) = large(raw.iter().filter(|&&b| b == b'\n').count(), raw.len(), o) {
@@ -315,7 +314,7 @@ pub fn commit_diff(dir: &Path, id: &str, parent: Option<&str>, c: &Change, o: Di
     let mut f = parse_one(&String::from_utf8_lossy(&raw));
     f.lossy |= std::str::from_utf8(&raw).is_err();
     if f.binary {
-        let old = c.old_path.as_deref().unwrap_or(&c.path);
+        let old = old_path.unwrap_or(&c.path);
         let new = if id == super::WORKTREE { file_size(dir, &c.path) } else { blob_size(dir, &format!("{id}:{}", c.path)) };
         f.sizes = Some((parent.and_then(|p| blob_size(dir, &format!("{p}:{old}"))), new));
     }
@@ -646,6 +645,28 @@ mod tests {
             assert_eq!(lines, ["-one", "-two", "+target", "\\ No newline at end of file"]);
             assert!(f.lossy && partial_patch(&f, |_, _| true, false).is_none() && partial_patch(&f, |h, _| h == 0, true).is_none());
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn copy_diff_shows_only_the_copy() {
+        let dir = std::env::temp_dir().join(format!("glasir-diff-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |a: &[&str]| run(&dir, a).unwrap();
+        let commit = |m: &str| g(&["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false", "commit", "-q", "-m", m]);
+        g(&["init", "-q"]);
+        std::fs::write(dir.join("a"), "one\ntwo\n").unwrap();
+        g(&["add", "."]);
+        commit("a");
+        std::fs::write(dir.join("b"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("a"), "one\ntwo\nthree\n").unwrap();
+        g(&["add", "."]);
+        commit("copy");
+        let c = Change { path: "b".into(), old_path: Some("a".into()), code: 'C' };
+        let f = commit_diff(&dir, "HEAD", Some("HEAD~"), &c, DiffOpts::default()).unwrap();
+        assert_eq!((f.hunks.len(), f.lossy), (1, false));
+        assert!(f.header.iter().any(|h| h.ends_with("b/b")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -170,10 +170,12 @@ pub fn fetch_failure(err: &str) -> &'static str {
 }
 
 /// Runs `f` with all uncommitted changes (untracked too) stashed, then reapplies them.
-/// If they conflict with the new state, the conflict markers stay and so does the stash.
+/// If they conflict with the new state, the conflict markers stay and so does the stash;
+/// if `f` fails mid-way (a merge stopped on conflicts) or they can't be applied, they stay only in the stash.
 pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) -> Res<String> {
     let top = || Cancel::default().scope(|| run(dir, &["rev-parse", "-q", "--verify", "refs/stash"])).unwrap_or_default();
-    let before = top();
+    let state = || Cancel::default().scope(|| super::git_dir(dir)).map(|g| super::state(&g)).ok();
+    let (before, was) = (top(), state());
     let pushed = run(dir, &["stash", "push", "-u", "-m", msg]);
     let mine = top();
     if mine == before {
@@ -181,6 +183,12 @@ pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) ->
     }
     let failed = pushed.is_err();
     let res = pushed.and_then(|_| f());
+    if let Err(p) = &res
+        && !failed
+        && state() != was
+    {
+        return Err(format!("{p}\n\nYour uncommitted changes are kept only in the stash \"{msg}\": apply it once you've finished or aborted this, then drop it."));
+    }
     // Outside any cancel scope: a cancelled op must still give the changes back.
     let pop = Cancel::default().scope(|| {
         let name = super::stashes(dir)?.into_iter().find(|s| s.id == mine.trim()).ok_or("The stash holding your changes is gone from the stash list.")?.name;
@@ -197,8 +205,12 @@ pub fn with_autostash(dir: &Path, msg: &str, f: impl FnOnce() -> Res<String>) ->
         (_, Err(e)) if e.contains("could not restore untracked files") => Err(format!(
             "Some untracked files couldn't come back: the new state has files of the same name. They are kept only in the stash \"{msg}\", so don't drop it.\n\n{e}"
         )),
-        (_, Err(e)) => Err(format!(
+        (_, Err(e)) if e.contains("CONFLICT") => Err(format!(
             "Your changes conflict with the new state: resolve the conflicts. They are also kept in the stash \"{msg}\"; drop it when you're done.\n\n{e}"
+        )),
+        (res, Err(e)) => Err(format!(
+            "{}Your changes couldn't be reapplied, so they are kept only in the stash \"{msg}\": apply it once you can, then drop it.\n\n{e}",
+            res.err().map(|p| format!("{p}\n\n")).unwrap_or_default()
         )),
     }
 }
@@ -327,6 +339,40 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("f")).unwrap(), "mine\n");
         assert_eq!(std::fs::read_to_string(dir.join("g")).unwrap(), "one\n");
         assert!(g(&["stash", "list"]).contains("other"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn autostash_keeps_changes_in_stash_when_op_stops_midway() {
+        let dir = std::env::temp_dir().join(format!("glasir-autostash-midway-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "T"]);
+        g(&["config", "commit.gpgsign", "false"]);
+        let commit = |f: &str, s: &str| {
+            std::fs::write(dir.join(f), s).unwrap();
+            g(&["commit", "-qam", s]);
+        };
+        std::fs::write(dir.join("c"), "base\n").unwrap();
+        std::fs::write(dir.join("d"), "base\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-qm", "init"]);
+        g(&["checkout", "-qb", "src"]);
+        commit("c", "src\n");
+        g(&["checkout", "-qb", "dst", "main"]);
+        commit("c", "dst\n");
+        g(&["checkout", "-q", "main"]);
+        std::fs::write(dir.join("d"), "mine\n").unwrap();
+        let res = with_autostash(&dir, "auto", || run(&dir, &["checkout", "dst", "--"]).and_then(|_| run(&dir, &["merge", "src"])));
+        let e = res.unwrap_err();
+        assert!(e.contains("Merge conflict in c") && e.contains("only in the stash \"auto\"") && !e.contains("drop it when you're done"), "{e}");
+        assert!(g(&["stash", "list"]).contains("auto"));
+        g(&["merge", "--abort"]);
+        g(&["stash", "pop"]);
+        assert_eq!(std::fs::read_to_string(dir.join("d")).unwrap(), "mine\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, PartialEq, Debug)]
 pub enum Mode {
-    /// Commits touching the file (following renames), or the folder when the path ends in `/`.
-    History,
+    /// Commits touching the file from `rev` (`None` = HEAD; following renames), or the folder when the path ends in `/`.
+    History(Option<String>),
     /// Blame at a revision; `None` = the working tree.
     Blame(Option<String>),
     /// `git log -L<start>,<end>:<path> <rev>`; `None` = the index (an unstaged diff's old side).
@@ -51,7 +51,7 @@ pub struct Blame {
 }
 
 pub enum Data {
-    History(Vec<Entry>),
+    History(Vec<Entry>, bool),
     Blame(Blame),
 }
 
@@ -91,9 +91,9 @@ impl FileView {
         let cancel = self.cancel.clone();
         self.task = Some(Task::spawn(ctx, move || {
             cancel.scope(|| match mode {
-                Mode::History => history(&dir, &p, limit).map(Data::History),
+                Mode::History(rev) => history(&dir, &p, rev.as_deref(), limit).map(|(v, more)| Data::History(v, more)),
                 Mode::Blame(rev) => blame(&dir, &p, rev.as_deref()).map(Data::Blame),
-                Mode::Lines { rev, start, end } => line_history(&dir, &p, rev.as_deref(), start, end).map(Data::History),
+                Mode::Lines { rev, start, end } => line_history(&dir, &p, rev.as_deref(), start, end).map(|v| Data::History(v, false)),
             })
         }));
     }
@@ -127,6 +127,7 @@ impl FileView {
         let stale = match self.mode {
             Mode::Blame(None) => head_moved || self.file_stamp() != self.stamp,
             Mode::Blame(_) => false,
+            Mode::History(Some(_)) => false,
             _ => head_moved,
         };
         if stale {
@@ -144,11 +145,11 @@ impl FileView {
         if let Some(d) = Task::poll(&mut self.task) {
             static LOADS: AtomicU64 = AtomicU64::new(1);
             let prev = match (&self.data, self.sel) {
-                (Some(Ok(Data::History(old))), Some(i)) => old.get(i).map(|e| e.id.clone()),
+                (Some(Ok(Data::History(old, _))), Some(i)) => old.get(i).map(|e| e.id.clone()),
                 _ => None,
             };
             let sel = match (&d, prev) {
-                (Ok(Data::History(v)), Some(id)) => v.iter().position(|e| e.id == id),
+                (Ok(Data::History(v, _)), Some(id)) => v.iter().position(|e| e.id == id),
                 _ => None,
             };
             (self.data, self.sel, self.data_gen) = (Some(d), sel, LOADS.fetch_add(1, Ordering::Relaxed));
@@ -199,17 +200,20 @@ const FORMAT: &str = "--format=%x1e%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%ad%x1f%s";
 
 const PAGE: usize = 1000;
 
-fn history(dir: &Path, path: &str, limit: usize) -> Res<Vec<Entry>> {
+fn history(dir: &Path, path: &str, rev: Option<&str>, limit: usize) -> Res<(Vec<Entry>, bool)> {
     // A folder (`dir/`) can't be followed through renames.
     let follow: &[&str] = if path.ends_with('/') { &["--diff-merges=first-parent"] } else { &["--follow", "-M", "--diff-merges=dense-combined"] };
     let n = format!("-n{limit}");
-    let args = [&["--literal-pathspecs", "log", &n], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT, "--", path]].concat();
-    let mut v = parse_history(&git::run(dir, &args)?);
+    let args = [&["--literal-pathspecs", "log", &n], follow, &["-z", "--name-status", git::DATE_FORMAT, FORMAT], rev.as_slice(), &["--", path]].concat();
+    let out = git::run(dir, &args)?;
+    let mut more = out.matches('\x1e').count() >= limit;
+    let mut v = parse_history(&out);
     // `--follow` finds copies too, but a copy's source still lives on: its commits are not this file's past.
     if let Some(i) = v.iter().position(|e| e.change.code == 'C') {
         v.truncate(i + 1);
+        more = false;
     }
-    Ok(v)
+    Ok((v, more))
 }
 
 /// Undoes git's C-style path quoting (`"\303\274 \"x\""`); plain paths pass through.
@@ -405,7 +409,7 @@ mod tests {
         // From a revision: the file there, with its old name.
         assert_eq!(line_history(&dir, old, Some("HEAD~2"), 2, 2).unwrap().len(), 2);
 
-        let f = history(&dir, "d[1]/", PAGE).unwrap();
+        let f = history(&dir, "d[1]/", None, PAGE).unwrap().0;
         assert_eq!(f.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["move and edit", "two", "add"]);
 
         let b = blame(&dir, "n ü.txt", Some("HEAD")).unwrap();
@@ -422,12 +426,12 @@ mod tests {
         assert_eq!(line_history(&dir, "n ü.txt", None, 1, 1).err().as_deref(), Some(INDEX_LINES));
 
         let ctx = egui::Context::default();
-        let mut fv = FileView::open(&ctx, &dir, "d[1]/", Mode::History);
+        let mut fv = FileView::open(&ctx, &dir, "d[1]/", Mode::History(None));
         fv.go(&ctx, prev_path.clone(), Mode::Blame(Some(prev.clone())));
         fv.go(&ctx, prev_path.clone(), Mode::Blame(Some(prev.clone()))); // the same view: no new step
         assert_eq!((fv.back.len(), fv.fwd.len()), (1, 0));
         fv.step(&ctx, false);
-        assert_eq!((fv.path.as_str(), &fv.mode, fv.fwd.len()), ("d[1]/", &Mode::History, 1));
+        assert_eq!((fv.path.as_str(), &fv.mode, fv.fwd.len()), ("d[1]/", &Mode::History(None), 1));
         fv.step(&ctx, true);
         wait_for("the blame", || {
             fv.poll();
@@ -463,11 +467,11 @@ mod tests {
         std::fs::write(dir.join("d/f"), "both\n").unwrap();
         sh(&dir, &["add", "d/f"]);
         sh(&dir, &["commit", "-qm", "merged"]);
-        let h = history(&dir, "d/", PAGE).unwrap();
+        let h = history(&dir, "d/", None, PAGE).unwrap().0;
         assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["merged", "main", "x", "base"]);
 
         let ctx = egui::Context::default();
-        let mut fv = FileView::open(&ctx, &dir, "d/", Mode::History);
+        let mut fv = FileView::open(&ctx, &dir, "d/", Mode::History(None));
         wait_for("the history", || {
             fv.poll();
             fv.data.is_some()
@@ -480,7 +484,7 @@ mod tests {
         });
         assert_eq!(fv.sel, Some(1));
 
-        let h = history(&dir, "d/f", PAGE).unwrap();
+        let h = history(&dir, "d/f", None, PAGE).unwrap().0;
         assert_eq!(h.iter().map(|e| (e.summary.as_str(), e.change.code)).collect::<Vec<_>>(), [("merged", 'M'), ("main", 'M'), ("x", 'M'), ("base", 'A')]);
 
         sh(&dir, &["config", "blame.ignoreRevsFile", "missing-revs"]);
@@ -497,8 +501,31 @@ mod tests {
         commit(&dir, "f1.txt", "one");
         commit(&dir, "f[1].txt", "two");
         commit(&dir, "f1.txt", "three");
-        let h = history(&dir, "f[1].txt", PAGE).unwrap();
+        let h = history(&dir, "f[1].txt", None, PAGE).unwrap().0;
         assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["two"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_starts_at_a_revision_and_more_counts_merges() {
+        use crate::repo::testutil::*;
+        let dir = scratch("history-rev");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "base.txt", "0");
+        sh(&dir, &["switch", "-qc", "side"]);
+        commit(&dir, "s.txt", "1");
+        sh(&dir, &["switch", "-q", "main"]);
+        commit(&dir, "base.txt", "2");
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge", "side"]);
+        let (v, more) = history(&dir, "s.txt", None, 2).unwrap();
+        assert_eq!((v.len(), more), (1, true));
+        assert!(!history(&dir, "s.txt", None, PAGE).unwrap().1);
+        sh(&dir, &["switch", "-q", "side"]);
+        commit(&dir, "t.txt", "3");
+        sh(&dir, &["switch", "-q", "main"]);
+        assert!(history(&dir, "t.txt", None, PAGE).unwrap().0.is_empty());
+        assert_eq!(history(&dir, "t.txt", Some("side"), PAGE).unwrap().0.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -516,7 +543,7 @@ mod tests {
         std::fs::write(dir.join("b/__init__.py"), "").unwrap();
         sh(&dir, &["add", "."]);
         sh(&dir, &["commit", "-qm", "package b"]);
-        let h = history(&dir, "b/__init__.py", PAGE).unwrap();
+        let h = history(&dir, "b/__init__.py", None, PAGE).unwrap().0;
         assert_eq!(h.iter().map(|e| e.summary.as_str()).collect::<Vec<_>>(), ["package b"], "a's commits are not b's past");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -529,7 +556,7 @@ mod tests {
         identity(&dir);
         commit(&dir, "f.txt", "one\n");
         let ctx = egui::Context::default();
-        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History);
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History(None));
         let settle = |fv: &mut FileView| {
             wait_for("the history", || {
                 fv.poll();
@@ -540,7 +567,7 @@ mod tests {
         commit(&dir, "f.txt", "two\n");
         fv.refresh(&ctx, true);
         settle(&mut fv);
-        assert!(matches!(&fv.data, Some(Ok(Data::History(h))) if h.len() == 2));
+        assert!(matches!(&fv.data, Some(Ok(Data::History(h, _))) if h.len() == 2));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -553,7 +580,7 @@ mod tests {
         commit(&dir, "f.txt", "one\n");
         commit(&dir, "g.txt", "two\n");
         let ctx = egui::Context::default();
-        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History);
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History(None));
         let settle = |fv: &mut FileView| {
             wait_for("the history", || {
                 fv.poll();
@@ -568,7 +595,7 @@ mod tests {
         fv.more(&ctx);
         settle(&mut fv);
         assert_eq!(listed().as_deref(), Some("-n4000"));
-        fv.go(&ctx, "g.txt".into(), Mode::History);
+        fv.go(&ctx, "g.txt".into(), Mode::History(None));
         settle(&mut fv);
         assert_eq!((listed().as_deref(), fv.limit), (Some("-n1000"), PAGE));
         fv.more(&ctx);
@@ -587,7 +614,7 @@ mod tests {
         identity(&dir);
         commit(&dir, "f.txt", "one\n");
         let ctx = egui::Context::default();
-        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History);
+        let mut fv = FileView::open(&ctx, &dir, "f.txt", Mode::History(None));
         let mut gens = vec![];
         for _ in 0..3 {
             wait_for("the history", || {

@@ -300,7 +300,7 @@ impl App {
                                 let (a, b) = r.split_once('-').unwrap_or_default();
                                 (Mode::Lines { rev: Some("HEAD".into()), start: a.parse().unwrap_or(1), end: b.parse().unwrap_or(1) }, path)
                             }
-                            "history" => (Mode::History, path),
+                            "history" => (Mode::History(None), path),
                             m => (Mode::Blame(m.strip_prefix("blame@").map(Into::into)), path),
                         };
                         if let Some(t) = self.tabs.get_mut(self.active) {

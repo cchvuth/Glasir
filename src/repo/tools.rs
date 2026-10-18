@@ -229,7 +229,7 @@ pub struct Open {
 }
 
 /// Commands that rewrite the working tree beyond the paths they name.
-const WHOLE_TREE: &[&str] = &["checkout", "switch", "reset", "restore", "rebase", "merge", "pull", "stash", "cherry-pick", "revert", "am", "clean", "apply", "mergetool", super::stack::RESTACK, super::merge_opts::PICK_NEW, super::rebase::ABORT_ANY, super::op::STASH_POP, super::op::STASH_APPLY, super::op::STASH_UNPOP];
+const WHOLE_TREE: &[&str] = &["checkout", "switch", "reset", "restore", "rebase", "merge", "pull", "stash", "cherry-pick", "revert", "am", "clean", "apply", "mergetool", super::stack::RESTACK, super::merge_opts::PICK_NEW, super::rebase::ABORT_ANY, super::op::STASH_POP, super::op::STASH_APPLY, super::op::STASH_UNPOP, super::op::STASH_RESTAGE];
 
 /// Whether `op` would change `path`: it names it (or a folder holding it), or rewrites the tree
 /// without naming paths (a hard reset, checkout, rebase, discard all).

@@ -51,7 +51,7 @@ fn dir_items(ui: &mut Ui, dir: &std::path::Path, path: &str, files: &[Change], s
         acts.push(Action::Reveal(path.into()));
     }
     if !untracked && ui.button(format!("{}  Folder history", icon::FOLDER_SIMPLE)).on_hover_text(format!("Commits that touched {path}/")).clicked() {
-        acts.push(Action::FileView(format!("{path}/"), crate::repo::history::Mode::History));
+        acts.push(Action::FileView(format!("{path}/"), crate::repo::history::Mode::History(None)));
     }
     if ui.button("Copy path").clicked() {
         acts.push(Action::Copy(path.into()));
@@ -651,7 +651,7 @@ impl RepoTab {
                         }
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != '?' {
-                            file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), (c.code == 'D').then_some("HEAD"), acts);
+                            file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), None, (c.code == 'D').then_some("HEAD"), acts);
                         }
                         if let Some(h) = d.status.head.as_deref().filter(|_| !matches!(c.code, '?' | 'A')) {
                             permalink_items(ui, d, h, c.old_path.as_deref().unwrap_or(&c.path), acts);
@@ -731,7 +731,7 @@ impl RepoTab {
                         lfs_track_item(ui, d, &c.path, acts);
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {
-                            file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), (c.code == 'D').then_some("HEAD"), acts);
+                            file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), None, (c.code == 'D').then_some("HEAD"), acts);
                         }
                         if let Some(h) = d.status.head.as_deref().filter(|_| c.code != 'A') {
                             permalink_items(ui, d, h, c.old_path.as_deref().unwrap_or(&c.path), acts);
@@ -809,6 +809,6 @@ mod tests {
             sim.click(at, egui::PointerButton::Primary, draw);
             opened.extend(acts.into_iter().filter_map(|a| if let Action::FileView(p, m) = a { Some((p, m)) } else { None }));
         }
-        assert_eq!(opened, [("f".into(), Mode::History), ("gone.txt".into(), Mode::Blame(Some("HEAD".into())))]);
+        assert_eq!(opened, [("f".into(), Mode::History(None)), ("gone.txt".into(), Mode::Blame(Some("HEAD".into())))]);
     }
 }

@@ -293,7 +293,11 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
             }
             if theme::pill(ui, icon::CLOCK_COUNTER_CLOCKWISE).on_hover_text("File history").clicked() {
                 let path = if worktree { change.old_path.as_ref().unwrap_or(&change.path) } else { &change.path };
-                acts.push(Action::FileView(path.clone(), Mode::History));
+                let rev = match &src {
+                    DiffSrc::Commit { id, .. } if !wt_compare => Some(id.clone()),
+                    _ => None,
+                };
+                acts.push(Action::FileView(path.clone(), Mode::History(rev)));
             }
         }
         if worktree {

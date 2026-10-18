@@ -70,6 +70,23 @@ fn signing_failed(op: &Op, i: usize, verb: &str, err: &str) -> Choice {
     }
 }
 
+fn signing_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    [
+        "failed to sign",
+        "unable to sign",
+        "user.signingkey",
+        "couldn't load public key",
+        "couldn't sign",
+        "couldn't find key in agent",
+        "couldn't get agent socket",
+        "no private key found for public key",
+        "incorrect passphrase supplied",
+    ]
+    .iter()
+    .any(|s| e.contains(s))
+}
+
 /// When `op` failed with `err` in a way that has a one-click fix, the choices to offer.
 pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> {
     let i = op.cmds.iter().take_while(|c| c.first().is_some_and(|a| a == super::rebase::HEAD_IS)).count();
@@ -93,7 +110,7 @@ pub(super) fn offer(op: &Op, err: &str, d: Option<&RepoData>) -> Option<Choice> 
         // gpg / ssh-keygen failed (no key, pinentry cancelled, locked agent): say so, offer to go unsigned.
         // A lone command only (bar the stacks' restack after it, which reports a failure as a note):
         // in a commit-then-rebase op, a later step may be what failed to sign.
-        verb @ ("commit" | "tag") if op.cmds[i + 1..].iter().all(|c| c.first().is_some_and(|a| a == super::stack::RESTACK)) && ["failed to sign", "unable to sign", "user.signingkey", "Couldn't load public key", "Couldn't sign"].iter().any(|s| err.contains(s)) => {
+        verb @ ("commit" | "tag") if op.cmds[i + 1..].iter().all(|c| c.first().is_some_and(|a| a == super::stack::RESTACK)) && signing_error(err) => {
             Some(signing_failed(op, i, verb, err))
         }
         _ => None,
@@ -446,6 +463,22 @@ mod tests {
         exec(&dir, &retry).unwrap();
         assert_eq!(sh(&dir, &["rev-parse", "s2~1"]), sh(&dir, &["rev-parse", "s1"]));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signing_errors_are_recognised() {
+        let tail = "\nfatal: failed to write commit object";
+        for e in [
+            "error: user.signingKey needs to be set for ssh signing",
+            "error: Couldn't find key in agent?",
+            "error: Couldn't get agent socket?",
+            "error: No private key found for public key \"/k/id.pub\"?",
+            "error: incorrect passphrase supplied to decrypt private key?",
+            "error: gpg failed to sign the data",
+        ] {
+            assert!(signing_error(&format!("{e}{tail}")), "{e}");
+        }
+        assert!(!signing_error("error: insufficient permission for adding an object to repository database .git/objects\nfatal: failed to write commit object"));
     }
 
     /// "Already applied" answers only the guard's own refusal, wherever the guard sits.

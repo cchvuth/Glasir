@@ -4,7 +4,7 @@
 
 use super::format::{lead_top, text_job, tops, visible, wrapped};
 use crate::ai;
-use crate::repo::merge_editor::{Chunk, Editor, Row, Take, conflicts, parse, parts, rebuild, save, stage, whole_ops};
+use crate::repo::merge_editor::{Chunk, Editor, Row, Take, conflicts, parse, parts, save, stage, whole_ops};
 use crate::repo::{Action, Task};
 use crate::theme::{self, icon};
 use egui::text::{LayoutJob, TextFormat};
@@ -310,8 +310,7 @@ pub fn show(ui: &mut Ui, ed: &mut Editor, ai: Option<&ai::Job>, tool_open: bool,
         ed.resolve(i, t);
     }
     if auto {
-        ed.output = rebuild(&ed.chunks, |_, c| c.trivial().then_some(Take::Current));
-        ed.reparse();
+        ed.resolve_trivial();
     }
     if let Some(i) = select {
         ed.sel = i;

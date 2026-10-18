@@ -203,7 +203,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
         match a.as_slice() {
             [super::tools::SHELL, line] => git::run_shell(dir, line),
-            [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP | STASH_APPLY | STASH_RENAME | STASH_UNPOP, ..] => stash_cmd(dir, &a),
+            [STASH_LIST | STASH_DROP | STASH_HAS | STASH_POP | STASH_APPLY | STASH_RENAME | STASH_UNPOP | STASH_RESTAGE, ..] => stash_cmd(dir, &a),
             [super::restore::APPLY_STASH_FILE, stash, path] => super::restore::apply_stash(dir, stash, path),
             [BRANCH_DELETE | BRANCH_RESTORE | BRANCH_CONFIG, ..] => branch_cmd(dir, &a),
             [SEQ_STATE, ..] => seq_state(dir, &a),
@@ -632,7 +632,9 @@ pub fn remove_worktree_and_branch(d: &RepoData, remove: &[&str], b: &str) -> Op 
 
 /// `exec` pseudo-commands naming stashes by commit id, since `stash@{n}` shifts when one is made or dropped elsewhere.
 /// `STASH_LIST n ids..` fails unless the first `n` stashes are `ids`; `STASH_DROP`, `STASH_POP` and `STASH_APPLY id` act wherever `id` is now;
-/// `STASH_HAS ids..` fails unless they all exist; `STASH_RENAME id msg` stores it again with a new message; `STASH_UNPOP id msg` lists a popped one again.
+/// `STASH_HAS ids..` fails unless they all exist; `STASH_RENAME id msg` stores it again with a new message; `STASH_UNPOP id msg` lists a popped one again;
+/// `STASH_RESTAGE id` pops a `--staged` save onto files that kept unstaged edits (which `stash pop` refuses), with
+/// the `-U1` context git took it out with.
 const STASH_LIST: &str = "!stash-list";
 const STASH_DROP: &str = "!stash-drop";
 const STASH_HAS: &str = "!stash-has";
@@ -640,6 +642,7 @@ pub(super) const STASH_POP: &str = "!stash-pop";
 pub(super) const STASH_APPLY: &str = "!stash-apply";
 pub(super) const STASH_RENAME: &str = "!stash-rename";
 pub(super) const STASH_UNPOP: &str = "!stash-unpop";
+pub(super) const STASH_RESTAGE: &str = "!stash-restage";
 
 fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
     let short = |id: &str| id[..7.min(id.len())].to_owned();
@@ -691,6 +694,16 @@ fn stash_cmd(dir: &Path, a: &[&str]) -> Res<String> {
             true => Ok(String::new()),
             false => git::run(dir, &["stash", "store", "-m", msg, id]),
         },
+        [STASH_RESTAGE, id] => {
+            let s = git::stashes(dir)?.into_iter().find(|s| s.id == *id).ok_or_else(|| format!("Stash {} is no longer in the stash list.", short(id)))?;
+            let patch = git::run_raw(dir, &["diff", "-U1", "--binary", "--no-color", "--no-ext-diff", "--submodule=short", &format!("{id}^1"), &format!("{id}^2")], None)?;
+            let apply = |extra: &[&str]| git::run_raw(dir, &[&["apply", "--whitespace=nowarn"], extra].concat(), Some(&patch));
+            apply(&["--check"])?;
+            apply(&["--check", "--cached"])?;
+            apply(&[])?;
+            apply(&["--cached"])?;
+            git::run(dir, &["stash", "drop", &s.name])
+        }
         [STASH_HAS, ids @ ..] => match ids.iter().find(|id| git::run(dir, &["cat-file", "-e", &format!("{id}^{{commit}}")]).is_err()) {
             Some(id) => Err(format!("Stash {} no longer exists (git gc pruned it), so no stash was touched.", short(id))),
             None => Ok(String::new()),
@@ -746,7 +759,8 @@ pub(super) fn exec_stash(dir: &Path, op: &mut Op) -> Res<String> {
     let revert = |label: &str, cmd: Vec<String>| Some(Box::new(Op { cmds: vec![cmd], ..Op::new(label, &[]) }));
     let now = before.as_ref().map(|_| top()).unwrap_or_default();
     if before.is_some_and(|b| b != now) && !now.is_empty() {
-        op.revert = revert("Pop stash", vec![STASH_POP.into(), now]);
+        let staged = op.cmds.iter().any(|c| c.iter().any(|a| a == "--staged"));
+        op.revert = revert("Pop stash", vec![if staged { STASH_RESTAGE } else { STASH_POP }.into(), now]);
     }
     if let Some(s) = popped {
         // Redo drops it again (the files come back with the step's backup).
@@ -3193,6 +3207,26 @@ mod tests {
         dirty();
         run(&ctx, &mut t, Action::Git(fill(super::stash_prompt(), "")));
         assert!(sh(&dir, &["stash", "list", "--format=%gs"]).starts_with("WIP on main: "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stash_staged_undo_keeps_unstaged_edits() {
+        let (dir, ctx, mut t) = stash_repo("stash-staged");
+        std::fs::write(dir.join("a"), "1x\n2\n3\n").unwrap();
+        std::fs::write(dir.join("added"), "n\n").unwrap();
+        sh(&dir, &["add", "a", "added"]);
+        std::fs::write(dir.join("a"), "1x\n2\n3y\n").unwrap();
+        run(&ctx, &mut t, Action::Git(Op::new("Stash staged", &["stash", "push", "--staged"])));
+        for round in 0..2 {
+            assert_eq!((sh(&dir, &["status", "--porcelain"]).as_str(), sh(&dir, &["stash", "list"]).lines().count()), (" M a\n", 1), "round {round}");
+            let msgs = run(&ctx, &mut t, Action::Undo);
+            assert!(t.choice.is_none() && msgs.iter().all(|m| !m.error), "round {round}: {:?}", t.choice.as_ref().map(|c| &c.text));
+            assert_eq!(sh(&dir, &["stash", "list"]), "");
+            assert_eq!(sh(&dir, &["status", "--porcelain"]), "MM a\nA  added\n");
+            assert_eq!((sh(&dir, &["show", ":a"]).as_str(), std::fs::read_to_string(dir.join("a")).unwrap().as_str()), ("1x\n2\n3\n", "1x\n2\n3y\n"));
+            run(&ctx, &mut t, Action::Redo);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

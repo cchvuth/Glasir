@@ -38,8 +38,8 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
             nav = Some(true);
         }
         let title = match &fv.mode {
-            Mode::History if folder => format!("{}  Folder history", icon::FOLDER_SIMPLE),
-            Mode::History => format!("{}  History", icon::CLOCK_COUNTER_CLOCKWISE),
+            Mode::History(_) if folder => format!("{}  Folder history", icon::FOLDER_SIMPLE),
+            Mode::History(_) => format!("{}  History", icon::CLOCK_COUNTER_CLOCKWISE),
             Mode::Blame(None) => format!("{}  Blame", icon::USER_LIST),
             Mode::Blame(Some(r)) => format!("{}  Blame at {}", icon::USER_LIST, &r[..r.len().min(7)]),
             Mode::Lines { start, end, .. } if start == end => format!("{}  History of line {start}", icon::CLOCK_COUNTER_CLOCKWISE),
@@ -57,7 +57,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
             // Folders above the shown file or folder open their history.
             if seg.ends_with('/') && end < fv.path.len() {
                 if ui.add(egui::Button::new(text).frame(false)).on_hover_text(format!("History of {}", &fv.path[..end])).clicked() {
-                    acts.push(Action::FileView(fv.path[..end].into(), Mode::History));
+                    acts.push(Action::FileView(fv.path[..end].into(), fv.mode.clone()));
                 }
             } else {
                 ui.add(egui::Label::new(text).truncate());
@@ -82,7 +82,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
         Some(Ok(d)) => d,
     };
     match data {
-        Data::History(entries) => {
+        Data::History(entries, more) => {
             const ROW: f32 = 46.0;
             // Rows as tall as their entry (a line-range entry carries its diff).
             let (id, key) = (egui::Id::new("history_tops"), fv.data_gen);
@@ -95,7 +95,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                 }
             };
             let tops = &tops.1;
-            let more = matches!(fv.mode, Mode::History) && entries.len() >= fv.limit;
+            let more = matches!(fv.mode, Mode::History(_)) && *more;
             let mut load_more = false;
             egui::ScrollArea::vertical().id_salt("file_history").auto_shrink(false).show_viewport(ui, |ui, view| {
                 ui.set_min_height(tops[entries.len()] + if more { 40.0 } else { 0.0 });
@@ -301,7 +301,7 @@ mod tests {
     fn back_or_forward_with_nowhere_to_go_keeps_the_diff() {
         let mut sim = Sim::new(520.0, 500.0);
         let t = tab(&sim.ctx, "history-nav", &["x"]);
-        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History(None));
         let (mut wrap, mut acts) = (false, vec![]);
         for key in [egui::Key::OpenBracket, egui::Key::CloseBracket] {
             let press = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
@@ -314,14 +314,14 @@ mod tests {
     fn a_menu_stays_with_its_entry_when_newer_ones_arrive() {
         let mut sim = Sim::new(520.0, 500.0);
         let t = tab(&sim.ctx, "history-menu", &["x"]);
-        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History(None));
         crate::repo::testutil::wait_for("the history", || {
             fv.poll();
             fv.data.is_some()
         });
         let entries = |n: i64| {
             let entry = |i: i64| Entry { id: format!("{i:07x}{}", "0".repeat(33)), parent: None, author: "T".into(), email: "t@t".into(), time: i, date: String::new(), summary: format!("summary {i}"), change: Change { path: "f".into(), old_path: None, code: 'M' }, hunks: vec![] };
-            Some(Ok(Data::History((0..n).rev().map(entry).collect())))
+            Some(Ok(Data::History((0..n).rev().map(entry).collect(), false)))
         };
         (fv.data, fv.data_gen) = (entries(10), 1);
         let (mut wrap, mut acts) = (false, vec![]);

@@ -203,15 +203,17 @@ impl Editor {
 
 /// Local branches (full name, commit) pointing at a commit the rewrite takes (`rewritten`) below the tip's
 /// commit `head` (one at `head` is a copy, like a backup): not a trunk or protected branch, not the remote's
-/// default, and not checked out anywhere (HEAD's moves anyway; git refuses another worktree's).
+/// default, and not checked out anywhere (HEAD's moves anyway; git refuses another worktree's), nor
+/// being rebased or bisected in another worktree.
 fn stacked_refs(dir: &Path, rewritten: impl Fn(&str) -> bool, head: &str) -> Vec<(String, String)> {
+    let busy = git::used_elsewhere(dir).unwrap_or_default();
     let fmt = "--format=%(refname)%09%(objectname)%09%(symref:lstrip=3)%09%(worktreepath)";
     let out = git::run(dir, &["for-each-ref", fmt, "refs/heads", "refs/remotes/origin/HEAD"]).unwrap_or_default();
     let rows: Vec<Vec<&str>> = out.lines().map(|l| l.splitn(4, '\t').collect()).collect();
     let default = rows.iter().find(|f| f[0] == "refs/remotes/origin/HEAD").and_then(|f| f.get(2).copied());
     rows.iter()
         .filter_map(|f| match f[..] {
-            [r, oid, _, ""] if oid != head && rewritten(oid) => {
+            [r, oid, _, ""] if oid != head && rewritten(oid) && !busy.iter().any(|b| b == r) => {
                 let name = r.strip_prefix("refs/heads/")?;
                 (!super::stack::protected(name) && Some(name) != default).then(|| (r.to_owned(), oid.to_owned()))
             }
@@ -1396,6 +1398,28 @@ mod tests {
         run_op(&dir, &quick(&dir, &git::git_dir(&dir).unwrap(), &b1, Act::Squash, None).unwrap());
         assert_eq!(sh(&dir, &["rev-parse", "a"]), sh(&dir, &["rev-parse", "b~1"]));
         assert_eq!(sh(&dir, &["show", "a:b1"]), "B1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rewrite_leaves_a_branch_another_worktree_is_rebasing() {
+        use crate::repo::testutil::*;
+        let dir = scratch("reword-wt-rebasing");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "m", "m");
+        sh(&dir, &["checkout", "-q", "-b", "b"]);
+        commit(&dir, "b1", "B1");
+        sh(&dir, &["branch", "s"]);
+        commit(&dir, "b2", "B2");
+        let wt = dir.join("wt");
+        sh(&dir, &["worktree", "add", "-q", &wt.to_string_lossy(), "s"]);
+        assert!(git::run(&wt, &["rebase", "-q", "-x", "false", "main"]).is_err());
+        let s = sh(&dir, &["rev-parse", "s"]);
+        rewrite(&dir, sh(&dir, &["rev-parse", "b~1"]).trim(), "HEAD", b"B1 better").unwrap();
+        assert_eq!(sh(&dir, &["log", "-1", "--format=%s", "b~1"]), "B1 better\n");
+        assert_eq!(sh(&dir, &["rev-parse", "s"]), s);
+        sh(&wt, &["rebase", "--abort"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

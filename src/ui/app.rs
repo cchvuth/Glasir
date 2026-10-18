@@ -252,10 +252,11 @@ impl App {
         if let (true, Some(d)) = (fetch, &t.data) {
             act = Some(Action::Git(fetch_op(d)));
         }
-        if !typing && cmd && pressed(Key::Z) {
+        let merging = t.merge.as_ref().is_some_and(|m| m.edited());
+        if !typing && !merging && cmd && pressed(Key::Z) {
             act = Some(if shift { Action::Redo } else { Action::Undo });
         }
-        if !typing && cmd && pressed(Key::Y) {
+        if !typing && !merging && cmd && pressed(Key::Y) {
             act = Some(Action::Redo);
         }
         if cmd && pressed(Key::F) && t.edit.is_none() && t.merge.is_none() && t.file_view.is_none() && t.rebase.is_none() && t.reflog.is_none() {
@@ -1414,7 +1415,7 @@ mod shell_tests {
         use crate::ui::testkit::{Sim, tab};
         let mut sim = Sim::new(900.0, 500.0);
         let t = tab(&sim.ctx, "hist-keys", &["one"]);
-        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History);
+        let mut fv = FileView::open(&sim.ctx, &t.dir, "f", Mode::History(None));
         fv.go(&sim.ctx, "f".into(), Mode::Blame(None));
         let mut nav = |sim: &mut Sim, key: Option<Key>, dialog: bool| {
             let mods = if key.is_some() { Modifiers::COMMAND } else { Modifiers::NONE };
@@ -1677,6 +1678,38 @@ mod shell_tests {
         for d in [a, b] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[test]
+    fn undo_shortcut_leaves_the_repo_alone_while_the_merge_editor_has_edits() {
+        use crate::repo::{Op, Undo};
+        use crate::ui::testkit::load;
+        let dir = repo("undo-merge");
+        commit(&dir, "one");
+        std::fs::write(dir.join("f"), "x\n").unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &dir);
+        load(&mut app.tabs[0], &ctx);
+        app.tabs[0].apply(&ctx, Action::Git(Op::new("Create branch", &["branch", "x"]).undo(Undo::Keep)));
+        load(&mut app.tabs[0], &ctx);
+        let top = app.tabs[0].undo_top();
+        let mut ed = crate::repo::merge_editor::Editor::open(&ctx, &dir, "f");
+        crate::repo::testutil::wait_for("the editor", || {
+            if let Some(d) = crate::repo::Task::poll(&mut ed.task) {
+                ed.data = Some(d);
+            }
+            ed.data.is_some()
+        });
+        ed.output = "edited\n".into();
+        app.tabs[0].merge = Some(ed);
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Z]);
+        load(&mut app.tabs[0], &ctx);
+        assert_eq!(app.tabs[0].undo_top(), top);
+        app.tabs[0].merge = None;
+        step(&ctx, &mut app, Modifiers::COMMAND, &[Key::Z]);
+        load(&mut app.tabs[0], &ctx);
+        assert_ne!(app.tabs[0].undo_top(), top);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
