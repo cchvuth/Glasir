@@ -12,6 +12,7 @@ pub struct RepoData {
     pub refs: Arc<Vec<Ref>>,
     pub stashes: Arc<Vec<git::Stash>>,
     pub worktrees: Arc<Vec<git::Worktree>>,
+    pub here: Option<usize>,
     pub submodules: Arc<Vec<git::Submodule>>,
     pub lfs: Arc<git::Lfs>,
     pub health: super::maintenance::Health,
@@ -297,7 +298,8 @@ impl RepoData {
     pub(super) fn count_worktree_changes(&mut self, dir: &Path) {
         let me = dir.canonicalize().ok();
         let n = self.changed;
-        if let Some(i) = self.worktrees.iter().position(|w| Path::new(&w.path).canonicalize().ok() == me)
+        self.here = self.worktrees.iter().position(|w| Path::new(&w.path).canonicalize().ok() == me);
+        if let Some(i) = self.here
             && self.worktrees[i].changes != n
         {
             Arc::make_mut(&mut self.worktrees)[i].changes = n;
@@ -388,6 +390,7 @@ impl RepoData {
             refs,
             stashes,
             worktrees: Default::default(),
+            here: None,
             submodules: Default::default(),
             lfs: Default::default(),
             health: Default::default(),

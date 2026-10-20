@@ -150,6 +150,21 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
     if ui.button("Checkout this commit (detached)").clicked() {
         acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &c.id]).undo(Undo::Keep)));
     }
+    let others: Vec<&crate::git::Worktree> = d.worktrees.iter().enumerate().filter(|&(i, w)| Some(i) != d.here && !w.bare && !w.prunable).map(|(_, w)| w).collect();
+    if !others.is_empty() {
+        ui.menu_button("Check out in another worktree", |ui| {
+            for w in others {
+                let name = std::path::Path::new(&w.path).file_name().map_or(w.path.clone(), |n| n.to_string_lossy().into_owned());
+                let on = w.branch.as_deref().map_or_else(|| format!("detached at {}", &w.head[..w.head.len().min(7)]), str::to_owned);
+                if ui.button(format!("{name}  ({on})")).on_hover_text(&w.path).clicked() {
+                    let leaves = w.branch.as_ref().map_or_else(|| "its current commit stays in its reflog".to_owned(), |b| format!("it leaves {b}"));
+                    let op = Op::new(format!("Check out {short} in {name}"), &[crate::repo::CHECKOUT_IN, &w.path, &c.id])
+                        .confirm(format!("Check out {short} (detached) in {}? {leaves}; its uncommitted changes stay, or git refuses if they'd be overwritten. This tab stays where it is.", w.path));
+                    acts.push(Action::Git(op));
+                }
+            }
+        });
+    }
     ui.separator();
     if ui.button("Create branch here…").clicked() {
         acts.push(prompt(

@@ -208,6 +208,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [BRANCH_DELETE | BRANCH_RESTORE | BRANCH_CONFIG, ..] => branch_cmd(dir, &a),
             [SEQ_STATE, ..] => seq_state(dir, &a),
             [DISCARD_ALL] => discard_all(dir),
+            [CHECKOUT_IN, path, rev] => checkout_in(path, rev),
             [super::cleanup::REMOTE_DELETE, rest @ ..] => super::cleanup::remote_delete(dir, rest),
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::RESET, name] => super::remotes::reset(dir, name),
@@ -617,6 +618,40 @@ pub fn remove_worktree_op(w: &git::Worktree, remove: &[&str], warn: &str) -> Op 
 
 /// Remove a worktree (`remove`: the `worktree remove` command), then force-delete its branch
 /// `b`; ⌘Z restores the branch with its config (not the folder), and redo deletes it again.
+pub fn delete_everywhere(d: &RepoData, r: &git::Ref) -> Option<(String, Op)> {
+    let name = r.name.as_str();
+    let remote = d.refs.iter().find(|x| x.kind == git::RefKind::Remote && !r.upstream.is_empty() && x.name == r.upstream).and_then(|x| Some((d.split_remote(&x.name)?, x.target.as_str())));
+    let wt = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()));
+    if remote.is_none() && wt.is_none() || r.worktree.is_some() && wt.is_none() {
+        return None;
+    }
+    let mut what = vec![format!("the local branch {name} (⌘Z brings it back)")];
+    let mut also = vec![];
+    let mut op = match wt {
+        Some(w) => {
+            let mut args = vec!["worktree", "remove"];
+            if w.changes > 0 {
+                args.push("--force");
+            }
+            args.push(&w.path);
+            also.push("its worktree".to_owned());
+            what.push(match w.changes {
+                0 => format!("its worktree folder {}", w.path),
+                n => format!("its worktree folder {} with {n} uncommitted change(s), which are LOST", w.path),
+            });
+            remove_worktree_and_branch(d, &args, name)
+        }
+        None => delete_branches(d, String::new(), &[name], true),
+    };
+    if let Some(((rm, rb), oid)) = remote {
+        what.push(format!("{rm}/{rb} on the remote (can't be undone)"));
+        also.insert(0, format!("{rm}/{rb}"));
+        op.cmds.extend(super::remotes::delete_branch(rm, rb, oid).cmds);
+    }
+    op.label = format!("Delete {name} everywhere");
+    Some((format!("Delete {name} and {}", also.join(" and ")), op.confirm(format!("Delete, even if not merged:\n• {}", what.join("\n• ")))))
+}
+
 pub fn remove_worktree_and_branch(d: &RepoData, remove: &[&str], b: &str) -> Op {
     let mut op = delete_branches(d, "Remove worktree".into(), &[b], true);
     let redo = Box::new(Op { revert: None, ..op.clone() });
@@ -804,6 +839,16 @@ fn state_files(g: &Path) -> Vec<String> {
 pub(super) const SEQ_STATE: &str = "!seq-state";
 
 pub const DISCARD_ALL: &str = "!discard-all";
+
+pub const CHECKOUT_IN: &str = "!checkout-in";
+
+fn checkout_in(path: &str, rev: &str) -> Res<String> {
+    let p = Path::new(path);
+    if !matches!(git::state(&git::git_dir(p)?), git::State::Clean | git::State::Bisecting) {
+        return Err(format!("{path} has a merge, rebase or other operation in progress: finish or abort it there first."));
+    }
+    git::run(p, &["checkout", "--detach", rev, "--"])
+}
 
 fn discard_all(dir: &Path) -> Res<String> {
     let untracked = || git::run(dir, &["ls-files", "-z", "-o", "--exclude-standard", "--directory"]).map(super::undo::split_z);
@@ -3208,6 +3253,64 @@ mod tests {
         run(&ctx, &mut t, Action::Git(fill(super::stash_prompt(), "")));
         assert!(sh(&dir, &["stash", "list", "--format=%gs"]).starts_with("WIP on main: "));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_everywhere_takes_the_branch_its_remote_branch_and_worktree() {
+        let up = scratch("delete-everywhere-up");
+        sh(&up, &["init", "-q", "--bare", "-b", "main"]);
+        let dir = scratch("delete-everywhere");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "1\n");
+        sh(&dir, &["remote", "add", "origin", up.to_str().unwrap()]);
+        sh(&dir, &["branch", "feat"]);
+        sh(&dir, &["push", "-q", "-u", "origin", "main", "feat"]);
+        let wt = dir.with_file_name(format!("{}-wt", dir.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&wt);
+        sh(&dir, &["worktree", "add", "-q", wt.to_str().unwrap(), "feat"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        let feat = d.local("feat").unwrap().clone();
+        let (label, mut op) = super::delete_everywhere(d, &feat).expect("offered");
+        assert_eq!(label, "Delete feat and origin/feat and its worktree");
+        op.confirm = None;
+        run(&ctx, &mut t, Action::Git(op));
+        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/heads/feat"]).is_err());
+        assert!(git::run(&up, &["rev-parse", "-q", "--verify", "refs/heads/feat"]).is_err());
+        assert!(!wt.exists());
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["rev-parse", "feat"]), sh(&dir, &["rev-parse", "main"]));
+        let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&up), std::fs::remove_dir_all(&wt));
+    }
+
+    #[test]
+    fn a_commit_is_checked_out_in_another_worktree_without_leaving_this_one() {
+        let dir = scratch("checkout-in-worktree");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "1\n");
+        let first = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        commit(&dir, "f", "2\n");
+        let wt = dir.with_file_name(format!("{}-wt", dir.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&wt);
+        sh(&dir, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        let w = wt.to_str().unwrap();
+        super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &first])).unwrap();
+        assert_eq!(sh(&wt, &["rev-parse", "HEAD"]).trim(), first);
+        assert!(git::run(&wt, &["symbolic-ref", "-q", "HEAD"]).is_err());
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/main\n");
+        sh(&wt, &["checkout", "-q", "side"]);
+        std::fs::write(wt.join("f"), "x\n").unwrap();
+        sh(&wt, &["commit", "-qam", "x"]);
+        sh(&wt, &["checkout", "-q", "-b", "other", "HEAD~1"]);
+        std::fs::write(wt.join("f"), "y\n").unwrap();
+        sh(&wt, &["commit", "-qam", "y"]);
+        assert!(git::run(&wt, &["merge", "-q", "side"]).is_err());
+        assert!(super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &first])).is_err_and(|e| e.contains("in progress")));
+        let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&wt));
     }
 
     #[test]

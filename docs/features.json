@@ -2419,6 +2419,32 @@
         "platform.git-runner",
         "platform.op-runner"
        ]
+      },
+      {
+       "id": "refs.delete-everywhere",
+       "name": "Delete a branch with its remote branch and worktree in one step",
+       "entry": [
+        "src/ui/sidebar/ref_menus.rs local_menu \"Delete <branch> and <remote>/<branch> and its worktree\" (sidebar row and graph pill)"
+       ],
+       "fns": [
+        "crate::repo::data::RepoData::local",
+        "crate::repo::data::RepoData::split_remote",
+        "crate::repo::op::Op::confirm",
+        "crate::repo::op::Op::revert",
+        "crate::repo::op::branch_cmd",
+        "crate::repo::op::delete_branches",
+        "crate::repo::op::delete_everywhere",
+        "crate::repo::op::keep_deleted",
+        "crate::repo::op::remove_worktree_and_branch",
+        "crate::repo::remotes::delete_branch",
+        "crate::ui::sidebar::ref_menus::local_menu",
+        "crate::ui::sidebar::ref_menus::remote_menu"
+       ],
+       "platform": [
+        "platform.git-runner",
+        "platform.op-runner",
+        "platform.undo-engine"
+       ]
       }
      ]
     },
@@ -6075,6 +6101,25 @@
         "crate::ui::sidebar::worktrees::worktree_row"
        ],
        "platform": []
+      },
+      {
+       "id": "tools.worktree-checkout-commit",
+       "name": "Check out a commit in another worktree without switching to it",
+       "entry": [
+        "src/ui/graph_view/menus.rs commit_menu \"Check out in another worktree ▸ <worktree>\""
+       ],
+       "fns": [
+        "crate::git::read::worktrees",
+        "crate::repo::data::RepoData::count_worktree_changes",
+        "crate::repo::op::checkout_in",
+        "crate::repo::op::exec",
+        "crate::ui::graph_view::menus::commit_menu"
+       ],
+       "platform": [
+        "platform.op-runner",
+        "platform.git-runner",
+        "platform.repo-load"
+       ]
       }
      ]
     },

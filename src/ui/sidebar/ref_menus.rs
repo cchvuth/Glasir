@@ -221,6 +221,11 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
                 delete_branches(d, format!("Delete {name}"), &[name], true).confirm(format!("Delete {name} even if it is not merged? (You can undo this.)")),
             ));
         }
+        if let Some((label, op)) = crate::repo::delete_everywhere(d, r)
+            && ui.button(label).clicked()
+        {
+            acts.push(Action::Git(op));
+        }
     }
     web_items(ui, d, r, acts);
     ui.separator();

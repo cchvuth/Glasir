@@ -147,7 +147,8 @@ The name fits a Git client:
 - Sidebar keeps the **default branch** (and main / master / develop / trunk)
   pinned on top, above a separator.
 - Checkout, create, rename, delete (undoable), set / unset upstream, fast-forward
-  or pull a branch **without checking it out**.
+  or pull a branch **without checking it out**. **Delete everywhere** removes a branch,
+  its remote branch and its worktree in one step.
 - Merge, rebase, cherry-pick, revert and soft / mixed / keep / hard reset from menus.
   **Reset the current branch to any commit, branch or tag**; a hard reset lists
   the files it discards and backs them up, so ⌘Z brings back refs *and* files.
@@ -254,6 +255,8 @@ The name fits a Git client:
   branch), switch in place (the commit message draft and ⌘Z steps stay with each
   worktree) or open in a new tab, lock / unlock, remove (with force / with its
   branch; a detached one's commit is kept under a backup ref), prune (asks first).
+  **Check out a commit in another worktree** from the commit menu, without leaving
+  the one you're in.
 - **Stashes**: stash all (with your own message, or git's default), staged only,
   a single file (right-click it in the WIP lists), or with an AI-written message;
   ⌘Z pops a fresh stash back. Apply and pop bring staged changes back staged
