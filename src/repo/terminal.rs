@@ -192,7 +192,11 @@ fn has_child(shell: i32) -> bool {
     };
     let pid = shell.to_string();
     let tty = out(&["ps", "-o", "tty=", "-p", &pid]);
-    !tty.is_empty() && out(&["ps", "-t", &tty, "-o", "ppid="]).lines().any(|p| p.trim() == pid)
+    !tty.is_empty()
+        && out(&["ps", "-t", &tty, "-o", "ppid=,stat="]).lines().any(|l| {
+            let mut f = l.split_whitespace();
+            f.next() == Some(&pid) && !f.next().is_some_and(|s| s.starts_with('Z'))
+        })
 }
 
 /// ConPTY has no foreground process group: look for a child of the shell instead.
@@ -378,7 +382,7 @@ mod tests {
         s.write(&b"sleep 60 & echo sta''rted\r"[..]);
         wait("started", || screen(s).contains("started"));
         wait("busy", || s.busy());
-        s.write(&b"kill %1\r"[..]);
+        s.write(&b"kill $!\r"[..]);
         wait("idle", || !s.busy());
     }
 
@@ -393,7 +397,7 @@ mod tests {
         s.write(&b"sleep 60 & echo sta''rted\r"[..]);
         wait("started", || screen(s).contains("started") && has_child(s.shell.0));
         assert!(s.busy());
-        s.write(&b"kill %1\r"[..]);
+        s.write(&b"kill $!\r"[..]);
         wait("idle", || !s.busy());
     }
 

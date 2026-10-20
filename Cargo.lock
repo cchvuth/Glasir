@@ -1531,7 +1531,7 @@ dependencies = [
 
 [[package]]
 name = "glasir"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "alacritty_terminal",
  "eframe",

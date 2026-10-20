@@ -531,19 +531,19 @@ mod tests {
         let dir = scratch("custom-literal");
         sh(&dir, &["init", "-q", "-b", "main"]);
         identity(&dir);
-        commit(&dir, "a.txt", "one\n");
-        commit(&dir, "*", "star\n");
-        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
-        let v = Vars { branch: "main".into(), sha: String::new(), path: "*".into() };
+        commit(&dir, "i", "one\n");
+        commit(&dir, "[id]", "route\n");
+        std::fs::write(dir.join("i"), "changed\n").unwrap();
+        let v = Vars { branch: "main".into(), sha: String::new(), path: "[id]".into() };
         let o = op(&Custom { name: "Discard".into(), command: "git checkout -- {path}".into() }, &dir, &v).unwrap();
         assert!(super::super::op::exec(&dir, &o).is_ok());
-        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "changed\n");
+        assert_eq!(std::fs::read_to_string(dir.join("i")).unwrap(), "changed\n");
         if !cfg!(windows) {
-            std::fs::write(dir.join("*"), "changed\n").unwrap();
+            std::fs::write(dir.join("[id]"), "changed\n").unwrap();
             let o = op(&Custom { name: "Discard".into(), command: "git checkout -- {path} && true".into() }, &dir, &v).unwrap();
             super::super::op::exec(&dir, &o).unwrap();
-            assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "changed\n");
-            assert_eq!(std::fs::read_to_string(dir.join("*")).unwrap(), "star\n");
+            assert_eq!(std::fs::read_to_string(dir.join("i")).unwrap(), "changed\n");
+            assert_eq!(std::fs::read_to_string(dir.join("[id]")).unwrap(), "route\n");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
