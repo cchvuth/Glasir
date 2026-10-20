@@ -1545,7 +1545,7 @@ impl RepoTab {
 
     pub fn draft_message(&self) -> (&str, &str) {
         match (&self.amend_prev, self.amend) {
-            (Some(((s, b), ..)), true) => (s, b),
+            (Some(((s, b), filled, _)), true) if (s, b) != (&filled.0, &filled.1) => (s, b),
             (None, true) => ("", ""),
             _ => (&self.summary, &self.body),
         }

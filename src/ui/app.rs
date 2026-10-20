@@ -1572,9 +1572,9 @@ mod shell_tests {
         t.summary = "typed".into();
         t.amend = true;
         t.apply(&ctx, Action::AmendToggled(true));
-        t.summary = "head message, edited".into();
+        t.summary = "typed, edited".into();
         app.close_tab(&ctx, 0);
-        assert_eq!(app.drafts.values().map(|d| d.0.as_str()).collect::<Vec<_>>(), ["typed"]);
+        assert_eq!(app.drafts.values().map(|d| d.0.as_str()).collect::<Vec<_>>(), ["typed, edited"]);
         let _ = std::fs::remove_dir_all(a);
     }
 

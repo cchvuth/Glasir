@@ -854,7 +854,7 @@ impl RepoTab {
             Action::SshKey(key) => {
                 let local = git::run(&self.dir, &["config", "--local", "--get", "core.sshCommand"]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
                 let custom = local.as_deref().filter(|c| matches!(sshkey::parse(Some(c)), sshkey::Active::Custom(_)));
-                let inherited = local.is_none() && git::run(&self.dir, &["config", "--get", "core.sshCommand"]).is_ok_and(|s| !s.trim().is_empty());
+                let inherited = git::run(&self.dir, &["config", "--show-scope", "--get-all", "core.sshCommand"]).is_ok_and(|s| s.lines().any(|l| !l.starts_with("local\t")));
                 if key.is_some() || local.is_some() || inherited {
                     self.run(ctx, sshkey::set_op(key.as_deref(), local.as_deref(), custom, inherited));
                 }

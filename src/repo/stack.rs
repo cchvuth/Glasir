@@ -259,7 +259,7 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
         Some(b) => git::run(dir, &super::op::checkout_args(b, true)),
         None => git::run(dir, &["checkout", "-q", "--detach", &head, "--"]),
     };
-    let busy = git::used_elsewhere(dir).unwrap_or_default();
+    let busy: Vec<String> = git::used_elsewhere(dir).unwrap_or_default().into_iter().filter(|b| *b != head).collect();
     git::with_autostash(dir, "Glasir: restack stacked branches", || {
         let (mut moved, mut merges): (Vec<(&str, &str)>, Vec<String>) = (vec![], vec![]);
         for e in &edges {
@@ -552,6 +552,23 @@ mod tests {
         assert_eq!(subjects(&dir, "b"), "b more a a base m0");
         assert_eq!(sh(&dir, &["rev-parse", "c"]), c);
         sh(&wt, &["rebase", "--abort"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restack_moves_the_child_checked_out_here() {
+        let dir = stack_repo("stack-child-here");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        commit(&dir, "a2", "more a\n");
+        sh(&dir, &["checkout", "-q", "b"]);
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(restack_op(t.data.as_ref().unwrap(), "a")));
+        let msgs = settle(&ctx, &mut t);
+        assert_eq!(subjects(&dir, "b"), "b more a a base m0", "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(sh(&dir, &["symbolic-ref", "HEAD"]), "refs/heads/b\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
