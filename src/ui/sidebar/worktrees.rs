@@ -63,7 +63,9 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         if !w.prunable && ui.button("Show in file manager").clicked() {
             crate::repo::reveal(std::path::Path::new(&w.path));
         }
+        let is_main = d.worktrees.first().is_some_and(|m| m.path == w.path);
         match &w.locked {
+            _ if is_main => {}
             Some(_) => {
                 if ui.button("Unlock").clicked() {
                     acts.push(op("Unlock worktree", &["worktree", "unlock", &w.path]));
@@ -75,7 +77,6 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
                 }
             }
         }
-        let is_main = d.worktrees.first().is_some_and(|m| m.path == w.path);
         if !current && !is_main && w.locked.is_none() {
             ui.separator();
             let (args, warn) = crate::repo::worktree_remove_args(w);

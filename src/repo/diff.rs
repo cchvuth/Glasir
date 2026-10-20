@@ -368,7 +368,7 @@ mod tests {
             let op = match how {
                 "hunk" => patch_op("Unstage hunk", &DiffSrc::Worktree { change, staged: true }, o, &f, git::partial_patch(&f, |_, _| true, true).unwrap(), &["--cached", "--reverse"]),
                 "file" => super::super::unstage_op(&change),
-                _ => super::super::unstage_all_op(),
+                _ => super::super::unstage_all_op(&t.data.as_ref().unwrap().status).unwrap(),
             };
             t.apply(&ctx, Action::Git(op));
             settle(&ctx, &mut t);

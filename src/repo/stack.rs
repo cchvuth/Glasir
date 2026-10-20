@@ -90,13 +90,13 @@ fn trunk(d: &RepoData, r: &git::Ref) -> bool {
 
 /// After a reload: an edge whose parent moved on (new or rewritten commits) while the child
 /// stayed built on the old base (even with commits of its own since) is still a stack, just
-/// stale, until it is restacked.
+/// stale, until it is restacked. Not once the parent contains the child (merged into it).
 pub(super) fn keep_stale(old: &RepoData, new: &mut RepoData) {
     let tip = |d: &RepoData, b: &str| d.local(b).map(|r| r.target.clone());
     let mut st = (*new.stack).clone();
     for (c, (p, base)) in old.stack.iter() {
         let on_base = |t: &str| t == base || reaches(new, t, base);
-        if !st.contains_key(c) && tip(new, c).is_some_and(|t| on_base(&t)) && tip(new, p).is_some_and(|t| t != *base) && !trunk_name(new, p) {
+        if !st.contains_key(c) && tip(new, c).is_some_and(|t| on_base(&t)) && tip(new, p).is_some_and(|t| t != *base && !tip(new, c).is_some_and(|ct| reaches(new, &t, &ct))) && !trunk_name(new, p) {
             st.insert(c.clone(), (p.clone(), base.clone()));
         }
     }
@@ -259,11 +259,16 @@ pub(super) fn restack(dir: &Path, a: &[&str]) -> Res<String> {
         Some(b) => git::run(dir, &super::op::checkout_args(b, true)),
         None => git::run(dir, &["checkout", "-q", "--detach", &head, "--"]),
     };
+    let busy = git::used_elsewhere(dir).unwrap_or_default();
     git::with_autostash(dir, "Glasir: restack stacked branches", || {
         let (mut moved, mut merges): (Vec<(&str, &str)>, Vec<String>) = (vec![], vec![]);
         for e in &edges {
             // Not built on `base` any more: not this stack's to move.
             if !needs(e, &moved) || git::run(dir, &["merge-base", "--is-ancestor", e[3], &format!("refs/heads/{}", e[0])]).is_err() {
+                continue;
+            }
+            if busy.iter().any(|b| b.strip_prefix("refs/heads/") == Some(e[0])) {
+                merges.push(format!("{} is in use in another worktree, so it wasn't restacked onto {}.", e[0], e[1]));
                 continue;
             }
             if git::run(dir, &["rev-list", "-n1", "--min-parents=2", &format!("{}..refs/heads/{}", e[3], e[0])]).is_ok_and(|m| !m.trim().is_empty()) {
@@ -501,6 +506,52 @@ mod tests {
         let d = t.data.as_ref().unwrap();
         assert_eq!(parent(d, "b"), Some("a"));
         assert!(stale(d, "b"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_child_merged_into_its_parent_is_no_longer_stacked_on_it() {
+        let dir = stack_repo("stack-merged-child");
+        sh(&dir, &["branch", "-q", "-D", "c"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        sh(&dir, &["merge", "-q", "--ff-only", "b"]);
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        assert_eq!(parent(t.data.as_ref().unwrap(), "b"), None);
+        let b = sh(&dir, &["rev-parse", "b"]);
+        for n in ["a2", "a3"] {
+            std::fs::write(dir.join(n), "x\n").unwrap();
+            sh(&dir, &["add", n]);
+            t.summary = n.into();
+            t.apply(&ctx, Action::Git(t.commit_op()));
+            settle(&ctx, &mut t);
+        }
+        assert_eq!(sh(&dir, &["rev-parse", "b"]), b);
+        assert_eq!(parent(t.data.as_ref().unwrap(), "b"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restack_skips_a_child_another_worktree_is_rebasing() {
+        let dir = stack_repo("stack-busy-child");
+        let wt = dir.join("wt");
+        sh(&dir, &["worktree", "add", "-q", &wt.to_string_lossy(), "c"]);
+        assert!(git::run(&wt, &["rebase", "-q", "-x", "false", "b"]).is_err());
+        let c = sh(&dir, &["rev-parse", "c"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        commit(&dir, "a2", "more a\n");
+        t.reload(&ctx, true);
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(restack_op(t.data.as_ref().unwrap(), "a")));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().any(|m| !m.error && m.text.contains("c is in use in another worktree")), "{:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+        assert_eq!(subjects(&dir, "b"), "b more a a base m0");
+        assert_eq!(sh(&dir, &["rev-parse", "c"]), c);
+        sh(&wt, &["rebase", "--abort"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

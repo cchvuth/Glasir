@@ -353,7 +353,7 @@ fn build(dir: &Path, purpose: &Purpose, draft: &str) -> Res<(String, &'static st
             let theirs = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"]
                 .into_iter()
                 .find(|h| git::run(dir, &["rev-parse", "-q", "--verify", h]).is_ok())
-                .map(side)
+                .map(|h| side(if h == "REVERT_HEAD" { "REVERT_HEAD^" } else { h }))
                 .unwrap_or_default();
             (
                 format!(
@@ -530,6 +530,27 @@ mod tests {
         std::fs::write(dir.join("big"), vec![0xff; MAX_CONTEXT / 3 + 1]).unwrap();
         let err = build(&dir, &Purpose::Resolve("big".into()), "").unwrap_err();
         assert!(err.contains("too large"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_during_a_revert_shows_the_parent_as_their_side() {
+        let dir = std::env::temp_dir().join(format!("glasir-ai-revert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| git::run(&dir, args).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            g(&["config", k, v]);
+        }
+        for (text, msg) in [("a\n", "base"), ("a\nx\n", "Add feature X"), ("a\nx2\n", "Tweak X")] {
+            std::fs::write(dir.join("f"), text).unwrap();
+            g(&["add", "f"]);
+            g(&["commit", "-qm", msg]);
+        }
+        assert!(git::run(&dir, &["revert", "--no-edit", "HEAD~1"]).is_err());
+        let (prompt, _) = build(&dir, &Purpose::Resolve("f".into()), "").unwrap();
+        assert!(prompt.contains("their side:\n- base\n\n"), "{prompt}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

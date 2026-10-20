@@ -201,6 +201,7 @@
         "refused toast when unsaved edits / running op / terminal / external tool"
        ],
        "fns": [
+        "crate::repo::op::RepoTab::draft_message",
         "crate::ui::app::App::close_tab",
         "crate::ui::app::App::shortcuts",
         "crate::ui::app::draft",
@@ -328,6 +329,7 @@
         "Action::Switch / Action::OpenTab from sidebar/worktree menus and branch checkout (handled by App::poll_tabs)"
        ],
        "fns": [
+        "crate::repo::op::RepoTab::draft_message",
         "crate::ui::app::App::add_tab",
         "crate::ui::app::App::poll_tabs",
         "crate::ui::app::App::remember",
@@ -348,6 +350,7 @@
         "automatic: closing a tab, switching worktree, quitting (.git/GLASIR_DRAFT)"
        ],
        "fns": [
+        "crate::repo::op::RepoTab::draft_message",
         "crate::ui::app::App::new_tab",
         "crate::ui::app::App::persist_drafts",
         "crate::ui::app::App::save",
@@ -1595,6 +1598,7 @@
        ],
        "fns": [
         "crate::repo::message::strip_comments",
+        "crate::repo::op::RepoTab::draft_message",
         "crate::repo::op::RepoTab::prefill_template",
         "crate::ui::app::App::persist_drafts",
         "crate::ui::app::draft",
@@ -2739,6 +2743,7 @@
         "crate::repo::RepoTab::apply",
         "crate::repo::RepoTab::reload",
         "crate::repo::data::RepoData::shows",
+        "crate::repo::data::View::change",
         "crate::repo::data::View::revs",
         "crate::ui::repo_view::show",
         "crate::ui::sidebar::eye",
@@ -2759,6 +2764,7 @@
        "fns": [
         "crate::repo::RepoTab::apply",
         "crate::repo::RepoTab::reload",
+        "crate::repo::data::View::change",
         "crate::repo::data::View::revs",
         "crate::ui::repo_view::show",
         "crate::ui::sidebar::ref_menus::view_items",
@@ -4243,6 +4249,9 @@
         "src/ui/sidebar/mod.rs:278 right-click a remote header"
        ],
        "fns": [
+        "crate::repo::op::fetch_remote_op",
+        "crate::repo::op::prune_remote_op",
+        "crate::repo::op::remote_specs",
         "crate::ui::sidebar::remote_row",
         "crate::ui::sidebar::remotes::remote_menu"
        ],
@@ -5034,6 +5043,7 @@
         "graph_view/mod.rs:233 first-parent toggle in header"
        ],
        "fns": [
+        "crate::repo::data::View::change",
         "crate::ui::graph_view::show"
        ],
        "platform": [
@@ -6022,6 +6032,7 @@
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
+        "crate::repo::op::RepoTab::draft_message",
         "crate::repo::op::branch_checkout",
         "crate::repo::undo::RepoTab::take_steps",
         "crate::ui::app::App::poll_tabs",

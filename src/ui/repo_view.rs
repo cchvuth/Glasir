@@ -134,14 +134,13 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     sidebar::remotes::form_dialog(t, &ctx, &mut acts);
     super::doctor::doctor_dialog(t, &ctx, &mut acts);
     for a in acts {
-        if let Action::View(v) = &a {
-            if *v == Default::default() {
-                s.views.remove(&t.dir);
-            } else {
-                s.views.insert(t.dir.clone(), v.clone());
-            }
-        }
+        let view = matches!(a, Action::View(_));
         t.apply(&ctx, a);
+        if view && t.view == Default::default() {
+            s.views.remove(&t.dir);
+        } else if view {
+            s.views.insert(t.dir.clone(), t.view.clone());
+        }
     }
 }
 

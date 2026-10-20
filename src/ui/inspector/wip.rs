@@ -674,7 +674,7 @@ impl RepoTab {
                                 clear = true;
                             }
                         } else if !s.staged.is_empty() && theme::small(ui, true, "Unstage all").clicked() {
-                            acts.push(Action::Git(crate::repo::unstage_all_op()));
+                            acts.extend(crate::repo::unstage_all_op(s).map(Action::Git));
                         }
                     });
                 });

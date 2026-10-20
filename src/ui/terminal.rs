@@ -282,16 +282,17 @@ fn input(ui: &Ui, s: &Session) {
             Event::Text(t) | Event::Ime(ImeEvent::Commit(t)) if !t.is_empty() => Some(t.into_bytes().into()),
             Event::Paste(_) if !mac && !shift => Some(Cow::Borrowed(b"\x16")),
             Event::Paste(t) => Some(paste(&t, mode.contains(TermMode::BRACKETED_PASTE)).into_bytes().into()),
-            // Off macOS, Ctrl+C / Ctrl+X arrive as Copy / Cut: copy a selection, else interrupt.
+            // Off macOS, Ctrl+C / Ctrl+X arrive as Copy / Cut: copy a selection, else interrupt
+            // (but not for Ctrl+Shift+C / X, the terminal copy keys).
             Event::Copy => match term.selection_to_string().filter(|t| !t.is_empty()) {
                 Some(t) => {
                     ui.ctx().copy_text(t);
                     term.selection = None;
                     None
                 }
-                None => (!mac).then_some(Cow::Borrowed(b"\x03")),
+                None => (!mac && !shift).then_some(Cow::Borrowed(b"\x03")),
             },
-            Event::Cut => (!mac).then_some(Cow::Borrowed(b"\x18")),
+            Event::Cut => (!mac && !shift).then_some(Cow::Borrowed(b"\x18")),
             Event::Key { key, pressed: true, modifiers, .. } => key_bytes(key, modifiers, mode.contains(TermMode::APP_CURSOR)),
             _ => None,
         };

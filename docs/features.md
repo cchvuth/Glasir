@@ -22,21 +22,21 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | Function | Features |
 |---|---|
 | `ui::inspector::wip::RepoTab::wip_panel` (src/ui/inspector/wip.rs:280) | 31 |
-| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:134) | 27 |
+| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:125) | 27 |
 | `ui::palette::items` (src/ui/palette.rs:74) | 25 |
 | `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:140) | 24 |
 | `repo::RepoTab::apply` (src/repo/mod.rs:647) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
-| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:276) | 14 |
+| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:267) | 14 |
 | `ui::graph_view::show` (src/ui/graph_view/mod.rs:116) | 14 |
-| `repo::data::RepoData::split_remote` (src/repo/data.rs:263) | 13 |
-| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:244) | 12 |
-| `repo::rebase::head_state` (src/repo/rebase.rs:580) | 12 |
+| `repo::data::RepoData::split_remote` (src/repo/data.rs:290) | 13 |
+| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:235) | 12 |
+| `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
 | `ui::app::App::shortcuts` (src/ui/app.rs:189) | 11 |
-| `repo::op::exec_stash` (src/repo/op.rs:787) | 11 |
+| `repo::op::exec_stash` (src/repo/op.rs:819) | 11 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
 | `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
@@ -44,8 +44,8 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::diff_view::Layout::get` (src/ui/diff_view.rs:75) | 10 |
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
-| `ui::app::App::ui` (src/ui/app.rs:498) | 9 |
-| `repo::op::stash_cmd` (src/repo/op.rs:694) | 9 |
+| `ui::app::App::ui` (src/ui/app.rs:501) | 9 |
+| `repo::op::stash_cmd` (src/repo/op.rs:726) | 9 |
 
 <a id="app"></a>
 ## App shell
@@ -110,7 +110,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Close a tab `app.close-tab`
 - **Entry:** ⌘W; x pill on the tab (titlebar.rs:52 'Close tab (⌘W)'); refused toast when unsaved edits / running op / terminal / external tool
 - **Platform:** `platform.undo-engine`
-- **Shared:** `ui::app::App::close_tab` (5), `ui::app::App::shortcuts` (11), `ui::app::draft` (5), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::titlebar::App::tab_bar` (11)
+- **Shared:** `repo::op::RepoTab::draft_message` (5), `ui::app::App::close_tab` (5), `ui::app::App::shortcuts` (11), `ui::app::draft` (5), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::titlebar::App::tab_bar` (11)
 
 #### Close other tabs `app.close-other-tabs`
 - **Entry:** Tab context menu 'Close other tabs' (titlebar.rs:82)
@@ -152,12 +152,12 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Open a worktree in the current tab (or a new one) `app.switch-worktree-in-tab`
 - **Entry:** Action::Switch / Action::OpenTab from sidebar/worktree menus and branch checkout (handled by App::poll_tabs)
 - **Platform:** `platform.undo-engine`
-- **Shared:** `ui::app::App::add_tab` (3), `ui::app::App::poll_tabs` (7), `ui::app::App::remember` (3), `ui::app::App::switch` (3), `ui::app::draft` (5), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::app::replaceable` (2)
+- **Shared:** `repo::op::RepoTab::draft_message` (5), `ui::app::App::add_tab` (3), `ui::app::App::poll_tabs` (7), `ui::app::App::remember` (3), `ui::app::App::switch` (3), `ui::app::draft` (5), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::app::replaceable` (2)
 
 #### Keep the typed commit message per repo (survives tab close and restart) `app.commit-draft`
 - **Entry:** automatic: closing a tab, switching worktree, quitting (.git/GLASIR_DRAFT)
 - **Own code:** `ui::app::saved_text`
-- **Shared:** `ui::app::App::new_tab` (3), `ui::app::App::persist_drafts` (2), `ui::app::App::save` (3), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::forget_draft` (5)
+- **Shared:** `repo::op::RepoTab::draft_message` (5), `ui::app::App::new_tab` (3), `ui::app::App::persist_drafts` (2), `ui::app::App::save` (3), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::forget_draft` (5)
 
 ### Welcome & recent repositories
 
@@ -485,7 +485,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Commit message drafts (kept per repo across tabs and restarts) `commit.drafts`
 - **Entry:** automatic: when switching/closing a tab (app.rs:171,303) and on save/exit (persist_drafts) to .git/GLASIR_DRAFT; ⇧⌘M focuses the summary and selects WIP (app.rs:269)
 - **Platform:** `platform.repo-load`
-- **Shared:** `repo::message::strip_comments` (4), `repo::op::RepoTab::prefill_template` (3), `ui::app::App::persist_drafts` (2), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::forget_draft` (5)
+- **Shared:** `repo::message::strip_comments` (4), `repo::op::RepoTab::draft_message` (5), `repo::op::RepoTab::prefill_template` (3), `ui::app::App::persist_drafts` (2), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::forget_draft` (5)
 
 #### Write the commit message with AI `commit.ai-commit-message`
 - **Entry:** "Generate" (sparkle) button in the commit box (wip.rs:345), Cancel while writing; ⌘P "Write commit message with AI" (palette.rs:117)
@@ -807,12 +807,12 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Hide / show a ref in the graph `refs.hide-from-graph`
 - **Entry:** src/ui/sidebar/mod.rs:37 eye icon on hovered rows and folder/remote headers ("Hide from graph"); ref menus "Hide from graph" / "Show in graph" (ref_menus.rs:32 view_items); persisted per repo in ui/repo_view.rs:137
 - **Platform:** `platform.op-runner`, `platform.repo-load`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::RepoData::shows` (2), `repo::data::View::revs` (3), `ui::repo_view::show` (6), `ui::sidebar::eye` (2), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::RepoData::shows` (2), `repo::data::View::change` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (6), `ui::sidebar::eye` (2), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
 
 #### Solo a ref (show only soloed refs) `refs.solo-ref`
 - **Entry:** ref menus "Solo (show only soloed refs)" / "Unsolo" (ref_menus.rs:32 view_items); soloed rows orange in sidebar (mod.rs:25 view_style)
 - **Platform:** `platform.repo-load`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (6), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::View::change` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (6), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
 
 #### Ref hover highlight (fade commits a pill can't reach) `refs.hover-highlight`
 - **Entry:** hover a graph ref pill for 50ms (src/ui/graph_view/mod.rs:449 act closure -> hover.rs:9 hover_ref; graph_view show reads hovered_ref)
@@ -1187,6 +1187,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Fetch or prune a single remote `remote.fetch-one`
 - **Entry:** src/ui/sidebar/remotes.rs:12 remote context menu "Fetch <remote>"; src/ui/sidebar/remotes.rs:15 "Prune deleted branches"; src/ui/sidebar/mod.rs:278 right-click a remote header
 - **Platform:** `platform.git-runner`, `platform.op-runner`
+- **Own code:** `repo::op::fetch_remote_op`, `repo::op::prune_remote_op`, `repo::op::remote_specs`
 - **Shared:** `ui::sidebar::remote_row` (6), `ui::sidebar::remotes::remote_menu` (7)
 
 #### Pull (merge, fast-forward only, rebase) with autostash `remote.pull`
@@ -1391,7 +1392,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### First-parent-only graph toggle and "Viewing N of M refs / Show all" `view.first-parent`
 - **Entry:** graph_view/mod.rs:148 "Show all" link; graph_view/mod.rs:233 first-parent toggle in header
 - **Platform:** `platform.repo-load`
-- **Shared:** `ui::graph_view::show` (14)
+- **Shared:** `repo::data::View::change` (3), `ui::graph_view::show` (14)
 
 #### Scroll to HEAD chip `view.head-chip`
 - **Entry:** graph_view/mod.rs:644-651 HEAD chip "Scroll to HEAD"
@@ -1674,7 +1675,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Open / switch to a worktree in place `tools.worktree-switch`
 - **Entry:** src/ui/sidebar/worktrees.rs:57 click or double-click a worktree row; src/ui/sidebar/ref_menus.rs:196 "Open its worktree"; branch checkout of a branch living in another worktree (op::branch_checkout); after a worktree is created (op.then_open)
 - **Platform:** `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::op::branch_checkout` (7), `repo::undo::RepoTab::take_steps` (2), `ui::app::App::poll_tabs` (7), `ui::app::App::switch` (3), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::app::replaceable` (2), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::worktrees::worktree_row` (6)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::op::RepoTab::draft_message` (5), `repo::op::branch_checkout` (7), `repo::undo::RepoTab::take_steps` (2), `ui::app::App::poll_tabs` (7), `ui::app::App::switch` (3), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::app::replaceable` (2), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::worktrees::worktree_row` (6)
 
 #### Open a worktree in a new tab `tools.worktree-open-tab`
 - **Entry:** src/ui/sidebar/worktrees.rs:61 "Open in new tab"

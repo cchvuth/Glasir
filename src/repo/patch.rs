@@ -17,7 +17,7 @@ pub(super) fn format_patch(dir: &Path, ids: &[String]) -> Res<Vec<u8>> {
     }
     let mut out = vec![];
     for id in ids.iter().rev() {
-        out.extend(git::run_raw(dir, &["format-patch", "-1", "--stdout", id], None)?);
+        out.extend(git::run_raw(dir, &["format-patch", "-1", "--stdout", "--no-cover-letter", "--no-base", id], None)?);
     }
     Ok(out)
 }
@@ -186,6 +186,33 @@ mod tests {
         t.apply(&ctx, Action::Undo);
         settle(&ctx, &mut t);
         assert_eq!(state(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&files);
+    }
+
+    #[test]
+    fn format_config_and_unstaged_edits_dont_break_apply() {
+        let dir = scratch("patch-config");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        let lines = "1\n2\n3\n4\n5\n6\n7\n";
+        commit(&dir, "a.txt", lines);
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "a.txt", &lines.replace('7', "7 feat"));
+        sh(&dir, &["config", "format.coverLetter", "true"]);
+        sh(&dir, &["config", "format.useAutoBase", "true"]);
+        let mbox = format_patch(&dir, &["feat".into()]).unwrap();
+        let plain = git::run_raw(&dir, &["diff", "--no-ext-diff", "main", "feat"], None).unwrap();
+        let files = scratch("patch-config-files");
+        std::fs::write(files.join("p.mbox"), &mbox).unwrap();
+        std::fs::write(files.join("p.diff"), &plain).unwrap();
+        sh(&dir, &["checkout", "-q", "-b", "applied", "main"]);
+        exec(&dir, &apply_op(&files.join("p.mbox"), &mbox)).unwrap();
+        assert_eq!(sh(&dir, &["diff", "feat", "HEAD"]), "");
+        sh(&dir, &["checkout", "-q", "-b", "plain", "main"]);
+        std::fs::write(dir.join("a.txt"), lines.replace('1', "1 mine")).unwrap();
+        exec(&dir, &apply_op(&files.join("p.diff"), &plain)).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), lines.replace('1', "1 mine").replace('7', "7 feat"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&files);
     }

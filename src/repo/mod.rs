@@ -45,10 +45,10 @@ mod undo;
 mod watch;
 
 pub use action::{Action, Choice, DiffSrc, Msg, MultiOp, Prompt, Sel, op, prompt};
-pub use data::{RepoData, View};
+pub use data::{RepoData, View, ViewChange};
 pub use diff::{DiffState, patch_op};
 pub use files::reveal;
-pub use op::{Backup, Op, PullMode, Undo, branch_checkout, checkout_args, continue_op, delete_everywhere, CHECKOUT_IN, DISCARD_ALL, in_progress, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, remove_worktree_op, worktree_remove_args, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_all_op, unstage_files_op, unstage_op};
+pub use op::{Backup, Op, PullMode, Undo, branch_checkout, checkout_args, continue_op, delete_everywhere, CHECKOUT_IN, DISCARD_ALL, in_progress, delete_branches, discard_files_op, discard_op, drop_stashes, fetch_op, fetch_remote_op, prune_remote_op, apply_stash_op, pop_stash, pull_op, remove_worktree_and_branch, remove_worktree_op, worktree_remove_args, rename_stash, reset_op, sequencer_op, stage_all_op, stage_files_op, stash_branch, stash_paths_op, stash_prompt, unstage_all_op, unstage_files_op, unstage_op};
 pub use msgedit::MsgEdit;
 pub use search::{MAX_HITS, Search};
 pub use task::Task;
@@ -401,7 +401,7 @@ impl RepoTab {
                 if self.running.is_some() && c == watch::Change::Index {
                     continue;
                 }
-                self.changed = Some((self.changed.is_some_and(|c| c.0) || c == watch::Change::Refs, now));
+                self.changed = Some((self.changed.is_some_and(|c| c.0) || c == watch::Change::Refs, self.changed.map_or(now, |c| c.1)));
             }
             if let Some((full, at)) = self.changed
                 && now - at > 0.4
@@ -773,8 +773,8 @@ impl RepoTab {
                 self.multi = if ids.len() > 1 { ids } else { vec![] };
             }
             Action::MultiOp(kind, ids) => self.multi_op(ctx, kind, ids),
-            Action::View(v) => {
-                self.view = v;
+            Action::View(c) => {
+                self.view.change(c);
                 self.reload(ctx, true);
             }
             Action::OpenTab(p) => self.open_tab = Some(self.dir.join(p)),
@@ -854,8 +854,9 @@ impl RepoTab {
             Action::SshKey(key) => {
                 let local = git::run(&self.dir, &["config", "--local", "--get", "core.sshCommand"]).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
                 let custom = local.as_deref().filter(|c| matches!(sshkey::parse(Some(c)), sshkey::Active::Custom(_)));
-                if key.is_some() || local.is_some() {
-                    self.run(ctx, sshkey::set_op(key.as_deref(), local.as_deref(), custom));
+                let inherited = local.is_none() && git::run(&self.dir, &["config", "--get", "core.sshCommand"]).is_ok_and(|s| !s.trim().is_empty());
+                if key.is_some() || local.is_some() || inherited {
+                    self.run(ctx, sshkey::set_op(key.as_deref(), local.as_deref(), custom, inherited));
                 }
             }
             Action::SshTest => {
@@ -1213,6 +1214,27 @@ mod tests {
             time += delay.as_secs_f64();
         }
         assert!(t.changed.is_none(), "the debounced reload waits for input");
+        settle(&ctx, &mut t);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_steady_stream_of_watcher_events_still_reloads() {
+        let dir = scratch("watch-stream");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.watcher = Some((notify::recommended_watcher(|_| {}).unwrap(), rx));
+        t.watcher_task = None;
+        tx.send(watch::Change::Refs).unwrap();
+        for i in 0..50 {
+            tx.send(watch::Change::Tree).unwrap();
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(100.0 + i as f64 * 0.2), ..Default::default() }, |ui| t.poll(ui.ctx(), &mut vec![]));
+            out.textures_delta.clear();
+        }
+        assert!(t.changed.is_some_and(|c| !c.0), "the moved refs never got their reload");
         settle(&ctx, &mut t);
         let _ = std::fs::remove_dir_all(&dir);
     }

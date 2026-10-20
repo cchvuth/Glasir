@@ -1,7 +1,7 @@
 //! What the UI emits: `Action`s (applied by `RepoTab::apply` after the frame),
 //! selections, prompts, failure choices and toast messages.
 
-use super::data::View;
+use super::data::ViewChange;
 use super::op::Op;
 use crate::ai;
 use crate::git::Change;
@@ -131,8 +131,9 @@ pub enum Action {
     OpenTab(String),
     /// Show another worktree of this repository in this tab.
     Switch(String),
-    /// Change the graph filter (hide / solo / first-parent) and reload.
-    View(View),
+    /// Change the graph filter (hide / solo / first-parent) and reload; the change applies to the
+    /// tab's pending view, which is ahead of the loaded one until the reload lands.
+    View(ViewChange),
     /// Replace the multi-selection (commit ids, graph order: newest first).
     Multi(Vec<String>),
     MultiOp(MultiOp, Vec<String>),

@@ -17,7 +17,7 @@ pub fn move_tag(dir: &Path, r: &Ref, target: &str) -> Result<Op, String> {
     } else {
         args.push("--no-sign"); // tag.gpgSign=true would otherwise demand a message
     }
-    args.extend([r.name.as_str(), target]);
+    args.extend(["--end-of-options", r.name.as_str(), target]);
     let mut op = Op::new(format!("Move tag {}", r.name), &args).undo(Undo::Keep);
     if let Some((m, signed)) = msg {
         if signed {
@@ -74,6 +74,20 @@ mod tests {
         let r = git::refs(&dir).unwrap().into_iter().find(|r| r.name == "lw").unwrap();
         exec(&dir, &move_tag(&dir, &r, "HEAD").unwrap()).unwrap();
         assert_eq!(sh(&dir, &["cat-file", "-t", "lw"]), "commit\n");
+    }
+
+    #[test]
+    fn a_tag_named_like_an_option_is_not_read_as_one() {
+        let dir = scratch("tag-option-name");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "secret.txt", "SECRET\n");
+        sh(&dir, &["update-ref", "refs/tags/-Fsecret.txt", "HEAD"]);
+        let r = git::refs(&dir).unwrap().into_iter().find(|r| r.name == "-Fsecret.txt").unwrap();
+        let head = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        let _ = exec(&dir, &move_tag(&dir, &r, &head).unwrap());
+        assert_eq!(sh(&dir, &["tag", "-l"]), "-Fsecret.txt\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

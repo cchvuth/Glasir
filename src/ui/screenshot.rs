@@ -347,7 +347,7 @@ impl App {
                                 _ => v.first_parent = true,
                             }
                             if v != t.view {
-                                t.apply(&ctx.clone(), Action::View(v));
+                                t.apply(&ctx.clone(), Action::View(crate::repo::ViewChange::Set(v)));
                             }
                         }
                     }

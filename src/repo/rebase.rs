@@ -370,6 +370,10 @@ pub(super) fn rewrite(dir: &Path, commit: &str, tip: &str, message: &[u8]) -> Re
     if git::run(dir, &["config", "--type=bool", "commit.gpgsign"]).is_ok_and(|v| v.trim() == "true") {
         return Err("Rewording this way would leave the rewritten commits unsigned (commit.gpgsign is on). Check the branch out, or reword with git rebase -i --rebase-merges in a terminal.".into());
     }
+    let ours = || git::run(dir, &["symbolic-ref", "-q", "HEAD"]).is_ok_and(|h| h.trim() == tip);
+    if let Some(b) = tip.strip_prefix("refs/heads/").filter(|_| !ours() && git::used_elsewhere(dir).unwrap_or_default().iter().any(|r| r == tip)) {
+        return Err(format!("{b} is checked out, rebased or bisected in another worktree. Reword it there instead."));
+    }
     let head = git::run(dir, &["rev-parse", tip])?.trim().to_owned();
     // Parents first: `commit` and its descendants up to HEAD.
     let ids = git::run(dir, &["rev-list", "--topo-order", "--reverse", &format!("--ancestry-path={commit}"), &head, &format!("^{commit}^@")])?;
@@ -1418,6 +1422,28 @@ mod tests {
         let s = sh(&dir, &["rev-parse", "s"]);
         rewrite(&dir, sh(&dir, &["rev-parse", "b~1"]).trim(), "HEAD", b"B1 better").unwrap();
         assert_eq!(sh(&dir, &["log", "-1", "--format=%s", "b~1"]), "B1 better\n");
+        assert_eq!(sh(&dir, &["rev-parse", "s"]), s);
+        sh(&wt, &["rebase", "--abort"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rewrite_refuses_a_branch_another_worktree_is_rebasing() {
+        use crate::repo::testutil::*;
+        let dir = scratch("reword-other-wt-branch");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "m", "m");
+        sh(&dir, &["checkout", "-q", "-b", "s"]);
+        commit(&dir, "s1", "S1");
+        commit(&dir, "s2", "S2");
+        sh(&dir, &["checkout", "-q", "main"]);
+        let wt = dir.join("wt");
+        sh(&dir, &["worktree", "add", "-q", &wt.to_string_lossy(), "s"]);
+        assert!(git::run(&wt, &["rebase", "-q", "-x", "false", "main"]).is_err());
+        let s = sh(&dir, &["rev-parse", "s"]);
+        let err = rewrite(&dir, sh(&dir, &["rev-parse", "s~1"]).trim(), "refs/heads/s", b"S1 better").unwrap_err();
+        assert!(err.contains("another worktree"), "{err}");
         assert_eq!(sh(&dir, &["rev-parse", "s"]), s);
         sh(&wt, &["rebase", "--abort"]);
         let _ = std::fs::remove_dir_all(&dir);

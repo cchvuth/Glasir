@@ -81,7 +81,7 @@ pub fn pick_op(label: impl Into<String>, ids: &[&str], merge: bool, no_commit: b
 }
 
 pub(super) fn clean(dir: &Path) -> Res<String> {
-    let busy = !matches!(git::state(&git::git_dir(dir)?), git::State::Clean);
+    let busy = !matches!(git::state(&git::git_dir(dir)?), git::State::Clean | git::State::Bisecting);
     if busy || !git::run(dir, &["status", "--porcelain", "-z", "--untracked-files=no"])?.trim().is_empty() {
         return Err("Commit, stash or discard your uncommitted changes first (and finish any merge or rebase in progress): this leaves its result uncommitted, and undoing it must not touch other work.".into());
     }
@@ -249,6 +249,29 @@ mod tests {
         let e = exec(&dir, &pick_op("Cherry-pick", &["HEAD"], true, false)).unwrap_err();
         assert!(e.contains("already in its history"), "{e}");
         assert_eq!(git::state(&git::git_dir(&dir).unwrap()), git::State::Clean);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn conflicted_squash_merge_prefills_the_message() {
+        let dir = repo("squash-conflict");
+        commit(&dir, "one", "main\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::Git(merge_op("feat", "feat", Some(Merge::Squash))));
+        settle(&ctx, &mut t);
+        assert!(!git::status(&dir).unwrap().conflicted.is_empty());
+        assert!(t.summary.contains("Squashed commit"), "{}", t.summary);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staged_ops_run_during_a_bisect() {
+        let dir = repo("pick-bisect");
+        sh(&dir, &["bisect", "start"]);
+        exec(&dir, &pick_op("Cherry-pick", &["feat"], false, true)).unwrap();
+        assert_eq!(sh(&dir, &["diff", "--cached", "--name-only"]).trim(), "two");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

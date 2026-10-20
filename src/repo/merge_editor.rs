@@ -208,6 +208,9 @@ pub(super) fn labels(dir: &Path) -> [String; 2] {
             None => at(h),
         };
         let what = g(&["log", "-1", "--format=%h %s", h, "--"]);
+        if h == "REVERT_HEAD" {
+            return format!("parent of {what}");
+        }
         if name.is_empty() { what } else { format!("{name} {what}") }
     });
     [current, incoming]
@@ -1073,6 +1076,23 @@ mod tests {
             assert!(d.whole.is_some());
             assert!(whole_ops("l", &d).iter().all(|op| op.confirm.is_some()));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revert_labels_incoming_as_the_parent() {
+        use crate::repo::testutil::{identity, scratch};
+        let dir = scratch("merge-revert-labels");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        for (text, msg) in [("a\n", "base"), ("a\nx\n", "Add feature X"), ("a\nx2\n", "Tweak X")] {
+            std::fs::write(dir.join("f"), text).unwrap();
+            sh(&dir, &["add", "f"]);
+            sh(&dir, &["commit", "-qm", msg]);
+        }
+        assert!(git::run(&dir, &["revert", "--no-edit", "HEAD~1"]).is_err());
+        let short = sh(&dir, &["rev-parse", "--short", "HEAD~1"]);
+        assert_eq!(labels(&dir)[1], format!("parent of {} Add feature X", short.trim()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

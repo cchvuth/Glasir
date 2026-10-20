@@ -225,11 +225,15 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::rebase::REWRITE, commit, tip @ ..] => super::rebase::rewrite(dir, commit, tip.first().copied().unwrap_or("HEAD"), op.input.as_deref().unwrap_or_default()),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
+            ["apply", "--3way", path] => git::run(dir, &a).or_else(|e| if e.contains("does not match index") { git::run(dir, &["apply", path]) } else { Err(e) }),
             [_, "add", "-A", "--pathspec-from-file=-", ..] => match without_vanished(dir, op.input.as_deref().unwrap_or_default()) {
                 paths if paths.is_empty() => Ok(String::new()),
                 paths => git::run_input(dir, &a, Some(&paths)),
             },
             ["--literal-pathspecs", "checkout", "--", paths @ ..] => discard_checkout(dir, &a, paths),
+            ["stash", "push", rest @ ..] if !rest.iter().any(|x| *x == "--" || x.starts_with("--pathspec")) && git::git_dir(dir).is_ok_and(|g| matches!(git::state(&g), git::State::Merging | git::State::CherryPicking | git::State::Reverting)) => {
+                Err("Nothing was stashed: a merge, cherry-pick or revert is in progress, and stashing everything would end it. Finish or abort it first (stashing single files still works).".into())
+            }
             ["tag", "--sign", rest @ ..] if rest.contains(&"-a") => {
                 let at = rest.iter().position(|x| *x == "--").map_or(1, |i| i + 1);
                 signed_tag(dir, &a, rest.get(at).copied().unwrap_or_default(), op.input.as_deref())
@@ -301,6 +305,30 @@ pub fn fetch_op(d: &RepoData) -> Op {
     op
 }
 
+fn remote_specs(d: &RepoData, name: &str) -> (Vec<String>, bool) {
+    let own: Vec<(String, String)> = d.config.iter().filter(|(k, _)| k.rsplit_once('.').is_some_and(|(r, key)| r.strip_prefix("remote.") == Some(name) && !key.starts_with("skip"))).cloned().collect();
+    let (remotes, elsewhere) = git::tracking(&own);
+    (remotes.into_iter().next().map(|r| r.1).unwrap_or_default(), elsewhere)
+}
+
+pub fn fetch_remote_op(d: &RepoData, name: &str) -> Op {
+    let (specs, elsewhere) = remote_specs(d, name);
+    if !elsewhere {
+        return Op::new(format!("Fetch {name}"), &["fetch", "--progress", name]);
+    }
+    let mut op = Op::new(format!("Fetch {name}"), &["fetch", "--no-prune", "--progress", name]);
+    if !specs.is_empty() {
+        op.cmds.push(["fetch", "--no-tags", "--no-prune-tags", "--no-write-fetch-head", "--refmap=", name].map(String::from).into_iter().chain(specs).collect());
+    }
+    op
+}
+
+pub fn prune_remote_op(d: &RepoData, name: &str) -> Option<Op> {
+    let (specs, _) = remote_specs(d, name);
+    let a: Vec<&str> = ["fetch", "--prune", "--no-tags", "--no-prune-tags", "--no-write-fetch-head", "--refmap=", name].into_iter().chain(specs.iter().map(String::as_str)).collect();
+    (!specs.is_empty()).then(|| Op::new(format!("Prune {name}"), &a))
+}
+
 /// Stage every unstaged and untracked change, but never a conflicted file: `add -A`
 /// would mark it resolved, markers and all. None when there's nothing to stage (an
 /// empty pathspec list would stage everything). Paths go over stdin: no argv limit.
@@ -322,9 +350,13 @@ pub fn unstage_files_op(cs: &[git::Change]) -> Option<Op> {
     (!paths.is_empty()).then(|| Op::new("Unstage", &["--literal-pathspecs", "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul"]).input(paths).light().backup(Backup::Staged(all)))
 }
 
-/// Unstage everything (WIP list, ⇧⌘U, palette).
-pub fn unstage_all_op() -> Op {
-    Op::new("Unstage all", &["reset", "-q", "--", "."]).light().backup(Backup::Staged(vec![]))
+/// Unstage everything (WIP list, ⇧⌘U, palette); with conflicts, only the staged list: a
+/// reset of the whole index would drop the conflict stages. None when that list is empty.
+pub fn unstage_all_op(s: &git::Status) -> Option<Op> {
+    if !s.conflicted.is_empty() {
+        return unstage_files_op(&s.staged);
+    }
+    Some(Op::new("Unstage all", &["reset", "-q", "--", "."]).light().backup(Backup::Staged(vec![])))
 }
 
 /// Discard several unstaged changes as one op: a single confirmation and one backup, so one ⌘Z
@@ -867,7 +899,7 @@ fn checkout_in(path: &str, rev: &str) -> Res<String> {
             return Err(format!("Nothing was changed: that commit has files {path} keeps ignored, which the checkout would overwrite: {}. Move them out of the way first.", clash[..clash.len().min(5)].join(", ")));
         }
     }
-    git::run(p, &["checkout", "--detach", rev, "--"])
+    git::run(p, &["checkout", "--no-overwrite-ignore", "--detach", rev, "--"])
 }
 
 fn discard_all(dir: &Path) -> Res<String> {
@@ -1145,9 +1177,18 @@ impl RepoTab {
 
     /// Finishes the running op once its thread is done.
     pub(super) fn poll_op(&mut self, ctx: &egui::Context, msgs: &mut Vec<Msg>) {
-        let Some(done) = self.running.as_mut().and_then(|(_, t)| t.0.try_recv().ok()) else { return };
+        let Some((label, t)) = &self.running else { return };
+        let done = t.0.try_recv();
+        let label = label.clone();
+        if matches!(done, Err(std::sync::mpsc::TryRecvError::Empty)) {
+            return;
+        }
         self.running = None;
         self.cancel = None;
+        let Ok(done) = done else {
+            msgs.push(Msg { text: format!("{label} stopped unexpectedly."), error: true });
+            return self.reload(ctx, true);
+        };
         match done {
             Done::Op(mut op, res, snaps, files) => {
                 let commit_next = std::mem::take(&mut self.commit_next) && res.is_ok() && !op.custom && op.label == "Stage all";
@@ -1182,7 +1223,7 @@ impl RepoTab {
                     self.mark_saved(c);
                 }
                 // A squash merge leaves git's prepared message: put it in the commit box (never over typed text).
-                if res.is_ok() && !op.custom && op.cmds.iter().any(|c| c[0] == "merge" && c.iter().any(|a| a == "--squash")) {
+                if !op.custom && op.cmds.iter().any(|c| c[0] == "merge" && c.iter().any(|a| a == "--squash")) {
                     let untouched = (self.summary.trim().is_empty() && self.body.trim().is_empty())
                         || self.template.as_ref().is_some_and(|t| t.summary == self.summary && t.body == self.body);
                     if let (Some(d), true) = (&self.data, untouched)
@@ -1502,6 +1543,14 @@ impl RepoTab {
         }
     }
 
+    pub fn draft_message(&self) -> (&str, &str) {
+        match (&self.amend_prev, self.amend) {
+            (Some(((s, b), ..)), true) => (s, b),
+            (None, true) => ("", ""),
+            _ => (&self.summary, &self.body),
+        }
+    }
+
     pub(super) fn poll_amend(&mut self) {
         if let Some(Some(msg)) = super::Task::poll(&mut self.amend_task)
             && let Some((prev, filled, _)) = &mut self.amend_prev
@@ -1583,6 +1632,26 @@ mod tests {
     use super::super::{Action, RepoTab, View};
     use super::{exec, Op};
     use crate::git;
+
+    #[test]
+    fn unstage_all_keeps_the_conflicts() {
+        let dir = scratch("unstage-all-conflict");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "c", "base\n");
+        commit(&dir, "other", "o\n");
+        sh(&dir, &["checkout", "-q", "-b", "feat"]);
+        commit(&dir, "c", "feat\n");
+        commit(&dir, "other", "o2\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "c", "main\n");
+        assert!(git::run(&dir, &["merge", "feat"]).is_err());
+        exec(&dir, &super::unstage_all_op(&git::status(&dir).unwrap()).unwrap()).unwrap();
+        let s = git::status(&dir).unwrap();
+        assert!(s.staged.is_empty(), "{:?}", s.staged);
+        assert_eq!(s.conflicted.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), ["c"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn amending_a_pushed_head_asks_first() {
@@ -3348,7 +3417,35 @@ mod tests {
         std::fs::write(wt.join("conf.env"), "SECRET\n").unwrap();
         assert!(super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &conf])).is_err_and(|e| e.contains("conf.env")));
         assert_eq!(std::fs::read_to_string(wt.join("conf.env")).unwrap(), "SECRET\n");
+        std::fs::write(&excl, "conf.env\n.git-info-exclude-marker\nbuild\ncache/\n").unwrap();
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/x.txt"), "t\n").unwrap();
+        sh(&dir, &["add", "-f", "build/x.txt"]);
+        sh(&dir, &["commit", "-qm", "build"]);
+        let build = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::remove_file(wt.join("conf.env")).unwrap();
+        std::fs::write(wt.join("build"), "SECRET\n").unwrap();
+        assert!(super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &build])).is_err());
+        assert_eq!(std::fs::read_to_string(wt.join("build")).unwrap(), "SECRET\n");
+        std::fs::remove_file(wt.join("build")).unwrap();
+        std::fs::write(dir.join("cache"), "t\n").unwrap();
+        sh(&dir, &["add", "-f", "cache"]);
+        sh(&dir, &["commit", "-qm", "cache"]);
+        let cache = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::create_dir_all(wt.join("cache")).unwrap();
+        std::fs::write(wt.join("cache/k"), "SECRET\n").unwrap();
+        assert!(super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &cache])).is_err());
+        assert_eq!(std::fs::read_to_string(wt.join("cache/k")).unwrap(), "SECRET\n");
         let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&wt));
+    }
+
+    #[test]
+    fn a_panicked_op_ends_with_an_error() {
+        let (dir, ctx, mut t) = stash_repo("op-panics");
+        t.running = Some(("Boom".into(), super::Task::spawn(&ctx, || panic!("boom"))));
+        let msgs = settle(&ctx, &mut t);
+        assert!(msgs.iter().any(|m| m.error && m.text.contains("Boom stopped unexpectedly")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -3371,6 +3468,26 @@ mod tests {
             assert_eq!((sh(&dir, &["show", ":a"]).as_str(), std::fs::read_to_string(dir.join("a")).unwrap().as_str()), ("1x\n2\n3\n", "1x\n2\n3y\n"));
             run(&ctx, &mut t, Action::Redo);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stash_all_refused_during_a_merge() {
+        let (dir, ctx, mut t) = stash_repo("stash-merge");
+        sh(&dir, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+        commit(&dir, "c", "c\n");
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        std::fs::write(dir.join("b"), "edit\n").unwrap();
+        run(&ctx, &mut t, Action::Reload);
+        for args in [&["stash", "push", "--include-untracked", "-m", "m"][..], &["stash", "push", "--staged"]] {
+            let msgs = run(&ctx, &mut t, Action::Git(Op::new("Stash", args)));
+            assert!(msgs.iter().any(|m| m.error && m.text.contains("Finish or abort")), "{args:?}: {:?}", msgs.iter().map(|m| &m.text).collect::<Vec<_>>());
+            assert!(dir.join(".git/MERGE_HEAD").exists() && sh(&dir, &["stash", "list"]).is_empty());
+        }
+        run(&ctx, &mut t, Action::Git(super::stash_paths_op(&["b"], false)));
+        assert!(dir.join(".git/MERGE_HEAD").exists());
+        assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3403,6 +3520,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("new")).unwrap(), "edited after the pop\n");
         assert_eq!(sh(&dir, &["stash", "list", "--format=%gs"]), "On main: s\nGlasir: Undo Pop stash\n");
         assert_eq!(sh(&dir, &["status", "--porcelain"]), " M b\n?? new\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stash_pop_onto_a_renamed_file_undoes() {
+        let (dir, ctx, mut t) = stash_repo("stash-pop-renamed");
+        std::fs::write(dir.join("a"), "1\n2x\n3\n").unwrap();
+        sh(&dir, &["stash", "push", "-q"]);
+        sh(&dir, &["mv", "a", "g"]);
+        sh(&dir, &["commit", "-qm", "mv"]);
+        run(&ctx, &mut t, Action::Reload);
+        let s = t.data.as_ref().unwrap().stashes[0].clone();
+        run(&ctx, &mut t, Action::Git(super::pop_stash(&s)));
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), " M g\n");
+        run(&ctx, &mut t, Action::Undo);
+        assert_eq!(sh(&dir, &["status", "--porcelain"]), "");
+        assert_eq!(sh(&dir, &["stash", "list"]).lines().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3535,7 +3669,7 @@ mod tests {
         std::fs::write(git::git_dir(&dir).unwrap().join("MERGE_HEAD"), &head).unwrap();
         std::fs::write(dir.join("f"), "b\n").unwrap();
         sh(&dir, &["add", "f"]);
-        super::exec(&dir, &super::unstage_all_op()).unwrap();
+        super::exec(&dir, &super::unstage_all_op(&git::status(&dir).unwrap()).unwrap()).unwrap();
         assert!(sh(&dir, &["diff", "--cached", "--name-only"]).is_empty());
         assert!(git::git_dir(&dir).unwrap().join("MERGE_HEAD").exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -3549,7 +3683,7 @@ mod tests {
         let ops: [(&str, Build); 4] = [
             ("unstage", |s| super::unstage_op(&s.staged[0])),
             ("unstage files", |s| super::unstage_files_op(&s.staged).unwrap()),
-            ("unstage all", |_| super::unstage_all_op()),
+            ("unstage all", |s| super::unstage_all_op(s).unwrap()),
             ("stage", |s| super::stage_files_op("Stage", &s.unstaged).unwrap()),
         ];
         for (name, build) in ops {

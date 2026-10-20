@@ -4,7 +4,7 @@
 use crate::ui::format::keys;
 use crate::ai::Purpose;
 use crate::git::{Page, RefKind};
-use crate::repo::{Action, Op, RepoData, Sel, Undo, branch_checkout, delete_branches, op, prompt};
+use crate::repo::{Action, Op, RepoData, Sel, Undo, ViewChange, branch_checkout, delete_branches, op, prompt};
 use crate::theme::icon;
 use crate::ui::graph_view::menus::{integrate_items, reset_menu};
 use egui::Ui;
@@ -31,27 +31,18 @@ pub fn synced_menu(ui: &mut Ui, d: &RepoData, local: &crate::git::Ref, up: &crat
 /// Graph hide / solo toggles.
 fn view_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     ui.separator();
-    let toggle = |list: fn(&mut crate::repo::View) -> &mut Vec<String>| {
-        let mut v = d.view.clone();
-        let l = list(&mut v);
-        match l.iter().position(|x| *x == r.full) {
-            Some(i) => _ = l.remove(i),
-            None => l.push(r.full.clone()),
-        }
-        Action::View(v)
-    };
     // HEAD is always in the graph, so hiding the checked-out branch would do nothing.
     if d.view.solo.is_empty() && !r.head {
         let hidden = d.view.hidden.contains(&r.full);
         let label = if hidden { format!("{}  Show in graph", icon::EYE) } else { format!("{}  Hide from graph", icon::EYE_SLASH) };
         if ui.button(label).clicked() {
-            acts.push(toggle(|v| &mut v.hidden));
+            acts.push(Action::View(ViewChange::Hide(vec![r.full.clone()], !hidden)));
         }
     }
     let solo = d.view.solo.contains(&r.full);
     let label = if solo { format!("{}  Unsolo", icon::CROSSHAIR) } else { format!("{}  Solo (show only soloed refs)", icon::CROSSHAIR) };
     if ui.button(label).clicked() {
-        acts.push(toggle(|v| &mut v.solo));
+        acts.push(Action::View(ViewChange::Solo(r.full.clone(), !solo)));
     }
 }
 
@@ -316,6 +307,30 @@ mod tests {
     use super::*;
     use crate::ui::testkit::{Sim, load, tab};
     use egui::PointerButton;
+
+    #[test]
+    fn two_hides_before_the_reload_hide_both() {
+        let mut sim = Sim::new(500.0, 900.0);
+        let mut t = tab(&sim.ctx, "hide-twice", &["one"]);
+        let dir = t.dir.clone();
+        for b in ["x", "y"] {
+            crate::git::run(&dir, &["branch", b]).unwrap();
+        }
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let mut acts = vec![];
+        let d = t.data.as_ref().unwrap();
+        for b in ["x", "y"] {
+            let mut draw = |ui: &mut Ui| view_items(ui, d, d.local(b).unwrap(), &mut acts);
+            sim.frame(vec![], &mut draw);
+            let at = sim.text(|s| s.ends_with("Hide from graph")).expect("the hide item");
+            sim.click(at, PointerButton::Primary, draw);
+        }
+        for a in acts {
+            t.apply(&sim.ctx, a);
+        }
+        assert_eq!(t.view.hidden, ["refs/heads/x", "refs/heads/y"]);
+    }
 
     #[test]
     fn pull_request_base_is_the_stack_parent() {

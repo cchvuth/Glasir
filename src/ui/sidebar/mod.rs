@@ -49,12 +49,7 @@ pub(super) fn eye(ui: &mut Ui, row: egui::Rect, d: &RepoData, refs: &[&crate::gi
     let col = if resp.hovered() { theme::text(ui) } else { theme::dim(ui) };
     ui.painter().text(at.center(), egui::Align2::CENTER_CENTER, if hidden { icon::EYE_SLASH } else { icon::EYE }, egui::FontId::proportional(14.0), col);
     if resp.on_hover_text(if hidden { "Show in graph" } else { "Hide from graph" }).clicked() {
-        let mut v = d.view.clone();
-        v.hidden.retain(|h| !refs.contains(&h.as_str()));
-        if !hidden {
-            v.hidden.extend(refs.iter().map(|f| f.to_string()));
-        }
-        acts.push(Action::View(v));
+        acts.push(Action::View(crate::repo::ViewChange::Hide(refs.iter().map(|f| f.to_string()).collect(), !hidden)));
     }
 }
 

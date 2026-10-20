@@ -3,17 +3,19 @@
 
 use crate::git;
 use crate::repo::remotes::{self, Form};
-use crate::repo::{Action, RepoData, RepoTab, op, prompt};
+use crate::repo::{Action, RepoData, RepoTab, fetch_remote_op, prompt, prune_remote_op};
 use crate::theme::{self, icon};
 use crate::ui::format::{dismissed_in, on_top};
 use egui::{Id, Key, RichText, TextEdit};
 
 pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<Action>) {
     if ui.button(format!("{}  Fetch {name}", icon::CLOUD_ARROW_DOWN)).clicked() {
-        acts.push(op(format!("Fetch {name}"), &["fetch", "--progress", name]));
+        acts.push(Action::Git(fetch_remote_op(d, name)));
     }
-    if ui.button(format!("{}  Prune deleted branches", icon::BROOM)).on_hover_text(format!("Drop remote-tracking branches that no longer exist on {name}")).clicked() {
-        acts.push(op(format!("Prune {name}"), &["remote", "prune", name]));
+    let prune = prune_remote_op(d, name);
+    let tip = format!("Drop remote-tracking branches that no longer exist on {name}");
+    if ui.add_enabled(prune.is_some(), egui::Button::new(format!("{}  Prune deleted branches", icon::BROOM))).on_hover_text(&tip).on_disabled_hover_text(format!("{name} fetches no remote-tracking branches")).clicked() {
+        acts.extend(prune.map(Action::Git));
     }
     ui.separator();
     if ui.button(format!("{}  Check out pull request #…", icon::GIT_PULL_REQUEST)).on_hover_text("Fetches refs/pull/<n>/head, resets pr/<n> to it and checks it out; refuses if pr/<n> has local commits (github.com and GitHub Enterprise)").clicked() {

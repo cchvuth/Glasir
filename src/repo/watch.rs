@@ -74,7 +74,15 @@ fn classify(p: &Path, gits: &[std::path::PathBuf; 2], root: &Path, ignored: &mut
     };
     let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
     match parts.iter().map(|c| c.as_ref()).collect::<Vec<&str>>()[..] {
-        ["refs" | "packed-refs" | "reftable" | "config", ..] | ["HEAD"] | ["worktrees", _, "HEAD"] => Some(Change::Refs),
+        ["config", ..] => {
+            ignored.clear(); // core.excludesFile may have changed
+            Some(Change::Refs)
+        }
+        ["info", "exclude"] => {
+            ignored.clear();
+            Some(Change::Tree)
+        }
+        ["refs" | "packed-refs" | "reftable", ..] | ["HEAD"] | ["worktrees", _, "HEAD"] => Some(Change::Refs),
         // Other per-worktree files count only in our own git dir, not the main worktree's (any HEAD does).
         ["MERGE_HEAD" | "rebase-merge" | "rebase-apply" | "CHERRY_PICK_HEAD" | "config.worktree", ..] if i == 0 => Some(Change::Refs),
         ["index", ..] if i == 0 => {
@@ -174,6 +182,18 @@ mod tests {
         }
         for p in [common.join("config.worktree"), common.join("MERGE_HEAD"), common.join("worktrees/other/index"), common.join("FETCH_HEAD")] {
             assert_eq!(c(p.clone()), None, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn exclude_and_config_edits_drop_ignore_verdicts() {
+        use std::path::{Path, PathBuf};
+        let common = PathBuf::from("/r/.git");
+        let gits = [common.clone(), common.clone()];
+        for (p, change) in [("info/exclude", super::Change::Tree), ("config", super::Change::Refs)] {
+            let mut cache = std::collections::HashMap::from([("build".to_owned(), true)]);
+            assert_eq!(super::classify(&common.join(p), &gits, Path::new("/r"), &mut cache, &mut None), Some(change));
+            assert!(cache.is_empty(), "{p}");
         }
     }
 

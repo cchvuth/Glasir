@@ -129,6 +129,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }
+
+    #[test]
+    fn one_remote_fetch_and_prune_keep_local_tags() {
+        use crate::repo::{data::load_all, fetch_remote_op, op::exec, prune_remote_op};
+        let (up, dir) = (scratch("prune-one-up"), scratch("prune-one"));
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a", "1");
+        sh(&up, &["branch", "gone"]);
+        sh(&up, &["branch", "later"]);
+        sh(&dir, &["clone", "-q", up.to_str().unwrap(), "."]);
+        sh(&dir, &["config", "--add", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]);
+        sh(&dir, &["config", "fetch.prune", "true"]);
+        sh(&dir, &["tag", "mine"]);
+        sh(&up, &["branch", "-D", "gone"]);
+        let refs = || sh(&dir, &["for-each-ref", "--format=%(refname)"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        exec(&dir, &prune_remote_op(&d, "origin").unwrap()).unwrap();
+        let r = refs();
+        assert!(r.contains("refs/tags/mine\n") && !r.contains("origin/gone") && r.contains("origin/later"), "{r}");
+        sh(&up, &["branch", "-D", "later"]);
+        exec(&dir, &fetch_remote_op(&d, "origin")).unwrap();
+        let r = refs();
+        assert!(r.contains("refs/tags/mine\n") && !r.contains("origin/later"), "{r}");
+        sh(&dir, &["config", "--replace-all", "remote.origin.fetch", "+refs/tags/*:refs/tags/*"]);
+        assert!(prune_remote_op(&load_all(&dir, 100, View::default()).unwrap(), "origin").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
 }
 
 impl RepoTab {

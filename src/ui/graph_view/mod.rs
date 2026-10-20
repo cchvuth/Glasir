@@ -13,7 +13,7 @@ use crate::ui::format::{keys, plural};
 use crate::ui::sidebar::ref_menus;
 use crate::git::{Ref, RefKind};
 use crate::graph::NONE;
-use crate::repo::{Action, RepoData, Search, Sel, View, branch_checkout};
+use crate::repo::{Action, RepoData, Search, Sel, View, ViewChange, branch_checkout};
 use crate::theme::{self, icon};
 use dnd::{BranchDrag, CommitDrag};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui, pos2, vec2};
@@ -152,7 +152,7 @@ pub fn show(
             }
             ui.label(egui::RichText::new(format!("{}  {}", icon::FUNNEL, what.join("  ·  "))).small().color(theme::changed()));
             if ui.link(egui::RichText::new("Show all").small()).clicked() {
-                acts.push(Action::View(View::default()));
+                acts.push(Action::View(ViewChange::Set(View::default())));
             }
         });
     }
@@ -230,7 +230,7 @@ pub fn show(
         p.text(fp.center(), Align2::CENTER_CENTER, icon::GIT_COMMIT, FontId::proportional(13.0), if v.first_parent { theme::text(ui) } else { dim });
     }
     if fp_room && fp_resp.clicked() {
-        acts.push(Action::View(View { first_parent: !v.first_parent, ..v.clone() }));
+        acts.push(Action::View(ViewChange::FirstParent(!v.first_parent)));
     }
     for (i, x) in [x_graph, x_msg].into_iter().enumerate() {
         let handle = Rect::from_center_size(pos2(x, hdr.center().y), vec2(8.0, hdr.height()));

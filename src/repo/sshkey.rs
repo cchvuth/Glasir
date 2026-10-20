@@ -28,7 +28,7 @@ pub fn build(path: &str) -> String {
 
 pub fn parse(cmd: Option<&str>) -> Active {
     match cmd.map(str::trim).filter(|c| !c.is_empty()) {
-        None => Active::Default,
+        None | Some("ssh") => Active::Default,
         Some(c) => match c.strip_prefix(PREFIX).and_then(|r| r.strip_suffix(SUFFIX)) {
             Some(q) if q.replace("'\\''", "").find('\'').is_none() => Active::Ours(q.replace("'\\''", "'")),
             _ => Active::Custom(c.to_owned()),
@@ -36,7 +36,7 @@ pub fn parse(cmd: Option<&str>) -> Active {
     }
 }
 
-pub fn set_op(key: Option<&str>, previous: Option<&str>, custom: Option<&str>) -> Op {
+pub fn set_op(key: Option<&str>, previous: Option<&str>, custom: Option<&str>, inherited: bool) -> Op {
     let restore = |cmd: Option<&str>| match cmd {
         Some(c) => Op::new("Restore SSH key setting", &["config", "core.sshCommand", c]),
         None => Op::new("Restore SSH key setting", &["config", "--unset-all", "core.sshCommand"]),
@@ -46,6 +46,7 @@ pub fn set_op(key: Option<&str>, previous: Option<&str>, custom: Option<&str>) -
             let name = Path::new(k).file_name().map_or(k.into(), |n| n.to_string_lossy());
             Op::new(format!("Use SSH key {name} for this repository"), &["config", "core.sshCommand", &build(k)])
         }
+        None if inherited => Op::new("Use the default SSH key for this repository", &["config", "core.sshCommand", "ssh"]),
         None => Op::new("Use the default SSH key for this repository", &["config", "--unset-all", "core.sshCommand"]),
     };
     let op = op.revert(restore(previous));
@@ -124,14 +125,18 @@ mod tests {
 
     #[test]
     fn the_op_sets_and_restores() {
-        let op = set_op(Some("/k/id"), Some("ssh -i x"), None);
+        let op = set_op(Some("/k/id"), Some("ssh -i x"), None, false);
         assert_eq!(op.cmds[0], ["config", "core.sshCommand", "ssh -i '/k/id' -o IdentitiesOnly=yes"]);
         assert_eq!(op.revert.as_ref().unwrap().cmds[0], ["config", "core.sshCommand", "ssh -i x"]);
         assert!(op.confirm.is_none());
-        let op = set_op(None, None, Some("ssh -i x"));
+        let op = set_op(None, None, Some("ssh -i x"), false);
         assert_eq!(op.cmds[0], ["config", "--unset-all", "core.sshCommand"]);
         assert!(op.confirm.unwrap().contains("ssh -i x"));
-        let asked = set_op(None, None, Some("sshpass -p hunter2 ssh -i x")).confirm.unwrap();
+        let asked = set_op(None, None, Some("sshpass -p hunter2 ssh -i x"), false).confirm.unwrap();
         assert!(asked.contains("sshpass -p *** ssh -i x") && !asked.contains("hunter2"));
+        let op = set_op(None, None, None, true);
+        assert_eq!(op.cmds[0], ["config", "core.sshCommand", "ssh"]);
+        assert_eq!(op.revert.as_ref().unwrap().cmds[0], ["config", "--unset-all", "core.sshCommand"]);
+        assert_eq!(parse(Some("ssh")), Active::Default);
     }
 }

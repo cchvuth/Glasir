@@ -83,11 +83,14 @@ fn dirty(dir: &Path, base: &str) -> Res<BTreeSet<String>> {
     Ok(ps)
 }
 
-/// Every path stash `id` touches: tracked changes, staged changes and untracked files (`^3`).
+/// Every path stash `id` touches: tracked changes, staged changes and untracked files (`^3`),
+/// and where the index has renamed a changed one since (an apply follows the rename).
 fn stash_paths(dir: &Path, id: &str) -> Res<Vec<String>> {
     let z = |args: &[&str]| git::run(dir, args).map(split_z);
     let mut ps: BTreeSet<String> = z(&["diff", "--name-only", "-z", "--no-renames", &format!("{id}^1"), id])?.into_iter().collect();
     ps.extend(z(&["diff", "--name-only", "-z", "--no-renames", &format!("{id}^1"), &format!("{id}^2")])?);
+    let moved = z(&["diff-index", "--cached", "-z", "--name-status", "-M", "--diff-filter=R", &format!("{id}^1")])?;
+    ps.extend(moved.chunks(3).filter(|r| r.len() == 3 && ps.contains(&r[1])).map(|r| r[2].clone()).collect::<Vec<_>>());
     ps.extend(z(&["ls-tree", "-r", "-z", "--name-only", &format!("{id}^3")]).unwrap_or_default());
     Ok(ps.into_iter().collect())
 }

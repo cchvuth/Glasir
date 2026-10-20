@@ -271,7 +271,7 @@ impl App {
             act = Some(Action::Select(Sel::Wip));
         }
         if eat(Modifiers::COMMAND | Modifiers::SHIFT, Key::U) {
-            act = Some(Action::Git(unstage_all_op()));
+            act = t.data.as_ref().and_then(|d| unstage_all_op(&d.status)).map(Action::Git).or(act);
         }
         // S / U: stage / unstage the files selected in the WIP lists (not while typing or in a dialog).
         let plain = ctx.input(|i| !i.modifiers.any());
@@ -482,9 +482,12 @@ impl eframe::App for App {
     /// Runs before every `ui`, and alone while the window is hidden (minimized, occluded,
     /// another Space): ops finish and the quit guards hold there too.
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        self.focused &= ctx.input(|i| i.viewport().focused.unwrap_or(true));
         self.poll_tabs(ctx);
         let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
         let unsaved = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|w| (i, w)));
+        #[cfg(unix)]
+        self.tabs.iter().for_each(|t| _ = t.term.running());
         #[cfg(target_os = "macos")]
         mac_quit::BUSY.store(
             busy.is_some() || unsaved.is_some() || self.tabs.iter().any(|t| t.term.busy() || !t.ext_tools.is_empty()),
@@ -635,8 +638,9 @@ fn replaceable(t: &RepoTab) -> bool {
 }
 
 fn draft(t: &RepoTab) -> Option<Draft> {
-    let untouched = t.template.as_ref().is_some_and(|m| (&m.summary, &m.body) == (&t.summary, &t.body));
-    ((!t.summary.is_empty() || !t.body.is_empty()) && !untouched).then(|| (t.summary.clone(), t.body.clone(), t.template.clone(), t.coauthors.clone()))
+    let (summary, body) = t.draft_message();
+    let untouched = t.template.as_ref().is_some_and(|m| (m.summary.as_str(), m.body.as_str()) == (summary, body));
+    ((!summary.is_empty() || !body.is_empty()) && !untouched).then(|| (summary.to_owned(), body.to_owned(), t.template.clone(), t.coauthors.clone()))
 }
 
 fn drop_data_off_thread(t: &mut RepoTab) {
@@ -1072,6 +1076,20 @@ mod shell_tests {
                 app.shortcuts = super::super::shortcuts::show(ui.ctx());
             }
         });
+    }
+
+    #[test]
+    fn focus_lost_while_hidden_is_noticed() {
+        use eframe::App as _;
+        let dir = repo("hidden-blur");
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &dir);
+        let mut raw = RawInput::default();
+        let vp = raw.viewports.entry(egui::ViewportId::ROOT).or_default();
+        (vp.minimized, vp.focused) = (Some(true), Some(false));
+        let _ = ctx.run_logic(&raw, |ctx| app.logic(ctx, &mut eframe::Frame::_new_kittest()));
+        assert!(!app.focused, "restoring the window would not reload");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1529,6 +1547,35 @@ mod shell_tests {
         for d in [a, b] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[test]
+    fn closing_a_tab_mid_amend_keeps_the_message_from_before() {
+        use crate::ui::testkit::load;
+        let a = repo("draft-amend");
+        crate::git::run(&a, &["-c", "user.name=T", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "head message"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        let t = &mut app.tabs[0];
+        load(t, &ctx);
+        t.amend = true;
+        t.apply(&ctx, Action::AmendToggled(true));
+        let start = std::time::Instant::now();
+        while t.summary.is_empty() {
+            assert!(start.elapsed().as_secs() < 120, "timed out filling the amend");
+            t.poll(&ctx, &mut vec![]);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(draft(t).is_none(), "HEAD's message is no draft");
+        t.amend = false;
+        t.apply(&ctx, Action::AmendToggled(false));
+        t.summary = "typed".into();
+        t.amend = true;
+        t.apply(&ctx, Action::AmendToggled(true));
+        t.summary = "head message, edited".into();
+        app.close_tab(&ctx, 0);
+        assert_eq!(app.drafts.values().map(|d| d.0.as_str()).collect::<Vec<_>>(), ["typed"]);
+        let _ = std::fs::remove_dir_all(a);
     }
 
     #[test]

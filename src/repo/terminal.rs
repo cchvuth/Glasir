@@ -134,9 +134,10 @@ impl Session {
         let now = std::time::Instant::now();
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         if seen.0.is_none_or(|at| now - at >= std::time::Duration::from_millis(500)) {
-            seen.0 = Some(now);
             #[cfg(unix)]
-            {
+            if seen.0.replace(now).is_none() {
+                seen.1 = has_child(self.shell.0);
+            } else {
                 let (cache, pid) = (self.seen.clone(), self.shell.0);
                 std::thread::spawn(move || {
                     let b = has_child(pid);
@@ -145,6 +146,7 @@ impl Session {
             }
             #[cfg(windows)]
             {
+                seen.0 = Some(now);
                 seen.1 = has_child(self.shell);
             }
         }
@@ -376,6 +378,21 @@ mod tests {
         s.write(&b"sleep 60 & echo sta''rted\r"[..]);
         wait("started", || screen(s).contains("started"));
         wait("busy", || s.busy());
+        s.write(&b"kill %1\r"[..]);
+        wait("idle", || !s.busy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_job_is_busy_on_the_first_ask() {
+        let dir = crate::repo::testutil::scratch("terminal-bg-first");
+        let ctx = egui::Context::default();
+        let mut ts = Terminals::default();
+        ts.toggle(&ctx, &dir);
+        let s = &ts.tabs[0];
+        s.write(&b"sleep 60 & echo sta''rted\r"[..]);
+        wait("started", || screen(s).contains("started") && has_child(s.shell.0));
+        assert!(s.busy());
         s.write(&b"kill %1\r"[..]);
         wait("idle", || !s.busy());
     }

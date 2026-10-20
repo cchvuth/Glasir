@@ -78,7 +78,34 @@ pub struct View {
     pub first_parent: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViewChange {
+    Hide(Vec<String>, bool),
+    Solo(String, bool),
+    FirstParent(bool),
+    Set(View),
+}
+
 impl View {
+    pub fn change(&mut self, c: ViewChange) {
+        match c {
+            ViewChange::Hide(refs, on) => {
+                self.hidden.retain(|h| !refs.contains(h));
+                if on {
+                    self.hidden.extend(refs);
+                }
+            }
+            ViewChange::Solo(r, on) => {
+                self.solo.retain(|s| *s != r);
+                if on {
+                    self.solo.push(r);
+                }
+            }
+            ViewChange::FirstParent(on) => self.first_parent = on,
+            ViewChange::Set(v) => *self = v,
+        }
+    }
+
     pub fn filtered(&self) -> bool {
         !self.hidden.is_empty() || !self.solo.is_empty()
     }
