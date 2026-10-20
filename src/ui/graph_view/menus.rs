@@ -159,7 +159,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
                 if ui.button(format!("{name}  ({on})")).on_hover_text(&w.path).clicked() {
                     let leaves = w.branch.as_ref().map_or_else(|| "its current commit stays in its reflog".to_owned(), |b| format!("it leaves {b}"));
                     let op = Op::new(format!("Check out {short} in {name}"), &[crate::repo::CHECKOUT_IN, &w.path, &c.id])
-                        .confirm(format!("Check out {short} (detached) in {}? {leaves}; its uncommitted changes stay, or git refuses if they'd be overwritten. This tab stays where it is.", w.path));
+                        .confirm(format!("Check out {short} (detached) in {}? {leaves}; its uncommitted changes stay, and nothing happens if the checkout would overwrite them or its ignored files. This tab stays where it is.", w.path));
                     acts.push(Action::Git(op));
                 }
             }

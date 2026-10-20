@@ -620,7 +620,10 @@ pub fn remove_worktree_op(w: &git::Worktree, remove: &[&str], warn: &str) -> Op 
 /// `b`; ⌘Z restores the branch with its config (not the folder), and redo deletes it again.
 pub fn delete_everywhere(d: &RepoData, r: &git::Ref) -> Option<(String, Op)> {
     let name = r.name.as_str();
-    let remote = d.refs.iter().find(|x| x.kind == git::RefKind::Remote && !r.upstream.is_empty() && x.name == r.upstream).and_then(|x| Some((d.split_remote(&x.name)?, x.target.as_str())));
+    let remote = d.push_target(name, &r.upstream).and_then(|(rm, rb)| {
+        let full = format!("{rm}/{rb}");
+        d.refs.iter().find(|x| x.kind == git::RefKind::Remote && x.name == full).map(|x| ((rm, rb), x.target.as_str()))
+    });
     let wt = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()));
     if remote.is_none() && wt.is_none() || r.worktree.is_some() && wt.is_none() {
         return None;
@@ -636,8 +639,8 @@ pub fn delete_everywhere(d: &RepoData, r: &git::Ref) -> Option<(String, Op)> {
             args.push(&w.path);
             also.push("its worktree".to_owned());
             what.push(match w.changes {
-                0 => format!("its worktree folder {}", w.path),
-                n => format!("its worktree folder {} with {n} uncommitted change(s), which are LOST", w.path),
+                0 => format!("its worktree folder {} (ignored files in it, like build output or .env, go too)", w.path),
+                n => format!("its worktree folder {} with {n} uncommitted change(s), which are LOST, and its ignored files", w.path),
             });
             remove_worktree_and_branch(d, &args, name)
         }
@@ -846,6 +849,14 @@ fn checkout_in(path: &str, rev: &str) -> Res<String> {
     let p = Path::new(path);
     if !matches!(git::state(&git::git_dir(p)?), git::State::Clean | git::State::Bisecting) {
         return Err(format!("{path} has a merge, rebase or other operation in progress: finish or abort it there first."));
+    }
+    let ignored = super::undo::split_z(git::run(p, &["ls-files", "-z", "-o", "-i", "--exclude-standard"])?);
+    if !ignored.is_empty() {
+        let tracked: std::collections::HashSet<String> = super::undo::split_z(git::run(p, &["ls-tree", "-r", "-z", "--name-only", rev])?).into_iter().collect();
+        let clash: Vec<&str> = ignored.iter().filter(|f| tracked.contains(*f)).map(String::as_str).collect();
+        if !clash.is_empty() {
+            return Err(format!("Nothing was changed: that commit has files {path} keeps ignored, which the checkout would overwrite: {}. Move them out of the way first.", clash[..clash.len().min(5)].join(", ")));
+        }
     }
     git::run(p, &["checkout", "--detach", rev, "--"])
 }
@@ -3274,6 +3285,10 @@ mod tests {
         settle(&ctx, &mut t);
         let d = t.data.as_ref().unwrap();
         let feat = d.local("feat").unwrap().clone();
+        sh(&dir, &["branch", "--track", "topic", "origin/main"]);
+        run(&ctx, &mut t, Action::Reload);
+        let d = t.data.as_ref().unwrap();
+        assert!(super::delete_everywhere(d, d.local("topic").unwrap()).is_none(), "its upstream is the branch it started from, not its own");
         let (label, mut op) = super::delete_everywhere(d, &feat).expect("offered");
         assert_eq!(label, "Delete feat and origin/feat and its worktree");
         op.confirm = None;
@@ -3310,6 +3325,20 @@ mod tests {
         sh(&wt, &["commit", "-qam", "y"]);
         assert!(git::run(&wt, &["merge", "-q", "side"]).is_err());
         assert!(super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &first])).is_err_and(|e| e.contains("in progress")));
+        sh(&wt, &["merge", "--abort"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("conf.env"), "tracked\n").unwrap();
+        sh(&dir, &["add", "conf.env"]);
+        sh(&dir, &["commit", "-qm", "conf"]);
+        let conf = sh(&dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        std::fs::write(wt.join(".git-info-exclude-marker"), "").unwrap();
+        let excl = sh(&wt, &["rev-parse", "--git-path", "info/exclude"]);
+        let excl = wt.join(excl.trim());
+        std::fs::create_dir_all(excl.parent().unwrap()).unwrap();
+        std::fs::write(&excl, "conf.env\n.git-info-exclude-marker\n").unwrap();
+        std::fs::write(wt.join("conf.env"), "SECRET\n").unwrap();
+        assert!(super::exec(&dir, &Op::new("Check out", &[super::CHECKOUT_IN, w, &conf])).is_err_and(|e| e.contains("conf.env")));
+        assert_eq!(std::fs::read_to_string(wt.join("conf.env")).unwrap(), "SECRET\n");
         let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&wt));
     }
 
