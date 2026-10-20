@@ -148,7 +148,7 @@ The name fits a Git client:
   pinned on top, above a separator.
 - Checkout, create, rename, delete (undoable), set / unset upstream, fast-forward
   or pull a branch **without checking it out**. **Delete everywhere** removes a branch,
-  its remote branch and its worktree in one step.
+  its remote branch and its worktree in one step; **Remove its worktree** keeps the branch.
 - Merge, rebase, cherry-pick, revert and soft / mixed / keep / hard reset from menus.
   **Reset the current branch to any commit, branch or tag**; a hard reset lists
   the files it discards and backs them up, so ⌘Z brings back refs *and* files.

@@ -195,6 +195,12 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     {
         acts.push(Action::Switch(p.clone()));
     }
+    if let Some(w) = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()))
+        && ui.button(format!("Remove its worktree (keep {name})")).on_hover_text(w.path.as_str()).clicked()
+    {
+        let (args, warn) = crate::repo::worktree_remove_args(w);
+        acts.push(Action::Git(crate::repo::remove_worktree_op(w, &args, &format!("{warn}\nThe branch {name} stays."))));
+    }
     if ui.button("Create branch from here…").clicked() {
         acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", d.rev(r)]).undo(Undo::Keep)));
     }

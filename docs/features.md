@@ -7,7 +7,7 @@ Every non-test function belongs to at least one feature (`featuremap.py check`).
 
 - [App shell](#app) (51 features)
 - [Committing and staging](#commit) (43 features)
-- [Branches, tags and the sidebar](#refs) (58 features)
+- [Branches, tags and the sidebar](#refs) (59 features)
 - [History rewriting and stacks](#rewrite) (21 features)
 - [Merging, cherry-picks and conflicts](#merge) (28 features)
 - [Remotes, sync and hosting](#remote) (32 features)
@@ -22,21 +22,21 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | Function | Features |
 |---|---|
 | `ui::inspector::wip::RepoTab::wip_panel` (src/ui/inspector/wip.rs:280) | 31 |
-| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:134) | 26 |
+| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:134) | 27 |
 | `ui::palette::items` (src/ui/palette.rs:74) | 25 |
 | `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:140) | 24 |
 | `repo::RepoTab::apply` (src/repo/mod.rs:647) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
-| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:270) | 14 |
+| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:276) | 14 |
 | `ui::graph_view::show` (src/ui/graph_view/mod.rs:116) | 14 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:263) | 13 |
-| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:238) | 12 |
+| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:244) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:580) | 12 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
 | `ui::app::App::shortcuts` (src/ui/app.rs:189) | 11 |
-| `repo::op::exec_stash` (src/repo/op.rs:775) | 11 |
+| `repo::op::exec_stash` (src/repo/op.rs:787) | 11 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
 | `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
@@ -45,7 +45,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
 | `ui::app::App::ui` (src/ui/app.rs:498) | 9 |
-| `repo::op::stash_cmd` (src/repo/op.rs:682) | 9 |
+| `repo::op::stash_cmd` (src/repo/op.rs:694) | 9 |
 
 <a id="app"></a>
 ## App shell
@@ -603,7 +603,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Check out a branch, remote branch or tag `refs.checkout`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 "Checkout <name>" (branch/remote/tag menus, sidebar and graph pills); double-click sidebar row (mod.rs:117) or graph pill (graph_view/mod.rs act closure); graph commit menu "Checkout <ref>" and double-click commit row (graph_view/menus.rs:93 checkout_action, :140); palette "Checkout <ref>" (src/ui/palette.rs:195)
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `repo::op::branch_checkout` (7), `repo::op::checkout_args` (3), `repo::op::in_progress` (4), `repo::op::switch_refused` (3), `repo::op::switches_head` (3), `ui::graph_view::menus::checkout_action` (2), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::show` (14), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
+- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `repo::op::branch_checkout` (7), `repo::op::checkout_args` (3), `repo::op::in_progress` (4), `repo::op::switch_refused` (3), `repo::op::switches_head` (3), `ui::graph_view::menus::checkout_action` (2), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::show` (14), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
 
 #### Checkout of a remote branch creates / fast-forwards a tracking branch `refs.checkout-remote-tracking`
 - **Entry:** same entries as refs.checkout on a remote branch row/pill: update local twin, new tracking branch, or prompt for a new name when twin tracks elsewhere
@@ -635,27 +635,27 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Create branch (from here, from commit, from HEAD) `refs.create-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Create branch from here…"; src/ui/graph_view/menus.rs:140 "Create branch here…" (commit menu); src/ui/toolbar.rs:244 toolbar_local branch button ("New branch from HEAD"); palette "Create branch…" (src/ui/palette.rs:93)
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::action::prompt` (7), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::graph_view::menus::commit_menu` (24), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (26), `ui::toolbar::toolbar_local` (5)
+- **Shared:** `repo::action::prompt` (7), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::graph_view::menus::commit_menu` (24), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (27), `ui::toolbar::toolbar_local` (5)
 
 #### Rename branch `refs.rename-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Rename…"
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::action::prompt` (7), `repo::op::Op::new` (7), `repo::op::Op::revert` (5), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::action::prompt` (7), `repo::op::Op::new` (7), `repo::op::Op::revert` (5), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Set upstream of a branch `refs.set-upstream`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Set upstream…"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::action::prompt` (7), `repo::data::RepoData::default_remote` (8), `repo::op::Op::new` (7), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::action::prompt` (7), `repo::data::RepoData::default_remote` (8), `repo::op::Op::new` (7), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Unset upstream of a branch `refs.unset-upstream`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Unset upstream (<up>)"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Delete / force delete a local branch (undoable) `refs.delete-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Delete" / "Force delete"
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::data::RepoData::local` (7), `repo::op::Op::confirm` (4), `repo::op::Op::revert` (5), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::keep_deleted` (2), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::data::RepoData::local` (7), `repo::op::Op::confirm` (4), `repo::op::Op::revert` (5), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::keep_deleted` (2), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Delete a branch from the remote `refs.delete-remote-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:233 remote_menu "Delete <branch> from <remote>"
@@ -665,64 +665,69 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Fast-forward a non-checked-out branch to its upstream `refs.fast-forward-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Fast-forward <name> to <upstream>"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Pull a branch (fast-forward) without checking it out `refs.pull-without-checkout`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Pull <name> (fast-forward, without checkout)"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::data::RepoData::split_remote` (13), `repo::remotes::pull_ff` (2), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::data::RepoData::split_remote` (13), `repo::remotes::pull_ff` (2), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Push a branch to its remote from the menu `refs.push-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Push <name> to <remote>"
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.op-runner`
-- **Shared:** `repo::data::RepoData::push_target` (4), `repo::data::RepoData::split_remote` (13), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::data::RepoData::push_target` (4), `repo::data::RepoData::split_remote` (13), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Move unpushed commits to a new branch (HEAD menu) `refs.move-unpushed-to-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu on HEAD branch (git-fork item)
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::spinoff::move_unpushed` (2), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::spinoff::move_unpushed` (2), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Open a branch in a new worktree / open its worktree `refs.branch-worktree`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 "Open in a new worktree…", "Open its worktree"; remote menu "Check out in a new worktree…"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::action::prompt` (7), `repo::data::RepoData::worktree_path` (3), `repo::data::RepoData::worktree_rev` (2), `repo::op::Op::then_open` (3), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12)
+- **Shared:** `repo::action::prompt` (7), `repo::data::RepoData::worktree_path` (3), `repo::data::RepoData::worktree_rev` (2), `repo::op::Op::then_open` (3), `ui::dialogs::fill` (8), `ui::dialogs::fill_arg` (7), `ui::dialogs::prompt_dialog` (8), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12)
 
 #### Merge / rebase / interactive rebase from a ref menu `refs.merge-rebase-from-menu`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu and :233 remote_menu via integrate_items ("Merge X into Y", with options, "Rebase Y onto X", "Interactive rebase…")
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::merge_opts::Merge::name` (4), `repo::merge_opts::merge_op` (4), `ui::graph_view::menus::integrate_items` (6), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12)
+- **Shared:** `repo::merge_opts::Merge::name` (4), `repo::merge_opts::merge_op` (4), `ui::graph_view::menus::integrate_items` (6), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12)
 
 #### Reset current branch to a ref (soft/mixed/keep/hard) `refs.reset-to-ref`
 - **Entry:** ref menus "Reset <head> to <ref>" (graph_view/menus.rs:283 reset_menu) in local, remote and tag menus
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
 - **Own code:** `repo::op::reset_op`
-- **Shared:** `ui::graph_view::menus::reset_busy` (2), `ui::graph_view::menus::reset_items` (2), `ui::graph_view::menus::reset_menu` (2), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
+- **Shared:** `ui::graph_view::menus::reset_busy` (2), `ui::graph_view::menus::reset_items` (2), `ui::graph_view::menus::reset_menu` (2), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
 
 #### Copy branch / tag name `refs.copy-ref-name`
 - **Entry:** ref menus "Copy branch name" / "Copy tag name"
-- **Shared:** `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
+- **Shared:** `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
 
 #### Right-click menu for refs (sidebar rows and graph pills) `refs.ref-menu-dispatch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:12 ref_menu; synced_menu for a pill with local+remote at same commit
-- **Shared:** `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::ref_menu` (3), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::synced_menu` (2), `ui::sidebar::ref_menus::tag_menu` (14), `ui::sidebar::ref_menus::view_items` (3)
+- **Shared:** `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::ref_menu` (3), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::synced_menu` (2), `ui::sidebar::ref_menus::tag_menu` (14), `ui::sidebar::ref_menus::view_items` (3)
 
 #### Restack / push stack from a branch menu `refs.stack-menu`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 local_menu "Restack", "Push stack (n branches)"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::stack::members` (5), `repo::stack::push_op` (3), `repo::stack::restack_op` (2), `repo::stack::stale` (6), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::stack::members` (5), `repo::stack::push_op` (3), `repo::stack::restack_op` (2), `repo::stack::stale` (6), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Delete a branch with its remote branch and worktree in one step `refs.delete-everywhere`
 - **Entry:** src/ui/sidebar/ref_menus.rs local_menu "Delete <branch> and <remote>/<branch> and its worktree" (sidebar row and graph pill)
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
 - **Own code:** `repo::op::delete_everywhere`
-- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::confirm` (4), `repo::op::Op::revert` (5), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::keep_deleted` (2), `repo::op::remove_worktree_and_branch` (2), `repo::remotes::delete_branch` (3), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12)
+- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::confirm` (4), `repo::op::Op::revert` (5), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::keep_deleted` (2), `repo::op::remove_worktree_and_branch` (2), `repo::op::worktree_remove_args` (3), `repo::remotes::delete_branch` (3), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12)
+
+#### Remove a branch's worktree and keep the branch `refs.remove-worktree-keep-branch`
+- **Entry:** src/ui/sidebar/ref_menus.rs local_menu "Remove its worktree (keep <branch>)" (sidebar row and graph pill); src/ui/sidebar/worktrees.rs "Remove worktree" on the worktree row
+- **Platform:** `platform.op-runner`, `platform.git-runner`
+- **Shared:** `repo::op::remove_worktree_op` (2), `repo::op::worktree_remove_args` (3), `ui::sidebar::ref_menus::local_menu` (27)
 
 ### Compare and web links from ref menus
 
 #### Compare ref with working tree / with current branch `refs.compare-from-menu`
 - **Entry:** src/ui/sidebar/ref_menus.rs:58 "Compare working tree with <ref>" and "Compare with <head>" (local, remote, tag menus)
 - **Own code:** `ui::sidebar::ref_menus::worktree_compare`
-- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::rev` (3), `ui::sidebar::ref_menus::compare_items` (3), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
+- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::rev` (3), `ui::sidebar::ref_menus::compare_items` (3), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
 
 #### Explain changes of a branch vs current (AI) `refs.explain-branch-ai`
 - **Entry:** src/ui/sidebar/ref_menus.rs:64 compare_items "Explain changes vs <head>"
@@ -973,7 +978,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Move unpushed commits to a new branch `rewrite.spinoff`
 - **Entry:** toolbar history tools (src/ui/toolbar.rs:140); branch context menu on HEAD (src/ui/sidebar/ref_menus.rs:153); ⌘P (src/ui/palette.rs:149)
 - **Platform:** `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::spinoff::move_unpushed` (2), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (26), `ui::toolbar::history_tools` (7)
+- **Shared:** `repo::spinoff::move_unpushed` (2), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (27), `ui::toolbar::history_tools` (7)
 
 ### Stacked branches
 
@@ -992,12 +997,12 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Restack a stack `rewrite.stack-restack`
 - **Entry:** branch context menu "Restack" (src/ui/sidebar/ref_menus.rs:176), shown when any member is stale
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::stack::children` (5), `repo::stack::members` (5), `repo::stack::parent` (7), `repo::stack::restack` (2), `repo::stack::restack_cmd` (2), `repo::stack::restack_op` (2), `repo::stack::stale` (6), `repo::stack::subcommand` (2), `repo::stack::trunk` (3), `repo::stack::trunk_name` (3), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::stack::children` (5), `repo::stack::members` (5), `repo::stack::parent` (7), `repo::stack::restack` (2), `repo::stack::restack_cmd` (2), `repo::stack::restack_op` (2), `repo::stack::stale` (6), `repo::stack::subcommand` (2), `repo::stack::trunk` (3), `repo::stack::trunk_name` (3), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Push a whole stack `rewrite.stack-push`
 - **Entry:** branch context menu "Push stack (N branches)" (src/ui/sidebar/ref_menus.rs:183)
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::stack::children` (5), `repo::stack::members` (5), `repo::stack::parent` (7), `repo::stack::push_op` (3), `repo::stack::stale` (6), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::stack::children` (5), `repo::stack::members` (5), `repo::stack::parent` (7), `repo::stack::push_op` (3), `repo::stack::stale` (6), `ui::sidebar::ref_menus::local_menu` (27)
 
 <a id="merge"></a>
 ## Merging, cherry-picks and conflicts
@@ -1193,7 +1198,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Fast-forward a branch without checking it out `remote.pull-ff-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:145 local branch menu "Pull <b> (fast-forward, without checkout)"; src/ui/sidebar/ref_menus.rs:140 "Fast-forward <b> to <upstream>" (local fetch)
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::data::RepoData::split_remote` (13), `repo::remotes::pull_ff` (2), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::ref_menu` (3)
+- **Shared:** `repo::data::RepoData::split_remote` (13), `repo::remotes::pull_ff` (2), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::ref_menu` (3)
 
 #### Push the current branch (sets upstream on first push) `remote.push`
 - **Entry:** src/ui/toolbar.rs:222 "Push" pill (opens Add remote when none); src/ui/palette.rs:85 Cmd+P "Push"; src/ui/inspector/wip.rs:403 "Push after commit" checkbox / "Commit and push"; src/repo/op.rs:1245 push after a queued commit
@@ -1208,12 +1213,12 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Push a specific branch or tag from the sidebar `remote.push-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:181 local branch menu "Push <b> to <remote>"; src/ui/sidebar/ref_menus.rs:274 tag menu "Push tag to <remote>"; src/ui/sidebar/ref_menus.rs:210 tag menu "Push all tags to <remote>" (also Cmd+P); src/ui/graph_view pills open the same ref_menu
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::data::RepoData::default_remote` (8), `repo::data::RepoData::push_target` (4), `repo::tags::push_all` (2), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::tag_menu` (14)
+- **Shared:** `repo::data::RepoData::default_remote` (8), `repo::data::RepoData::push_target` (4), `repo::tags::push_all` (2), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::tag_menu` (14)
 
 #### Push a stack of branches `remote.push-stack`
 - **Entry:** src/ui/sidebar/ref_menus.rs:182 local branch menu "Push stack (N branches)"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::stack::push_op` (3), `ui::sidebar::ref_menus::local_menu` (26)
+- **Shared:** `repo::stack::push_op` (3), `ui::sidebar::ref_menus::local_menu` (27)
 
 #### Delete a branch from the remote `remote.delete-remote-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:253 remote branch menu "Delete <b> from <remote>"
@@ -1664,12 +1669,12 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Create a worktree (new branch, from HEAD / commit / branch / remote branch) `tools.worktree-create`
 - **Entry:** src/ui/sidebar/worktrees.rs:19 "New worktree…"; src/ui/graph_view/menus.rs:165 "Create worktree here (new branch)…"; src/ui/sidebar/ref_menus.rs:190 "Open in a new worktree…"; src/ui/sidebar/ref_menus.rs:245 "Check out in a new worktree…"
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `git::read::worktrees` (5), `repo::data::RepoData::worktree_path` (3), `repo::op::Op::then_open` (3), `ui::app::App::poll_tabs` (7), `ui::app::App::switch` (3), `ui::graph_view::menus::commit_menu` (24), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::worktrees::list` (3)
+- **Shared:** `git::read::worktrees` (5), `repo::data::RepoData::worktree_path` (3), `repo::op::Op::then_open` (3), `ui::app::App::poll_tabs` (7), `ui::app::App::switch` (3), `ui::graph_view::menus::commit_menu` (24), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::worktrees::list` (3)
 
 #### Open / switch to a worktree in place `tools.worktree-switch`
 - **Entry:** src/ui/sidebar/worktrees.rs:57 click or double-click a worktree row; src/ui/sidebar/ref_menus.rs:196 "Open its worktree"; branch checkout of a branch living in another worktree (op::branch_checkout); after a worktree is created (op.then_open)
 - **Platform:** `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::op::branch_checkout` (7), `repo::undo::RepoTab::take_steps` (2), `ui::app::App::poll_tabs` (7), `ui::app::App::switch` (3), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::app::replaceable` (2), `ui::sidebar::ref_menus::local_menu` (26), `ui::sidebar::worktrees::worktree_row` (6)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::op::branch_checkout` (7), `repo::undo::RepoTab::take_steps` (2), `ui::app::App::poll_tabs` (7), `ui::app::App::switch` (3), `ui::app::draft` (5), `ui::app::draft_file` (3), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::app::replaceable` (2), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::worktrees::worktree_row` (6)
 
 #### Open a worktree in a new tab `tools.worktree-open-tab`
 - **Entry:** src/ui/sidebar/worktrees.rs:61 "Open in new tab"
@@ -1684,8 +1689,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Remove a worktree (optionally delete its branch) `tools.worktree-remove`
 - **Entry:** src/ui/sidebar/worktrees.rs:93 "Remove worktree" / "Remove worktree and delete <branch>"
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Own code:** `repo::op::remove_worktree_op`
-- **Shared:** `repo::op::Op::confirm` (4), `repo::op::Op::then` (2), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::remove_worktree_and_branch` (2), `ui::sidebar::worktrees::worktree_row` (6)
+- **Shared:** `repo::op::Op::confirm` (4), `repo::op::Op::then` (2), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::remove_worktree_and_branch` (2), `repo::op::remove_worktree_op` (2), `repo::op::worktree_remove_args` (3), `ui::sidebar::worktrees::worktree_row` (6)
 
 #### Prune stale worktrees `tools.worktree-prune`
 - **Entry:** src/ui/sidebar/worktrees.rs:27 "Prune stale"
@@ -1827,13 +1831,13 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 
 #### Git process runner (run/exec/stream/cancel/env, credential redaction) `platform.git-runner`
 - **Entry:** every git call; GLASIR_PERF logs slow ones
-- **Used by:** 118 features
+- **Used by:** 119 features
 - **Own code:** `git::runner::Cancel::active`, `git::runner::Cancel::attach`, `git::runner::Cancel::cancel`, `git::runner::Cancel::detach`, `git::runner::Cancel::is_cancelled`, `git::runner::Cancel::progress`, `git::runner::Cancel::scope`, `git::runner::base`, `git::runner::cmd`, `git::runner::exec`, `git::runner::exec_both`, `git::runner::last_progress`, `git::runner::progress_label`, `git::runner::read_all`, `git::runner::read_small`, `git::runner::run`, `git::runner::run_capped`, `git::runner::run_input`, `git::runner::run_raw`, `git::runner::run_shell`, `git::runner::run_stderr`, `git::runner::run_tool`, `git::runner::spawn`, `git::runner::spawning`, `git::runner::squash_progress`, `git::runner::stream`
 - **Shared:** `git::env::check_git` (3), `git::env::import_login_env` (3), `git::env::parse_env` (3), `git::env::parse_version` (3), `git::url::redact` (6), `git::url::redact_command` (3), `git::url::secrets` (3), `git::url::shell_words` (3)
 
 #### Op / Action dispatch and execution `platform.op-runner`
 - **Entry:** RepoTab::apply for every Action; RepoTab::run for every Op; poll_op after the thread finishes
-- **Used by:** 174 features
+- **Used by:** 175 features
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.task`, `platform.undo-engine`
 - **Own code:** `repo::RepoTab::cancellable`, `repo::RepoTab::progress`, `repo::action::op`, `repo::op::Dropped::from`, `repo::op::Op::backup`, `repo::op::Op::light`, `repo::op::RepoTab::poll_op`, `repo::op::Undo::mode`, `repo::op::network`, `repo::op::own_state`, `repo::op::seq_files`, `repo::op::seq_state`, `repo::op::state_files`
 - **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::busy` (2), `repo::RepoTab::prepare` (5), `repo::RepoTab::unpark_rebase` (2), `repo::op::Op::confirm` (4), `repo::op::Op::input` (2), `repo::op::Op::new` (7), `repo::op::Op::revert` (5), `repo::op::Op::then` (2), `repo::op::Op::then_open` (3), `repo::op::Op::undo` (4), `repo::op::RepoTab::run` (4), `repo::op::exec` (6), `repo::op::exec_stash` (11), `repo::op::in_progress` (4), `repo::op::switch_refused` (3), `repo::op::switches_head` (3), `repo::op::without_vanished` (6)

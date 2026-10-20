@@ -78,16 +78,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         let is_main = d.worktrees.first().is_some_and(|m| m.path == w.path);
         if !current && !is_main && w.locked.is_none() {
             ui.separator();
-            let (force, warn) = if w.changes > 0 {
-                (true, format!("{} has {} uncommitted change(s) that will be LOST, and its ignored files (build output, .env, …) go too.", w.path, w.changes))
-            } else {
-                (false, format!("Remove the worktree folder {}? Ignored files in it (build output, .env, …) go too.", w.path))
-            };
-            let mut args = vec!["worktree", "remove"];
-            if force {
-                args.push("--force");
-            }
-            args.push(&w.path);
+            let (args, warn) = crate::repo::worktree_remove_args(w);
             if ui.button("Remove worktree").clicked() {
                 acts.push(Action::Git(crate::repo::remove_worktree_op(w, &args, &warn)));
             }

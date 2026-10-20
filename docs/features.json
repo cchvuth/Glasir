@@ -2436,6 +2436,7 @@
         "crate::repo::op::delete_everywhere",
         "crate::repo::op::keep_deleted",
         "crate::repo::op::remove_worktree_and_branch",
+        "crate::repo::op::worktree_remove_args",
         "crate::repo::remotes::delete_branch",
         "crate::ui::sidebar::ref_menus::local_menu",
         "crate::ui::sidebar::ref_menus::remote_menu"
@@ -2444,6 +2445,23 @@
         "platform.git-runner",
         "platform.op-runner",
         "platform.undo-engine"
+       ]
+      },
+      {
+       "id": "refs.remove-worktree-keep-branch",
+       "name": "Remove a branch's worktree and keep the branch",
+       "entry": [
+        "src/ui/sidebar/ref_menus.rs local_menu \"Remove its worktree (keep <branch>)\" (sidebar row and graph pill)",
+        "src/ui/sidebar/worktrees.rs \"Remove worktree\" on the worktree row"
+       ],
+       "fns": [
+        "crate::repo::op::remove_worktree_op",
+        "crate::repo::op::worktree_remove_args",
+        "crate::ui::sidebar::ref_menus::local_menu"
+       ],
+       "platform": [
+        "platform.op-runner",
+        "platform.git-runner"
        ]
       }
      ]
@@ -6065,6 +6083,7 @@
         "crate::repo::op::delete_branches",
         "crate::repo::op::remove_worktree_and_branch",
         "crate::repo::op::remove_worktree_op",
+        "crate::repo::op::worktree_remove_args",
         "crate::ui::sidebar::worktrees::worktree_row"
        ],
        "platform": [

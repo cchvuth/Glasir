@@ -608,6 +608,19 @@ fn keep_deleted(dir: &Path, op: &mut Op) {
     }
 }
 
+pub fn worktree_remove_args(w: &git::Worktree) -> (Vec<&str>, String) {
+    let warn = match w.changes {
+        0 => format!("Remove the worktree folder {}? Ignored files in it (build output, .env, …) go too.", w.path),
+        n => format!("{} has {n} uncommitted change(s) that will be LOST, and its ignored files (build output, .env, …) go too.", w.path),
+    };
+    let mut args = vec!["worktree", "remove"];
+    if w.changes > 0 {
+        args.push("--force");
+    }
+    args.push(&w.path);
+    (args, warn)
+}
+
 pub fn remove_worktree_op(w: &git::Worktree, remove: &[&str], warn: &str) -> Op {
     if w.branch.is_some() || w.head.is_empty() || w.head.bytes().all(|b| b == b'0') {
         return Op::new("Remove worktree", remove).confirm(warn);
@@ -632,11 +645,7 @@ pub fn delete_everywhere(d: &RepoData, r: &git::Ref) -> Option<(String, Op)> {
     let mut also = vec![];
     let mut op = match wt {
         Some(w) => {
-            let mut args = vec!["worktree", "remove"];
-            if w.changes > 0 {
-                args.push("--force");
-            }
-            args.push(&w.path);
+            let (args, _) = worktree_remove_args(w);
             also.push("its worktree".to_owned());
             what.push(match w.changes {
                 0 => format!("its worktree folder {} (ignored files in it, like build output or .env, go too)", w.path),
