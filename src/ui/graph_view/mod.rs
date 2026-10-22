@@ -54,26 +54,25 @@ fn ref_label(r: &Ref, synced: bool) -> String {
     let cloud = if synced { format!("{}  ", icon::CLOUD) } else { String::new() };
     match r.kind {
         RefKind::Local => {
-            let wt = if r.worktree.is_some() { format!("{}  ", icon::TREE_STRUCTURE) } else { String::new() };
-            format!("{wt}{cloud}{}  {}", if r.head { icon::CHECK } else { icon::GIT_BRANCH }, r.name)
+            let at = match (r.head, r.worktree.is_some()) {
+                (true, _) => format!("{}  ", icon::CHECK),
+                (_, true) => format!("{}  ", icon::TREE_STRUCTURE),
+                _ => String::new(),
+            };
+            format!("{at}{cloud}{}  {}", icon::GIT_BRANCH, r.name)
         }
         RefKind::Remote => format!("{}  {}", icon::CLOUD, r.name),
         RefKind::Tag => format!("{}  {}", icon::TAG, r.name),
     }
 }
 
-/// A ref's pill at `min`, at most `max_w` wide; `synced`: its upstream rides along as a ☁. HEAD's leads with
-/// a "HEAD" capsule (the name gets cut, not the capsule); a pill too narrow for it gets the pin glyph instead.
+/// A ref's pill at `min`, at most `max_w` wide; `synced`: its upstream rides along as a ☁. HEAD's is
+/// accent-filled and leads with a check.
 fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32, faded: bool) -> Rect {
     let p = ui.painter();
     let head_pill = rf.head && rf.kind == RefKind::Local;
     let hc = if faded { theme::accent().gamma_multiply(0.3) } else { theme::accent() };
-    let cap_w = if head_pill && max_w >= 80.0 { 40.0 } else { 0.0 };
-    let label = match cap_w > 0.0 {
-        true if synced => format!("{}  {}", icon::CLOUD, rf.name),
-        true => rf.name.clone(),
-        false => ref_label(rf, synced),
-    };
+    let label = ref_label(rf, synced);
     let fill = match rf.kind {
         _ if head_pill => hc,
         RefKind::Local => col.gamma_multiply(0.85),
@@ -83,15 +82,10 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
     };
     let label_col = Color32::WHITE.gamma_multiply(if faded { 0.6 } else { 1.0 });
     let g = p.layout_no_wrap(label, FontId::proportional(12.0), label_col);
-    let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0 + cap_w).min(max_w).max(10.0), 20.0));
+    let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0).min(max_w).max(10.0), 20.0));
     p.rect_filled(pill, 10.0, fill);
     p.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
-    if cap_w > 0.0 {
-        let cap = Rect::from_min_size(pill.min + vec2(3.0, 3.0), vec2(cap_w - 6.0, 14.0));
-        p.rect_filled(cap, 7.0, label_col.gamma_multiply(0.22));
-        p.text(cap.center(), Align2::CENTER_CENTER, "HEAD", FontId::proportional(9.5), label_col);
-    }
-    p.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0 + cap_w, pill.center().y - g.size().y / 2.0), g, label_col);
+    p.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0, pill.center().y - g.size().y / 2.0), g, label_col);
     pill
 }
 
