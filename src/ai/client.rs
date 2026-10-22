@@ -1,7 +1,7 @@
 //! AI provider settings and token storage (env var, OS keychain, private file),
 //! the shared HTTP post, and the Claude Messages API client (streamed SSE).
 
-use super::openai;
+use super::{cli, openai};
 use crate::git::Res;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
@@ -16,25 +16,35 @@ const SERVICE: &str = "glasir";
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub enum Provider {
     #[default]
+    ClaudeCode,
+    Codex,
     Claude,
     OpenAi,
 }
 
 impl Provider {
-    pub const ALL: [Provider; 2] = [Provider::Claude, Provider::OpenAi];
+    pub const ALL: [Provider; 4] = [Provider::ClaudeCode, Provider::Codex, Provider::Claude, Provider::OpenAi];
+
+    /// Runs a signed-in CLI instead of calling an API with a token.
+    pub fn is_cli(self) -> bool {
+        matches!(self, Provider::ClaudeCode | Provider::Codex)
+    }
 
     /// The assistant's name in UI text ("Asks Claude").
     pub fn name(self) -> &'static str {
         match self {
-            Provider::Claude => "Claude",
+            Provider::Claude | Provider::ClaudeCode => "Claude",
             Provider::OpenAi => "ChatGPT",
+            Provider::Codex => "Codex",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Provider::Claude => "Claude (Anthropic)",
-            Provider::OpenAi => "ChatGPT (OpenAI)",
+            Provider::Claude => "Claude API",
+            Provider::OpenAi => "OpenAI API",
+            Provider::ClaudeCode => "Claude Code CLI",
+            Provider::Codex => "Codex CLI",
         }
     }
 
@@ -42,14 +52,16 @@ impl Provider {
         match self {
             Provider::Claude => &MODELS,
             Provider::OpenAi => &openai::MODELS,
+            Provider::ClaudeCode => &cli::CLAUDE_MODELS,
+            Provider::Codex => &cli::CODEX_MODELS,
         }
     }
 
     /// The token's keychain account and private-file name.
     fn account(self) -> &'static str {
         match self {
-            Provider::Claude => "claude-token",
-            Provider::OpenAi => "openai-token",
+            Provider::Claude | Provider::ClaudeCode => "claude-token",
+            Provider::OpenAi | Provider::Codex => "openai-token",
         }
     }
 }
@@ -82,13 +94,16 @@ pub struct Config {
     /// keychain: `Some("")` = none saved, `None` = not known yet (older settings).
     pub saved_in: Option<String>,
     pub openai: Endpoint,
+    /// The Claude Code / Codex CLI: `base_url` holds the command, `model` "default" leaves it to the CLI.
+    pub claude_code: Endpoint,
+    pub codex: Endpoint,
     /// Settings → AI → "Custom instructions", appended to every AI prompt.
     pub instructions: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { provider: Provider::Claude, model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true, saved_in: None, openai: Endpoint::default(), instructions: String::new() }
+        Config { provider: if cfg!(test) { Provider::Claude } else { Provider::ClaudeCode }, model: DEFAULT_MODEL.into(), base_url: DEFAULT_URL.into(), enabled: true, saved_in: None, openai: Endpoint::default(), claude_code: cli::endpoint(Provider::ClaudeCode), codex: cli::endpoint(Provider::Codex), instructions: String::new() }
     }
 }
 
@@ -98,6 +113,17 @@ impl Config {
         match self.provider {
             Provider::Claude => (&mut self.model, &mut self.base_url, &mut self.saved_in),
             Provider::OpenAi => (&mut self.openai.model, &mut self.openai.base_url, &mut self.openai.saved_in),
+            Provider::ClaudeCode => (&mut self.claude_code.model, &mut self.claude_code.base_url, &mut self.claude_code.saved_in),
+            Provider::Codex => (&mut self.codex.model, &mut self.codex.base_url, &mut self.codex.saved_in),
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        match self.provider {
+            Provider::Claude => &self.model,
+            Provider::OpenAi => &self.openai.model,
+            Provider::ClaudeCode => &self.claude_code.model,
+            Provider::Codex => &self.codex.model,
         }
     }
 }
@@ -109,7 +135,7 @@ pub const IN_FILE: &str = "a private file (no system keychain available)";
 pub fn env_source(p: Provider) -> Option<&'static str> {
     env_token(p, |k| std::env::var(k).ok()).map(|_| match p {
         Provider::Claude => "the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN environment variable",
-        Provider::OpenAi => "the OPENAI_API_KEY environment variable",
+        _ => "the OPENAI_API_KEY environment variable",
     })
 }
 
@@ -118,7 +144,7 @@ type Saved = Option<Option<(String, &'static str)>>;
 /// Each provider's saved token and where it is, looked up at most once per run:
 /// macOS can ask for the user's password on every keychain read, so after the
 /// first one the token comes from memory (and Save / Remove update the memory too).
-static SAVED: std::sync::Mutex<[Saved; 2]> = std::sync::Mutex::new([None, None]);
+static SAVED: std::sync::Mutex<[Saved; 4]> = std::sync::Mutex::new([None, None, None, None]);
 
 fn saved(p: Provider) -> Option<(String, &'static str)> {
     let mut s = SAVED.lock().unwrap_or_else(|e| e.into_inner());
@@ -141,6 +167,7 @@ fn env_token(p: Provider, var: impl Fn(&str) -> Option<String>) -> Option<(Strin
     let (t, bearer) = match p {
         Provider::Claude => get("ANTHROPIC_API_KEY").map(|t| (t, false)).or_else(|| get("ANTHROPIC_AUTH_TOKEN").map(|t| (t, true))),
         Provider::OpenAi => get("OPENAI_API_KEY").map(|t| (t, true)),
+        Provider::ClaudeCode | Provider::Codex => None,
     }?;
     Some((t, bearer, get(if p == Provider::Claude { "ANTHROPIC_BASE_URL" } else { "OPENAI_BASE_URL" })))
 }
@@ -293,9 +320,12 @@ pub(super) enum Ev {
 }
 
 pub(super) fn need_token(p: Provider) -> Res<(String, bool, Option<String>)> {
+    if p.is_cli() {
+        return Ok((String::new(), false, None));
+    }
     token(p).ok_or_else(|| match p {
-        Provider::Claude => "No Claude token. Add one in Settings → AI, or set ANTHROPIC_API_KEY.".into(),
         Provider::OpenAi => "No OpenAI API key. Add one in Settings → AI, or set OPENAI_API_KEY.".into(),
+        _ => "No Claude token. Add one in Settings → AI, or set ANTHROPIC_API_KEY.".into(),
     })
 }
 
@@ -372,6 +402,10 @@ pub(super) fn complete(
     if cfg.provider == Provider::OpenAi {
         let ep = Endpoint { base_url: base.unwrap_or_else(|| cfg.openai.base_url.clone()), ..cfg.openai.clone() };
         return openai::complete(&ep, &token, system, prompt, effort, schema, on_text);
+    }
+    if cfg.provider.is_cli() {
+        let ep = if cfg.provider == Provider::Codex { &cfg.codex } else { &cfg.claude_code };
+        return cli::complete(cfg.provider, ep, system, prompt, schema, on_text);
     }
     let base = base.as_deref().unwrap_or(&cfg.base_url).trim_end_matches('/');
     let first_party = base == DEFAULT_URL;

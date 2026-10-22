@@ -1,7 +1,7 @@
 //! The AI features: what each [`Purpose`] sends (git context + prompt), and
 //! [`Job`], a completion streaming on a background thread into the UI.
 
-use super::client::{Config, Ev, Provider, complete, need_token};
+use super::client::{Config, Ev, complete, need_token};
 use crate::git::{self, Res};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -411,8 +411,7 @@ pub fn test(cfg: &Config) -> Res<String> {
         out += &t;
         true
     })?;
-    let model = if cfg.provider == Provider::OpenAi { &cfg.openai.model } else { &cfg.model };
-    Ok(format!("{model} replied: {}", out.trim()))
+    Ok(format!("{} replied: {}", cfg.model(), out.trim()))
 }
 
 #[cfg(test)]

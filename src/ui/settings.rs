@@ -66,6 +66,8 @@ pub struct Settings {
     pub stacks: bool,
     /// The embedded terminal panel (⌃`); off = the toolbar's external terminal only.
     pub terminal: bool,
+    /// Ask GitHub for a newer Glasir release at startup (`crate::update`).
+    pub check_updates: bool,
 }
 
 impl Default for Settings {
@@ -102,6 +104,7 @@ impl Default for Settings {
             search_history: vec![],
             stacks: true,
             terminal: true,
+            check_updates: true,
         }
     }
 }
@@ -192,6 +195,10 @@ impl App {
                     ui.checkbox(&mut s.avatars, "Show GitHub avatars")
                         .on_hover_text("Authors' profile pictures from the origin remote's GitHub / GitHub Enterprise host, using git's saved credentials for it. Off: no avatar requests at all.");
                     ui.end_row();
+                    ui.label("Updates");
+                    ui.checkbox(&mut s.check_updates, "Check for a new version at startup")
+                        .on_hover_text("Asks github.com/cchvuth/Glasir for its latest release (nothing else is sent). A newer one shows an Update pill in the title bar that installs it in place.");
+                    ui.end_row();
                     ui.label("Cherry-pick");
                     ui.checkbox(&mut s.cherry_pick_x, "Add \"(cherry picked from commit …)\" to the message")
                         .on_hover_text("git cherry-pick -x: records the original commit in each picked commit's message. Not used for 'without committing'; the interactive editor adds it to picked and reworded commits.");
@@ -245,6 +252,8 @@ impl App {
                     RichText::new(match p {
                         ai::Provider::Claude => "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`). It is stored in your system keychain and only sent to the API URL below.",
                         ai::Provider::OpenAi => "Bring your own OpenAI API key (sk-…, from platform.openai.com). It is stored in your system keychain and only sent to the API URL below.",
+                        ai::Provider::ClaudeCode => "Uses the Claude Code CLI you are signed in to (run `claude` once in a terminal to sign in). No token is stored here; requests run with no tools in an empty folder.",
+                        ai::Provider::Codex => "Uses the Codex CLI you are signed in to (run `codex login` once in a terminal). No token is stored here; requests run read-only in an empty folder.",
                     })
                     .small()
                     .color(theme::dim(ui)),
@@ -252,7 +261,7 @@ impl App {
                 ui.add_space(4.0);
                 egui::Grid::new("ai_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
                     ui.label("Provider");
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         for q in ai::Provider::ALL {
                             if ui.radio_value(&mut s.ai.provider, q, q.label()).changed() {
                                 st.source = token_source(&mut s.ai);
@@ -263,58 +272,60 @@ impl App {
                     });
                     ui.end_row();
                     let p = s.ai.provider;
-                    ui.label(if p == ai::Provider::OpenAi { "OpenAI API key" } else { "Claude token" });
-                    ui.horizontal(|ui| {
-                        ui.add(TextEdit::singleline(&mut st.token).margin(crate::theme::INPUT_MARGIN).password(true).hint_text("Paste token").desired_width(250.0));
-                        if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
-                            let saved = match ai::save_token(p, &st.token) {
-                                Ok(()) => {
-                                    ai::remove_plain_token(p);
-                                    st.note = Some((true, "Token saved to the system keychain.".into()));
-                                    Some(ai::IN_KEYCHAIN)
-                                }
-                                Err(e) => match ai::save_plain_token(p, &st.token) {
+                    if !p.is_cli() {
+                        ui.label(if p == ai::Provider::OpenAi { "OpenAI API key" } else { "Claude token" });
+                        ui.horizontal(|ui| {
+                            ui.add(TextEdit::singleline(&mut st.token).margin(crate::theme::INPUT_MARGIN).password(true).hint_text("Paste token").desired_width(250.0));
+                            if ui.add_enabled(!st.token.trim().is_empty(), Button::new("Save")).clicked() {
+                                let saved = match ai::save_token(p, &st.token) {
                                     Ok(()) => {
-                                        st.note = Some((false, format!("No system keychain ({e}); saved to a private file readable only by you.")));
-                                        Some(ai::IN_FILE)
+                                        ai::remove_plain_token(p);
+                                        st.note = Some((true, "Token saved to the system keychain.".into()));
+                                        Some(ai::IN_KEYCHAIN)
                                     }
-                                    Err(e2) => {
-                                        st.note = Some((false, format!("Could not save the token: {e}; {e2}")));
-                                        None
-                                    }
-                                },
-                            };
-                            st.token.clear();
-                            if let Some(at) = saved {
-                                *s.ai.current().2 = Some(at.into());
-                                st.source = ai::env_source(p).or(Some(at));
-                            }
-                        }
-                        if st.source.is_some() && ui.button("Remove").clicked() {
-                            let in_file = s.ai.current().2.as_deref() == Some(ai::IN_FILE);
-                            ai::remove_plain_token(p);
-                            match ai::save_token(p, "") {
-                                // A file-saved token means there is no keychain to delete from.
-                                Err(e) if !in_file => st.note = Some((false, format!("Could not remove the token from the keychain: {e}"))),
-                                _ => {
-                                    *s.ai.current().2 = Some(String::new());
-                                    st.source = ai::env_source(p);
-                                    st.note = Some((true, "Stored token removed.".into()));
+                                    Err(e) => match ai::save_plain_token(p, &st.token) {
+                                        Ok(()) => {
+                                            st.note = Some((false, format!("No system keychain ({e}); saved to a private file readable only by you.")));
+                                            Some(ai::IN_FILE)
+                                        }
+                                        Err(e2) => {
+                                            st.note = Some((false, format!("Could not save the token: {e}; {e2}")));
+                                            None
+                                        }
+                                    },
+                                };
+                                st.token.clear();
+                                if let Some(at) = saved {
+                                    *s.ai.current().2 = Some(at.into());
+                                    st.source = ai::env_source(p).or(Some(at));
                                 }
                             }
-                        }
-                    });
-                    ui.end_row();
-                    ui.label("");
-                    ui.label(
-                        RichText::new(match st.source {
-                            Some(src) => format!("{}  Using the token from {src}", icon::CHECK_CIRCLE),
-                            None => format!("{}  No token configured", icon::WARNING),
-                        })
-                        .small()
-                        .color(if st.source.is_some() { theme::add() } else { theme::changed() }),
-                    );
-                    ui.end_row();
+                            if st.source.is_some() && ui.button("Remove").clicked() {
+                                let in_file = s.ai.current().2.as_deref() == Some(ai::IN_FILE);
+                                ai::remove_plain_token(p);
+                                match ai::save_token(p, "") {
+                                    // A file-saved token means there is no keychain to delete from.
+                                    Err(e) if !in_file => st.note = Some((false, format!("Could not remove the token from the keychain: {e}"))),
+                                    _ => {
+                                        *s.ai.current().2 = Some(String::new());
+                                        st.source = ai::env_source(p);
+                                        st.note = Some((true, "Stored token removed.".into()));
+                                    }
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        ui.label(
+                            RichText::new(match st.source {
+                                Some(src) => format!("{}  Using the token from {src}", icon::CHECK_CIRCLE),
+                                None => format!("{}  No token configured", icon::WARNING),
+                            })
+                            .small()
+                            .color(if st.source.is_some() { theme::add() } else { theme::changed() }),
+                        );
+                        ui.end_row();
+                    }
                     let (model, base_url, _) = s.ai.current();
                     ui.label("Model");
                     ui.horizontal(|ui| {
@@ -326,10 +337,11 @@ impl App {
                         ui.add(TextEdit::singleline(model).margin(crate::theme::INPUT_MARGIN).desired_width(150.0)).on_hover_text("Any model id");
                     });
                     ui.end_row();
-                    ui.label("API base URL");
+                    ui.label(if p.is_cli() { "Command" } else { "API base URL" });
                     ui.add(TextEdit::singleline(base_url).margin(crate::theme::INPUT_MARGIN).desired_width(330.0)).on_hover_text(match p {
                         ai::Provider::Claude => "Change only for an Anthropic-compatible gateway",
                         ai::Provider::OpenAi => "Change only for an OpenAI-compatible endpoint (gateway or local server)",
+                        _ => "Name or full path of the command; it uses the account you signed in to it with",
                     });
                     ui.end_row();
                 });
@@ -387,6 +399,9 @@ impl App {
 /// settings; older settings check once.
 fn token_source(cfg: &mut ai::Config) -> Option<&'static str> {
     let p = cfg.provider;
+    if p.is_cli() {
+        return None;
+    }
     let saved_in = cfg.current().2;
     if saved_in.is_none() {
         *saved_in = Some(ai::find_saved(p).unwrap_or_default().to_owned());

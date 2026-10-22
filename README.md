@@ -57,7 +57,8 @@ The name fits a Git client:
   background); renames read `old → new`, and the file list is virtualised so
   10k-file commits stay smooth.
 - Branch, remote and tag **pills** joined to their commits (`+N` when several; a branch level with its upstream is one pill with a ☁);
-  hovering shows all of a commit's pills, each with its own right-click menu; worktree branches get a tree icon.
+  hovering shows all of a commit's pills, each with its own right-click menu; icons lead the name in order
+  worktree, synced upstream ☁, branch.
 - **Grouped branch names**: local branches, each remote's branches and tags fold into
   folders by their `/` prefixes (`feature ▸ payments ▸ v2`, single-folder chains read
   `release/2.0`), with counts. The current branch's folders start open, a filter opens
@@ -148,7 +149,8 @@ The name fits a Git client:
   pinned on top, above a separator.
 - Checkout, create, rename, delete (undoable), set / unset upstream, fast-forward
   or pull a branch **without checking it out**. **Delete everywhere** removes a branch,
-  its remote branch and its worktree in one step; **Remove its worktree** keeps the branch.
+  its remote branch and its worktree in one step; **Remove its worktree** keeps the branch (from the
+  checked-out branch's menu too: **Remove this worktree** moves the tab to the main worktree).
 - Merge, rebase, cherry-pick, revert and soft / mixed / keep / hard reset from menus.
   **Reset the current branch to any commit, branch or tag**; a hard reset lists
   the files it discards and backs them up, so ⌘Z brings back refs *and* files.
@@ -251,7 +253,7 @@ The name fits a Git client:
   offer to retry unsigned.
 
 ### Worktrees, stashes and tags
-- **Worktrees**: list with change counts and lock state, create (new or existing
+- **Worktrees**: list with change counts and lock state (the main worktree is marked with a house and `· main`), create (new or existing
   branch), switch in place (the commit message draft and ⌘Z steps stay with each
   worktree) or open in a new tab, lock / unlock, remove (with force / with its
   branch; a detached one's commit is kept under a backup ref), prune (asks first).
@@ -308,7 +310,7 @@ The name fits a Git client:
   when a repo has thousands of loose objects or no commit-graph. **Enable background
   maintenance** schedules git's own hourly / daily / weekly job for the repo (⌘Z undoes).
 
-### AI (bring your own Claude or ChatGPT token)
+### AI (your Claude Code / Codex CLI, or your own API key)
 - ✨ **Commit messages** from your staged changes (keeps your draft if it fails);
   when amending, the message covers the last commit's changes plus the staged ones.
 - ✨ **Commit Composer**: the AI splits all your uncommitted changes (hunk by hunk,
@@ -332,6 +334,9 @@ The name fits a Git client:
 - **⌘P command palette** with fuzzy search over commands, branches, tags and repos.
 - **Repo tabs** show the branch, a dirty dot and ahead/behind arrows; drag to reorder, right-click to rename, close others or reveal; ⌘1–⌘9 switch. Recent repositories, live refresh when files change on disk.
 - **Command log** (⇧⌘L) showing every git command Glasir ran, copyable as shell commands.
+- **Updates in place**: at startup Glasir asks GitHub for its latest release; an **Update to x.y**
+  pill in the title bar downloads it, swaps it in and restarts. Downloaded by the app itself,
+  so macOS doesn't block the new version again. Off in Settings → Updates.
 - **Embedded terminal** (⌃`, the toolbar's terminal button or ⌘P): your login shell
   in the repo folder below the graph, with several shell tabs, 256 / true colours,
   scrollback, mouse selection, copy / paste, resizing, Alt as Meta (Linux / Windows)
@@ -371,7 +376,8 @@ Get the latest build from [Releases](https://github.com/cchvuth/Glasir/releases/
 `Glasir-windows-x86_64.zip`. The macOS app is not notarized, so macOS blocks it after
 download ("can't be opened" or "is damaged"). Move it to Applications and run
 `xattr -dr com.apple.quarantine /Applications/Glasir.app`, or try to open it once and then
-choose **Open Anyway** in System Settings → Privacy & Security.
+choose **Open Anyway** in System Settings → Privacy & Security. That's needed only for the
+first install: later versions come through the in-app update pill without it.
 
 ## Build
 
@@ -390,10 +396,13 @@ also puts it in `/Applications`.
 
 Open **Settings → AI** and pick a provider:
 
-- **Claude (Anthropic)**: paste an Anthropic API key (`sk-ant-api…`) or an OAuth
+- **Claude Code CLI** (default) or **Codex CLI**: uses the CLI you're already signed in
+  to, no API key. Each request runs the CLI with no tools in an empty temp folder
+  (Codex: read-only sandbox); set the command's full path if it isn't on `PATH`.
+- **Claude API**: paste an Anthropic API key (`sk-ant-api…`) or an OAuth
   token (`sk-ant-oat…`, e.g. from `claude setup-token`), or set
   `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`. Default model `claude-opus-5-5`.
-- **ChatGPT (OpenAI)**: paste an OpenAI API key, or set `OPENAI_API_KEY`.
+- **OpenAI API**: paste an OpenAI API key, or set `OPENAI_API_KEY`.
   Default model `gpt-5`; the base URL (default `https://api.openai.com/v1`) can
   point at any OpenAI-compatible Chat Completions endpoint.
 

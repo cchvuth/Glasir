@@ -5,7 +5,7 @@ Every non-test function belongs to at least one feature (`featuremap.py check`).
 
 ## Contents
 
-- [App shell](#app) (51 features)
+- [App shell](#app) (52 features)
 - [Committing and staging](#commit) (43 features)
 - [Branches, tags and the sidebar](#refs) (59 features)
 - [History rewriting and stacks](#rewrite) (21 features)
@@ -28,14 +28,14 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `repo::RepoTab::apply` (src/repo/mod.rs:647) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
-| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:267) | 14 |
-| `ui::graph_view::show` (src/ui/graph_view/mod.rs:116) | 14 |
+| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:276) | 14 |
+| `ui::graph_view::show` (src/ui/graph_view/mod.rs:122) | 14 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:290) | 13 |
-| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:235) | 12 |
+| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:244) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
-| `ui::app::App::shortcuts` (src/ui/app.rs:189) | 11 |
+| `ui::app::App::shortcuts` (src/ui/app.rs:194) | 11 |
 | `repo::op::exec_stash` (src/repo/op.rs:819) | 11 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
@@ -44,7 +44,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::diff_view::Layout::get` (src/ui/diff_view.rs:75) | 10 |
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
-| `ui::app::App::ui` (src/ui/app.rs:501) | 9 |
+| `ui::app::App::ui` (src/ui/app.rs:506) | 9 |
 | `repo::op::stash_cmd` (src/repo/op.rs:726) | 9 |
 
 <a id="app"></a>
@@ -61,6 +61,10 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** src/ui/app.rs:93 git_check task at startup; src/ui/app.rs:535 dismissible warning banner under the tab bar (x pill)
 - **Platform:** `platform.task`
 - **Shared:** `git::env::check_git` (3), `git::env::parse_version` (3), `ui::app::App::new` (7), `ui::app::App::ui` (9)
+
+#### Update from GitHub releases `app.self-update`
+- **Entry:** src/ui/update.rs update_pill (title bar); Settings → Updates; check at startup in App::new
+- **Own code:** `ui::update::App::check_updates`, `ui::update::App::update_pill`, `update::agent`, `update::asset_name`, `update::check`, `update::install`, `update::install_to`, `update::newer`, `update::parse`, `update::relaunch`, `update::stage`, `update::swap`, `update::target`, `update::unpack`
 
 #### Open a repository passed on the command line `app.cli-open`
 - **Entry:** src/main.rs:49 first CLI argument; src/ui/app.rs:117 App::new -> open
@@ -1878,7 +1882,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** every AI feature; prompt building (Purpose -> build) is one match in ai::tasks::build and is not separable per feature, so it stays here
 - **Used by:** 9 features
 - **Platform:** `platform.git-runner`, `platform.task`
-- **Own code:** `ai::client::Config::current`, `ai::client::Config::default`, `ai::client::Endpoint::default`, `ai::client::Provider::account`, `ai::client::Provider::label`, `ai::client::Provider::models`, `ai::client::Provider::name`, `ai::client::complete`, `ai::client::env_source`, `ai::client::env_token`, `ai::client::find_saved`, `ai::client::find_saved_cached`, `ai::client::keychain::delete`, `ai::client::keychain::get`, `ai::client::keychain::set`, `ai::client::keychain_token`, `ai::client::need_token`, `ai::client::plain_path`, `ai::client::plain_token`, `ai::client::post`, `ai::client::remember`, `ai::client::remove_plain_token`, `ai::client::save_plain_token`, `ai::client::save_token`, `ai::client::saved`, `ai::client::supports_effort`, `ai::client::tls`, `ai::client::token`, `ai::enabled`, `ai::name`, `ai::openai::complete`, `ai::sync`, `ai::tasks::head_or_empty`, `ai::tasks::stash_state`
+- **Own code:** `ai::client::Config::current`, `ai::client::Config::model`, `ai::client::Provider::is_cli`, `ai::cli::endpoint`, `ai::cli::complete`, `ai::cli::spawn`, `ai::cli::feed`, `ai::cli::stderr_of`, `ai::cli::failed`, `ai::cli::claude`, `ai::cli::codex`, `ai::client::Config::default`, `ai::client::Endpoint::default`, `ai::client::Provider::account`, `ai::client::Provider::label`, `ai::client::Provider::models`, `ai::client::Provider::name`, `ai::client::complete`, `ai::client::env_source`, `ai::client::env_token`, `ai::client::find_saved`, `ai::client::find_saved_cached`, `ai::client::keychain::delete`, `ai::client::keychain::get`, `ai::client::keychain::set`, `ai::client::keychain_token`, `ai::client::need_token`, `ai::client::plain_path`, `ai::client::plain_token`, `ai::client::post`, `ai::client::remember`, `ai::client::remove_plain_token`, `ai::client::save_plain_token`, `ai::client::save_token`, `ai::client::saved`, `ai::client::supports_effort`, `ai::client::tls`, `ai::client::token`, `ai::enabled`, `ai::name`, `ai::openai::complete`, `ai::sync`, `ai::tasks::head_or_empty`, `ai::tasks::stash_state`
 - **Shared:** `ai::tasks::Job::poll` (3), `ai::tasks::Job::running` (3), `ai::tasks::Purpose::title` (3), `ai::tasks::build` (5), `ai::tasks::compose_schema` (3), `ai::tasks::diff_with_stat` (2), `ai::tasks::parent_or_empty` (2), `ai::tasks::recent_subjects` (2), `ai::tasks::repo_instructions` (2), `ai::tasks::secret` (2), `ai::tasks::start` (5), `ai::tasks::system_with` (2), `ai::tasks::too_large` (2), `ai::tasks::uncommitted_changes` (2)
 
 #### Syntax highlighting of diff lines `platform.highlight`

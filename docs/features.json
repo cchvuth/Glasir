@@ -41,6 +41,29 @@
        ]
       },
       {
+       "id": "app.self-update",
+       "name": "Update from GitHub releases",
+       "entry": [
+        "src/ui/update.rs update_pill (title bar); Settings → Updates; check at startup in App::new"
+       ],
+       "fns": [
+        "crate::ui::update::App::check_updates",
+        "crate::ui::update::App::update_pill",
+        "crate::update::agent",
+        "crate::update::asset_name",
+        "crate::update::check",
+        "crate::update::install",
+        "crate::update::install_to",
+        "crate::update::newer",
+        "crate::update::parse",
+        "crate::update::relaunch",
+        "crate::update::stage",
+        "crate::update::swap",
+        "crate::update::target",
+        "crate::update::unpack"
+       ]
+      },
+      {
        "id": "app.cli-open",
        "name": "Open a repository passed on the command line",
        "entry": [
@@ -6952,6 +6975,16 @@
        ],
        "fns": [
         "crate::ai::client::Config::current",
+        "crate::ai::client::Config::model",
+        "crate::ai::client::Provider::is_cli",
+        "crate::ai::cli::endpoint",
+        "crate::ai::cli::complete",
+        "crate::ai::cli::spawn",
+        "crate::ai::cli::feed",
+        "crate::ai::cli::stderr_of",
+        "crate::ai::cli::failed",
+        "crate::ai::cli::claude",
+        "crate::ai::cli::codex",
         "crate::ai::client::Config::default",
         "crate::ai::client::Endpoint::default",
         "crate::ai::client::Provider::account",

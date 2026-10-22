@@ -32,6 +32,7 @@ impl App {
             if theme::pill(ui, glyph).on_hover_text("Switch light / dark").clicked() {
                 toggle_flavor(&mut self.s, ui.ctx());
             }
+            self.update_pill(ui);
             theme::rest(ui, |ui| {
                 let (mut close, mut others, mut drag) = (None, None, None);
                 let (mut rects, mut ends) = (vec![], vec![]);

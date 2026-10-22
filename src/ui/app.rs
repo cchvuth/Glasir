@@ -53,6 +53,7 @@ pub struct App {
     quit_pending: bool,
     /// The window was asked to close while N terminal commands ran: "Quit anyway?".
     pub(super) quit_ask: Option<usize>,
+    pub(super) update: super::update::Updater,
 }
 
 impl App {
@@ -96,6 +97,7 @@ impl App {
             drop_hint_shot: false,
             quit_pending: false,
             quit_ask: None,
+            update: Default::default(),
             s,
         };
         let active = app.s.active;
@@ -116,6 +118,9 @@ impl App {
         app.active = want.and_then(|w| app.tabs.iter().position(|t| t.dir == w)).unwrap_or(active.min(app.tabs.len()));
         if let Some(p) = open {
             app.open(&cc.egui_ctx, &p);
+        }
+        if app.s.check_updates && app.shot.is_none() && !cfg!(test) {
+            app.check_updates(&cc.egui_ctx);
         }
         app
     }

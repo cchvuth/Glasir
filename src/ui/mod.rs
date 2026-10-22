@@ -31,6 +31,7 @@ mod testkit;
 mod titlebar;
 mod toasts;
 mod toolbar;
+mod update;
 mod welcome;
 
 pub use app::App;

@@ -83,6 +83,7 @@ impl App {
                         }
                     }
                     "log" => self.show_log = true,
+                    "update" => self.update.found = Some(crate::update::Release { version: "9.9.0".into(), page: String::new(), asset: None }),
                     // Settings → Built-in terminal off while shells still run.
                     "terminal-off" => {
                         std::thread::sleep(std::time::Duration::from_secs(2)); // let a typed `terminal:<command>` start, or its shell ends as idle

@@ -11,6 +11,7 @@ mod highlight;
 mod repo;
 mod theme;
 mod ui;
+mod update;
 
 use std::path::PathBuf;
 
