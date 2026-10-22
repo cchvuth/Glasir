@@ -3380,6 +3380,32 @@ mod tests {
     }
 
     #[test]
+    fn removing_the_worktree_this_tab_shows_keeps_its_branch_and_moves_to_main() {
+        let dir = scratch("remove-this-worktree");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "1\n");
+        let wt = dir.with_file_name(format!("{}-wt", dir.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&wt);
+        sh(&dir, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        let wt = wt.canonicalize().unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, wt.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let d = t.data.as_ref().unwrap();
+        let (w, main) = (d.worktrees[d.here.unwrap()].clone(), d.worktrees[0].path.clone());
+        let (args, warn) = super::worktree_remove_args(&w);
+        let from_main: Vec<&str> = ["-C", main.as_str()].into_iter().chain(args).collect();
+        let mut op = super::remove_worktree_op(&w, &from_main, &warn).then_open(main.clone());
+        op.confirm = None;
+        run(&ctx, &mut t, Action::Git(op));
+        assert!(!wt.exists());
+        assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/heads/side"]).is_ok());
+        assert_eq!(t.switch_to.as_deref(), Some(std::path::Path::new(&main)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_commit_is_checked_out_in_another_worktree_without_leaving_this_one() {
         let dir = scratch("checkout-in-worktree");
         sh(&dir, &["init", "-q", "-b", "main"]);

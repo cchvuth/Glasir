@@ -34,8 +34,10 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
 }
 
 fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bool, acts: &mut Vec<Action>) {
+    let is_main = d.worktrees.first().is_some_and(|m| m.path == w.path);
     let name = w.branch.clone().unwrap_or_else(|| format!("detached @ {}", &w.head[..w.head.len().min(7)]));
-    let mut label = format!("{}  {name}", if current { icon::CHECK } else { icon::TREE_STRUCTURE });
+    let glyph = if current { icon::CHECK } else if is_main { icon::HOUSE } else { icon::TREE_STRUCTURE };
+    let mut label = format!("{glyph}  {name}{}", if is_main { "  · main" } else { "" });
     if w.changes > 0 {
         label += &format!("  {}{}", icon::PENCIL_SIMPLE, w.changes);
     }
@@ -47,7 +49,8 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         text = text.strikethrough().color(theme::dim(ui));
     }
     let tip = format!(
-        "{}{}{}",
+        "{}{}{}{}",
+        if is_main { "Main worktree\n" } else { "" },
         w.path,
         w.locked.as_ref().map_or(String::new(), |r| format!("\nLocked{}", if r.is_empty() { String::new() } else { format!(": {r}") })),
         if w.prunable { "\nMissing on disk (prune to clean up)" } else { "" }
@@ -63,7 +66,6 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         if !w.prunable && ui.button("Show in file manager").clicked() {
             crate::repo::reveal(std::path::Path::new(&w.path));
         }
-        let is_main = d.worktrees.first().is_some_and(|m| m.path == w.path);
         match &w.locked {
             _ if is_main => {}
             Some(_) => {

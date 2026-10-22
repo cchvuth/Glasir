@@ -50,11 +50,13 @@ fn corner(pts: &mut Vec<Pos2>, a: Pos2, c: Pos2, b: Pos2) {
     }
 }
 
-fn ref_label(r: &Ref) -> String {
+fn ref_label(r: &Ref, synced: bool) -> String {
+    let cloud = if synced { format!("{}  ", icon::CLOUD) } else { String::new() };
     match r.kind {
-        RefKind::Local if r.head => format!("{}  {}", icon::CHECK, r.name),
-        RefKind::Local if r.worktree.is_some() => format!("{}  {}", icon::TREE_STRUCTURE, r.name),
-        RefKind::Local => format!("{}  {}", icon::GIT_BRANCH, r.name),
+        RefKind::Local => {
+            let wt = if r.worktree.is_some() { format!("{}  ", icon::TREE_STRUCTURE) } else { String::new() };
+            format!("{wt}{cloud}{}  {}", if r.head { icon::CHECK } else { icon::GIT_BRANCH }, r.name)
+        }
         RefKind::Remote => format!("{}  {}", icon::CLOUD, r.name),
         RefKind::Tag => format!("{}  {}", icon::TAG, r.name),
     }
@@ -67,8 +69,11 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
     let head_pill = rf.head && rf.kind == RefKind::Local;
     let hc = if faded { theme::accent().gamma_multiply(0.3) } else { theme::accent() };
     let cap_w = if head_pill && max_w >= 80.0 { 40.0 } else { 0.0 };
-    let label = if cap_w > 0.0 { rf.name.clone() } else { ref_label(rf) };
-    let label = if synced { format!("{label}  {}", icon::CLOUD) } else { label };
+    let label = match cap_w > 0.0 {
+        true if synced => format!("{}  {}", icon::CLOUD, rf.name),
+        true => rf.name.clone(),
+        false => ref_label(rf, synced),
+    };
     let fill = match rf.kind {
         _ if head_pill => hc,
         RefKind::Local => col.gamma_multiply(0.85),
@@ -100,7 +105,8 @@ fn tip_now(r: &egui::Response, text: String) {
 fn pill_tip(rf: &Ref, up: Option<&Ref>) -> String {
     let up = up.map_or(String::new(), |u| format!("  ·  {}", u.name));
     let msg = if rf.message.is_empty() { String::new() } else { format!("\n{}", rf.message) };
-    format!("{}{up}{msg}", ref_label(rf))
+    let wt = rf.worktree.as_ref().map_or(String::new(), |p| format!("\nChecked out in {p}"));
+    format!("{}{up}{wt}{msg}", ref_label(rf, false))
 }
 
 /// A small capsule of `fg` text on `bg` at `x`; returns where the next thing starts.
