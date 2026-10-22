@@ -198,6 +198,21 @@ fn without_vanished(dir: &Path, paths: &[u8]) -> Vec<u8> {
 }
 
 /// Runs an op's commands in order, stopping at the first failure.
+fn worktree_remove(dir: &Path, a: &[&str]) -> Res<String> {
+    let e = match git::run(dir, a) {
+        Err(e) if e.contains("failed to delete") => e,
+        r => return r,
+    };
+    let path = Path::new(a.last().copied().unwrap_or_default());
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if !path.exists() || std::fs::remove_dir_all(path).is_ok() {
+            return Ok(String::new());
+        }
+    }
+    Err(e)
+}
+
 pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
     let one = |args: &Vec<String>| {
         let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -225,6 +240,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::rebase::REWRITE, commit, tip @ ..] => super::rebase::rewrite(dir, commit, tip.first().copied().unwrap_or("HEAD"), op.input.as_deref().unwrap_or_default()),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
+            _ if a.windows(2).any(|w| w == ["worktree", "remove"]) => worktree_remove(dir, &a),
             ["apply", "--3way", path] => git::run(dir, &a).or_else(|e| if e.contains("does not match index") { git::run(dir, &["apply", path]) } else { Err(e) }),
             [_, "add", "-A", "--pathspec-from-file=-", ..] => match without_vanished(dir, op.input.as_deref().unwrap_or_default()) {
                 paths if paths.is_empty() => Ok(String::new()),
@@ -1076,6 +1092,10 @@ pub fn in_progress(s: git::State) -> Option<String> {
     Some(format!("Finish or abort the {busy} in progress first"))
 }
 
+fn removes_worktree(op: &Op) -> Option<&str> {
+    op.cmds.iter().find(|c| c.windows(2).any(|w| w == ["worktree", "remove"])).and_then(|c| c.last()).map(String::as_str)
+}
+
 fn switches_head(c: &[String]) -> bool {
     let mut a = c.iter().skip_while(|a| a.starts_with('-'));
     a.next().is_some_and(|s| s == "checkout") && a.skip_while(|x| *x != "--").nth(1).is_none()
@@ -1122,6 +1142,9 @@ impl RepoTab {
         }
         if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
             return self.open_tool(ctx, op, kind);
+        }
+        if removes_worktree(&op).is_some_and(|p| Path::new(p).canonicalize().ok() == self.dir.canonicalize().ok()) {
+            (self.watcher, self.watcher_task) = (None, None);
         }
         let common = network(&op).then(|| self.common.clone());
         let op = super::stack::follow(op, self.data.as_ref());
@@ -1218,6 +1241,9 @@ impl RepoTab {
                 }
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
                     self.switch_to = Some(self.dir.join(p));
+                }
+                if res.is_err() && removes_worktree(&op).is_some() && self.watcher.is_none() && self.watcher_task.is_none() {
+                    self.start_watching(ctx);
                 }
                 if let (Ok(_), Some(c)) = (&res, &op.reword) {
                     self.mark_saved(c);
@@ -3398,7 +3424,8 @@ mod tests {
         let from_main: Vec<&str> = ["-C", main.as_str()].into_iter().chain(args).collect();
         let mut op = super::remove_worktree_op(&w, &from_main, &warn).then_open(main.clone());
         op.confirm = None;
-        run(&ctx, &mut t, Action::Git(op));
+        let msgs = run(&ctx, &mut t, Action::Git(op));
+        assert!(msgs.iter().all(|m| !m.error), "{}", msgs.iter().map(|m| m.text.as_str()).collect::<Vec<_>>().join("\n"));
         assert!(!wt.exists());
         assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/heads/side"]).is_ok());
         assert_eq!(t.switch_to.as_deref(), Some(std::path::Path::new(&main)));

@@ -2483,6 +2483,8 @@
        ],
        "fns": [
         "crate::repo::op::remove_worktree_op",
+        "crate::repo::op::removes_worktree",
+        "crate::repo::op::worktree_remove",
         "crate::repo::op::worktree_remove_args",
         "crate::ui::sidebar::ref_menus::local_menu"
        ],
@@ -6011,7 +6013,8 @@
        "fns": [
         "crate::git::read::worktrees",
         "crate::ui::sidebar::worktrees::list",
-        "crate::ui::sidebar::worktrees::worktree_row"
+        "crate::ui::sidebar::worktrees::worktree_row",
+        "crate::ui::sidebar::worktrees::worktree_name"
        ],
        "platform": [
         "platform.design-system",
@@ -6117,6 +6120,8 @@
         "crate::repo::op::delete_branches",
         "crate::repo::op::remove_worktree_and_branch",
         "crate::repo::op::remove_worktree_op",
+        "crate::repo::op::removes_worktree",
+        "crate::repo::op::worktree_remove",
         "crate::repo::op::worktree_remove_args",
         "crate::ui::sidebar::worktrees::worktree_row"
        ],
@@ -6884,7 +6889,8 @@
         "crate::repo::RepoTab::watching",
         "crate::repo::watch::classify",
         "crate::repo::watch::is_ignored",
-        "crate::repo::watch::watch"
+        "crate::repo::watch::watch",
+        "crate::repo::RepoTab::start_watching"
        ],
        "platform": [
         "platform.task"

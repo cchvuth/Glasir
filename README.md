@@ -21,6 +21,19 @@ keeps working: credential helpers (Git Credential Manager, macOS Keychain,
 libsecret), SSH keys and agents, GitHub Enterprise SSO, hooks, LFS, commit
 signing, partial clones and `fsmonitor`.
 
+## Install
+
+macOS (Apple Silicon), in Terminal:
+
+```sh
+curl -fsSL -o /tmp/Glasir.zip https://github.com/cchvuth/Glasir/releases/latest/download/Glasir-macos-arm64.zip \
+  && ditto -x -k /tmp/Glasir.zip /Applications && rm /tmp/Glasir.zip
+```
+
+Downloaded this way the app isn't quarantined, so macOS opens it without the
+"Open Anyway" step, and later versions install from the update pill in the title bar.
+Linux and Windows builds: see [Download](#download).
+
 ## Why "Glasir"?
 
 In Norse myth, **Glasir** (Old Norse *Glasir*, said roughly "GLAH-seer") is a tree
@@ -43,7 +56,7 @@ The name fits a Git client:
 ## Features
 
 ### Commit graph
-- Colored lanes with rounded joins, author avatars, merge dots and a
+- Colored lanes with rounded joins, an author avatar on every commit (merges too) and a
   live **WIP** row for uncommitted changes.
 - **GitHub avatars**: authors' real profile pictures (graph and commit details)
   from the origin's github.com / GitHub Enterprise host, with the token git's
@@ -70,7 +83,7 @@ The name fits a Git client:
 - **Hover a branch pill** in the graph to highlight its history and fade the rest.
 - **Hide / Solo** branches (hover a sidebar row, remote or folder for its eye button), **first-parent** view.
 - **Stashes** drawn next to the commit they were made on.
-- **Unmistakable HEAD**: the checked-out commit's title is larger, bold and in the accent colour, and its branch pill carries a **HEAD** badge (a **detached HEAD** badge when detached); the sidebar marks the current branch with a ✓. Scrolled away, a chip ("↑ main (HEAD)") at the edge jumps back to it.
+- **Unmistakable HEAD**: the checked-out commit's title is larger, bold and in the accent colour, and its branch pill leads with a ✓ (a **detached HEAD** badge when detached); the sidebar marks the current branch with a ✓. Scrolled away, a chip ("↑ main (HEAD)") at the edge jumps back to it.
 - **Minimap rail** with markers for HEAD, selection, WIP, search hits and branch tips.
 - **⌘F search across all history**, not just the loaded commits: free text matches message, author or SHA;
   operators `author:` `committer:` `message:` `path:` `code:` (added/removed) `regex:` (changed lines)
@@ -150,7 +163,7 @@ The name fits a Git client:
 - Checkout, create, rename, delete (undoable), set / unset upstream, fast-forward
   or pull a branch **without checking it out**. **Delete everywhere** removes a branch,
   its remote branch and its worktree in one step; **Remove its worktree** keeps the branch (from the
-  checked-out branch's menu too: **Remove this worktree** moves the tab to the main worktree).
+  checked-out branch's menu too: **Remove this worktree** moves the tab to the primary worktree).
 - Merge, rebase, cherry-pick, revert and soft / mixed / keep / hard reset from menus.
   **Reset the current branch to any commit, branch or tag**; a hard reset lists
   the files it discards and backs them up, so ⌘Z brings back refs *and* files.
@@ -253,7 +266,9 @@ The name fits a Git client:
   offer to retry unsigned.
 
 ### Worktrees, stashes and tags
-- **Worktrees**: list with change counts and lock state (the main worktree is marked with a house and `· main`), create (new or existing
+- **Worktrees**: list with change counts and lock state, each row as `folder · branch` (the main
+  worktree as `primary · branch`, with a house; the toolbar's repo card names the worktree
+  you're in), create (new or existing
   branch), switch in place (the commit message draft and ⌘Z steps stay with each
   worktree) or open in a new tab, lock / unlock, remove (with force / with its
   branch; a detached one's commit is kept under a backup ref), prune (asks first).
@@ -373,8 +388,9 @@ The name fits a Git client:
 
 Get the latest build from [Releases](https://github.com/cchvuth/Glasir/releases/latest):
 `Glasir-macos-arm64.zip` (Glasir.app), `Glasir-linux-x86_64.tar.gz` and
-`Glasir-windows-x86_64.zip`. The macOS app is not notarized, so macOS blocks it after
-download ("can't be opened" or "is damaged"). Move it to Applications and run
+`Glasir-windows-x86_64.zip`. On macOS the [Install](#install) command avoids the next
+step: the app is not notarized, so macOS blocks a browser download of it ("can't be
+opened" or "is damaged"). Move it to Applications and run
 `xattr -dr com.apple.quarantine /Applications/Glasir.app`, or try to open it once and then
 choose **Open Anyway** in System Settings → Privacy & Security. That's needed only for the
 first install: later versions come through the in-app update pill without it.

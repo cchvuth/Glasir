@@ -230,7 +230,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     {
         let (args, warn) = crate::repo::worktree_remove_args(w);
         let from_main: Vec<&str> = ["-C", main.path.as_str()].into_iter().chain(args).collect();
-        let op = crate::repo::remove_worktree_op(w, &from_main, &format!("{warn}\nThe branch {name} stays; this tab moves to the main worktree."));
+        let op = crate::repo::remove_worktree_op(w, &from_main, &format!("{warn}\nThe branch {name} stays; this tab moves to the primary worktree."));
         acts.push(Action::Git(op.then_open(main.path.clone())));
     }
     web_items(ui, d, r, acts);

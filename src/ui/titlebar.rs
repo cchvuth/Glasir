@@ -150,10 +150,10 @@ fn tab_label(ui: &Ui, t: &crate::repo::RepoTab, alias: Option<&String>, active: 
             add(" ●".into(), theme::changed(), &small);
         }
         if s.ahead > 0 {
-            add(format!(" ↑{}", s.ahead), theme::add(), &small);
+            add(format!(" ↑ {}", s.ahead), theme::add(), &small);
         }
         if s.behind > 0 {
-            add(format!(" ↓{}", s.behind), theme::del(), &small);
+            add(format!(" ↓ {}", s.behind), theme::del(), &small);
         }
     }
     job

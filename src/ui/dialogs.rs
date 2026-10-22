@@ -294,7 +294,7 @@ pub(super) fn cleanup_dialog(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Ve
                             }
                             // Full width: details line up on the right, long names end in "…".
                             theme::bar(ui, |ui| {
-                                let mut info = vec![super::format::ago(r.date), format!("↑{} ↓{}", r.ahead, r.behind)];
+                                let mut info = vec![super::format::ago(r.date), format!("↑ {}  ↓ {}", r.ahead, r.behind)];
                                 if !r.note.is_empty() {
                                     info.insert(0, r.note.clone());
                                 }

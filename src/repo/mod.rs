@@ -303,9 +303,7 @@ impl RepoTab {
             avatars: Default::default(),
             term: Default::default(),
         };
-        // Registering watches walks the whole tree (inotify): keep it off the UI thread.
-        let (c, d) = (ctx.clone(), t.dir.clone());
-        t.watcher_task = Some(Task::spawn(ctx, move || watch::watch(&c, &d)));
+        t.start_watching(ctx);
         // Backups whose undo step went with an earlier session: kept 7 days, then pruned.
         let d = t.dir.clone();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |n| n.as_secs());
@@ -342,6 +340,12 @@ impl RepoTab {
     }
     pub fn loading(&self) -> bool {
         self.load.is_some()
+    }
+
+    pub(super) fn start_watching(&mut self, ctx: &egui::Context) {
+        // Registering watches walks the whole tree (inotify): keep it off the UI thread.
+        let (c, d) = (ctx.clone(), self.dir.clone());
+        self.watcher_task = Some(Task::spawn(ctx, move || watch::watch(&c, &d)));
     }
 
     /// A file watcher is running (or starting): outside changes arrive without polling.

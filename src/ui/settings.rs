@@ -261,15 +261,17 @@ impl App {
                 ui.add_space(4.0);
                 egui::Grid::new("ai_grid").num_columns(2).min_col_width(LABEL_W).spacing([16.0, 8.0]).show(ui, |ui| {
                     ui.label("Provider");
-                    ui.horizontal_wrapped(|ui| {
+                    let before = s.ai.provider;
+                    egui::ComboBox::from_id_salt("ai_provider").selected_text(before.label()).width(200.0).show_ui(ui, |ui| {
                         for q in ai::Provider::ALL {
-                            if ui.radio_value(&mut s.ai.provider, q, q.label()).changed() {
-                                st.source = token_source(&mut s.ai);
-                                st.token.clear();
-                                st.note = None;
-                            }
+                            ui.selectable_value(&mut s.ai.provider, q, q.label());
                         }
                     });
+                    if s.ai.provider != before {
+                        st.source = token_source(&mut s.ai);
+                        st.token.clear();
+                        st.note = None;
+                    }
                     ui.end_row();
                     let p = s.ai.provider;
                     if !p.is_cli() {

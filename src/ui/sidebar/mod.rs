@@ -8,6 +8,7 @@ pub mod stashes;
 mod folders;
 mod submodules;
 mod worktrees;
+pub(super) use worktrees::worktree_name;
 
 use crate::git::RefKind;
 use crate::repo::{Action, RepoData, Sel, branch_checkout, stack};
@@ -120,10 +121,10 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
         text += &format!("  {}", icon::ARROWS_CLOCKWISE);
     }
     if r.ahead > 0 {
-        text += &format!("  ↑{}", r.ahead);
+        text += &format!("  ↑ {}", r.ahead);
     }
     if r.behind > 0 {
-        text += &format!("  ↓{}", r.behind);
+        text += &format!("  ↓ {}", r.behind);
     }
     let mut rt = RichText::new(text);
     if r.head {

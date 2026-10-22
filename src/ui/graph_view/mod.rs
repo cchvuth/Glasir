@@ -392,15 +392,12 @@ pub fn show(
                 let commit = d.commit(r);
                 let is_head = Some(r) == head_row;
                 let hc = if faded { hc.gamma_multiply(0.3) } else { hc };
+                let rad = if is_head { 10.5 } else { 9.0 };
                 match commit {
                     None => {
                         gp.circle(c, 7.0, theme::bg(ui), Stroke::new(2.0, col));
                     }
-                    Some(cm) if cm.parents.len() > 1 => {
-                        gp.circle_filled(c, if is_head { 7.0 } else { 5.0 }, col);
-                    }
                     Some(cm) => {
-                        let rad = if is_head { 10.5 } else { 9.0 };
                         let a = if faded { 0.3 } else { 1.0 };
                         gp.circle_filled(c, rad, theme::avatar(&cm.email).gamma_multiply(a));
                         match avatars.get(&cm.email) {
@@ -434,7 +431,7 @@ pub fn show(
                     // Node may be scrolled out of view; in a narrow column the pill can even
                     // end past the column's edge, so min/max rather than clamp (which panics).
                     let from = pill.right() + extra; // after the +N badge, not through it
-                    let to = (c.x - 9.0).min(x_msg - 2.0).max(from);
+                    let to = (c.x - rad - 0.75).min(x_msg - 2.0).max(from);
                     let line = if rf.head && rf.kind == RefKind::Local { Stroke::new(2.5, hc) } else { Stroke::new(1.5, col.gamma_multiply(0.7)) };
                     painter.line_segment([pos2(from, y(r)), pos2(to, y(r))], line);
                     if more > 0 {

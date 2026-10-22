@@ -25,18 +25,18 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:125) | 27 |
 | `ui::palette::items` (src/ui/palette.rs:74) | 25 |
 | `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:140) | 24 |
-| `repo::RepoTab::apply` (src/repo/mod.rs:647) | 21 |
+| `repo::RepoTab::apply` (src/repo/mod.rs:651) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
 | `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:276) | 14 |
-| `ui::graph_view::show` (src/ui/graph_view/mod.rs:122) | 14 |
+| `ui::graph_view::show` (src/ui/graph_view/mod.rs:116) | 14 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:290) | 13 |
 | `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:244) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
 | `ui::app::App::shortcuts` (src/ui/app.rs:194) | 11 |
-| `repo::op::exec_stash` (src/repo/op.rs:819) | 11 |
+| `repo::op::exec_stash` (src/repo/op.rs:835) | 11 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
 | `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
@@ -45,7 +45,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
 | `ui::app::App::ui` (src/ui/app.rs:506) | 9 |
-| `repo::op::stash_cmd` (src/repo/op.rs:726) | 9 |
+| `repo::op::stash_cmd` (src/repo/op.rs:742) | 9 |
 
 <a id="app"></a>
 ## App shell
@@ -724,7 +724,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Remove a branch's worktree and keep the branch `refs.remove-worktree-keep-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs local_menu "Remove its worktree (keep <branch>)" (sidebar row and graph pill); src/ui/sidebar/worktrees.rs "Remove worktree" on the worktree row
 - **Platform:** `platform.op-runner`, `platform.git-runner`
-- **Shared:** `repo::op::remove_worktree_op` (2), `repo::op::worktree_remove_args` (3), `ui::sidebar::ref_menus::local_menu` (27)
+- **Shared:** `repo::op::remove_worktree_op` (2), `repo::op::removes_worktree` (2), `repo::op::worktree_remove` (2), `repo::op::worktree_remove_args` (3), `ui::sidebar::ref_menus::local_menu` (27)
 
 ### Compare and web links from ref menus
 
@@ -1669,6 +1669,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Worktrees sidebar section `tools.worktree-list`
 - **Entry:** src/ui/sidebar/worktrees.rs:9 WORKTREES section (current marker, change count, lock, prunable rows)
 - **Platform:** `platform.design-system`, `platform.repo-load`
+- **Own code:** `ui::sidebar::worktrees::worktree_name`
 - **Shared:** `git::read::worktrees` (5), `ui::sidebar::worktrees::list` (3), `ui::sidebar::worktrees::worktree_row` (6)
 
 #### Create a worktree (new branch, from HEAD / commit / branch / remote branch) `tools.worktree-create`
@@ -1694,7 +1695,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Remove a worktree (optionally delete its branch) `tools.worktree-remove`
 - **Entry:** src/ui/sidebar/worktrees.rs:93 "Remove worktree" / "Remove worktree and delete <branch>"
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::op::Op::confirm` (4), `repo::op::Op::then` (2), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::remove_worktree_and_branch` (2), `repo::op::remove_worktree_op` (2), `repo::op::worktree_remove_args` (3), `ui::sidebar::worktrees::worktree_row` (6)
+- **Shared:** `repo::op::Op::confirm` (4), `repo::op::Op::then` (2), `repo::op::branch_cmd` (3), `repo::op::delete_branches` (4), `repo::op::remove_worktree_and_branch` (2), `repo::op::remove_worktree_op` (2), `repo::op::removes_worktree` (2), `repo::op::worktree_remove` (2), `repo::op::worktree_remove_args` (3), `ui::sidebar::worktrees::worktree_row` (6)
 
 #### Prune stale worktrees `tools.worktree-prune`
 - **Entry:** src/ui/sidebar/worktrees.rs:27 "Prune stale"
@@ -1865,7 +1866,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** background: notify events in the worktree and .git
 - **Used by:** 3 features
 - **Platform:** `platform.task`
-- **Own code:** `repo::RepoTab::watching`, `repo::watch::classify`, `repo::watch::is_ignored`, `repo::watch::watch`
+- **Own code:** `repo::RepoTab::watching`, `repo::watch::classify`, `repo::watch::is_ignored`, `repo::watch::watch`, `repo::RepoTab::start_watching`
 
 #### Background Task (thread + channel) `platform.task`
 - **Entry:** every off-UI-thread job

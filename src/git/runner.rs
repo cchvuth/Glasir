@@ -250,6 +250,9 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
     let started = std::time::SystemTime::now();
     let progress = args.contains(&"--progress").then(|| cancel.1.clone());
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let ["-C", p, ..] = args {
+        c.current_dir(dir.join(p));
+    }
     if input.is_some() {
         c.stdin(Stdio::piped());
     }

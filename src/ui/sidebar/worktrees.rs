@@ -33,13 +33,21 @@ pub(super) fn list(ui: &mut Ui, d: &RepoData, dir: &std::path::Path, f: &str, ac
     });
 }
 
+/// "primary" for the repository's own folder, else the worktree's folder name.
+pub(crate) fn worktree_name<'a>(d: &RepoData, w: &'a crate::git::Worktree) -> &'a str {
+    match d.worktrees.first().is_some_and(|m| m.path == w.path) {
+        true => "primary",
+        false => w.path.rsplit(['/', '\\']).find(|p| !p.is_empty()).unwrap_or(&w.path),
+    }
+}
+
 fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bool, acts: &mut Vec<Action>) {
     let is_main = d.worktrees.first().is_some_and(|m| m.path == w.path);
     let name = w.branch.clone().unwrap_or_else(|| format!("detached @ {}", &w.head[..w.head.len().min(7)]));
     let glyph = if current { icon::CHECK } else if is_main { icon::HOUSE } else { icon::TREE };
-    let mut label = format!("{glyph}  {name}{}", if is_main { "  · main" } else { "" });
+    let mut label = format!("{glyph}  {}  ·  {name}", worktree_name(d, w));
     if w.changes > 0 {
-        label += &format!("  {}{}", icon::PENCIL_SIMPLE, w.changes);
+        label += &format!("  {} {}", icon::PENCIL_SIMPLE, w.changes);
     }
     if w.locked.is_some() {
         label += &format!("  {}", icon::LOCK_SIMPLE);
@@ -50,7 +58,7 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
     }
     let tip = format!(
         "{}{}{}{}",
-        if is_main { "Main worktree\n" } else { "" },
+        if is_main { "Primary worktree (the repository's own folder)\n" } else { "" },
         w.path,
         w.locked.as_ref().map_or(String::new(), |r| format!("\nLocked{}", if r.is_empty() { String::new() } else { format!(": {r}") })),
         if w.prunable { "\nMissing on disk (prune to clean up)" } else { "" }

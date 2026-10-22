@@ -44,8 +44,15 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             ui.scope(|ui| {
                 ui.set_max_width(room.max(120.0));
                 theme::group(ui, |ui| {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(&t.name).strong().size(14.5));
+                    ui.add_space(12.0);
+                    let here = t.data.as_ref().and_then(|d| d.here.filter(|_| d.worktrees.len() > 1).and_then(|i| Some((d, d.worktrees.get(i)?))));
+                    let repo = here.and_then(|(d, _)| d.worktrees[0].path.rsplit(['/', '\\']).find(|p| !p.is_empty())).unwrap_or(&t.name);
+                    ui.label(RichText::new(repo).strong().size(14.5));
+                    if let Some((d, w)) = here {
+                        let glyph = if d.here == Some(0) { icon::HOUSE } else { icon::TREE };
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(format!("{glyph}  {}", super::sidebar::worktree_name(d, w))).color(theme::dim(ui))).on_hover_text(format!("Worktree {}", w.path));
+                    }
                     if let Some(d) = &t.data {
                         let st = &d.status;
                         let branch = st.branch.clone().unwrap_or_else(|| {
@@ -53,14 +60,15 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                         });
                         let mut text = format!("{}  {branch}", icon::GIT_BRANCH);
                         if st.ahead > 0 {
-                            text += &format!("  {}{}", icon::ARROW_UP, st.ahead);
+                            text += &format!("  {} {}", icon::ARROW_UP, st.ahead);
                         }
                         if st.behind > 0 {
-                            text += &format!("  {}{}", icon::ARROW_DOWN, st.behind);
+                            text += &format!("  {} {}", icon::ARROW_DOWN, st.behind);
                         }
+                        ui.add_space(6.0);
                         ui.label(RichText::new(text).color(theme::dim(ui)));
                     }
-                    ui.add_space(6.0);
+                    ui.add_space(12.0);
                 });
             });
             let x0 = ui.cursor().min.x;

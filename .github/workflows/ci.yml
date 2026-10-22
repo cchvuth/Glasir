@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -21,7 +21,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The Windows image converts checkouts to CRLF; the tests compare exact bytes.
       - run: git config --global core.autocrlf false
+      # Windows spends most of its test time starting processes: use the real git, not the
+      # launcher in Git\cmd that starts it as a second process, and don't virus-scan the
+      # checkout or the tests' scratch repos.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try { Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:TEMP, "$env:LOCALAPPDATA\Temp", "$env:USERPROFILE\.cargo" } catch { Write-Host "No Defender exclusion: $_" }
+          "C:\Program Files\Git\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: (Get-Command git).Source; git --version
       - run: cargo test --locked
+
+  # Release builds run beside the tests, and only where a release can follow.
+  build:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
       - name: Package
         shell: bash
@@ -42,9 +66,10 @@ jobs:
           path: dist/*
 
   # A push to master that raises the version in Cargo.toml becomes a GitHub
-  # release (tag v<version>) and a ghcr.io package; other pushes skip it.
+  # release (tag v<version>) and a ghcr.io package, once every test and build passed;
+  # other pushes skip it.
   release:
-    needs: build
+    needs: [test, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
