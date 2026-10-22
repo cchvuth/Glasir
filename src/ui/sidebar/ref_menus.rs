@@ -182,7 +182,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "--end-of-options", "{}", d.worktree_rev(r)]).then_open("{}")));
     }
     if let Some(p) = &r.worktree
-        && ui.button(format!("{}  Open its worktree", icon::TREE_STRUCTURE)).on_hover_text(p.as_str()).clicked()
+        && ui.button(format!("{}  Open its worktree", icon::TREE)).on_hover_text(p.as_str()).clicked()
     {
         acts.push(Action::Switch(p.clone()));
     }

@@ -110,7 +110,7 @@ fn stacked<'a>(d: &'a RepoData, locals: &[&'a crate::git::Ref]) -> Vec<(&'a crat
 /// A local branch row: marker, stack / ahead / behind badges, menus, drag-and-drop. `name` is what
 /// it shows (the last segment inside a folder); `depth` its stack depth.
 fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: usize, acts: &mut Vec<Action>) {
-    let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE_STRUCTURE } else { icon::GIT_BRANCH };
+    let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE } else { icon::GIT_BRANCH };
     let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
     let mut text = format!("{indent}{glyph}  {name}");
     if depth == 0 && !stack::children(d, &r.name).is_empty() {

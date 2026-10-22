@@ -56,7 +56,7 @@ fn ref_label(r: &Ref, synced: bool) -> String {
         RefKind::Local => {
             let at = match (r.head, r.worktree.is_some()) {
                 (true, _) => format!("{}  ", icon::CHECK),
-                (_, true) => format!("{}  ", icon::TREE_STRUCTURE),
+                (_, true) => format!("{}  ", icon::TREE),
                 _ => String::new(),
             };
             format!("{at}{cloud}{}  {}", icon::GIT_BRANCH, r.name)
