@@ -66,8 +66,11 @@ The name fits a Git client:
 - **GitHub avatars**: authors' real profile pictures (graph and commit details)
   from the origin's github.com / GitHub Enterprise host, with the token git's
   credential helper already has for it (never prompts; public github.com works
-  without one). Cached on disk for a week; initials otherwise. Settings → "Show
-  GitHub avatars" turns it off, with no avatar requests at all.
+  without one). Cached on disk for a week. Settings → "Show GitHub avatars" turns
+  it off, with no avatar requests at all.
+- **Critter avatars**: authors without a GitHub picture get a [DiceBear](https://www.dicebear.com)
+  critter (CC0), drawn from their name, so the same person looks the same in
+  every repo and view. Rendered locally, cached on disk for five years.
 - **Commit details**: author and committer (when different) with absolute and
   relative dates, `Co-authored-by` trailers as co-authors (an × on hover or right-click
   removes one from the message, however old the commit), copy short or full SHA,

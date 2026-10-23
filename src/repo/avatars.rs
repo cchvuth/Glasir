@@ -129,6 +129,53 @@ fn texture(ctx: &egui::Context, email: &str, bytes: &[u8]) -> Option<egui::Textu
     Some(ctx.load_texture(format!("avatar {email}"), color, egui::TextureOptions::LINEAR))
 }
 
+/// The author's DiceBear critter, seeded by name so it is the same in every
+/// repo and view; `None` while it renders off the UI thread.
+pub fn critter(ctx: &egui::Context, name: &str) -> Option<egui::TextureHandle> {
+    static DONE: Mutex<Option<HashMap<String, Option<egui::TextureHandle>>>> = Mutex::new(None);
+    let mut done = DONE.lock().unwrap();
+    let done = done.get_or_insert_default();
+    if let Some(t) = done.get(name) {
+        return t.clone();
+    }
+    done.insert(name.to_owned(), None);
+    let (ctx, name) = (ctx.clone(), name.to_owned());
+    std::thread::spawn(move || {
+        let t = cached_critter(&name).map(|img| ctx.load_texture(format!("critter {name}"), img, egui::TextureOptions::LINEAR));
+        DONE.lock().unwrap().get_or_insert_default().insert(name, t);
+        ctx.request_repaint();
+    });
+    None
+}
+
+/// A critter's PNG is kept on disk for five years, then rendered again.
+fn cached_critter(name: &str) -> Option<egui::ColorImage> {
+    const KEEP: Duration = Duration::from_secs(5 * 365 * 86400);
+    let hash = name.bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    let file = eframe::storage_dir("Glasir").filter(|_| !cfg!(test)).map(|d| d.join("avatars").join("critters").join(format!("{hash:016x}.png")));
+    let fresh = |f: &&PathBuf| std::fs::metadata(f).and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age < KEEP));
+    if let Some(img) = file.as_ref().filter(fresh).and_then(|f| image::open(f).ok()).map(|i| i.to_rgba8()) {
+        return Some(egui::ColorImage::from_rgba_unmultiplied([img.width() as usize, img.height() as usize], img.as_raw()));
+    }
+    let img = critter_image(name)?;
+    if let Some(f) = file {
+        let rgba: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
+        let _ = std::fs::create_dir_all(f.parent()?).map(|_| image::save_buffer(&f, &rgba, PX, PX, image::ExtendedColorType::Rgba8));
+    }
+    Some(img)
+}
+
+fn critter_image(name: &str) -> Option<egui::ColorImage> {
+    static STYLE: OnceLock<Option<dicebear_core::Style>> = OnceLock::new();
+    let style = STYLE.get_or_init(|| dicebear_core::Style::from_str(dicebear_styles::CRITTERS).ok()).as_ref()?;
+    let svg = dicebear_core::Avatar::new(style, serde_json::json!({ "seed": name })).ok()?;
+    let tree = resvg::usvg::Tree::from_str(svg.to_svg(), &Default::default()).ok()?;
+    let mut px = resvg::tiny_skia::Pixmap::new(PX, PX)?;
+    let k = PX as f32 / tree.size().width().max(tree.size().height());
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(k, k), &mut px.as_mut());
+    Some(egui::ColorImage::from_rgba_premultiplied([PX as usize; 2], px.data()))
+}
+
 /// `(host, owner, repo)` of an origin on github.com or GitHub Enterprise; never
 /// another forge, a local path or an HTTPS origin with a port (its API and credentials aren't the host's).
 fn github_repo(origin: &str) -> Option<(String, String, String)> {
@@ -419,6 +466,14 @@ fn file_name(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_name_always_gets_the_same_critter_and_others_differ() {
+        let imgs: Vec<_> = (0..300).map(|i| critter_image(&format!("Author {i}")).unwrap().pixels).collect();
+        assert_eq!(critter_image("Author 7").unwrap().pixels, imgs[7]);
+        let unique: std::collections::HashSet<_> = imgs.iter().map(|p| p.iter().map(|c| c.to_array()).collect::<Vec<_>>()).collect();
+        assert_eq!(unique.len(), imgs.len());
+    }
 
     #[test]
     fn noreply_emails() {

@@ -4927,6 +4927,20 @@
         "platform.git-runner",
         "platform.task"
        ]
+      },
+      {
+       "id": "remote.critters",
+       "name": "DiceBear critter pictures for authors without a GitHub avatar",
+       "entry": [
+        "src/ui/graph_view/mod.rs graph rows",
+        "src/ui/inspector/commit.rs commit details",
+        "src/ui/history.rs file history rows"
+       ],
+       "fns": [
+        "crate::repo::avatars::cached_critter",
+        "crate::repo::avatars::critter",
+        "crate::repo::avatars::critter_image"
+       ]
       }
      ]
     },

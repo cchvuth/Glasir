@@ -10,7 +10,7 @@ Every non-test function belongs to at least one feature (`featuremap.py check`).
 - [Branches, tags and the sidebar](#refs) (59 features)
 - [History rewriting and stacks](#rewrite) (21 features)
 - [Merging, cherry-picks and conflicts](#merge) (28 features)
-- [Remotes, sync and hosting](#remote) (32 features)
+- [Remotes, sync and hosting](#remote) (33 features)
 - [Graph, inspector and views](#view) (42 features)
 - [Stashes, worktrees, undo and tools](#tools) (40 features)
 - [Platform](#platform) (12 features)
@@ -1353,6 +1353,10 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Platform:** `platform.design-system`, `platform.git-runner`, `platform.task`
 - **Own code:** `repo::avatars::Avatars::get`, `repo::avatars::Avatars::sync`, `repo::avatars::Lookup::api_get`, `repo::avatars::Lookup::blocked`, `repo::avatars::Lookup::download`, `repo::avatars::Lookup::get`, `repo::avatars::Lookup::lookup`, `repo::avatars::Lookup::miss`, `repo::avatars::Lookup::new`, `repo::avatars::Lookup::reachable`, `repo::avatars::Lookup::read`, `repo::avatars::Lookup::record`, `repo::avatars::Lookup::resolve`, `repo::avatars::Lookup::save`, `repo::avatars::Lookup::skipped`, `repo::avatars::Lookup::token`, `repo::avatars::api_base`, `repo::avatars::avatar_of`, `repo::avatars::blocks_host`, `repo::avatars::enabled`, `repo::avatars::file_name`, `repo::avatars::fresh`, `repo::avatars::github_repo`, `repo::avatars::image_ok`, `repo::avatars::is_image`, `repo::avatars::load_index`, `repo::avatars::noreply_url`, `repo::avatars::now_fresh`, `repo::avatars::retry_bare`, `repo::avatars::set_enabled`, `repo::avatars::sized`, `repo::avatars::texture`
 - **Shared:** `theme::avatar` (2), `ui::inspector::commit::avatar` (2)
+
+#### DiceBear critter pictures for authors without a GitHub avatar `remote.critters`
+- **Entry:** src/ui/graph_view/mod.rs graph rows; src/ui/inspector/commit.rs commit details; src/ui/history.rs file history rows
+- **Own code:** `repo::avatars::cached_critter`, `repo::avatars::critter`, `repo::avatars::critter_image`
 
 ### LFS and submodules
 

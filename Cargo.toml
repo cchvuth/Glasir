@@ -16,6 +16,10 @@ egui = "0.36.2"
 egui-phosphor = "0.14.0"
 # Already in the tree via eframe (png); image diffs add the other formats.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# Authors without a GitHub picture get a DiceBear critter (CC0), rendered from SVG (no text, so no fonts).
+dicebear-core = "11.0.0-rc.2"
+dicebear-styles = { version = "11.0.0-rc.3", features = ["critters"] }
+resvg = { version = "0.48.1", default-features = false }
 notify = "8"
 open = "5.4.4"
 rfd = "0.17.2"
@@ -60,3 +64,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# dicebear-core with its schema validator's network resolving off (vendor/dicebear-core/Cargo.toml).
+[patch.crates-io]
+dicebear-core = { path = "vendor/dicebear-core" }

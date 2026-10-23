@@ -62,11 +62,11 @@ fn editable(ui: &mut Ui, r: &Response, why_not: Option<&str>) -> bool {
     r.clicked() && why_not.is_none()
 }
 
-/// A round author picture: the GitHub avatar when loaded, else colored initials.
+/// A round author picture: the GitHub avatar when loaded, else their critter (initials while it renders).
 fn avatar(ui: &mut Ui, avatars: &crate::repo::avatars::Avatars, name: &str, email: &str, r: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(r * 2.0, r * 2.0), Sense::hover());
     ui.painter().circle_filled(rect.center(), r, theme::avatar(email));
-    match avatars.get(email) {
+    match avatars.get(email).or_else(|| crate::repo::avatars::critter(ui.ctx(), name)) {
         Some(t) => theme::photo(ui.painter(), rect.center(), r, &t, 1.0),
         None => {
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initials(name), egui::FontId::proportional(r * 0.8), Color32::WHITE);

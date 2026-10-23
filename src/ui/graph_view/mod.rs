@@ -413,7 +413,7 @@ pub fn show(
                     Some(cm) => {
                         let a = if faded { 0.3 } else { 1.0 };
                         gp.circle_filled(c, rad, theme::avatar(&cm.email).gamma_multiply(a));
-                        match avatars.get(&cm.email) {
+                        match avatars.get(&cm.email).or_else(|| crate::repo::avatars::critter(ui.ctx(), &cm.author)) {
                             Some(t) => theme::photo(&gp, c, rad, &t, a),
                             None => {
                                 gp.text(c, Align2::CENTER_CENTER, initials(&cm.author), FontId::proportional(9.0), Color32::WHITE.gamma_multiply(a));

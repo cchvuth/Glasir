@@ -116,7 +116,10 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     let p = ui.painter().with_clip_rect(rect);
                     let c = pos2(rect.left() + 20.0, rect.center().y);
                     p.circle_filled(c, 12.0, theme::avatar(&e.email));
-                    p.text(c, Align2::CENTER_CENTER, initials(&e.author), FontId::proportional(10.0), Color32::WHITE);
+                    match crate::repo::avatars::critter(ui.ctx(), &e.author) {
+                        Some(t) => theme::photo(&p, c, 12.0, &t, 1.0),
+                        None => drop(p.text(c, Align2::CENTER_CENTER, initials(&e.author), FontId::proportional(10.0), Color32::WHITE)),
+                    }
                     p.text(pos2(rect.left() + 42.0, rect.top() + 14.0), Align2::LEFT_CENTER, &e.summary, FontId::proportional(13.5), theme::text(ui));
                     let meta = format!("{}  ·  {}  ·  {}", &e.id[..e.id.len().min(7)], e.author, relative_time(e.time, &e.date));
                     p.text(pos2(rect.left() + 42.0, rect.top() + 33.0), Align2::LEFT_CENTER, meta, FontId::proportional(11.5), theme::dim(ui));
