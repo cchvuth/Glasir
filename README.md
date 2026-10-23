@@ -26,12 +26,16 @@ signing, partial clones and `fsmonitor`.
 macOS (Apple Silicon), in Terminal:
 
 ```sh
-curl -fsSL -o /tmp/Glasir.zip https://github.com/cchvuth/Glasir/releases/latest/download/Glasir-macos-arm64.zip \
-  && ditto -x -k /tmp/Glasir.zip /Applications && rm /tmp/Glasir.zip
+curl -fsSL -o /tmp/Glasir.zip https://github.com/cchvuth/Glasir/releases/latest/download/Glasir-macos-arm64.zip &&
+  { pgrep -qf /Applications/Glasir.app/ && osascript -e 'quit app "Glasir"'; while pgrep -qf /Applications/Glasir.app/; do sleep 0.5; done; } &&
+  rm -rf /Applications/Glasir.app && ditto -x -k /tmp/Glasir.zip /Applications && rm /tmp/Glasir.zip &&
+  open /Applications/Glasir.app
 ```
 
-Downloaded this way the app isn't quarantined, so macOS opens it without the
-"Open Anyway" step, and later versions install from the update pill in the title bar.
+It also updates an installed copy: Glasir quits (asking first if work is unsaved), is
+replaced and opens again. Downloaded this way the app isn't quarantined, so macOS opens it
+without the "Open Anyway" step, and later versions install from the update pill in the
+title bar, which restarts Glasir by itself.
 Linux and Windows builds: see [Download](#download).
 
 ## Why "Glasir"?
@@ -83,7 +87,7 @@ The name fits a Git client:
 - **Hover a branch pill** in the graph to highlight its history and fade the rest.
 - **Hide / Solo** branches (hover a sidebar row, remote or folder for its eye button), **first-parent** view.
 - **Stashes** drawn next to the commit they were made on.
-- **Unmistakable HEAD**: the checked-out commit's title is larger, bold and in the accent colour, and its branch pill leads with a ✓ (a **detached HEAD** badge when detached); the sidebar marks the current branch with a ✓. Scrolled away, a chip ("↑ main (HEAD)") at the edge jumps back to it.
+- **Unmistakable HEAD**: the checked-out commit's title is larger, bold and in the accent colour, and its branch pill is bold, glows and leads with a ✓ (a **detached HEAD** badge when detached); the sidebar marks the current branch with a ✓. Scrolled away, a chip ("↑ main (HEAD)") at the edge jumps back to it.
 - **Minimap rail** with markers for HEAD, selection, WIP, search hits and branch tips.
 - **⌘F search across all history**, not just the loaded commits: free text matches message, author or SHA;
   operators `author:` `committer:` `message:` `path:` `code:` (added/removed) `regex:` (changed lines)

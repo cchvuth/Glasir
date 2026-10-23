@@ -81,11 +81,25 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
         RefKind::Tag => theme::tag(ui),
     };
     let label_col = Color32::WHITE.gamma_multiply(if faded { 0.6 } else { 1.0 });
-    let g = p.layout_no_wrap(label, FontId::proportional(12.0), label_col);
+    let mut job = egui::text::LayoutJob::simple_singleline(label, FontId::proportional(12.0), label_col);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((max_w - 14.0).max(0.0));
+    let g = p.layout_job(job);
     let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0).min(max_w).max(10.0), 20.0));
+    if head_pill {
+        for (grow, a) in [(3.0, 0.1), (2.0, 0.18), (1.0, 0.3)] {
+            p.rect_filled(pill.expand(grow), 10.0 + grow, hc.gamma_multiply(a));
+        }
+    }
     p.rect_filled(pill, 10.0, fill);
-    p.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
-    p.with_clip_rect(pill.shrink(2.0)).galley(pos2(pill.left() + 7.0, pill.center().y - g.size().y / 2.0), g, label_col);
+    if !head_pill {
+        p.rect_stroke(pill, 10.0, Stroke::new(1.0, Color32::from_white_alpha(45)), egui::StrokeKind::Inside);
+    }
+    let text_at = pos2(pill.left() + 7.0, pill.center().y - g.size().y / 2.0);
+    let clip = p.with_clip_rect(pill.shrink(2.0));
+    if head_pill {
+        clip.galley(text_at + vec2(0.6, 0.0), g.clone(), label_col);
+    }
+    clip.galley(text_at, g, label_col);
     pill
 }
 
@@ -99,7 +113,7 @@ fn tip_now(r: &egui::Response, text: String) {
 fn pill_tip(rf: &Ref, up: Option<&Ref>) -> String {
     let up = up.map_or(String::new(), |u| format!("  ·  {}", u.name));
     let msg = if rf.message.is_empty() { String::new() } else { format!("\n{}", rf.message) };
-    let wt = rf.worktree.as_ref().map_or(String::new(), |p| format!("\nChecked out in {p}"));
+    let wt = rf.worktree.as_ref().map_or(String::new(), |p| format!("\n{}  Checked out in another worktree: {p}\nA branch can be checked out in one worktree at a time; double-click switches this tab there.", icon::TREE));
     format!("{}{up}{wt}{msg}", ref_label(rf, false))
 }
 

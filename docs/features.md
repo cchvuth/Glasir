@@ -29,7 +29,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
 | `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:276) | 14 |
-| `ui::graph_view::show` (src/ui/graph_view/mod.rs:116) | 14 |
+| `ui::graph_view::show` (src/ui/graph_view/mod.rs:128) | 14 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:290) | 13 |
 | `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:244) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
@@ -64,7 +64,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 
 #### Update from GitHub releases `app.self-update`
 - **Entry:** src/ui/update.rs update_pill (title bar); Settings → Updates; check at startup in App::new
-- **Own code:** `ui::update::App::check_updates`, `ui::update::App::update_pill`, `update::agent`, `update::asset_name`, `update::check`, `update::install`, `update::install_to`, `update::newer`, `update::parse`, `update::relaunch`, `update::stage`, `update::swap`, `update::target`, `update::unpack`
+- **Own code:** `ui::update::App::check_updates`, `ui::update::App::restart`, `ui::update::App::update_pill`, `update::agent`, `update::asset_name`, `update::check`, `update::install`, `update::install_to`, `update::newer`, `update::parse`, `update::relaunch`, `update::stage`, `update::swap`, `update::target`, `update::unpack`
 
 #### Open a repository passed on the command line `app.cli-open`
 - **Entry:** src/main.rs:49 first CLI argument; src/ui/app.rs:117 App::new -> open
@@ -246,6 +246,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Per-repo toolbar layout and buttons `app.toolbar`
 - **Entry:** top panel of a repo tab (toolbar.rs): Refresh F5, terminal toggle, open-in menu, web globe, overflow menu, branch/ahead-behind label, Undo/Redo, Fetch/Pull/Push menus, Branch/Stash/Pop, conflict chip, fetch-failed chip, progress/cancel; each button's action is owned by its feature
 - **Platform:** `platform.design-system`, `platform.format`
+- **Own code:** `ui::toolbar::fit`
 - **Shared:** `ui::toolbar::history_tools` (7), `ui::toolbar::label` (3), `ui::toolbar::open_items` (4), `ui::toolbar::pull_hint` (2), `ui::toolbar::toolbar` (7), `ui::toolbar::toolbar_local` (5), `ui::toolbar::toolbar_remote` (5)
 
 #### Toolbar Undo / Redo buttons `app.toolbar-undo-redo`

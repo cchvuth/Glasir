@@ -48,6 +48,7 @@
        ],
        "fns": [
         "crate::ui::update::App::check_updates",
+        "crate::ui::update::App::restart",
         "crate::ui::update::App::update_pill",
         "crate::update::agent",
         "crate::update::asset_name",
@@ -630,6 +631,7 @@
         "top panel of a repo tab (toolbar.rs): Refresh F5, terminal toggle, open-in menu, web globe, overflow menu, branch/ahead-behind label, Undo/Redo, Fetch/Pull/Push menus, Branch/Stash/Pop, conflict chip, fetch-failed chip, progress/cancel; each button's action is owned by its feature"
        ],
        "fns": [
+        "crate::ui::toolbar::fit",
         "crate::ui::toolbar::history_tools",
         "crate::ui::toolbar::label",
         "crate::ui::toolbar::open_items",

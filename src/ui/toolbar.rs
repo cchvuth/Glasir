@@ -47,11 +47,10 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                     ui.add_space(12.0);
                     let here = t.data.as_ref().and_then(|d| d.here.filter(|_| d.worktrees.len() > 1).and_then(|i| Some((d, d.worktrees.get(i)?))));
                     let repo = here.and_then(|(d, _)| d.worktrees[0].path.rsplit(['/', '\\']).find(|p| !p.is_empty())).unwrap_or(&t.name);
-                    ui.label(RichText::new(repo).strong().size(14.5));
+                    let mut parts = vec![(RichText::new(repo).strong().size(14.5), None)];
                     if let Some((d, w)) = here {
                         let glyph = if d.here == Some(0) { icon::HOUSE } else { icon::TREE };
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(format!("{glyph}  {}", super::sidebar::worktree_name(d, w))).color(theme::dim(ui))).on_hover_text(format!("Worktree {}", w.path));
+                        parts.push((RichText::new(format!("{glyph}  {}", super::sidebar::worktree_name(d, w))).color(theme::dim(ui)), Some(format!("Worktree {}", w.path))));
                     }
                     if let Some(d) = &t.data {
                         let st = &d.status;
@@ -65,8 +64,21 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
                         if st.behind > 0 {
                             text += &format!("  {} {}", icon::ARROW_DOWN, st.behind);
                         }
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(text).color(theme::dim(ui)));
+                        parts.push((RichText::new(text).color(theme::dim(ui)), None));
+                    }
+                    let natural: Vec<f32> = parts.iter().map(|(t, _)| egui::WidgetText::from(t.clone()).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x).collect();
+                    let widths = fit(&natural, ui.available_width() - 12.0 - 6.0 * (parts.len() - 1) as f32);
+                    for (i, ((text, tip), w)) in parts.into_iter().zip(widths).enumerate() {
+                        if i > 0 {
+                            ui.add_space(6.0);
+                        }
+                        let r = ui.scope(|ui| {
+                            ui.set_max_width(w);
+                            ui.add(egui::Label::new(text).truncate())
+                        });
+                        if let Some(tip) = tip {
+                            r.inner.on_hover_text(tip);
+                        }
                     }
                     ui.add_space(12.0);
                 });
@@ -125,6 +137,24 @@ pub(super) fn toolbar(ui: &mut Ui, t: &RepoTab, s: &mut Settings, acts: &mut Vec
             });
         });
     });
+}
+
+/// Widths for texts `natural` wide sharing `avail`: what doesn't fit is cut from the longest
+/// first, down to one common width, so short ones stay whole.
+fn fit(natural: &[f32], avail: f32) -> Vec<f32> {
+    let mut sorted = natural.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let (mut left, mut n, mut cap) = (avail.max(0.0), natural.len(), f32::INFINITY);
+    for w in sorted {
+        if w * n as f32 <= left {
+            left -= w;
+            n -= 1;
+        } else {
+            cap = left / n as f32;
+            break;
+        }
+    }
+    natural.iter().map(|w| w.min(cap)).collect()
 }
 
 /// Hand the repository to the user's own tools (also in ⌘P).
@@ -279,5 +309,19 @@ fn toolbar_local(ui: &mut Ui, newest: Option<&git::Stash>, compact: bool, acts: 
                 acts.push(Action::Git(pop_stash(s)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit;
+
+    #[test]
+    fn long_names_are_cut_first_and_short_ones_stay_whole() {
+        assert_eq!(fit(&[100.0, 50.0], 200.0), [100.0, 50.0]);
+        assert_eq!(fit(&[300.0, 50.0, 50.0], 200.0), [100.0, 50.0, 50.0]);
+        assert_eq!(fit(&[300.0, 120.0, 50.0], 200.0), [75.0, 75.0, 50.0]);
+        assert_eq!(fit(&[300.0, 300.0], 200.0), [100.0, 100.0]);
+        assert_eq!(fit(&[80.0, 40.0], -5.0), [0.0, 0.0]);
     }
 }

@@ -15,11 +15,25 @@ pub(super) struct Updater {
     install: Option<Task<Res<PathBuf>>>,
     /// Installed: relaunch this.
     ready: Option<PathBuf>,
+    /// The relaunch helper is waiting for this process to exit.
+    relaunching: bool,
 }
 
 impl App {
     pub(super) fn check_updates(&mut self, ctx: &egui::Context) {
         self.update.check = Some(Task::spawn(ctx, update::check));
+    }
+
+    /// Closes the window (asking first as any quit does) and starts the installed version once it's gone.
+    fn restart(&mut self, ctx: &egui::Context) {
+        let Some(p) = &self.update.ready else { return };
+        if !self.update.relaunching {
+            match update::relaunch(p) {
+                Ok(()) => self.update.relaunching = true,
+                Err(e) => return self.toast(ctx, e, true),
+            }
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     pub(super) fn update_pill(&mut self, ui: &mut Ui) {
@@ -29,7 +43,10 @@ impl App {
             self.update.found = r;
         }
         match Task::poll(&mut self.update.install) {
-            Some(Ok(p)) => self.update.ready = Some(p),
+            Some(Ok(p)) => {
+                self.update.ready = Some(p);
+                self.restart(&ctx);
+            }
             Some(Err(e)) => {
                 let page = self.update.found.as_ref().map_or(String::new(), |r| format!("\nDownload it from {}", r.page));
                 self.toast(&ctx, format!("Update failed: {e}{page}"), true);
@@ -37,11 +54,8 @@ impl App {
             None => {}
         }
         if let Some(p) = self.update.ready.clone() {
-            if theme::pill(ui, format!("{}  Restart to update", icon::ARROWS_CLOCKWISE)).on_hover_text("The new version is installed: restart Glasir to use it").clicked() {
-                match update::relaunch(&p) {
-                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                    Err(e) => self.toast(&ctx, e, true),
-                }
+            if theme::pill(ui, format!("{}  Restart to update", icon::ARROWS_CLOCKWISE)).on_hover_text(format!("The new version is installed at {}: restart Glasir to use it", p.display())).clicked() {
+                self.restart(&ctx);
             }
         } else if self.update.install.is_some() {
             ui.spinner();

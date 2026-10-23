@@ -14,6 +14,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
+        # Three shards of about equal test time: repo::split and repo::undo are half of it.
+        shard: [split, undo, rest]
+    name: test (${{ matrix.os }}, ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -21,18 +24,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # The Windows image converts checkouts to CRLF; the tests compare exact bytes.
       - run: git config --global core.autocrlf false
-      # Windows spends most of its test time starting processes: use the real git, not the
-      # launcher in Git\cmd that starts it as a second process, and don't virus-scan the
-      # checkout or the tests' scratch repos.
+      # Windows spends most of its test time starting processes: don't virus-scan the checkout
+      # or the tests' scratch repos. Git Bash below puts the real git (mingw64/bin) before the
+      # launcher in Git\bin that starts it as a second process.
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
           try { Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:TEMP, "$env:LOCALAPPDATA\Temp", "$env:USERPROFILE\.cargo" } catch { Write-Host "No Defender exclusion: $_" }
-          "C:\Program Files\Git\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-      - if: runner.os == 'Windows'
-        shell: pwsh
-        run: (Get-Command git).Source; git --version
-      - run: cargo test --locked
+      - shell: bash
+        run: |
+          echo "git: $(command -v git)"
+          case "${{ matrix.shard }}" in
+            split) cargo test --locked -- repo::split repo::stack ;;
+            undo) cargo test --locked -- repo::undo repo::diff repo::rebase ;;
+            rest) cargo test --locked -- --skip repo::split --skip repo::stack --skip repo::undo --skip repo::diff --skip repo::rebase ;;
+          esac
 
   # Release builds run beside the tests, and only where a release can follow.
   build:

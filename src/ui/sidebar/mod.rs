@@ -111,9 +111,13 @@ fn stacked<'a>(d: &'a RepoData, locals: &[&'a crate::git::Ref]) -> Vec<(&'a crat
 /// A local branch row: marker, stack / ahead / behind badges, menus, drag-and-drop. `name` is what
 /// it shows (the last segment inside a folder); `depth` its stack depth.
 fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: usize, acts: &mut Vec<Action>) {
-    let glyph = if r.head { icon::CHECK } else if r.worktree.is_some() { icon::TREE } else { icon::GIT_BRANCH };
+    let at = match (r.head, r.worktree.is_some()) {
+        (true, _) => format!("{}  ", icon::CHECK),
+        (_, true) => format!("{}  ", icon::TREE),
+        _ => String::new(),
+    };
     let indent = if depth > 0 { format!("{}{} ", "    ".repeat(depth - 1), icon::ARROW_ELBOW_DOWN_RIGHT) } else { String::new() };
-    let mut text = format!("{indent}{glyph}  {name}");
+    let mut text = format!("{indent}{at}{}  {name}", icon::GIT_BRANCH);
     if depth == 0 && !stack::children(d, &r.name).is_empty() {
         text += &format!("  {}", icon::STACK);
     }
@@ -138,6 +142,9 @@ fn local_row(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, name: &str, depth: 
     let mut tip = if r.gone { format!("{}\nUpstream branch is gone", r.name) } else { r.name.clone() };
     if r.head {
         tip += "\nCurrent branch (HEAD)";
+    }
+    if let Some(p) = &r.worktree {
+        tip += &format!("\n{}  Checked out in another worktree: {p}\nA branch can be checked out in one worktree at a time; double-click switches this tab there.", icon::TREE);
     }
     if let Some(p) = stack::parent(d, &r.name) {
         tip += &format!("\nStacked on {p}");
