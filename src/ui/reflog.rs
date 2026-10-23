@@ -22,6 +22,9 @@ fn action_color(action: &str) -> Color32 {
 /// Recovery actions for one entry: the header bar for the selection, and each row's menu.
 fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action>) {
     let short = &e.id[..e.id.len().min(7)];
+    if theme::pill(ui, format!("{}  Check out", icon::ARROW_BEND_UP_RIGHT)).on_hover_text("Check out this commit (detached HEAD)").clicked() {
+        acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &e.id]).undo(Undo::Keep)));
+    }
     if theme::pill(ui, format!("{}  Create branch here…", icon::GIT_BRANCH)).on_hover_text("A new branch at this commit; your checkout stays as it is").clicked() {
         acts.push(prompt(format!("New branch at {short}"), "", Op::new("Create branch", &["branch", "--", "{}", &e.id]).undo(Undo::Keep)));
     }
@@ -34,9 +37,6 @@ fn entry_items(ui: &mut Ui, d: &RepoData, e: &ReflogEntry, acts: &mut Vec<Action
             .response
             .on_disabled_hover_text(busy.unwrap_or_default())
             .on_hover_text(format!("Reset {head} to {short}"));
-    }
-    if theme::pill(ui, format!("{}  Check out", icon::ARROW_BEND_UP_RIGHT)).on_hover_text("Check out this commit (detached HEAD)").clicked() {
-        acts.push(Action::Git(Op::new(format!("Checkout {short}"), &["checkout", "--detach", &e.id]).undo(Undo::Keep)));
     }
 }
 

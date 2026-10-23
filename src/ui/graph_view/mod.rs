@@ -67,14 +67,13 @@ fn ref_label(r: &Ref, synced: bool) -> String {
 }
 
 /// A ref's pill at `min`, at most `max_w` wide; `synced`: its upstream rides along as a ☁. HEAD's is
-/// accent-filled and leads with a check.
+/// filled with its lane colour `col`, glows and leads with a check.
 fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32, faded: bool) -> Rect {
     let p = ui.painter();
     let head_pill = rf.head && rf.kind == RefKind::Local;
-    let hc = if faded { theme::accent().gamma_multiply(0.3) } else { theme::accent() };
     let label = ref_label(rf, synced);
     let fill = match rf.kind {
-        _ if head_pill => hc,
+        _ if head_pill => col,
         RefKind::Local => col.gamma_multiply(0.85),
         RefKind::Remote => col.gamma_multiply(0.4),
         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
@@ -87,7 +86,7 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
     let pill = Rect::from_min_size(min, vec2((g.size().x + 14.0).min(max_w).max(10.0), 20.0));
     if head_pill {
         for (grow, a) in [(3.0, 0.1), (2.0, 0.18), (1.0, 0.3)] {
-            p.rect_filled(pill.expand(grow), 10.0 + grow, hc.gamma_multiply(a));
+            p.rect_filled(pill.expand(grow), 10.0 + grow, col.gamma_multiply(a));
         }
     }
     p.rect_filled(pill, 10.0, fill);
@@ -446,7 +445,7 @@ pub fn show(
                     // end past the column's edge, so min/max rather than clamp (which panics).
                     let from = pill.right() + extra; // after the +N badge, not through it
                     let to = (c.x - rad - 0.75).min(x_msg - 2.0).max(from);
-                    let line = if rf.head && rf.kind == RefKind::Local { Stroke::new(2.5, hc) } else { Stroke::new(1.5, col.gamma_multiply(0.7)) };
+                    let line = if rf.head && rf.kind == RefKind::Local { Stroke::new(2.5, col) } else { Stroke::new(1.5, col.gamma_multiply(0.7)) };
                     painter.line_segment([pos2(from, y(r)), pos2(to, y(r))], line);
                     if more > 0 {
                         let b = Rect::from_min_size(pos2(pill.right() + 4.0, y(r) - 9.0), vec2(22.0, 18.0));

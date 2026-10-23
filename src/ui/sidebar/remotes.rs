@@ -37,9 +37,6 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
     if ui.button(format!("{}  Edit remote…", icon::PENCIL_SIMPLE)).on_hover_text("Rename it or change its fetch / push URL").clicked() {
         acts.push(Action::RemoteForm(Form::edit(d, name)));
     }
-    if ui.button(format!("{}  Remove remote…", icon::TRASH)).clicked() {
-        acts.push(Action::Git(remotes::remove(d, name)));
-    }
     ui.separator();
     let url = d.remotes.iter().find(|r| r.0 == name).map_or("", |r| r.1.as_str());
     if let (Some(web), Some(host)) = (git::web_url(url), git::host(url))
@@ -49,6 +46,10 @@ pub fn remote_menu(ui: &mut egui::Ui, d: &RepoData, name: &str, acts: &mut Vec<A
     }
     if ui.button(format!("{}  Copy URL", icon::COPY)).clicked() {
         acts.push(Action::Copy(url.into()));
+    }
+    ui.separator();
+    if ui.button(format!("{}  Remove remote…", icon::TRASH)).clicked() {
+        acts.push(Action::Git(remotes::remove(d, name)));
     }
 }
 

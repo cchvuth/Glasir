@@ -353,8 +353,9 @@ The name fits a Git client:
 - **⌘P command palette** with fuzzy search over commands, branches, tags and repos.
 - **Repo tabs** show the branch, a dirty dot and ahead/behind arrows; drag to reorder, right-click to rename, close others or reveal; ⌘1–⌘9 switch. Recent repositories, live refresh when files change on disk.
 - **Command log** (⇧⌘L) showing every git command Glasir ran, copyable as shell commands.
-- **Updates in place**: at startup Glasir asks GitHub for its latest release; an **Update to x.y**
-  pill in the title bar downloads it, swaps it in and restarts. Downloaded by the app itself,
+- **Updates in place**: at startup and when its window comes back into focus (at most every
+  10 minutes) Glasir asks GitHub for its latest release; a pulsing **Update to x.y** pill in the
+  title bar downloads it, swaps it in and restarts. Downloaded by the app itself,
   so macOS doesn't block the new version again. Off in Settings → Updates.
 - **Embedded terminal** (⌃`, the toolbar's terminal button or ⌘P): your login shell
   in the repo folder below the graph, with several shell tabs, 256 / true colours,

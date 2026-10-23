@@ -12,27 +12,17 @@ use egui::Ui;
 /// holds hits older than `d`'s loaded page).
 pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, shown: &RepoData, multi: &[String], acts: &mut Vec<Action>) {
     let n = multi.len();
-    for (kind, label) in [
-        (MultiOp::CherryPick, format!("Cherry-pick {n} commits")),
-        (MultiOp::CherryPickEdit, format!("{}  Cherry-pick interactively…", icon::CHERRIES)),
-        (MultiOp::Squash, format!("Squash {n} commits into one")),
-        (MultiOp::Revert, format!("Revert {n} commits")),
-    ] {
+    let item = |ui: &mut Ui, acts: &mut Vec<Action>, kind: MultiOp, label: String| {
         if ui.button(label).clicked() {
             acts.push(Action::MultiOp(kind, multi.to_vec()));
         }
-    }
-    if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::del())).clicked() {
-        acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
-    }
-    recompose_items(ui, d, &format!("Recompose {n} commits…"), &multi[n - 1], multi, acts);
-    patch_items(ui, multi, acts);
+    };
+    item(ui, acts, MultiOp::CherryPick, format!("Cherry-pick {n} commits"));
+    item(ui, acts, MultiOp::CherryPickEdit, format!("{}  Cherry-pick interactively…", icon::CHERRIES));
+    item(ui, acts, MultiOp::Revert, format!("Revert {n} commits"));
     ui.separator();
     if ui.button("Compare oldest ↔ newest").clicked() {
         acts.push(Action::Select(Sel::Compare { from: format!("{}^", multi[n - 1]), to: multi[0].clone(), three_dot: false }));
-    }
-    if ui.button("Copy SHAs").clicked() {
-        acts.push(Action::Copy(multi.join("\n")));
     }
     // GitHub's base...head leaves the base out: compare from the oldest one's parent (none for a root).
     if let Some(base) = d.first_parent(&multi[n - 1]).or_else(|| shown.first_parent(&multi[n - 1])) {
@@ -40,6 +30,17 @@ pub(super) fn multi_menu(ui: &mut Ui, d: &RepoData, shown: &RepoData, multi: &[S
         crate::ui::links::items(ui, d, &[("compare", page)], &[&multi[n - 1], &multi[0]], acts);
     }
     crate::ui::bisect::multi_item(ui, d, multi, acts);
+    ui.separator();
+    if ui.button("Copy SHAs").clicked() {
+        acts.push(Action::Copy(multi.join("\n")));
+    }
+    patch_items(ui, multi, acts);
+    ui.separator();
+    item(ui, acts, MultiOp::Squash, format!("Squash {n} commits into one"));
+    recompose_items(ui, d, &format!("Recompose {n} commits…"), &multi[n - 1], multi, acts);
+    if ui.button(egui::RichText::new(format!("Drop {n} commits")).color(theme::del())).clicked() {
+        acts.push(Action::MultiOp(MultiOp::Drop, multi.to_vec()));
+    }
 }
 /// The commits from `oldest` up to HEAD (exactly `picked`, if any) back into the Commit
 /// Composer, with or without the uncommitted changes.
@@ -210,6 +211,53 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
             acts.push(Action::Git(pick_op(format!("Cherry-pick {short} (no commit)"), &[&c.id], merge, true)));
         }
     }
+    let mut revert = vec!["revert", "--no-edit"];
+    if c.parents.len() > 1 {
+        revert.extend(["-m", "1"]);
+    }
+    revert.push(&c.id);
+    if ui.button("Revert commit").clicked() {
+        let mut op = Op::new(format!("Revert {short}"), &revert).undo(Undo::Keep);
+        if let Some(first) = c.parents.first().filter(|_| c.parents.len() > 1) {
+            op.label = format!("Revert merge {short}");
+            op = op.confirm(format!(
+                "{short} is a merge commit. Revert it against parent 1 ({})? That undoes what the merge brought in from its other side(s); the first parent's side stays. (Undo with ⌘Z.)",
+                &first[..first.len().min(7)]
+            ));
+        }
+        acts.push(Action::Git(op));
+    }
+    ui.separator();
+    if !is_head && ui.button("Compare with HEAD").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: "HEAD".into(), three_dot: false }));
+    }
+    if ui.button("Compare working tree with this commit").on_hover_text("Your uncommitted and committed changes since this commit").clicked() {
+        acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: crate::git::WORKTREE.into(), three_dot: false }));
+    }
+    crate::ui::links::items(ui, d, &[("commit", crate::git::Page::Commit(&c.id))], &[&c.id], acts);
+    crate::ui::bisect::commit_items(ui, d, c, acts);
+    ui.separator();
+    if ui.button("Copy commit SHA").clicked() {
+        acts.push(Action::Copy(c.id.clone()));
+    }
+    if ui.button("Copy commit message").clicked() {
+        acts.push(Action::Copy(crate::git::run(&d.git_dir, &["log", "-1", "--format=%B", &c.id]).map_or_else(|_| c.summary.clone(), |m| m.trim_end().to_owned())));
+    }
+    // format-patch skips merge commits.
+    if c.parents.len() < 2 {
+        patch_items(ui, std::slice::from_ref(&c.id), acts);
+    }
+    let cmds = crate::repo::tools::commands(Some("sha"));
+    if !cmds.is_empty() {
+        ui.separator();
+        // {branch}: the branch at this commit, else the current one.
+        let branch = refs.iter().find(|r| r.kind == RefKind::Local).map(|r| r.name.clone()).or_else(|| d.status.branch.clone()).unwrap_or_default();
+        let vars = crate::repo::tools::Vars { branch, sha: c.id.clone(), path: String::new() };
+        crate::ui::inspector::custom_items(ui, cmds, &vars, acts);
+    }
+    if d.status.branch.is_some() {
+        ui.separator();
+    }
     // Only HEAD's own history: for another branch's commit it would be a rebase onto it.
     if d.status.branch.is_some() && !is_head && on_branch && ui.button("Edit history after this commit (interactive rebase)…").clicked() {
         acts.push(Action::Rebase { base: c.id.clone(), label: short.into() });
@@ -248,50 +296,7 @@ pub fn commit_menu(ui: &mut Ui, d: &RepoData, c: &Commit, on_branch: bool, acts:
             }
         });
     }
-    let mut revert = vec!["revert", "--no-edit"];
-    if c.parents.len() > 1 {
-        revert.extend(["-m", "1"]);
-    }
-    revert.push(&c.id);
-    if ui.button("Revert commit").clicked() {
-        let mut op = Op::new(format!("Revert {short}"), &revert).undo(Undo::Keep);
-        if let Some(first) = c.parents.first().filter(|_| c.parents.len() > 1) {
-            op.label = format!("Revert merge {short}");
-            op = op.confirm(format!(
-                "{short} is a merge commit. Revert it against parent 1 ({})? That undoes what the merge brought in from its other side(s); the first parent's side stays. (Undo with ⌘Z.)",
-                &first[..first.len().min(7)]
-            ));
-        }
-        acts.push(Action::Git(op));
-    }
     reset_menu(ui, d, &c.id, "this commit", acts);
-    crate::ui::bisect::commit_items(ui, d, c, acts);
-    ui.separator();
-    if ui.button("Copy commit SHA").clicked() {
-        acts.push(Action::Copy(c.id.clone()));
-    }
-    if ui.button("Copy commit message").clicked() {
-        acts.push(Action::Copy(crate::git::run(&d.git_dir, &["log", "-1", "--format=%B", &c.id]).map_or_else(|_| c.summary.clone(), |m| m.trim_end().to_owned())));
-    }
-    if !is_head && ui.button("Compare with HEAD").clicked() {
-        acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: "HEAD".into(), three_dot: false }));
-    }
-    if ui.button("Compare working tree with this commit").on_hover_text("Your uncommitted and committed changes since this commit").clicked() {
-        acts.push(Action::Select(Sel::Compare { from: c.id.clone(), to: crate::git::WORKTREE.into(), three_dot: false }));
-    }
-    crate::ui::links::items(ui, d, &[("commit", crate::git::Page::Commit(&c.id))], &[&c.id], acts);
-    // format-patch skips merge commits.
-    if c.parents.len() < 2 {
-        patch_items(ui, std::slice::from_ref(&c.id), acts);
-    }
-    let cmds = crate::repo::tools::commands(Some("sha"));
-    if !cmds.is_empty() {
-        ui.separator();
-        // {branch}: the branch at this commit, else the current one.
-        let branch = refs.iter().find(|r| r.kind == RefKind::Local).map(|r| r.name.clone()).or_else(|| d.status.branch.clone()).unwrap_or_default();
-        let vars = crate::repo::tools::Vars { branch, sha: c.id.clone(), path: String::new() };
-        crate::ui::inspector::custom_items(ui, cmds, &vars, acts);
-    }
 }
 
 /// "Reset <current branch> to <what>" (commit, branch and tag menus); `id` is the commit.
@@ -329,6 +334,7 @@ pub(super) fn wip_menu(ui: &mut Ui, state: State, acts: &mut Vec<Action>) {
     if ui.button("Stash all changes").clicked() {
         acts.push(stash_prompt());
     }
+    ui.separator();
     if ui.button("Discard all changes").clicked() {
         acts.push(Action::Git(discard_all_op(state)));
     }

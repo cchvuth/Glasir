@@ -596,11 +596,12 @@ impl RepoTab {
                                     acts.extend(stage_files_op("Stage", files).map(Action::Git));
                                     clear = true;
                                 }
+                                clear |= dir_items(ui, &self.dir, path, files, false, acts);
+                                ui.separator();
                                 if ui.button("Discard changes in folder").clicked() {
                                     acts.extend(discard_files_op(files, &s.submodules).map(Action::Git));
                                     clear = true;
                                 }
-                                clear |= dir_items(ui, &self.dir, path, files, false, acts);
                             });
                             return false;
                         }
@@ -628,24 +629,23 @@ impl RepoTab {
                                 acts.extend(stage_files_op("Stage", &sel_un).map(Action::Git));
                                 clear = true;
                             }
+                            clear |= stash_files_item(ui, &sel_un, false, acts);
+                            ui.separator();
                             if ui.button(format!("Discard {n} files")).clicked() {
                                 acts.extend(discard_files_op(&sel_un, &s.submodules).map(Action::Git));
                                 clear = true;
                             }
-                            clear |= stash_files_item(ui, &sel_un, false, acts);
                             return;
                         }
                         if ui.button("Stage").clicked() {
                             acts.extend(stage_one());
-                        }
-                        if ui.button("Discard changes").clicked() {
-                            acts.extend(discard_files_op(std::slice::from_ref(c), &s.submodules).map(Action::Git));
                         }
                         stash_files_item(ui, std::slice::from_ref(c), false, acts);
                         lfs_track_item(ui, d, &c.path, acts);
                         if c.code == '?' {
                             gitignore_item(ui, &self.dir, &c.path, acts);
                         }
+                        ui.separator();
                         if ui.button("Show in file manager").clicked() {
                             acts.push(Action::Reveal(c.path.clone()));
                         }
@@ -658,6 +658,10 @@ impl RepoTab {
                         }
                         if ui.button("Copy path").clicked() {
                             acts.push(Action::Copy(c.path.clone()));
+                        }
+                        ui.separator();
+                        if ui.button("Discard changes").clicked() {
+                            acts.extend(discard_files_op(std::slice::from_ref(c), &s.submodules).map(Action::Git));
                         }
                     });
                     false
@@ -729,6 +733,7 @@ impl RepoTab {
                         }
                         stash_files_item(ui, std::slice::from_ref(c), true, acts);
                         lfs_track_item(ui, d, &c.path, acts);
+                        ui.separator();
                         open_items(ui, d, head, &c.path, c.code == 'D', acts);
                         if c.code != 'A' {
                             file_items(ui, &c.path, c.old_path.as_deref().unwrap_or(&c.path), None, (c.code == 'D').then_some("HEAD"), acts);

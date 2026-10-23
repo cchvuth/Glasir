@@ -197,7 +197,7 @@ mod tests {
     #[test]
     #[ignore]
     fn installs_the_latest_release() {
-        let mut r = parse(&agent().get(LATEST).call().unwrap().body_mut().read_to_string().unwrap(), "0.0.0").unwrap().unwrap();
+        let r = parse(&agent().get(LATEST).call().unwrap().body_mut().read_to_string().unwrap(), "0.0.0").unwrap().unwrap();
         let dir = std::env::temp_dir().join(format!("glasir-update-real-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

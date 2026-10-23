@@ -17,15 +17,67 @@ pub fn ref_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
         RefKind::Tag => tag_menu(ui, d, r, acts),
     }
     view_items(ui, d, r, acts);
+    delete_items(ui, d, r, acts);
 }
 
-/// A local branch level with its upstream (one graph pill): the local's menu, then what is the remote's own.
+/// A local branch level with its upstream (one graph pill): the local's menu, then what is the
+/// remote's own; both deletes come last.
 pub fn synced_menu(ui: &mut Ui, d: &RepoData, local: &crate::git::Ref, up: &crate::git::Ref, acts: &mut Vec<Action>) {
-    ref_menu(ui, d, local, acts);
+    ui.spacing_mut().button_padding.x = 10.0;
+    local_menu(ui, d, local, acts);
+    view_items(ui, d, local, acts);
     ui.separator();
     ui.label(egui::RichText::new(format!("{}  {}", icon::CLOUD, up.name)).small().weak());
     remote_menu(ui, d, up, true, acts);
     view_items(ui, d, up, acts);
+    delete_items(ui, d, local, acts);
+    delete_items(ui, d, up, acts);
+}
+
+/// The destructive items, last in a ref's menu behind their own separator.
+fn delete_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
+    let name = r.name.as_str();
+    match r.kind {
+        RefKind::Local if !r.head => {
+            ui.separator();
+            if ui.button("Delete").clicked() {
+                acts.push(Action::Git(delete_branches(d, format!("Delete {name}"), &[name], false)));
+            }
+            if ui.button("Force delete").clicked() {
+                acts.push(Action::Git(
+                    delete_branches(d, format!("Delete {name}"), &[name], true).confirm(format!("Delete {name} even if it is not merged? (You can undo this.)")),
+                ));
+            }
+            if let Some((label, op)) = crate::repo::delete_everywhere(d, r)
+                && ui.button(label).clicked()
+            {
+                acts.push(Action::Git(op));
+            }
+        }
+        RefKind::Remote => {
+            if let Some((remote, branch)) = d.split_remote(name) {
+                ui.separator();
+                if ui.button(format!("Delete {branch} from {remote}")).clicked() {
+                    acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch, &r.target)));
+                }
+            }
+        }
+        RefKind::Tag => {
+            ui.separator();
+            if ui.button("Delete tag").clicked() {
+                acts.push(Action::Git(Op::new(format!("Delete tag {name}"), &["tag", "-d", "--end-of-options", name]).undo(Undo::Keep)));
+            }
+            if let Some(remote) = d.default_remote() {
+                if ui.button(format!("Delete tag from {remote}")).clicked() {
+                    acts.push(Action::Git(Op::new(format!("Delete remote tag {name}"), &["push", remote, "--delete", &r.full]).confirm(format!("Delete tag {name} on {remote}?"))));
+                }
+                if ui.button(format!("Delete tag here and from {remote}")).clicked() {
+                    acts.push(Action::Git(crate::repo::tags::delete_everywhere(r, remote)));
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Graph hide / solo toggles.
@@ -124,6 +176,7 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
 
 fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     let name = r.name.as_str();
+    // Switch and sync.
     if !r.head {
         if ui.button(format!("Checkout {name}")).clicked() {
             acts.extend(branch_checkout(d, r));
@@ -136,19 +189,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
         {
             acts.push(Action::Git(crate::repo::remotes::pull_ff(name, remote, rb)));
         }
-        integrate_items(ui, d, name, d.rev(r), acts);
-        reset_menu(ui, d, &r.target, name, acts);
-        compare_items(ui, d, r, acts);
     }
-    if r.head
-        && let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
-    {
-        ui.separator();
-        if ui.button(format!("{}  {label}", icon::GIT_FORK)).on_hover_text(format!("New branch at HEAD for them; {name} goes back to {}", r.upstream)).clicked() {
-            acts.push(a);
-        }
-    }
-    ui.separator();
     if let Some((remote, rb)) = d.push_target(name, &r.upstream) {
         let to = if rb == name { remote.to_owned() } else { format!("{remote}/{rb}") };
         if ui.button(format!("Push {name} to {to}")).clicked() {
@@ -177,15 +218,15 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
             acts.extend(crate::repo::stack::push_op(d, name).map(Action::Git));
         }
     }
-    if !r.head && r.worktree.is_none() && ui.button("Open in a new worktree…").clicked() {
-        let path = d.worktree_path(name);
-        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "--end-of-options", "{}", d.worktree_rev(r)]).then_open("{}")));
+    // Into the checked-out branch.
+    if !r.head {
+        ui.separator();
+        integrate_items(ui, d, name, d.rev(r), acts);
+        reset_menu(ui, d, &r.target, name, acts);
+        compare_items(ui, d, r, acts);
     }
-    if let Some(p) = &r.worktree
-        && ui.button(format!("{}  Open its worktree", icon::TREE)).on_hover_text(p.as_str()).clicked()
-    {
-        acts.push(Action::Switch(p.clone()));
-    }
+    // The branch itself.
+    ui.separator();
     if ui.button("Create branch from here…").clicked() {
         acts.push(prompt(format!("New branch from {name}"), "", Op::new("Create branch", &["checkout", "-b", "{}", d.rev(r)]).undo(Undo::Keep)));
     }
@@ -203,36 +244,13 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     if !r.upstream.is_empty() && ui.button(format!("Unset upstream ({})", r.upstream)).clicked() {
         acts.push(op("Unset upstream", &["branch", "--unset-upstream", "--end-of-options", name]));
     }
-    if !r.head {
-        if ui.button("Delete").clicked() {
-            acts.push(Action::Git(delete_branches(d, format!("Delete {name}"), &[name], false)));
-        }
-        if ui.button("Force delete").clicked() {
-            acts.push(Action::Git(
-                delete_branches(d, format!("Delete {name}"), &[name], true).confirm(format!("Delete {name} even if it is not merged? (You can undo this.)")),
-            ));
-        }
-        if let Some((label, op)) = crate::repo::delete_everywhere(d, r)
-            && ui.button(label).clicked()
-        {
-            acts.push(Action::Git(op));
-        }
-    }
-    if let Some(w) = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()))
-        && ui.button(format!("Remove its worktree (keep {name})")).on_hover_text(w.path.as_str()).clicked()
-    {
-        let (args, warn) = crate::repo::worktree_remove_args(w);
-        acts.push(Action::Git(crate::repo::remove_worktree_op(w, &args, &format!("{warn}\nThe branch {name} stays."))));
-    }
     if r.head
-        && let (Some(w), Some(main)) = (d.here.filter(|&i| i > 0).and_then(|i| d.worktrees.get(i)).filter(|w| w.locked.is_none()), d.worktrees.first())
-        && ui.button(format!("Remove this worktree (keep {name})")).on_hover_text(w.path.as_str()).clicked()
+        && let Some((label, a)) = crate::repo::spinoff::move_unpushed(d)
+        && ui.button(format!("{}  {label}", icon::GIT_FORK)).on_hover_text(format!("New branch at HEAD for them; {name} goes back to {}", r.upstream)).clicked()
     {
-        let (args, warn) = crate::repo::worktree_remove_args(w);
-        let from_main: Vec<&str> = ["-C", main.path.as_str()].into_iter().chain(args).collect();
-        let op = crate::repo::remove_worktree_op(w, &from_main, &format!("{warn}\nThe branch {name} stays; this tab moves to the primary worktree."));
-        acts.push(Action::Git(op.then_open(main.path.clone())));
+        acts.push(a);
     }
+    worktree_items(ui, d, r, acts);
     web_items(ui, d, r, acts);
     ui.separator();
     if ui.button("Copy branch name").clicked() {
@@ -240,33 +258,65 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
     }
 }
 
+/// Open the branch in a worktree, or remove the one it is checked out in (keeping the branch).
+fn worktree_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
+    let name = r.name.as_str();
+    let its = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()));
+    let this = r.head.then(|| d.here.filter(|&i| i > 0).and_then(|i| d.worktrees.get(i)).filter(|w| w.locked.is_none())).flatten().zip(d.worktrees.first());
+    let open = !r.head && r.worktree.is_none();
+    if !open && r.worktree.is_none() && its.is_none() && this.is_none() {
+        return;
+    }
+    ui.separator();
+    if open && ui.button("Open in a new worktree…").clicked() {
+        let path = d.worktree_path(name);
+        acts.push(prompt(format!("Worktree folder for {name}"), path, Op::new("Create worktree", &["worktree", "add", "--end-of-options", "{}", d.worktree_rev(r)]).then_open("{}")));
+    }
+    if let Some(p) = &r.worktree
+        && ui.button(format!("{}  Open its worktree", icon::TREE)).on_hover_text(p.as_str()).clicked()
+    {
+        acts.push(Action::Switch(p.clone()));
+    }
+    if let Some(w) = its
+        && ui.button(format!("Remove its worktree (keep {name})")).on_hover_text(w.path.as_str()).clicked()
+    {
+        let (args, warn) = crate::repo::worktree_remove_args(w);
+        acts.push(Action::Git(crate::repo::remove_worktree_op(w, &args, &format!("{warn}\nThe branch {name} stays."))));
+    }
+    if let Some((w, main)) = this
+        && ui.button(format!("Remove this worktree (keep {name})")).on_hover_text(w.path.as_str()).clicked()
+    {
+        let (args, warn) = crate::repo::worktree_remove_args(w);
+        let from_main: Vec<&str> = ["-C", main.path.as_str()].into_iter().chain(args).collect();
+        let op = crate::repo::remove_worktree_op(w, &from_main, &format!("{warn}\nThe branch {name} stays; this tab moves to the primary worktree."));
+        acts.push(Action::Git(op.then_open(main.path.clone())));
+    }
+}
+
 /// `paired`: right after its local branch's menu (same commit), so only what is the remote's own.
 fn remote_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, paired: bool, acts: &mut Vec<Action>) {
-    if !paired {
-        if ui.button(format!("Checkout {}", r.name)).clicked() {
-            acts.extend(branch_checkout(d, r));
+    if paired {
+        if ui.button("Copy branch name").clicked() {
+            acts.push(Action::Copy(r.name.clone()));
         }
-        integrate_items(ui, d, &r.name, d.rev(r), acts);
-        reset_menu(ui, d, &r.target, &r.name, acts);
-        compare_items(ui, d, r, acts);
-        let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
-        if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
-            acts.push(prompt(
-                format!("Worktree folder for {local}"),
-                d.worktree_path(&local),
-                Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.full]).then_open("{}"),
-            ));
-        }
-        ui.separator();
+        return;
     }
-    if let Some((remote, branch)) = d.split_remote(&r.name)
-        && ui.button(format!("Delete {branch} from {remote}")).clicked()
-    {
-        acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch, &r.target)));
+    if ui.button(format!("Checkout {}", r.name)).clicked() {
+        acts.extend(branch_checkout(d, r));
     }
-    if !paired {
-        web_items(ui, d, r, acts);
+    let local = d.split_remote(&r.name).map_or(r.name.as_str(), |s| s.1).to_owned();
+    if d.local(&local).is_none() && ui.button("Check out in a new worktree…").clicked() {
+        acts.push(prompt(
+            format!("Worktree folder for {local}"),
+            d.worktree_path(&local),
+            Op::new("Create worktree", &["worktree", "add", "--track", "-b", &local, "{}", &r.full]).then_open("{}"),
+        ));
     }
+    ui.separator();
+    integrate_items(ui, d, &r.name, d.rev(r), acts);
+    reset_menu(ui, d, &r.target, &r.name, acts);
+    compare_items(ui, d, r, acts);
+    web_items(ui, d, r, acts);
     ui.separator();
     if ui.button("Copy branch name").clicked() {
         acts.push(Action::Copy(r.name.clone()));
@@ -277,32 +327,19 @@ fn tag_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Actio
     if ui.button(format!("Checkout {}", r.name)).clicked() {
         acts.extend(branch_checkout(d, r));
     }
-    reset_menu(ui, d, &r.target, &r.name, acts);
-    worktree_compare(ui, d, r, acts);
     if let Some(remote) = d.default_remote() {
         if ui.button(format!("Push tag to {remote}")).clicked() {
             acts.push(op(format!("Push tag {}", r.name), &["push", remote, &r.full]));
         }
-        if ui.button(format!("Delete tag from {remote}")).clicked() {
-            acts.push(Action::Git(
-                Op::new(format!("Delete remote tag {}", r.name), &["push", remote, "--delete", &r.full])
-                    .confirm(format!("Delete tag {} on {remote}?", r.name)),
-            ));
-        }
-    }
-    if r.annotated && ui.button(format!("{}  Verify signature", icon::SEAL_CHECK)).on_hover_text("Check the tag's signature (git verify-tag)").clicked() {
-        acts.push(Action::VerifyTag(r.full.clone()));
-    }
-    if ui.button("Delete tag").clicked() {
-        acts.push(Action::Git(Op::new(format!("Delete tag {}", r.name), &["tag", "-d", "--end-of-options", &r.name]).undo(Undo::Keep)));
-    }
-    if let Some(remote) = d.default_remote() {
-        if ui.button(format!("Delete tag here and from {remote}")).clicked() {
-            acts.push(Action::Git(crate::repo::tags::delete_everywhere(r, remote)));
-        }
         if ui.button(format!("{}  Push all tags to {remote}", icon::TAG)).clicked() {
             acts.push(Action::Git(crate::repo::tags::push_all(remote)));
         }
+    }
+    ui.separator();
+    reset_menu(ui, d, &r.target, &r.name, acts);
+    worktree_compare(ui, d, r, acts);
+    if r.annotated && ui.button(format!("{}  Verify signature", icon::SEAL_CHECK)).on_hover_text("Check the tag's signature (git verify-tag)").clicked() {
+        acts.push(Action::VerifyTag(r.full.clone()));
     }
     crate::ui::links::items(ui, d, &[("release page", Page::Release(&r.name))], &[], acts);
     ui.separator();

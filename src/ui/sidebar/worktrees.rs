@@ -74,6 +74,9 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
         if !w.prunable && ui.button("Show in file manager").clicked() {
             crate::repo::reveal(std::path::Path::new(&w.path));
         }
+        if ui.button("Copy path").clicked() {
+            acts.push(Action::Copy(w.path.clone()));
+        }
         match &w.locked {
             _ if is_main => {}
             Some(_) => {
@@ -99,10 +102,6 @@ fn worktree_row(ui: &mut Ui, d: &RepoData, w: &crate::git::Worktree, current: bo
                 let op = crate::repo::remove_worktree_and_branch(d, &args, b);
                 acts.push(Action::Git(op.confirm(format!("{warn}\nBranch {b} is deleted too (undoable)."))));
             }
-        }
-        ui.separator();
-        if ui.button("Copy path").clicked() {
-            acts.push(Action::Copy(w.path.clone()));
         }
     });
 }

@@ -2062,6 +2062,8 @@
         "crate::ui::graph_view::show",
         "crate::ui::palette::items",
         "crate::ui::sidebar::ref_menus::local_menu",
+        "crate::ui::sidebar::ref_menus::worktree_items",
+        "crate::ui::sidebar::ref_menus::delete_items",
         "crate::ui::sidebar::ref_menus::remote_menu",
         "crate::ui::sidebar::ref_menus::tag_menu"
        ],

@@ -119,9 +119,7 @@ impl App {
         if let Some(p) = open {
             app.open(&cc.egui_ctx, &p);
         }
-        if app.s.check_updates && app.shot.is_none() && !cfg!(test) {
-            app.check_updates(&cc.egui_ctx);
-        }
+        app.check_updates(&cc.egui_ctx);
         app
     }
 
@@ -519,6 +517,9 @@ impl eframe::App for App {
             self.open(&ctx, &p);
         }
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if focused && !self.focused {
+            self.check_updates(&ctx);
+        }
         if focused && !self.focused
             && let Some(t) = self.tabs.get_mut(self.active)
         {

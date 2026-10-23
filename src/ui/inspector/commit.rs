@@ -90,7 +90,6 @@ fn restore_items(ui: &mut Ui, d: &RepoData, id: &str, parent: Option<&str>, c: &
         let path = c.old_path.as_deref().unwrap_or(&c.path);
         acts.push(Action::Git(restore_file(d, format!("Restore {path}"), p, path, &format!("the version before {short}"))));
     }
-    ui.separator();
 }
 
 /// The signature badge (`%G?`) with its tooltip: what git concluded, then signer and key.
@@ -333,15 +332,6 @@ impl RepoTab {
                     acts.push(Action::Diff(src));
                 }
                 resp.context_menu(|ui| {
-                    if let Some(d) = stash.filter(|_| c.code != 'D')
-                        && ui.button(format!("{}  Apply this file", icon::ARROW_LINE_DOWN)).on_hover_text("Write this file from the stash into the working tree; the stash is kept").clicked()
-                    {
-                        let label = format!("Apply {} from stash", c.path);
-                        acts.push(Action::Git(if *id == untracked_id { restore_file(d, label, id, &c.path, "the stash's version") } else { apply_stash_file(d, label, id, &c.path) }));
-                    }
-                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
-                        restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
-                    }
                     let at = if stash.is_some() { info.parents.first() } else { Some(&info.id) };
                     file_items(ui, &c.path, &c.path, at.map(String::as_str), blame_rev.as_deref(), acts);
                     if let Some(d) = self.data.as_ref().filter(|_| !wt) {
@@ -352,6 +342,18 @@ impl RepoTab {
                     }
                     if ui.button("Copy path").clicked() {
                         acts.push(Action::Copy(c.path.clone()));
+                    }
+                    if (stash.is_some() && c.code != 'D') || (self.data.is_some() && stash.is_none() && !wt) {
+                        ui.separator();
+                    }
+                    if let Some(d) = stash.filter(|_| c.code != 'D')
+                        && ui.button(format!("{}  Apply this file", icon::ARROW_LINE_DOWN)).on_hover_text("Write this file from the stash into the working tree; the stash is kept").clicked()
+                    {
+                        let label = format!("Apply {} from stash", c.path);
+                        acts.push(Action::Git(if *id == untracked_id { restore_file(d, label, id, &c.path, "the stash's version") } else { apply_stash_file(d, label, id, &c.path) }));
+                    }
+                    if let Some(d) = self.data.as_ref().filter(|_| stash.is_none() && !wt) {
+                        restore_items(ui, d, &info.id, info.parents.first().map(String::as_str), c, acts);
                     }
                 });
             };

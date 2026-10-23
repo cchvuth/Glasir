@@ -17,11 +17,20 @@ pub(super) struct Updater {
     ready: Option<PathBuf>,
     /// The relaunch helper is waiting for this process to exit.
     relaunching: bool,
+    checked: Option<std::time::Instant>,
 }
 
 impl App {
+    /// At start and when the window comes back into focus; GitHub allows 60 unauthenticated
+    /// requests an hour, so at most one check per 10 minutes.
     pub(super) fn check_updates(&mut self, ctx: &egui::Context) {
-        self.update.check = Some(Task::spawn(ctx, update::check));
+        let u = &mut self.update;
+        let recent = u.checked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(600));
+        if !self.s.check_updates || self.shot.is_some() || cfg!(test) || recent || u.check.is_some() || u.install.is_some() || u.ready.is_some() {
+            return;
+        }
+        u.checked = Some(std::time::Instant::now());
+        u.check = Some(Task::spawn(ctx, update::check));
     }
 
     /// Closes the window (asking first as any quit does) and starts the installed version once it's gone.
@@ -65,7 +74,18 @@ impl App {
                 true => format!("Glasir {} is out: download and install it here (right-click: release notes)", r.version),
                 false => format!("Glasir {} is out: open its release page", r.version),
             };
-            let pill = theme::pill(ui, egui::RichText::new(format!("{}  Update to {}", icon::DOWNLOAD_SIMPLE, r.version)).color(theme::accent())).on_hover_text(tip);
+            // Accent-filled with a pulsing glow behind it (painted once its size is known).
+            let slot = ui.painter().add(egui::Shape::Noop);
+            let pill = theme::pill(ui, egui::RichText::new(format!("{}  Update to {}", icon::DOWNLOAD_SIMPLE, r.version)).color(egui::Color32::WHITE).strong()).on_hover_text(tip);
+            let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * std::f32::consts::TAU / 1.6).sin();
+            let (rect, accent) = (pill.rect, theme::accent());
+            let mut glow: Vec<egui::Shape> = [(5.0, 0.12), (3.0, 0.22), (1.5, 0.35)]
+                .into_iter()
+                .map(|(grow, k): (f32, f32)| egui::Shape::rect_filled(rect.expand(grow * (0.5 + 0.5 * pulse)), rect.height() / 2.0 + grow, accent.gamma_multiply(k * (0.3 + 0.7 * pulse))))
+                .collect();
+            glow.push(egui::Shape::rect_filled(rect, rect.height() / 2.0, accent));
+            ui.painter().set(slot, egui::Shape::Vec(glow));
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
             let page = r.page.clone();
             pill.context_menu(|ui| {
                 if ui.button("Release notes").clicked() {

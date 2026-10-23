@@ -22,20 +22,20 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | Function | Features |
 |---|---|
 | `ui::inspector::wip::RepoTab::wip_panel` (src/ui/inspector/wip.rs:280) | 31 |
-| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:125) | 27 |
+| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:177) | 27 |
 | `ui::palette::items` (src/ui/palette.rs:74) | 25 |
-| `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:140) | 24 |
+| `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:141) | 24 |
 | `repo::RepoTab::apply` (src/repo/mod.rs:651) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
-| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:276) | 14 |
-| `ui::graph_view::show` (src/ui/graph_view/mod.rs:128) | 14 |
+| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:326) | 14 |
+| `ui::graph_view::show` (src/ui/graph_view/mod.rs:129) | 14 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:290) | 13 |
-| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:244) | 12 |
+| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:297) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
-| `ui::app::App::shortcuts` (src/ui/app.rs:194) | 11 |
+| `ui::app::App::shortcuts` (src/ui/app.rs:192) | 11 |
 | `repo::op::exec_stash` (src/repo/op.rs:835) | 11 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
@@ -44,7 +44,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::diff_view::Layout::get` (src/ui/diff_view.rs:75) | 10 |
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
-| `ui::app::App::ui` (src/ui/app.rs:506) | 9 |
+| `ui::app::App::ui` (src/ui/app.rs:504) | 9 |
 | `repo::op::stash_cmd` (src/repo/op.rs:742) | 9 |
 
 <a id="app"></a>
@@ -608,6 +608,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Check out a branch, remote branch or tag `refs.checkout`
 - **Entry:** src/ui/sidebar/ref_menus.rs:134 "Checkout <name>" (branch/remote/tag menus, sidebar and graph pills); double-click sidebar row (mod.rs:117) or graph pill (graph_view/mod.rs act closure); graph commit menu "Checkout <ref>" and double-click commit row (graph_view/menus.rs:93 checkout_action, :140); palette "Checkout <ref>" (src/ui/palette.rs:195)
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.op-runner`, `platform.undo-engine`
+- **Own code:** `ui::sidebar::ref_menus::worktree_items`, `ui::sidebar::ref_menus::delete_items`
 - **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `repo::op::branch_checkout` (7), `repo::op::checkout_args` (3), `repo::op::in_progress` (4), `repo::op::switch_refused` (3), `repo::op::switches_head` (3), `ui::graph_view::menus::checkout_action` (2), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::show` (14), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (27), `ui::sidebar::ref_menus::remote_menu` (12), `ui::sidebar::ref_menus::tag_menu` (14)
 
 #### Checkout of a remote branch creates / fast-forwards a tracking branch `refs.checkout-remote-tracking`
