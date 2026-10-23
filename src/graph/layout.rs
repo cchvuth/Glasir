@@ -43,6 +43,8 @@ struct Slot {
     edge: u32,
     prio: u32,
     color: u16,
+    /// A merge's edge (2nd+ parent): it takes its parent's color once that is placed.
+    merge: bool,
 }
 
 fn free_lane(lanes: &mut Vec<Option<Slot>>) -> usize {
@@ -52,11 +54,20 @@ fn free_lane(lanes: &mut Vec<Option<Slot>>) -> usize {
     })
 }
 
-/// Lane color for `seed`, bumped past the colors of the lanes up to two columns away (and `avoid`).
+/// Lane color for a lane starting at `col`: the one least used by the open lanes (the nearer, the
+/// more it counts) and never `avoid`; ties go to the first from `seed`'s color on, so a lane's color
+/// comes from the commit that starts it.
 fn pick(lanes: &[Option<Slot>], col: usize, seed: u32, avoid: Option<u16>) -> u16 {
-    let near = |c: u16| Some(c) == avoid || [col.wrapping_sub(2), col.wrapping_sub(1), col + 1, col + 2].iter().any(|&k| lanes.get(k).copied().flatten().is_some_and(|s| s.color == c));
+    let cost = |c: u16| -> u32 {
+        let used: u32 = lanes.iter().enumerate().filter(|(_, s)| s.is_some_and(|s| s.color == c)).map(|(k, _)| match k.abs_diff(col) {
+            0 | 1 => 4,
+            2 => 2,
+            _ => 1,
+        }).sum();
+        used + if Some(c) == avoid { 1000 } else { 0 }
+    };
     let c0 = (seed % COLORS as u32) as u16;
-    (0..COLORS).map(|d| (c0 + d) % COLORS).find(|&c| !near(c)).unwrap_or(c0)
+    (0..COLORS).map(|d| (c0 + d) % COLORS).min_by_key(|&c| cost(c)).unwrap_or(c0)
 }
 
 impl Graph {
@@ -69,6 +80,8 @@ impl Graph {
         let n = parents.len();
         let mut g = Graph { nodes: Vec::with_capacity(n), edges: Vec::with_capacity(n + n / 8), ..Default::default() };
         let mut lanes: Vec<Option<Slot>> = vec![];
+        // Merge edges running in a lane another edge already holds for the same parent: (parent row, edge).
+        let mut joining: Vec<(u32, u32)> = vec![];
         for i in 0..n as u32 {
             // The waiting lane with the best chain priority (ties: leftmost) gets the node.
             let mut best: Option<(usize, Slot)> = None;
@@ -94,12 +107,36 @@ impl Graph {
                     let e = &mut g.edges[s.edge as usize];
                     e.to = i;
                     e.to_col = col as u16;
+                    if s.merge {
+                        e.color = color;
+                    }
                     *slot = None;
                 }
             }
+            joining.retain(|&(target, edge)| {
+                let done = target == i;
+                if done {
+                    let e = &mut g.edges[edge as usize];
+                    (e.to, e.to_col, e.color) = (i, col as u16, color);
+                }
+                !done
+            });
             g.nodes.push(Node { col: col as u16, color });
+            // A merge's line always has the merged-in branch's color (its parent's, set once placed), also
+            // when that branch went on in another lane; only diverging branches get a new color.
             for (pi, &p) in parents[i as usize].iter().enumerate() {
-                let (lane, prio, color) = if pi == 0 {
+                // A parent another lane already heads for (its branch went on after the merge): the
+                // merge joins that lane instead of running beside it and bending back.
+                if pi > 0
+                    && p != NONE
+                    && let Some(k) = lanes.iter().position(|s| s.is_some_and(|s| s.target == p))
+                {
+                    joining.push((p, g.edges.len() as u32));
+                    let lane_color = lanes[k].map_or(color, |s| s.color);
+                    g.edges.push(Edge { from: i, to: NONE, from_col: col as u16, lane: k as u16, to_col: k as u16, color: lane_color });
+                    continue;
+                }
+                let (lane, prio, lane_color) = if pi == 0 {
                     (col, prio_i, color)
                 } else {
                     // A merged-in lane takes its parent's color: the branch keeps it from its tip down.
@@ -107,8 +144,8 @@ impl Graph {
                     let s = if p == NONE { seed[i as usize].wrapping_add(pi as u32) } else { seed[p as usize] };
                     (k, u32::MAX, pick(&lanes, k, s, Some(color)))
                 };
-                lanes[lane] = Some(Slot { target: p, edge: g.edges.len() as u32, prio, color });
-                g.edges.push(Edge { from: i, to: NONE, from_col: col as u16, lane: lane as u16, to_col: lane as u16, color });
+                lanes[lane] = Some(Slot { target: p, edge: g.edges.len() as u32, prio, color: lane_color, merge: pi > 0 });
+                g.edges.push(Edge { from: i, to: NONE, from_col: col as u16, lane: lane as u16, to_col: lane as u16, color: lane_color });
             }
             g.width = g.width.max(lanes.len() as u16);
         }
@@ -223,6 +260,43 @@ mod tests {
         // feature joins back into lane 0 at the base commit
         let join = g.edges.iter().find(|e| e.from == 2).unwrap();
         assert_eq!((join.lane, join.to_col), (1, 0));
+    }
+
+    #[test]
+    fn a_merge_line_has_the_merged_branch_color() {
+        // 0: merge(1, 2) on main  1: main  2: feature  3: base
+        let g = Graph::layout(&[vec![1, 2], vec![3], vec![3], vec![]], &[0, 5, 5, 5], &seeds(4));
+        let merge = g.edges.iter().find(|e| e.from == 0 && e.to == 2).unwrap();
+        assert_eq!(merge.color, g.nodes[2].color);
+        assert_ne!(g.nodes[2].color, g.nodes[0].color, "the feature keeps its own color");
+        // The merged-in commit lands in another lane (its branch went on after the merge): the
+        // merge's line still has that branch's color.
+        // 0: merge(2, 3)  1: a newer child of 3 on its own lane  2: main  3: merged-in  4: base
+        let g = Graph::layout(&[vec![2, 3], vec![3], vec![4], vec![4], vec![]], &[0, 1, 0, 5, 0], &seeds(5));
+        let merge = g.edges.iter().find(|e| e.from == 0 && e.to == 3).unwrap();
+        assert_ne!(merge.lane, g.nodes[3].col, "it lands in the other lane");
+        assert_eq!(merge.color, g.nodes[3].color);
+    }
+
+    #[test]
+    fn a_merge_into_a_branch_that_went_on_joins_its_lane() {
+        // 0: feature's newer commit (on 2)  1: merge(3, 2) on main  2: feature  3: main base
+        let g = Graph::layout(&[vec![2], vec![3, 2], vec![3], vec![]], &[5, 0, 5, 0], &seeds(4));
+        let merge = g.edges.iter().find(|e| e.from == 1 && e.to == 2).unwrap();
+        assert_eq!((merge.lane, merge.to_col), (g.nodes[2].col, g.nodes[2].col), "no extra lane beside the feature's");
+        assert_eq!(g.width, 2);
+        assert_eq!(merge.color, g.nodes[2].color);
+        assert!(g.edges.iter().all(|e| e.to != NONE), "every edge reaches its parent");
+    }
+
+    #[test]
+    fn diverging_branches_get_different_colors() {
+        // 0, 1, 2: three branch tips on the same base 3, far apart from each other.
+        let g = Graph::layout(&[vec![3], vec![3], vec![3], vec![]], &[5; 4], &[10, 20, 30, 40]);
+        let mut c: Vec<u16> = g.nodes[..3].iter().map(|n| n.color).collect();
+        c.sort();
+        c.dedup();
+        assert_eq!(c.len(), 3, "same seed color, still three colors");
     }
 
     #[test]

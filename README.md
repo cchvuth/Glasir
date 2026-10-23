@@ -61,7 +61,8 @@ The name fits a Git client:
 
 ### Commit graph
 - Colored lanes with rounded joins, an author avatar on every commit (merges too) and a
-  live **WIP** row for uncommitted changes.
+  live **WIP** row for uncommitted changes. Branches that fork get distinct colours; a merge
+  line keeps the colour of the branch it brings in.
 - **GitHub avatars**: authors' real profile pictures (graph and commit details)
   from the origin's github.com / GitHub Enterprise host, with the token git's
   credential helper already has for it (never prompts; public github.com works

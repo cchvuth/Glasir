@@ -9,7 +9,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A master commit that already passed every test on ci/check (scripts/ci-check.sh) isn't
+  # tested again: its release only waits for the builds.
+  checked:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      passed: ${{ steps.q.outputs.passed }}
+    steps:
+      - id: q
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&branch=ci/check&status=success" --jq .total_count)
+          if [ "${n:-0}" -gt 0 ]; then echo "passed=true" >> "$GITHUB_OUTPUT"; fi
+
   test:
+    needs: checked
+    # Also when the lookup failed: then nothing is known to have passed.
+    if: always() && needs.checked.outputs.passed != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -75,8 +95,11 @@ jobs:
   # release (tag v<version>) and a ghcr.io package, once every test and build passed;
   # other pushes skip it.
   release:
-    needs: [test, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [checked, test, build]
+    if: >-
+      always() && github.event_name == 'push' && github.ref == 'refs/heads/master' &&
+      needs.build.result == 'success' &&
+      (needs.test.result == 'success' || (needs.test.result == 'skipped' && needs.checked.outputs.passed == 'true'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
