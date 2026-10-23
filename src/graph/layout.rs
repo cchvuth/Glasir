@@ -54,17 +54,24 @@ fn free_lane(lanes: &mut Vec<Option<Slot>>) -> usize {
     })
 }
 
-/// Lane color for a lane starting at `col`: the one least used by the open lanes (the nearer, the
-/// more it counts) and never `avoid`; ties go to the first from `seed`'s color on, so a lane's color
-/// comes from the commit that starts it.
-fn pick(lanes: &[Option<Slot>], col: usize, seed: u32, avoid: Option<u16>) -> u16 {
+/// Lane color for a lane starting at `col` in `row`: the one least used by the open lanes (the
+/// nearer, the more it counts) and by the rows just above (`last`: each color's latest row), never
+/// `avoid`; ties go to the first from `seed`'s color on, so a lane's color comes from the commit
+/// that starts it.
+fn pick(lanes: &[Option<Slot>], col: usize, seed: u32, avoid: Option<u16>, last: &[u32], row: u32) -> u16 {
     let cost = |c: u16| -> u32 {
+        let recent = match row.wrapping_sub(last[c as usize]) {
+            0..10 => 3,
+            10..30 => 2,
+            30..60 => 1,
+            _ => 0,
+        };
         let used: u32 = lanes.iter().enumerate().filter(|(_, s)| s.is_some_and(|s| s.color == c)).map(|(k, _)| match k.abs_diff(col) {
             0 | 1 => 4,
             2 => 2,
             _ => 1,
         }).sum();
-        used + if Some(c) == avoid { 1000 } else { 0 }
+        used + recent + if Some(c) == avoid { 1000 } else { 0 }
     };
     let c0 = (seed % COLORS as u32) as u16;
     (0..COLORS).map(|d| (c0 + d) % COLORS).min_by_key(|&c| cost(c)).unwrap_or(c0)
@@ -82,6 +89,7 @@ impl Graph {
         let mut lanes: Vec<Option<Slot>> = vec![];
         // Merge edges running in a lane another edge already holds for the same parent: (parent row, edge).
         let mut joining: Vec<(u32, u32)> = vec![];
+        let mut last = [u32::MAX / 2; COLORS as usize];
         for i in 0..n as u32 {
             // The waiting lane with the best chain priority (ties: leftmost) gets the node.
             let mut best: Option<(usize, Slot)> = None;
@@ -97,7 +105,7 @@ impl Graph {
                 Some((k, s)) => (k, s.prio.min(prio[i as usize]), s.color),
                 None => {
                     let k = free_lane(&mut lanes);
-                    (k, prio[i as usize], pick(&lanes, k, seed[i as usize], None))
+                    (k, prio[i as usize], pick(&lanes, k, seed[i as usize], None, &last, i))
                 }
             };
             for slot in lanes.iter_mut() {
@@ -122,6 +130,7 @@ impl Graph {
                 !done
             });
             g.nodes.push(Node { col: col as u16, color });
+            last[color as usize] = i;
             // A merge's line always has the merged-in branch's color (its parent's, set once placed), also
             // when that branch went on in another lane; only diverging branches get a new color.
             for (pi, &p) in parents[i as usize].iter().enumerate() {
@@ -142,7 +151,7 @@ impl Graph {
                     // A merged-in lane takes its parent's color: the branch keeps it from its tip down.
                     let k = free_lane(&mut lanes);
                     let s = if p == NONE { seed[i as usize].wrapping_add(pi as u32) } else { seed[p as usize] };
-                    (k, u32::MAX, pick(&lanes, k, s, Some(color)))
+                    (k, u32::MAX, pick(&lanes, k, s, Some(color), &last, i))
                 };
                 lanes[lane] = Some(Slot { target: p, edge: g.edges.len() as u32, prio, color: lane_color, merge: pi > 0 });
                 g.edges.push(Edge { from: i, to: NONE, from_col: col as u16, lane: lane as u16, to_col: lane as u16, color: lane_color });
