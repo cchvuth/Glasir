@@ -17,6 +17,7 @@
        "fns": [
         "crate::git::env::import_login_env",
         "crate::git::env::parse_env",
+        "crate::desktop_entry",
         "crate::main"
        ],
        "platform": [

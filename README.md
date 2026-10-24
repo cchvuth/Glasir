@@ -397,7 +397,8 @@ The name fits a Git client:
 
 Get the latest build from [Releases](https://github.com/cchvuth/Glasir/releases/latest):
 `Glasir-macos-arm64.zip` (Glasir.app), `Glasir-linux-x86_64.tar.gz` and
-`Glasir-windows-x86_64.zip`. On macOS the [Install](#install) command avoids the next
+`Glasir-windows-x86_64.zip`. On Linux the first start adds Glasir (with its icon) to the
+app launcher. On macOS the [Install](#install) command avoids the next
 step: the app is not notarized, so macOS blocks a browser download of it ("can't be
 opened" or "is damaged"). Move it to Applications and run
 `xattr -dr com.apple.quarantine /Applications/Glasir.app`, or try to open it once and then

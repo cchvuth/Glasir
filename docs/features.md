@@ -55,6 +55,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Start up and import the login shell environment `app.startup`
 - **Entry:** src/main.rs:17 process start (also GLASIR_ASKPASS dispatch to askpass::run); src/main.rs:30 import_login_env (unix) so GUI launches see PATH, SSH_AUTH_SOCK
 - **Platform:** `platform.git-runner`
+- **Own code:** `desktop_entry`
 - **Shared:** `git::env::import_login_env` (3), `git::env::parse_env` (3), `main` (3)
 
 #### Warn when git is missing or too old `app.git-version-check`
