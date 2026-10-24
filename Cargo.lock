@@ -1628,7 +1628,7 @@ dependencies = [
 
 [[package]]
 name = "glasir"
-version = "1.3.5"
+version = "1.3.6"
 dependencies = [
  "alacritty_terminal",
  "dicebear-core",
