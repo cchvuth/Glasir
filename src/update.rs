@@ -56,10 +56,11 @@ pub fn check() -> Res<Option<Release>> {
 }
 
 /// What an update replaces: the running `.app` bundle on macOS, else the executable.
-/// None for a development build (run from a cargo `target` folder).
+/// None for a development build (run from a cargo `target` folder) and for the .deb's /usr/bin
+/// copy, which the package manager owns: the pill opens the release page instead.
 pub fn target() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    if exe.components().any(|c| c.as_os_str() == "target") {
+    if exe.components().any(|c| c.as_os_str() == "target") || (cfg!(target_os = "linux") && exe.starts_with("/usr")) {
         return None;
     }
     match cfg!(target_os = "macos") {

@@ -36,7 +36,20 @@ It also updates an installed copy: Glasir quits (asking first if work is unsaved
 replaced and opens again. Downloaded this way the app isn't quarantined, so macOS opens it
 without the "Open Anyway" step, and later versions install from the update pill in the
 title bar, which restarts Glasir by itself.
-Linux and Windows builds: see [Download](#download).
+Linux (x86_64), in a terminal:
+
+```sh
+mkdir -p ~/.local/bin &&
+  curl -fsSL https://github.com/cchvuth/Glasir/releases/latest/download/Glasir-linux-x86_64.tar.gz | tar -xz -C ~/.local/bin &&
+  ~/.local/bin/Glasir --install
+```
+
+It adds Glasir with its icon to the app launcher, and gives the program file its icon in
+GNOME Files, before the first start; run it again to update. Or install
+`Glasir-linux-amd64.deb` from [Releases](https://github.com/cchvuth/Glasir/releases/latest)
+(new versions then come from the release page instead of the update pill).
+
+Windows builds: see [Download](#download).
 
 ## Why "Glasir"?
 
@@ -396,9 +409,9 @@ The name fits a Git client:
 ## Download
 
 Get the latest build from [Releases](https://github.com/cchvuth/Glasir/releases/latest):
-`Glasir-macos-arm64.zip` (Glasir.app), `Glasir-linux-x86_64.tar.gz` and
-`Glasir-windows-x86_64.zip`. On Linux the first start adds Glasir (with its icon) to the
-app launcher. On macOS the [Install](#install) command avoids the next
+`Glasir-macos-arm64.zip` (Glasir.app), `Glasir-linux-x86_64.tar.gz`, `Glasir-linux-amd64.deb`
+and `Glasir-windows-x86_64.zip`. On Linux the first start adds Glasir (with its icon) to the
+app launcher and gives the program file its icon in GNOME Files. On macOS the [Install](#install) command avoids the next
 step: the app is not notarized, so macOS blocks a browser download of it ("can't be
 opened" or "is damaged"). Move it to Applications and run
 `xattr -dr com.apple.quarantine /Applications/Glasir.app`, or try to open it once and then

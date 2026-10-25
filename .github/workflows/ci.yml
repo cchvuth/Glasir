@@ -82,7 +82,8 @@ jobs:
               scripts/macos-app.sh
               ditto -c -k --keepParent target/release/Glasir.app dist/Glasir-macos-arm64.zip ;;
             Linux)
-              tar -czf dist/Glasir-linux-x86_64.tar.gz -C target/release Glasir ;;
+              tar -czf dist/Glasir-linux-x86_64.tar.gz -C target/release Glasir
+              scripts/linux-deb.sh dist ;;
             Windows)
               7z a dist/Glasir-windows-x86_64.zip ./target/release/Glasir.exe ;;
           esac
