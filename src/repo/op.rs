@@ -1262,7 +1262,7 @@ impl RepoTab {
                     self.start_watching(ctx);
                 }
                 if let (Ok(_), Some(p)) = (&res, removes_worktree(&self.dir, &op)) {
-                    let real = p.parent().and_then(|d| d.canonicalize().ok()).zip(p.file_name()).map(|(d, n)| d.join(n));
+                    let real = p.parent().filter(|_| !cfg!(windows)).and_then(|d| d.canonicalize().ok()).zip(p.file_name()).map(|(d, n)| d.join(n));
                     self.removed_worktree = Some(real.unwrap_or(p));
                 }
                 if let (Ok(_), Some(c)) = (&res, &op.reword) {

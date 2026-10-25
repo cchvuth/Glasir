@@ -267,7 +267,7 @@ impl RepoData {
 
     pub fn replaying(&self) -> bool {
         let has = |f: &str| self.git_dir.join(f).exists();
-        self.state == git::State::Applying || (self.state == git::State::Rebasing && has("REBASE_HEAD") && !has("rebase-merge/amend"))
+        self.state == git::State::Applying || (self.state == git::State::Rebasing && has("REBASE_HEAD") && (!has("rebase-merge/amend") || has("rebase-merge/current-fixups")))
     }
 
     /// Sidebar order: 0 = the remote's default branch, 1 = other long-lived
@@ -982,6 +982,12 @@ mod tests {
         sh(&dir, &["-c", &edit, "rebase", "-q", "-i", "HEAD~1"]);
         let d = load();
         assert!(d.state == git::State::Rebasing && !d.replaying(), "an edit stop (guided split) takes new commits");
+        sh(&dir, &["rebase", "--abort"]);
+        commit(&dir, "f", "w\n");
+        let w = sh(&dir, &["rev-parse", "HEAD"]);
+        let fixup = format!("sequence.editor=printf 'pick {}\\nfixup {}\\n' >", y.trim(), w.trim());
+        assert!(git::run(&dir, &["-c", &fixup, "rebase", "-q", "-i", "main~1"]).is_err());
+        assert!(load().replaying(), "a conflicted fixup must be continued to fold in");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
