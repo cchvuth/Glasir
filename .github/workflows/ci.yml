@@ -34,10 +34,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-22.04, windows-latest]
-        # Three shards of about equal test time: repo::split and repo::undo are half of it.
-        shard: [split, undo, rest]
+        # Shards of about equal test time (Windows is the slowest, mostly starting processes):
+        # repo::split and repo::undo alone are half of it.
+        shard: [split, undo, op, rewrite, ui, rest]
     name: test (${{ matrix.os }}, ${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
+    # A hung test fails the job (and keeps its log) instead of holding the run.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,10 +57,14 @@ jobs:
       - shell: bash
         run: |
           echo "git: $(command -v git)"
+          named="repo::split repo::undo repo::op repo::watch repo::stack repo::diff repo::rebase repo::msgedit ui:: ai:: git::"
           case "${{ matrix.shard }}" in
-            split) cargo test --locked -- repo::split repo::stack ;;
-            undo) cargo test --locked -- repo::undo repo::diff repo::rebase ;;
-            rest) cargo test --locked -- --skip repo::split --skip repo::stack --skip repo::undo --skip repo::diff --skip repo::rebase ;;
+            split) cargo test --locked -- repo::split ;;
+            undo) cargo test --locked -- repo::undo ;;
+            op) cargo test --locked -- repo::op repo::watch ;;
+            rewrite) cargo test --locked -- repo::stack repo::diff repo::rebase repo::msgedit ;;
+            ui) cargo test --locked -- ui:: ai:: git:: ;;
+            rest) cargo test --locked -- $(printf -- '--skip %s ' $named) ;;
           esac
 
   # Release builds run beside the tests, and only where a release can follow.
