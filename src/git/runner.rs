@@ -71,6 +71,11 @@ fn base(prog: &str, dir: &Path) -> Command {
             .env("GLASIR_ASKPASS", "1");
     }
     c.env("GIT_TERMINAL_PROMPT", "0");
+    own_group(&mut c);
+    c
+}
+
+pub fn own_group(c: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -81,9 +86,26 @@ fn base(prog: &str, dir: &Path) -> Command {
     // stopping on SIGTTIN when Glasir runs from a terminal. setsid is async-signal-safe.
     #[cfg(unix)]
     unsafe {
-        std::os::unix::process::CommandExt::pre_exec(&mut c, || if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
+        std::os::unix::process::CommandExt::pre_exec(c, || if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) });
     }
-    c
+}
+
+pub fn kill_tree(pid: u32) {
+    let pid = pid.to_string();
+    // SIGTERM to git's whole process group lets git remove its lock files.
+    #[cfg(unix)]
+    let mut c = Command::new("kill");
+    #[cfg(unix)]
+    c.args(["-TERM", "--", &format!("-{pid}")]);
+    // taskkill /T also ends git-remote-https / ssh, which hold our pipes.
+    #[cfg(windows)]
+    let mut c = Command::new("taskkill");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.args(["/T", "/F", "/PID", &pid]).creation_flags(0x0800_0000);
+    }
+    let _ = spawn(c.stdout(Stdio::null()).stderr(Stdio::null())).and_then(|mut c| c.wait());
 }
 
 pub fn spawning<T>(f: impl FnOnce() -> T) -> T {
@@ -122,22 +144,8 @@ impl Cancel {
         g.0 = true;
         let Some(pid) = g.1 else { return };
         drop(g);
-        let pid = pid.to_string();
-        // SIGTERM to git's whole process group lets git remove its lock files.
-        #[cfg(unix)]
-        let mut c = Command::new("kill");
-        #[cfg(unix)]
-        c.args(["-TERM", "--", &format!("-{pid}")]);
-        // taskkill /T also ends git-remote-https / ssh, which hold our pipes.
-        #[cfg(windows)]
-        let mut c = Command::new("taskkill");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            c.args(["/T", "/F", "/PID", &pid]).creation_flags(0x0800_0000);
-        }
         // Off the caller's thread: search cancels on every keystroke, and taskkill is slow.
-        std::thread::spawn(move || spawn(c.stdout(Stdio::null()).stderr(Stdio::null()))?.wait());
+        std::thread::spawn(move || kill_tree(pid));
     }
 
     fn active() -> Cancel {
@@ -250,8 +258,11 @@ fn exec_both(mut c: Command, dir: &Path, args: &[&str], input: Option<&[u8]>) ->
     let started = std::time::SystemTime::now();
     let progress = args.contains(&"--progress").then(|| cancel.1.clone());
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let ["-C", p, ..] = args {
-        c.current_dir(dir.join(p));
+    if let ["-C", p, ..] = args
+        && Path::new(p).is_absolute()
+        && Path::new(p).is_dir()
+    {
+        c.current_dir(p);
     }
     if input.is_some() {
         c.stdin(Stdio::piped());
@@ -421,6 +432,19 @@ mod tests {
         assert_eq!(progress_label("Receiving objects:  45% (450/1000), 1.2 MiB"), ("Receiving objects 45%".into(), Some(0.45)));
         assert_eq!(progress_label("Enumerating objects: 5, done."), ("Enumerating objects: 5, done.".into(), None));
         assert_eq!(squash_progress("Counting:  1%\rCounting: 100% (2/2), done.\r\nTo /x.git\n"), "Counting: 100% (2/2), done.\nTo /x.git");
+    }
+
+    #[test]
+    fn a_dash_c_dir_resolves_once_and_a_missing_one_is_gits_error() {
+        let dir = std::env::temp_dir().join(format!("glasir-runner-dash-c-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        run(&dir, &["init", "-q"]).unwrap();
+        assert_eq!(run(&dir, &["-C", "docs", "rev-parse", "--show-prefix"]).unwrap(), "docs/\n");
+        let gone = dir.join("gone");
+        let e = run(&dir, &["-C", gone.to_str().unwrap(), "status"]).unwrap_err();
+        assert!(e.contains("cannot change to"), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

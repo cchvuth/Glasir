@@ -4,6 +4,7 @@
 
 use crate::git::Res;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const LATEST: &str = "https://api.github.com/repos/cchvuth/Glasir/releases/latest";
 
@@ -43,13 +44,20 @@ fn parse(json: &str, current: &str) -> Res<Option<Release>> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder().tls_config(crate::ai::tls()).timeout_connect(Some(std::time::Duration::from_secs(20))).user_agent(concat!("Glasir/", env!("CARGO_PKG_VERSION"))).build().into()
+    ureq::Agent::config_builder()
+        .tls_config(crate::ai::tls())
+        .timeout_connect(Some(Duration::from_secs(20)))
+        .timeout_recv_response(Some(Duration::from_secs(30)))
+        .timeout_recv_body(Some(Duration::from_secs(600)))
+        .user_agent(concat!("Glasir/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
 }
 
-/// The newest release, when it is newer than this build. Also clears a finished update's leftovers.
+/// The newest release, when it is newer than this build. Also clears finished updates' leftovers.
 pub fn check() -> Res<Option<Release>> {
     if let Some(t) = target() {
-        let _ = std::fs::remove_dir_all(stage(&t));
+        clear_stale(&t, Duration::from_secs(3600));
     }
     let mut r = agent().get(LATEST).header("Accept", "application/vnd.github+json").call().map_err(|e| format!("Could not check for updates: {e}"))?;
     parse(&r.body_mut().read_to_string().map_err(|e| e.to_string())?, env!("CARGO_PKG_VERSION"))
@@ -59,7 +67,8 @@ pub fn check() -> Res<Option<Release>> {
 /// None for a development build (run from a cargo `target` folder) and for the .deb's /usr/bin
 /// copy, which the package manager owns: the pill opens the release page instead.
 pub fn target() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let exe = std::env::current_exe().ok()?;
+    let exe = if cfg!(windows) { exe } else { exe.canonicalize().ok()? };
     if exe.components().any(|c| c.as_os_str() == "target") || (cfg!(target_os = "linux") && exe.starts_with("/usr")) {
         return None;
     }
@@ -69,9 +78,26 @@ pub fn target() -> Option<PathBuf> {
     }
 }
 
-/// Next to the target, so the swap is a rename on one volume.
+/// Next to the target, so the swap is a rename on one volume; one per process, so two running
+/// copies don't delete each other's download.
 fn stage(target: &Path) -> PathBuf {
-    target.with_file_name(".glasir-update")
+    target.with_file_name(format!(".glasir-update-{}", std::process::id()))
+}
+
+fn clear(target: &Path, stage: &Path) {
+    if target.exists() {
+        let _ = std::fs::remove_dir_all(stage);
+    }
+}
+
+fn clear_stale(target: &Path, age: Duration) {
+    let Some(dir) = target.parent().and_then(|d| std::fs::read_dir(d).ok()) else { return };
+    for e in dir.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|d| d >= age));
+        if old && e.file_name().to_string_lossy().starts_with(".glasir-update") {
+            clear(target, &e.path());
+        }
+    }
 }
 
 fn unpack(archive: &Path, into: &Path) -> Res<()> {
@@ -98,7 +124,7 @@ pub fn install(r: &Release) -> Res<PathBuf> {
 fn install_to(r: &Release, target: PathBuf) -> Res<PathBuf> {
     let (url, (_, inner)) = r.asset.as_deref().zip(asset_name()).ok_or("That release has no download for this platform.")?;
     let stage = stage(&target);
-    let _ = std::fs::remove_dir_all(&stage);
+    clear(&target, &stage);
     std::fs::create_dir_all(stage.join("new")).map_err(|e| format!("Can't write next to {}: {e}", target.display()))?;
     let res = (|| {
         let file = stage.join("download");
@@ -109,8 +135,8 @@ fn install_to(r: &Release, target: PathBuf) -> Res<PathBuf> {
         unpack(&file, &stage.join("new"))?;
         swap(&target, &stage.join("new").join(inner), &stage.join("old"))
     })();
-    // A running Windows exe can't be deleted: the next check() clears it.
-    let _ = std::fs::remove_dir_all(&stage);
+    // A running Windows exe can't be deleted: a check() an hour later clears it.
+    clear(&target, &stage);
     res.map(|_| target)
 }
 
@@ -191,6 +217,26 @@ mod tests {
         std::fs::write(&new, "2").unwrap();
         swap(&target, &new, &old).unwrap();
         assert_eq!((std::fs::read_to_string(&target).unwrap(), std::fs::read_to_string(&old).unwrap()), ("2".into(), "1".into()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_stale_stages_are_cleared_and_never_without_the_target() {
+        let dir = std::env::temp_dir().join(format!("glasir-update-stages-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let target = dir.join("Glasir");
+        let (mine, other) = (stage(&target), dir.join(".glasir-update-1"));
+        assert_ne!(mine, other);
+        for s in [&mine, &other] {
+            std::fs::create_dir_all(s.join("old")).unwrap();
+        }
+        clear_stale(&target, Duration::ZERO);
+        assert!(mine.exists() && other.exists(), "the target is gone: the stages may hold the only copy");
+        std::fs::write(&target, "1").unwrap();
+        clear_stale(&target, Duration::from_secs(3600));
+        assert!(mine.exists() && other.exists(), "another copy may be installing");
+        clear_stale(&target, Duration::ZERO);
+        assert!(!mine.exists() && !other.exists() && target.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 pub(super) struct CloneDlg {
     url: String,
     dir: String,
-    task: Option<Task<git::Res<PathBuf>>>,
+    pub(super) task: Option<Task<git::Res<PathBuf>>>,
     cancel: git::Cancel,
     error: Option<String>,
 }

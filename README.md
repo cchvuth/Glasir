@@ -26,9 +26,9 @@ signing, partial clones and `fsmonitor`.
 macOS (Apple Silicon), in Terminal:
 
 ```sh
-curl -fsSL -o /tmp/Glasir.zip https://github.com/cchvuth/Glasir/releases/latest/download/Glasir-macos-arm64.zip &&
+z=$(mktemp -d)/Glasir.zip && curl -fsSL -o "$z" https://github.com/cchvuth/Glasir/releases/latest/download/Glasir-macos-arm64.zip &&
   { pgrep -qf /Applications/Glasir.app/ && osascript -e 'quit app "Glasir"'; while pgrep -qf /Applications/Glasir.app/; do sleep 0.5; done; } &&
-  rm -rf /Applications/Glasir.app && ditto -x -k /tmp/Glasir.zip /Applications && rm /tmp/Glasir.zip &&
+  rm -rf /Applications/Glasir.app && ditto -x -k "$z" /Applications && rm -r "$(dirname "$z")" &&
   open /Applications/Glasir.app
 ```
 

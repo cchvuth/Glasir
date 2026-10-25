@@ -137,7 +137,7 @@ pub struct RepoTab {
     /// A repository the app should open in a new tab.
     pub open_tab: Option<PathBuf>,
     pub switch_to: Option<PathBuf>,
-    watcher: Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>,
+    pub(crate) watcher: Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>,
     watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>>>,
     pub search: Option<Search>,
     /// Finding a jumped-to commit outside the loaded history: (id, its position in the log).
@@ -500,7 +500,7 @@ impl RepoTab {
             Some(op::Dropped::Menu(title, items, at)) => self.commit_drop = Some((title, items, at)),
             Some(op::Dropped::Run(o)) => self.run(ctx, o),
             Some(op::Dropped::Note(e)) => self.notes.push(Msg { text: e, error: true }),
-            Some(op::Dropped::Editor(ed)) => (self.diff, self.merge, self.rebase) = (None, None, Some(*ed)),
+            Some(op::Dropped::Editor(ed)) => (self.diff, self.merge, self.file_view, self.rebase) = (None, None, None, Some(*ed)),
             Some(op::Dropped::Split(o, sp)) => self.begin_split(ctx, o, *sp),
             None => {}
         }
@@ -986,6 +986,24 @@ mod tests {
         t.rebase.as_mut().unwrap().items[0].act = rebase::Act::Pick;
         t.apply(&ctx, Action::MergeEditor("f".into()));
         assert!(t.rebase.is_none() && t.merge.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_interactive_rebase_closes_the_file_history() {
+        let dir = scratch("rebase-closes-history");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "1\n");
+        commit(&dir, "f", "2\n");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, dir.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        t.apply(&ctx, Action::FileView("f".into(), history::Mode::History(None)));
+        assert!(t.file_view.is_some());
+        t.apply(&ctx, Action::Rebase { base: "HEAD~1".into(), label: "x".into() });
+        settle(&ctx, &mut t);
+        assert!(t.rebase.is_some() && t.file_view.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

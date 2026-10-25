@@ -26,7 +26,7 @@ Package: glasir
 Version: $version
 Architecture: amd64
 Maintainer: ChanVuth Chea <cchvuth@gmail.com>
-Depends: git
+Depends: git, libc6 (>= 2.35)
 Section: devel
 Priority: optional
 Homepage: https://github.com/cchvuth/Glasir

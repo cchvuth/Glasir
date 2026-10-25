@@ -253,7 +253,7 @@ impl App {
                         ai::Provider::Claude => "Bring your own token: an Anthropic API key (sk-ant-api…) or an OAuth token (sk-ant-oat…, e.g. from `claude setup-token`). It is stored in your system keychain and only sent to the API URL below.",
                         ai::Provider::OpenAi => "Bring your own OpenAI API key (sk-…, from platform.openai.com). It is stored in your system keychain and only sent to the API URL below.",
                         ai::Provider::ClaudeCode => "Uses the Claude Code CLI you are signed in to (run `claude` once in a terminal to sign in). No token is stored here; requests run with no tools in an empty folder.",
-                        ai::Provider::Codex => "Uses the Codex CLI you are signed in to (run `codex login` once in a terminal). No token is stored here; requests run read-only in an empty folder.",
+                        ai::Provider::Codex => "Uses the Codex CLI you are signed in to (run `codex login` once in a terminal). No token is stored here; requests run in an empty folder in Codex's read-only sandbox with your MCP servers off, which can't change files but can still read any file your account can.",
                     })
                     .small()
                     .color(theme::dim(ui)),

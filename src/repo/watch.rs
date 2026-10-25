@@ -5,7 +5,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 /// What a watcher event changed.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub(super) enum Change {
+pub(crate) enum Change {
     /// Refs, HEAD or a sequencer state: full reload.
     Refs,
     /// The index (often our own git writing it): status reload.
@@ -28,21 +28,28 @@ pub(super) fn watch(ctx: &egui::Context, dir: &Path) -> Option<(notify::Recommen
     let git_dirs = gits.clone();
     // `ignored` verdicts: a build dir's churn must not trigger status reloads.
     let (mut ignored, mut tree_at) = (std::collections::HashMap::new(), None);
+    let (raw, events) = channel::<notify::Event>();
+    std::thread::spawn(move || {
+        for e in events {
+            if e.need_rescan() {
+                let _ = tx.send(Change::Refs);
+                ctx.request_repaint_after(std::time::Duration::from_millis(450));
+                continue;
+            }
+            for p in &e.paths {
+                if let Some(c) = classify(p, &gits, &root, &mut ignored, &mut tree_at) {
+                    let _ = tx.send(c);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(450));
+                }
+            }
+        }
+    });
     let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(e) = res else { return };
         if matches!(e.kind, notify::EventKind::Access(_)) {
             return; // our own git reads (inotify IN_OPEN/CLOSE) are not changes
         }
-        if e.need_rescan() {
-            let _ = tx.send(Change::Refs);
-            return ctx.request_repaint_after(std::time::Duration::from_millis(450));
-        }
-        for p in &e.paths {
-            if let Some(c) = classify(p, &gits, &root, &mut ignored, &mut tree_at) {
-                let _ = tx.send(c);
-                ctx.request_repaint_after(std::time::Duration::from_millis(450));
-            }
-        }
+        let _ = raw.send(e);
     })
     .ok()?;
     if w.watch(dir, notify::RecursiveMode::Recursive).is_err() {

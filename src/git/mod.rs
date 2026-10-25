@@ -35,7 +35,7 @@ pub fn short_ref(r: &str) -> &str {
 pub use network::{credential_token, diagnose, fetch_failure, fetch_quiet, fetch_remote_quiet, ls_remote_quiet, ls_remote_via, tracking, with_autostash};
 pub use read::{DATE_FORMAT, LOG_FORMAT, WORKTREE, author, coauthor_line, commit_info, compare_info, config, conflict_kind, git_dir, log, numstat, parse_log, predict_conflicts, refs, remotes, stash_info, stashes, state, status, verify_tag, worktrees};
 pub use reflog::{ReflogEntry, reflog};
-pub use runner::{CANCELLED, Cancel, cmd, exec, progress_label, read_small, run, run_capped, run_input, run_raw, run_shell, run_stderr, run_tool, spawn, spawning, stream};
+pub use runner::{CANCELLED, Cancel, cmd, exec, kill_tree, own_group, progress_label, read_small, run, run_capped, run_input, run_raw, run_shell, run_stderr, run_tool, spawn, spawning, stream};
 pub use snapshot::{Entry, FOREIGN, Snap, Snapshot, View, ancestors, clean_snap, drop_backups, empty_tree, flagged, head, index_tree, keep, move_files, related, move_refs, prune, snap, snapshot, current, view, write};
 pub(crate) use snapshot::{scratch, used_elsewhere};
 #[cfg(test)]

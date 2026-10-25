@@ -18,6 +18,7 @@ pub(super) struct Updater {
     /// The relaunch helper is waiting for this process to exit.
     relaunching: bool,
     checked: Option<std::time::Instant>,
+    found_at: f64,
 }
 
 impl App {
@@ -50,6 +51,7 @@ impl App {
         // Offline or rate-limited: nothing to say until the next start.
         if let Some(Ok(r)) = Task::poll(&mut self.update.check) {
             self.update.found = r;
+            self.update.found_at = ui.input(|i| i.time);
         }
         match Task::poll(&mut self.update.install) {
             Some(Ok(p)) => {
@@ -74,10 +76,13 @@ impl App {
                 true => format!("Glasir {} is out: download and install it here (right-click: release notes)", r.version),
                 false => format!("Glasir {} is out: open its release page", r.version),
             };
-            // Accent-filled with a pulsing glow behind it (painted once its size is known).
+            // Accent-filled with a glow behind it (painted once its size is known), pulsing for a few
+            // seconds while the window has focus.
             let slot = ui.painter().add(egui::Shape::Noop);
             let pill = theme::pill(ui, egui::RichText::new(format!("{}  Update to {}", icon::DOWNLOAD_SIMPLE, r.version)).color(egui::Color32::WHITE).strong()).on_hover_text(tip);
-            let pulse = 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * std::f32::consts::TAU / 1.6).sin();
+            let (time, focused) = ui.input(|i| (i.time, i.viewport().focused.unwrap_or(true)));
+            let live = focused && time - self.update.found_at < 10.0;
+            let pulse = if live { 0.5 + 0.5 * (time as f32 * std::f32::consts::TAU / 1.6).sin() } else { 0.0 };
             let (rect, accent) = (pill.rect, theme::accent());
             let mut glow: Vec<egui::Shape> = [(5.0, 0.12), (3.0, 0.22), (1.5, 0.35)]
                 .into_iter()
@@ -85,7 +90,9 @@ impl App {
                 .collect();
             glow.push(egui::Shape::rect_filled(rect, rect.height() / 2.0, accent));
             ui.painter().set(slot, egui::Shape::Vec(glow));
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+            if live {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+            }
             let page = r.page.clone();
             pill.context_menu(|ui| {
                 if ui.button("Release notes").clicked() {
@@ -103,5 +110,31 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{RawInput, ViewportId};
+
+    #[test]
+    fn the_pill_stops_animating_after_a_while_and_when_unfocused() {
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), None);
+        app.update.found = Some(super::Release { version: "9.0.0".into(), page: String::new(), asset: None });
+        let mut delay = |time: f64, focused: bool| {
+            let mut raw = RawInput { time: Some(time), ..Default::default() };
+            raw.viewports.entry(ViewportId::ROOT).or_default().focused = Some(focused);
+            let mut d = std::time::Duration::MAX;
+            for _ in 0..3 {
+                let mut out = ctx.run_ui(raw.clone(), |ui| app.update_pill(ui));
+                out.textures_delta.clear();
+                d = out.viewport_output[&ViewportId::ROOT].repaint_delay;
+            }
+            d
+        };
+        assert!(delay(1.0, true) <= std::time::Duration::from_millis(33));
+        assert!(delay(2.0, false) > std::time::Duration::from_secs(1));
+        assert!(delay(20.0, true) > std::time::Duration::from_secs(1));
     }
 }

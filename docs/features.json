@@ -156,6 +156,8 @@
         "crate::update::asset_name",
         "crate::update::target",
         "crate::update::stage",
+        "crate::update::clear_stale",
+        "crate::update::clear",
         "crate::ui::app::App::new",
         "crate::ui::app::App::ui",
         "crate::ui::settings::App::settings_dialog",
@@ -183,6 +185,7 @@
         "crate::update::unpack",
         "crate::update::swap",
         "crate::update::stage",
+        "crate::update::clear",
         "crate::update::relaunch",
         "crate::update::target",
         "crate::update::asset_name",
@@ -200,10 +203,13 @@
        "entry": [
         "`Glasir --install` (src/main.rs:37, the README's install command): writes the entry and icon, waits for the file-manager icon, exits without opening a window",
         "every start on Linux (src/main.rs:38 -> :70 desktop_entry): (re)writes ~/.local/share/applications/Glasir.desktop and icons/hicolor/512x512/apps/glasir.png when missing or when the binary moved, so launchers and Wayland docks show the icon; sets the binary's icon in GNOME Files via gio metadata::custom-icon",
-        "skipped for a binary under /usr (the .deb ships its own entry)"
+        "skipped for the .deb's /usr/bin/glasir (the package ships its own entry), which instead removes a user entry whose binary is gone (src/main.rs exec_target)",
+        "the Exec path is quoted and escaped per the Desktop Entry spec (src/main.rs exec_value); a relative XDG_DATA_HOME is ignored"
        ],
        "fns": [
         "crate::desktop_entry",
+        "crate::exec_value",
+        "crate::exec_target",
         "crate::main"
        ],
        "platform": []
@@ -224,8 +230,8 @@
        "id": "app.deb-package",
        "name": "Debian / Ubuntu .deb package",
        "entry": [
-        "scripts/linux-deb.sh [dist] -> dist/Glasir-linux-amd64.deb: /usr/bin/glasir, /usr/share/applications/Glasir.desktop, the 512 px icon, Depends: git (shell script, no Rust functions)",
-        "the installed /usr copy gets no per-user launcher entry (src/main.rs:71 desktop_entry) and does not update itself: the update pill opens the release page (src/update.rs:61 target)"
+        "scripts/linux-deb.sh [dist] -> dist/Glasir-linux-amd64.deb: /usr/bin/glasir, /usr/share/applications/Glasir.desktop, the 512 px icon, Depends: git, libc6 (>= 2.35) (shell script, no Rust functions; the Linux release is built on ubuntu-22.04 for that glibc)",
+        "the installed /usr/bin copy gets no per-user launcher entry, a stale one is removed (src/main.rs:71 desktop_entry) and does not update itself: the update pill opens the release page (src/update.rs:61 target)"
        ],
        "fns": [
         "crate::desktop_entry",
@@ -629,7 +635,7 @@
        "entry": [
         "Settings → AI → Provider \"Claude Code CLI\" (the default) or \"Codex CLI\" (src/ui/settings.rs:263); the token rows are hidden and \"API base URL\" becomes \"Command\" (name or full path of the CLI)",
         "Model: \"default\" leaves it to the CLI; Claude Code also offers opus / sonnet / haiku (src/ai/cli.rs:12)",
-        "every AI feature: ai::client::complete -> src/ai/cli.rs:19 complete runs `claude -p --output-format stream-json` with no tools, no session, no MCP and project settings only, or `codex exec --sandbox read-only --json`, in an empty temp folder; streamed text (claude) or the last message file (codex); JSON-schema replies via --json-schema / --output-schema",
+        "every AI feature: ai::client::complete -> src/ai/cli.rs:19 complete runs `claude -p --output-format stream-json` with no tools, no session, no MCP and user settings only (system prompt via --system-prompt-file), or `codex exec --sandbox read-only -c mcp_servers={} --json`, in a fresh private (0700) temp folder removed afterwards, in its own process group (cancel and a 180 s silence timeout kill the whole tree); streamed text (claude) or the last message file (codex); JSON-schema replies via --json-schema / --output-schema",
         "errors: a missing CLI says how to install it or set its path (src/ai/cli.rs:30 spawn; .cmd fallback on Windows); \"not logged in\" and other CLI errors show as the AI error",
         "Settings → AI \"Test connection\" reports \"<model> replied: …\" (ai::tasks::test)"
        ],
@@ -639,6 +645,9 @@
         "crate::ai::cli::spawn",
         "crate::ai::cli::feed",
         "crate::ai::cli::stderr_of",
+        "crate::ai::cli::private_dir",
+        "crate::ai::cli::read",
+        "crate::ai::cli::stop",
         "crate::ai::cli::failed",
         "crate::ai::cli::claude",
         "crate::ai::cli::codex",
@@ -2624,6 +2633,7 @@
         "crate::repo::op::remove_worktree_op",
         "crate::repo::op::removes_worktree",
         "crate::repo::op::worktree_remove",
+        "crate::repo::op::worktree_path",
         "crate::repo::op::worktree_remove_args",
         "crate::ui::sidebar::ref_menus::worktree_items"
        ],
@@ -6324,6 +6334,7 @@
         "crate::repo::op::remove_worktree_op",
         "crate::repo::op::removes_worktree",
         "crate::repo::op::worktree_remove",
+        "crate::repo::op::worktree_path",
         "crate::repo::op::worktree_remove_args",
         "crate::ui::sidebar::worktrees::worktree_row"
        ],
@@ -6347,6 +6358,7 @@
         "crate::repo::op::worktree_remove_args",
         "crate::repo::op::removes_worktree",
         "crate::repo::op::worktree_remove",
+        "crate::repo::op::worktree_path",
         "crate::repo::op::exec",
         "crate::repo::op::RepoTab::run",
         "crate::repo::op::RepoTab::poll_op",
@@ -6874,6 +6886,8 @@
         "crate::git::runner::Cancel::progress",
         "crate::git::runner::Cancel::scope",
         "crate::git::runner::base",
+        "crate::git::runner::own_group",
+        "crate::git::runner::kill_tree",
         "crate::git::runner::cmd",
         "crate::git::runner::exec",
         "crate::git::runner::exec_both",
@@ -7219,6 +7233,9 @@
         "crate::ai::cli::spawn",
         "crate::ai::cli::feed",
         "crate::ai::cli::stderr_of",
+        "crate::ai::cli::private_dir",
+        "crate::ai::cli::read",
+        "crate::ai::cli::stop",
         "crate::ai::cli::failed",
         "crate::ai::cli::claude",
         "crate::ai::cli::codex",

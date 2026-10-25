@@ -87,8 +87,8 @@ impl Graph {
         let n = parents.len();
         let mut g = Graph { nodes: Vec::with_capacity(n), edges: Vec::with_capacity(n + n / 8), ..Default::default() };
         let mut lanes: Vec<Option<Slot>> = vec![];
-        // Merge edges running in a lane another edge already holds for the same parent: (parent row, edge).
-        let mut joining: Vec<(u32, u32)> = vec![];
+        // Merge edges running in a lane another edge already holds for the same parent: (parent row, edge, that lane's edge).
+        let mut joining: Vec<(u32, u32, u32)> = vec![];
         let mut last = [u32::MAX / 2; COLORS as usize];
         for i in 0..n as u32 {
             // The waiting lane with the best chain priority (ties: leftmost) gets the node.
@@ -121,28 +121,29 @@ impl Graph {
                     *slot = None;
                 }
             }
-            joining.retain(|&(target, edge)| {
+            joining.retain(|&(target, edge, host)| {
                 let done = target == i;
                 if done {
+                    let host_color = g.edges[host as usize].color;
                     let e = &mut g.edges[edge as usize];
-                    (e.to, e.to_col, e.color) = (i, col as u16, color);
+                    (e.to, e.to_col, e.color) = (i, col as u16, host_color);
                 }
                 !done
             });
             g.nodes.push(Node { col: col as u16, color });
             last[color as usize] = i;
             // A merge's line always has the merged-in branch's color (its parent's, set once placed), also
-            // when that branch went on in another lane; only diverging branches get a new color.
+            // when that branch went on in another lane (a line joining a lane takes that lane's); only
+            // diverging branches get a new color.
             for (pi, &p) in parents[i as usize].iter().enumerate() {
                 // A parent another lane already heads for (its branch went on after the merge): the
                 // merge joins that lane instead of running beside it and bending back.
                 if pi > 0
                     && p != NONE
-                    && let Some(k) = lanes.iter().position(|s| s.is_some_and(|s| s.target == p))
+                    && let Some((k, h)) = lanes.iter().enumerate().find_map(|(k, s)| s.filter(|s| s.target == p).map(|s| (k, s)))
                 {
-                    joining.push((p, g.edges.len() as u32));
-                    let lane_color = lanes[k].map_or(color, |s| s.color);
-                    g.edges.push(Edge { from: i, to: NONE, from_col: col as u16, lane: k as u16, to_col: k as u16, color: lane_color });
+                    joining.push((p, g.edges.len() as u32, h.edge));
+                    g.edges.push(Edge { from: i, to: NONE, from_col: col as u16, lane: k as u16, to_col: k as u16, color: h.color });
                     continue;
                 }
                 let (lane, prio, lane_color) = if pi == 0 {
@@ -296,6 +297,32 @@ mod tests {
         assert_eq!(g.width, 2);
         assert_eq!(merge.color, g.nodes[2].color);
         assert!(g.edges.iter().all(|e| e.to != NONE), "every edge reaches its parent");
+    }
+
+    #[test]
+    fn edges_sharing_a_lane_have_one_color() {
+        let cases: [(&[&[u32]], &[u32]); 4] = [
+            (&[&[3], &[3], &[4, 3], &[5], &[5], &[]], &[5, 1, 2, 1, 2, 1]),
+            (&[&[2], &[3, 2], &[3], &[]], &[5, 0, 5, 0]),
+            (&[&[2], &[3], &[4, 3], &[4], &[]], &[5, 1, 0, 1, 0]),
+            (&[&[3], &[4], &[5, 3], &[5], &[5], &[]], &[5, 1, 2, 1, 2, 0]),
+        ];
+        for (parents, prio) in cases {
+            let parents: Vec<Vec<u32>> = parents.iter().map(|p| p.to_vec()).collect();
+            let n = parents.len();
+            for k in 0..20 {
+                let seed: Vec<u32> = (0..n as u32).map(|i| i * 7 + k).collect();
+                let g = Graph::layout(&parents, prio, &seed);
+                let end = |e: &Edge| if e.to == NONE { n as u32 } else { e.to };
+                for a in &g.edges {
+                    for b in &g.edges {
+                        if a.lane == b.lane && a.from < end(b) && b.from < end(a) {
+                            assert_eq!(a.color, b.color, "{parents:?} seed {k}: {a:?} and {b:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

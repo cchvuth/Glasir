@@ -355,6 +355,14 @@ impl App {
         for (i, p) in switches {
             self.switch(ctx, i, &p);
         }
+        for i in (0..self.tabs.len()).rev() {
+            let t = &self.tabs[i];
+            if !t.dir.join(".git").exists() && t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.ext_tools.is_empty() {
+                let gone = format!("{} is no longer a repository: its tab closed.", t.dir.display());
+                self.close_tab(ctx, i);
+                self.toast(ctx, gone, false);
+            }
+        }
         for (m, undo) in msgs {
             self.toast_undo(ctx, m.text, m.error, undo);
         }
@@ -487,7 +495,8 @@ impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.focused &= ctx.input(|i| i.viewport().focused.unwrap_or(true));
         self.poll_tabs(ctx);
-        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned));
+        let cloning = self.clone.as_ref().is_some_and(|c| c.task.is_some()).then(|| "Clone".to_owned());
+        let busy = self.tabs.iter().find_map(|t| t.busy().map(str::to_owned)).or(cloning);
         let unsaved = self.tabs.iter().enumerate().find_map(|(i, t)| t.unsaved().map(|w| (i, w)));
         #[cfg(unix)]
         self.tabs.iter().for_each(|t| _ = t.term.running());
@@ -650,8 +659,9 @@ fn draft(t: &RepoTab) -> Option<Draft> {
 }
 
 fn drop_data_off_thread(t: &mut RepoTab) {
-    if let Some(d) = t.data.take() {
-        std::thread::spawn(move || drop(d));
+    let (d, w) = (t.data.take(), t.watcher.take());
+    if d.is_some() || w.is_some() {
+        std::thread::spawn(move || drop((d, w)));
     }
 }
 
@@ -923,6 +933,33 @@ mod close_tests {
     }
 
     #[test]
+    fn quitting_waits_for_a_running_clone() {
+        let dir = std::env::temp_dir().join(format!("glasir-quit-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::git::run(&dir, &["init", "-q"]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(dir.clone()));
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        app.open_clone();
+        app.clone.as_mut().unwrap().task = Some(crate::repo::Task::spawn(&ctx, move || rx.recv().map_err(|e| e.to_string()).and(Err("stopped".to_owned()))));
+        assert!(close(&ctx, &mut app).contains(&ViewportCommand::CancelClose));
+        assert!(app.quit_pending);
+        tx.send(()).unwrap();
+        let t = std::time::Instant::now();
+        loop {
+            let mut out = ctx.run_ui(RawInput::default(), |ui| app.pass(ui, &mut eframe::Frame::_new_kittest()));
+            out.textures_delta.clear();
+            if out.viewport_output.get(&ViewportId::ROOT).is_some_and(|v| v.commands.contains(&ViewportCommand::Close)) {
+                break;
+            }
+            assert!(t.elapsed().as_secs() < 60, "the clone's end never closed the window");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_typed_commit_message_survives_quitting() {
         let dir = std::env::temp_dir().join(format!("glasir-quit-draft-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1051,7 +1088,7 @@ mod close_tests {
 
 #[cfg(test)]
 mod shell_tests {
-    use super::{App, draft, replaceable};
+    use super::{App, draft, drop_data_off_thread, replaceable};
     use crate::repo::{Action, RepoTab};
     use egui::{Event, Key, Modifiers, RawInput};
     use std::path::{Path, PathBuf};
@@ -1522,6 +1559,40 @@ mod shell_tests {
         for d in [a, b, c] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[test]
+    fn a_dropped_tab_hands_its_watcher_to_another_thread() {
+        let a = repo("drop-watcher");
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, a.clone(), 100, Default::default());
+        t.watcher = Some((notify::recommended_watcher(|_| {}).unwrap(), std::sync::mpsc::channel().1));
+        drop_data_off_thread(&mut t);
+        assert!(t.watcher.is_none());
+        let _ = std::fs::remove_dir_all(a);
+    }
+
+    #[test]
+    fn a_tab_whose_worktree_was_removed_never_stays() {
+        let (a, b, c) = (repo("gone-a"), repo("gone-b"), repo("gone-c"));
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &a);
+        app.open(&ctx, &b);
+        app.open(&ctx, &c);
+        std::fs::remove_dir_all(&a).unwrap();
+        app.tabs[0].switch_to = Some(b.clone());
+        app.poll_tabs(&ctx);
+        assert_eq!(app.tabs.len(), 2, "b already has a tab: a's is closed");
+        assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()) && app.active == 0);
+        app.tabs[1].amend = true;
+        std::fs::remove_dir_all(&c).unwrap();
+        app.tabs[1].switch_to = Some(b.clone());
+        app.poll_tabs(&ctx);
+        assert_eq!(app.tabs.len(), 1, "closed, though it held an amend");
+        assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()));
+        std::fs::remove_dir_all(&b).unwrap();
+        app.poll_tabs(&ctx);
+        assert!(app.tabs.is_empty(), "removed by another tab, or outside the app");
     }
 
     #[test]

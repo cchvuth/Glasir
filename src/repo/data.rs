@@ -509,7 +509,11 @@ pub(super) fn load_all(dir: &Path, limit: usize, view: View) -> Res<RepoData> {
     // One extra commit tells "exactly a page" from "more to load".
     let truncated = log.len() > limit;
     log.truncate(limit);
-    let mut d = RepoData::build(Arc::new(log), Arc::new(refs?), Arc::new(stashes), Arc::new(remotes), git_dir, origin_head, status?, view);
+    let mut refs = refs?;
+    for r in &mut refs {
+        r.worktree.take_if(|p| worktrees.iter().any(|w| w.bare && w.path == *p));
+    }
+    let mut d = RepoData::build(Arc::new(log), Arc::new(refs), Arc::new(stashes), Arc::new(remotes), git_dir, origin_head, status?, view);
     d.truncated = truncated;
     d.worktrees = Arc::new(worktrees);
     d.count_worktree_changes(dir);
@@ -886,6 +890,23 @@ mod tests {
         exec(&dir, &Op::new("Create worktree", &["worktree", "add", wt.to_str().unwrap(), d.worktree_rev(r)])).unwrap();
         assert_eq!(sh(&wt, &["symbolic-ref", "HEAD"]), "refs/heads/x\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bare_repos_head_branch_is_not_checked_out_elsewhere() {
+        let src = scratch("bare-src");
+        sh(&src, &["init", "-q", "-b", "main"]);
+        identity(&src);
+        commit(&src, "a", "one\n");
+        sh(&src, &["branch", "feat"]);
+        let bare = src.join("repo.git");
+        sh(&src, &["clone", "-q", "--bare", src.to_str().unwrap(), bare.to_str().unwrap()]);
+        let wt = src.join("wt");
+        sh(&bare, &["worktree", "add", "-q", wt.to_str().unwrap(), "feat"]);
+        let d = load_all(&wt, 100, View::default()).unwrap();
+        let main = d.refs.iter().find(|r| r.kind == RefKind::Local && r.name == "main").unwrap();
+        assert_eq!(main.worktree, None);
+        let _ = std::fs::remove_dir_all(&src);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use super::task::Task;
 use super::RepoTab;
 use crate::git::{self, Ref, RefKind, Res, Snapshot};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Whether an op can be undone, and the `git reset` mode that undoes it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -203,10 +203,10 @@ fn worktree_remove(dir: &Path, a: &[&str]) -> Res<String> {
         Err(e) if e.contains("failed to delete") => e,
         r => return r,
     };
-    let path = Path::new(a.last().copied().unwrap_or_default());
+    let path = worktree_path(dir, a);
     for _ in 0..20 {
         std::thread::sleep(std::time::Duration::from_millis(250));
-        if !path.exists() || std::fs::remove_dir_all(path).is_ok() {
+        if !path.exists() || std::fs::remove_dir_all(&path).is_ok() {
             return Ok(String::new());
         }
     }
@@ -240,7 +240,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::rebase::REFS_AT, pairs @ ..] => super::rebase::refs_at(dir, pairs),
             [super::rebase::REWRITE, commit, tip @ ..] => super::rebase::rewrite(dir, commit, tip.first().copied().unwrap_or("HEAD"), op.input.as_deref().unwrap_or_default()),
             [super::stack::RESTACK, rest @ ..] => super::stack::restack(dir, rest),
-            _ if a.windows(2).any(|w| w == ["worktree", "remove"]) => worktree_remove(dir, &a),
+            _ if !op.custom && a.windows(2).any(|w| w == ["worktree", "remove"]) => worktree_remove(dir, &a),
             ["apply", "--3way", path] => git::run(dir, &a).or_else(|e| if e.contains("does not match index") { git::run(dir, &["apply", path]) } else { Err(e) }),
             [_, "add", "-A", "--pathspec-from-file=-", ..] => match without_vanished(dir, op.input.as_deref().unwrap_or_default()) {
                 paths if paths.is_empty() => Ok(String::new()),
@@ -661,10 +661,10 @@ pub fn worktree_remove_args(w: &git::Worktree) -> (Vec<&str>, String) {
         0 => format!("Remove the worktree folder {}? Ignored files in it (build output, .env, …) go too.", w.path),
         n => format!("{} has {n} uncommitted change(s) that will be LOST, and its ignored files (build output, .env, …) go too.", w.path),
     };
-    let mut args = vec!["worktree", "remove"];
-    if w.changes > 0 {
-        args.push("--force");
-    }
+    let mut args = match w.changes {
+        0 => vec!["-c", "status.showUntrackedFiles=normal", "worktree", "remove"],
+        _ => vec!["worktree", "remove", "--force"],
+    };
     args.push(&w.path);
     (args, warn)
 }
@@ -1092,8 +1092,16 @@ pub fn in_progress(s: git::State) -> Option<String> {
     Some(format!("Finish or abort the {busy} in progress first"))
 }
 
-fn removes_worktree(op: &Op) -> Option<&str> {
-    op.cmds.iter().find(|c| c.windows(2).any(|w| w == ["worktree", "remove"])).and_then(|c| c.last()).map(String::as_str)
+fn removes_worktree(dir: &Path, op: &Op) -> Option<PathBuf> {
+    op.cmds.iter().find(|c| c.windows(2).any(|w| w == ["worktree", "remove"])).map(|c| worktree_path(dir, c))
+}
+
+fn worktree_path<S: AsRef<str>>(dir: &Path, c: &[S]) -> PathBuf {
+    let base = match c {
+        [o, p, ..] if o.as_ref() == "-C" => dir.join(p.as_ref()),
+        _ => dir.to_path_buf(),
+    };
+    base.join(c.last().map_or("", |l| l.as_ref()))
 }
 
 fn switches_head(c: &[String]) -> bool {
@@ -1132,6 +1140,11 @@ impl RepoTab {
         if self.tool_blocks(&op.label, |p| super::tools::touches(&op, p)) {
             return if op.parked { self.unpark_rebase() };
         }
+        let here = removes_worktree(&self.dir, &op).is_some_and(|p| p.canonicalize().ok() == self.dir.canonicalize().ok());
+        if here && self.term.busy() {
+            self.notes.push(Msg { text: format!("'{}' skipped: a command is still running in this tab's terminal, inside that worktree. Let it finish or stop it there first.", op.label), error: true });
+            return;
+        }
         if op.confirm.is_some() {
             self.confirm = Some(op);
             return;
@@ -1143,8 +1156,9 @@ impl RepoTab {
         if let Some(kind) = super::tools::kind(&op.label).filter(|_| !op.custom) {
             return self.open_tool(ctx, op, kind);
         }
-        if removes_worktree(&op).is_some_and(|p| Path::new(p).canonicalize().ok() == self.dir.canonicalize().ok()) {
-            (self.watcher, self.watcher_task) = (None, None);
+        let watcher = here.then(|| self.watcher.take());
+        if here {
+            (self.watcher_task, self.term) = (None, Default::default());
         }
         let common = network(&op).then(|| self.common.clone());
         let op = super::stack::follow(op, self.data.as_ref());
@@ -1155,6 +1169,7 @@ impl RepoTab {
         self.running = Some((
             label,
             Task::spawn(ctx, move || {
+                drop(watcher);
                 let _turn = common.map(super::fetch::Fetching::user);
                 // Durable before anything runs: Err refuses the op. One that moves HEAD (checkout,
                 // merge, rebase, continue, abort...) backs up what git may overwrite there: ignored
@@ -1242,7 +1257,7 @@ impl RepoTab {
                 if let (Ok(_), Some(p)) = (&res, &op.then_open) {
                     self.switch_to = Some(self.dir.join(p));
                 }
-                if res.is_err() && removes_worktree(&op).is_some() && self.watcher.is_none() && self.watcher_task.is_none() {
+                if res.is_err() && removes_worktree(&self.dir, &op).is_some() && self.watcher.is_none() && self.watcher_task.is_none() {
                     self.start_watching(ctx);
                 }
                 if let (Ok(_), Some(c)) = (&res, &op.reword) {
@@ -3267,6 +3282,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn a_clean_looking_worktree_with_new_files_is_kept_whatever_status_config_says() {
+        let root = scratch("wt-stale-clean");
+        let a = root.join("a");
+        std::fs::create_dir_all(&a).unwrap();
+        sh(&a, &["init", "-q", "-b", "main"]);
+        identity(&a);
+        commit(&a, "f", "one");
+        sh(&a, &["config", "status.showUntrackedFiles", "no"]);
+        let wt = root.join("wt");
+        sh(&a, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        let d = super::super::data::load_all(&a, 100, View::default()).unwrap();
+        let w = d.worktrees.iter().find(|w| w.branch.as_deref() == Some("side")).unwrap();
+        std::fs::write(wt.join("new"), "work").unwrap();
+        let (args, warn) = super::worktree_remove_args(w);
+        let e = super::exec(&a, &super::remove_worktree_op(w, &args, &warn)).unwrap_err();
+        assert!(e.contains("untracked"), "{e}");
+        assert!(wt.join("new").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Force delete waiting for confirmation while the branch moves: refuses, so the new tip
     /// isn't lost (⌘Z would recreate the branch at the old one).
     #[test]
@@ -3430,6 +3466,71 @@ mod tests {
         assert!(git::run(&dir, &["rev-parse", "-q", "--verify", "refs/heads/side"]).is_ok());
         assert_eq!(t.switch_to.as_deref(), Some(std::path::Path::new(&main)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_this_worktree_waits_for_its_terminal_command_then_ends_the_shell() {
+        let dir = scratch("remove-this-wt-term");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "1\n");
+        let wt = dir.with_file_name(format!("{}-wt", dir.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&wt);
+        sh(&dir, &["worktree", "add", "-q", "-b", "side", wt.to_str().unwrap()]);
+        let wt = wt.canonicalize().unwrap();
+        let ctx = egui::Context::default();
+        let mut t = RepoTab::new(&ctx, wt.clone(), 100, View::default());
+        settle(&ctx, &mut t);
+        let w = t.data.as_ref().unwrap().worktrees.iter().find(|w| w.branch.as_deref() == Some("side")).unwrap().clone();
+        let (args, _) = super::worktree_remove_args(&w);
+        let main = dir.canonicalize().unwrap();
+        let from_main: Vec<&str> = ["-C", main.to_str().unwrap()].into_iter().chain(args).collect();
+        let op = Op::new("Remove worktree", &from_main);
+        t.term.toggle(&ctx, &wt);
+        t.term.tabs[0].write(&b"sleep 60\r"[..]);
+        super::super::testutil::wait_for("busy", || t.term.busy());
+        run(&ctx, &mut t, Action::Git(op.clone()));
+        assert!(wt.exists() && t.notes.iter().any(|m| m.error && m.text.contains("terminal")));
+        t.term.tabs[0].write(&b"\x03"[..]);
+        super::super::testutil::wait_for("idle", || !t.term.busy());
+        run(&ctx, &mut t, Action::Git(op));
+        assert!(!wt.exists() && t.term.tabs.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_left_behind_is_retried_at_its_own_path_by_the_built_in_removal_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("remove-wt-retry");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        std::fs::create_dir(dir.join("d")).unwrap();
+        commit(&dir, "d/f", "1\n");
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let mode = |wt: &std::path::Path, m| std::fs::set_permissions(wt.join("d"), std::fs::Permissions::from_mode(m)).unwrap();
+        let wts = ["x", "y"].map(|b| {
+            let wt = dir.with_file_name(format!("{name}-{b}"));
+            let _ = std::fs::remove_dir_all(&wt);
+            sh(&dir, &["worktree", "add", "-q", "-b", b, wt.to_str().unwrap()]);
+            mode(&wt, 0o555);
+            wt
+        });
+        let mut custom = Op::new("git worktree remove", &["worktree", "remove", &format!("../{name}-x")]);
+        custom.custom = true;
+        let e = exec(&dir, &custom).unwrap_err();
+        assert!(e.contains("failed to delete"), "{e}");
+        let y = wts[1].clone();
+        let unlock = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            mode(&y, 0o755);
+        });
+        exec(&dir, &Op::new("Remove worktree", &["worktree", "remove", &format!("../{name}-y")])).unwrap();
+        unlock.join().unwrap();
+        assert!(!wts[1].exists());
+        mode(&wts[0], 0o755);
+        let _ = (std::fs::remove_dir_all(&dir), std::fs::remove_dir_all(&wts[0]));
     }
 
     #[test]

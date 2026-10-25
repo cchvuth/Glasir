@@ -262,7 +262,7 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
 fn worktree_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Action>) {
     let name = r.name.as_str();
     let its = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()));
-    let this = r.head.then(|| d.here.filter(|&i| i > 0).and_then(|i| d.worktrees.get(i)).filter(|w| w.locked.is_none())).flatten().zip(d.worktrees.first());
+    let this = r.head.then(|| d.here.filter(|&i| i > 0).and_then(|i| d.worktrees.get(i)).filter(|w| w.locked.is_none())).flatten().and_then(|w| d.worktrees.iter().find(|m| !m.bare && !m.prunable && m.path != w.path).map(|m| (w, m)));
     let open = !r.head && r.worktree.is_none();
     if !open && r.worktree.is_none() && its.is_none() && this.is_none() {
         return;
@@ -288,7 +288,7 @@ fn worktree_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec
     {
         let (args, warn) = crate::repo::worktree_remove_args(w);
         let from_main: Vec<&str> = ["-C", main.path.as_str()].into_iter().chain(args).collect();
-        let op = crate::repo::remove_worktree_op(w, &from_main, &format!("{warn}\nThe branch {name} stays; this tab moves to the primary worktree."));
+        let op = crate::repo::remove_worktree_op(w, &from_main, &format!("{warn}\nThe branch {name} stays; this tab moves to {}.", main.path));
         acts.push(Action::Git(op.then_open(main.path.clone())));
     }
 }
@@ -401,6 +401,39 @@ mod tests {
         let d = t.data.as_ref().unwrap();
         assert_eq!(pr_base(d, "b"), "a");
         assert_eq!(d.rev(d.local("a").unwrap()), "refs/heads/a");
+    }
+
+    #[test]
+    fn removing_this_worktree_of_a_bare_repo_moves_to_a_worktree_with_files() {
+        let mut sim = Sim::new(500.0, 900.0);
+        let t = tab(&sim.ctx, "bare-wt-src", &["one"]);
+        let base = t.dir.with_file_name(format!("glasir-ui-bare-wt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let bare = base.join("repo.git");
+        crate::git::run(&t.dir, &["clone", "-q", "--bare", t.dir.to_str().unwrap(), bare.to_str().unwrap()]).unwrap();
+        for b in ["a", "b"] {
+            crate::git::run(&bare, &["worktree", "add", "-q", "-b", b, base.join(b).to_str().unwrap()]).unwrap();
+        }
+        let mut wt = crate::repo::RepoTab::new(&sim.ctx, base.join("a").canonicalize().unwrap(), 100, Default::default());
+        load(&mut wt, &sim.ctx);
+        let mut acts = vec![];
+        let d = wt.data.as_ref().unwrap();
+        let head = d.local("a").unwrap();
+        let mut draw = |ui: &mut Ui| worktree_items(ui, d, head, &mut acts);
+        sim.frame(vec![], &mut draw);
+        let at = sim.text(|s| s.starts_with("Remove this worktree")).expect("offered");
+        sim.click(at, PointerButton::Primary, draw);
+        let Some(Action::Git(op)) = acts.pop() else { panic!("no op") };
+        let b = d.worktrees.iter().find(|w| w.branch.as_deref() == Some("b")).unwrap().path.clone();
+        assert_eq!((op.then_open.as_deref(), &op.cmds.last().unwrap()[..2]), (Some(b.as_str()), &["-C".to_owned(), b.clone()][..]));
+        crate::git::run(&bare, &["worktree", "remove", &b]).unwrap();
+        wt.reload(&sim.ctx, true);
+        load(&mut wt, &sim.ctx);
+        let d = wt.data.as_ref().unwrap();
+        let head = d.local("a").unwrap();
+        sim.frame(vec![], |ui| worktree_items(ui, d, head, &mut vec![]));
+        assert!(sim.text(|s| s.starts_with("Remove this worktree")).is_none(), "only the bare folder is left to move to");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

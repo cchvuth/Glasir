@@ -65,19 +65,23 @@ const ICON: &[u8] = include_bytes!("../assets/icon-512.png");
 /// Linux: a desktop entry and icon in the user's data dir, so launchers and Wayland docks (which
 /// ignore the window icon) show Glasir's; rewritten when the binary has moved. A Linux binary has
 /// no icon of its own, so the file manager (GNOME Files) gets one as the file's custom icon.
-/// Nothing for the .deb's /usr/bin/glasir: the package ships both. `wait`: until `gio` is done.
+/// Nothing for the .deb's /usr/bin/glasir (the package ships both) but removing a user entry
+/// whose binary is gone (a removed tarball copy): it would hide the package's. `wait`: until `gio` is done.
 #[cfg(target_os = "linux")]
 fn desktop_entry(wait: bool) {
     let Ok(exe) = std::env::current_exe() else { return };
-    if exe.starts_with("/usr") {
+    let Some(data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))) else { return };
+    let file = data.join("applications/Glasir.desktop");
+    if exe.starts_with("/usr/bin") {
+        if std::fs::read_to_string(&file).ok().and_then(|s| exec_target(&s)).is_some_and(|p| !p.exists()) {
+            let _ = std::fs::remove_file(&file);
+        }
         return;
     }
-    let Some(data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))) else { return };
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName=Glasir\nComment=Git client\nExec=\"{}\"\nIcon=glasir\nTerminal=false\nCategories=Development;RevisionControl;\nStartupWMClass=Glasir\n",
-        exe.display()
+        "[Desktop Entry]\nType=Application\nName=Glasir\nComment=Git client\nExec={}\nIcon=glasir\nTerminal=false\nCategories=Development;RevisionControl;\nStartupWMClass=Glasir\n",
+        exec_value(&exe.to_string_lossy())
     );
-    let file = data.join("applications/Glasir.desktop");
     let icon = data.join("icons/hicolor/512x512/apps/glasir.png");
     if !std::fs::read_to_string(&file).is_ok_and(|s| s == entry) || !icon.exists() {
         for (path, bytes) in [(&icon, ICON), (&file, entry.as_bytes())] {
@@ -97,5 +101,42 @@ fn desktop_entry(wait: bool) {
     match wait {
         true => gio(),
         false => drop(std::thread::spawn(gio)),
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn exec_value(exe: &str) -> String {
+    let quoted: String = exe
+        .chars()
+        .flat_map(|c| match c {
+            '"' | '`' | '$' | '\\' => vec!['\\', c],
+            '%' => vec!['%', '%'],
+            _ => vec![c],
+        })
+        .collect();
+    format!("\"{}\"", quoted.replace('\\', "\\\\"))
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn exec_target(entry: &str) -> Option<PathBuf> {
+    let unescape = |s: &str| {
+        let mut it = s.chars();
+        std::iter::from_fn(|| it.next().map(|c| if c == '\\' { it.next().unwrap_or(c) } else { c })).collect::<String>()
+    };
+    let v = entry.lines().find_map(|l| l.strip_prefix("Exec=\""))?.strip_suffix('"')?;
+    Some(PathBuf::from(unescape(&unescape(v)).replace("%%", "%")))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_desktop_entry_exec_is_escaped_and_reads_back() {
+        let exe = r#"/opt/100% "x" $y \z`w`/Glasir"#;
+        let v = super::exec_value(exe);
+        assert_eq!(v, r#""/opt/100%% \\"x\\" \\$y \\\\z\\`w\\`/Glasir""#);
+        let entry = format!("[Desktop Entry]\nExec={v}\nIcon=glasir\n");
+        assert_eq!(super::exec_target(&entry), Some(exe.into()));
+        assert_eq!(super::exec_target("Exec=\"/home/u/.local/bin/Glasir\"\n"), Some("/home/u/.local/bin/Glasir".into()));
+        assert_eq!(super::exec_target("Exec=glasir\n"), None);
     }
 }
