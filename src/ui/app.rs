@@ -355,12 +355,18 @@ impl App {
         for (i, p) in switches {
             self.switch(ctx, i, &p);
         }
+        let removed: Vec<PathBuf> = self.tabs.iter_mut().filter_map(|t| t.removed_worktree.take()).collect();
         for i in (0..self.tabs.len()).rev() {
-            let t = &self.tabs[i];
-            if !t.dir.join(".git").exists() && t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.ext_tools.is_empty() {
+            let t = &mut self.tabs[i];
+            if !removed.contains(&t.dir) {
+                continue;
+            }
+            if t.unsaved().is_none() && t.busy().is_none() && !t.term.busy() && t.ext_tools.is_empty() {
                 let gone = format!("{} is no longer a repository: its tab closed.", t.dir.display());
                 self.close_tab(ctx, i);
                 self.toast(ctx, gone, false);
+            } else {
+                t.removed_worktree = Some(t.dir.clone());
             }
         }
         for (m, undo) in msgs {
@@ -618,7 +624,7 @@ const DRAFT_FILE: &str = "GLASIR_DRAFT";
 
 impl App {
     fn persist_drafts(&self) {
-        let open = self.tabs.iter().filter(|t| !t.amend).map(|t| (t.dir.as_path(), draft(t)));
+        let open = self.tabs.iter().map(|t| (t.dir.as_path(), draft(t)));
         let closed = self.drafts.iter().map(|(dir, d)| (dir.as_path(), Some(d.clone())));
         for (dir, d) in open.chain(closed) {
             match d {
@@ -642,8 +648,8 @@ fn forget_draft(dir: &Path) {
 }
 
 fn saved_text(d: &Draft) -> String {
-    let msg = format!("{}\n\n{}", d.0, d.1);
-    d.2.as_ref().map_or(msg.clone(), |t| crate::repo::message::strip_comments(&msg, t))
+    let body = d.2.as_ref().map_or(d.1.clone(), |t| crate::repo::message::strip_comments(&d.1, t));
+    format!("{}\n\n{body}", d.0)
 }
 
 fn replaceable(t: &RepoTab) -> bool {
@@ -999,7 +1005,30 @@ mod close_tests {
     #[test]
     fn a_saved_draft_drops_the_template_comments() {
         let t = crate::repo::message::Template { prefix: "#".into(), body: "# explain".into(), summary: "feat: ".into() };
-        assert_eq!(super::saved_text(&("feat: add".into(), "# explain".into(), Some(t), vec![])), "feat: add");
+        assert_eq!(super::saved_text(&("feat: add".into(), "# explain".into(), Some(t), vec![])), "feat: add\n\n");
+    }
+
+    #[test]
+    fn drafts_mid_amend_and_body_only_come_back() {
+        let ctx = egui::Context::default();
+        let t = crate::ui::testkit::tab(&ctx, "amend-draft", &["one"]);
+        let open = || {
+            let mut app = super::App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), Some(t.dir.clone()));
+            crate::ui::testkit::load(&mut app.tabs[0], &ctx);
+            app
+        };
+        let mut app = open();
+        app.tabs[0].summary = "fix it".into();
+        app.tabs[0].amend = true;
+        app.tabs[0].apply(&ctx, crate::repo::Action::AmendToggled(true));
+        app.persist_drafts();
+        let mut app = open();
+        assert_eq!(app.tabs[0].summary, "fix it");
+        app.tabs[0].template = Some(crate::repo::message::Template { prefix: "#".into(), body: "# explain".into(), summary: String::new() });
+        (app.tabs[0].summary, app.tabs[0].body) = (String::new(), "why\n# explain".into());
+        app.persist_drafts();
+        let app = open();
+        assert_eq!((app.tabs[0].summary.as_str(), app.tabs[0].body.as_str()), ("", "why"));
     }
 
     fn close(ctx: &egui::Context, app: &mut super::App) -> Vec<ViewportCommand> {
@@ -1483,7 +1512,7 @@ mod shell_tests {
             let events = [Event::ModifiersChanged(mods)].into_iter().chain(key.map(|key| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: mods })).collect();
             let (mut acts, mut wrap) = (vec![], false);
             sim.frame(events, |ui| {
-                super::super::history::show(ui, &mut fv, &mut wrap, &mut acts);
+                super::super::history::show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts);
                 if dialog {
                     egui::Modal::new(egui::Id::new("dialog")).show(ui.ctx(), |ui| ui.label("Confirm"));
                 }
@@ -1580,19 +1609,52 @@ mod shell_tests {
         app.open(&ctx, &b);
         app.open(&ctx, &c);
         std::fs::remove_dir_all(&a).unwrap();
+        app.tabs[0].removed_worktree = Some(app.tabs[0].dir.clone());
         app.tabs[0].switch_to = Some(b.clone());
         app.poll_tabs(&ctx);
         assert_eq!(app.tabs.len(), 2, "b already has a tab: a's is closed");
         assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()) && app.active == 0);
         app.tabs[1].amend = true;
         std::fs::remove_dir_all(&c).unwrap();
+        app.tabs[1].removed_worktree = Some(app.tabs[1].dir.clone());
         app.tabs[1].switch_to = Some(b.clone());
         app.poll_tabs(&ctx);
         assert_eq!(app.tabs.len(), 1, "closed, though it held an amend");
         assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()));
+        let d = repo("gone-d");
+        app.open(&ctx, &d);
         std::fs::remove_dir_all(&b).unwrap();
+        app.tabs[1].removed_worktree = Some(app.tabs[0].dir.clone());
         app.poll_tabs(&ctx);
-        assert!(app.tabs.is_empty(), "removed by another tab, or outside the app");
+        assert_eq!(app.tabs.len(), 1, "removed by another tab");
+        assert!(app.tabs[0].dir.ends_with(d.file_name().unwrap()));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn only_a_worktree_the_app_removed_closes_its_tab() {
+        let (main, other) = (repo("rm-wt-main"), repo("rm-wt-other"));
+        crate::git::run(&main, &["-c", "user.name=T", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "one"]).unwrap();
+        let wt = main.with_file_name(format!("{}-wt", main.file_name().unwrap().to_string_lossy()));
+        let _ = std::fs::remove_dir_all(&wt);
+        crate::git::run(&main, &["worktree", "add", "-q", &wt.to_string_lossy()]).unwrap();
+        let ctx = egui::Context::default();
+        let mut app = app(&ctx, &main);
+        app.open(&ctx, &wt);
+        app.open(&ctx, &other);
+        std::fs::remove_dir_all(&other).unwrap();
+        crate::ui::testkit::load(&mut app.tabs[0], &ctx);
+        app.tabs[0].apply(&ctx, Action::Git(crate::repo::Op::new("Remove worktree", &["worktree", "remove", &wt.to_string_lossy()])));
+        let start = std::time::Instant::now();
+        while app.tabs.len() == 3 {
+            assert!(start.elapsed().as_secs() < 120, "the worktree's tab never closed");
+            app.poll_tabs(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!wt.exists());
+        assert_eq!(app.tabs.len(), 2);
+        assert!(app.tabs[1].dir.ends_with(other.file_name().unwrap()), "a folder gone by itself (a share offline) keeps its tab");
+        let _ = std::fs::remove_dir_all(main);
     }
 
     #[test]

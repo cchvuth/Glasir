@@ -91,13 +91,14 @@ fn read(program: &str, child: &mut Child, on_text: &mut dyn FnMut(String) -> boo
     loop {
         let text = match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(line) => {
-                heard = true;
-                match serde_json::from_slice(&line).map(|v| each(&v)) {
-                    Ok(Err(e)) => {
+                let v: serde_json::Value = serde_json::from_slice(&line).unwrap_or_default();
+                heard |= !matches!(v["type"].as_str(), None | Some("system" | "thread.started" | "turn.started"));
+                match each(&v) {
+                    Err(e) => {
                         stop(child);
                         return Err(e);
                     }
-                    r => r.ok().and_then(Result::ok).unwrap_or_default(),
+                    Ok(text) => text,
                 }
             }
             Err(RecvTimeoutError::Timeout) if !heard && start.elapsed() > SILENCE => {
@@ -120,12 +121,12 @@ fn failed(program: &str, status: std::process::ExitStatus, err: &str) -> String 
 }
 
 fn claude(program: &str, dir: &Path, model: Option<&str>, system: &str, prompt: &str, schema: Option<&serde_json::Value>, on_text: &mut dyn FnMut(String) -> bool) -> Res<()> {
-    let system_file = dir.join("system.txt");
-    std::fs::write(&system_file, system).map_err(|e| e.to_string())?;
-    let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "user", "--system-prompt-file"]
+    let (system_file, settings) = (dir.join("system.txt"), dir.join("settings.json"));
+    std::fs::write(&system_file, system).and_then(|_| std::fs::write(&settings, r#"{"disableAllHooks":true}"#)).map_err(|e| e.to_string())?;
+    let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--tools", "", "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "user"]
         .map(String::from)
         .to_vec();
-    args.push(system_file.to_string_lossy().into_owned());
+    args.extend(["--settings".into(), settings.to_string_lossy().into_owned(), "--system-prompt-file".into(), system_file.to_string_lossy().into_owned()]);
     if let Some(m) = model {
         args.extend(["--model".into(), m.into()]);
     }
@@ -239,21 +240,23 @@ mod tests {
 
     #[test]
     fn claude_code_streams_text_and_passes_its_flags() {
-        let (argv, sys) = (scratch("claude-argv"), scratch("claude-system"));
+        let (argv, sys, settings) = (scratch("claude-argv"), scratch("claude-system"), scratch("claude-settings"));
         let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = --system-prompt-file ] && cat \"$2\" > '{}'; shift; done\ncat > /dev/null\necho '{{\"type\":\"system\",\"subtype\":\"init\"}}'\necho '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"Fix \"}}}}}}'\necho '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"parser\"}}}}}}'\necho '{{\"type\":\"result\",\"is_error\":false,\"result\":\"Fix parser\"}}'\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = --system-prompt-file ] && cat \"$2\" > '{}'; [ \"$1\" = --settings ] && cat \"$2\" > '{}'; shift; done\ncat > /dev/null\necho '{{\"type\":\"system\",\"subtype\":\"init\"}}'\necho '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"Fix \"}}}}}}'\necho '{{\"type\":\"stream_event\",\"event\":{{\"type\":\"content_block_delta\",\"delta\":{{\"type\":\"text_delta\",\"text\":\"parser\"}}}}}}'\necho '{{\"type\":\"result\",\"is_error\":false,\"result\":\"Fix parser\"}}'\n",
             argv.display(),
-            sys.display()
+            sys.display(),
+            settings.display()
         );
         let p = fake("claude", &script);
         assert_eq!(ask(Provider::ClaudeCode, &p, None).unwrap(), "Fix parser");
         let args = std::fs::read_to_string(&argv).unwrap();
-        for a in ["-p", "stream-json", "--no-session-persistence", "--strict-mcp-config", "user", "haiku"] {
+        for a in ["-p", "stream-json", "--no-session-persistence", "--strict-mcp-config", "user", "--settings", "haiku"] {
             assert!(args.lines().any(|l| l == a), "{a} in {args}");
         }
         assert!(!args.lines().any(|l| l == "SYS"), "{args}");
         assert_eq!(std::fs::read_to_string(&sys).unwrap(), "SYS");
-        let _ = (std::fs::remove_file(argv), std::fs::remove_file(sys));
+        assert!(std::fs::read_to_string(&settings).unwrap().contains(r#""disableAllHooks":true"#));
+        let _ = (std::fs::remove_file(argv), std::fs::remove_file(sys), std::fs::remove_file(settings));
     }
 
     #[test]
@@ -313,7 +316,7 @@ mod tests {
 
     #[test]
     fn a_silent_cli_times_out() {
-        let p = fake("claude", "#!/bin/sh\ncat > /dev/null\nsleep 60\n");
+        let p = fake("claude", "#!/bin/sh\ncat > /dev/null\necho '{\"type\":\"system\",\"subtype\":\"init\"}'\nsleep 60\n");
         let t = Instant::now();
         assert!(ask(Provider::ClaudeCode, &p, None).is_err_and(|e| e.contains("did not answer")));
         assert!(t.elapsed() < Duration::from_secs(30), "{:?}", t.elapsed());

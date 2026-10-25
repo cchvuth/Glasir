@@ -71,12 +71,12 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                             let split = (r.width() * 0.38).clamp(280.0, 460.0);
                             let left = egui::Rect::from_min_max(r.min, egui::pos2(r.left() + split, r.bottom()));
                             let right = egui::Rect::from_min_max(egui::pos2(r.left() + split + 12.0, r.top()), r.max);
-                            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| close = history::show(ui, fv, &mut s.wrap, &mut acts));
+                            ui.scope_builder(UiBuilder::new().max_rect(left), |ui| close = history::show(ui, fv, &t.avatars, &mut s.wrap, &mut acts));
                             ui.scope_builder(UiBuilder::new().max_rect(right), |ui| {
                                 diff_view::show(ui, t.diff.as_mut().unwrap(), t.data.as_ref(), &mut s.split_diff, &mut s.wrap, &mut acts)
                             });
                         } else {
-                            close = history::show(ui, fv, &mut s.wrap, &mut acts);
+                            close = history::show(ui, fv, &t.avatars, &mut s.wrap, &mut acts);
                         }
                         if close {
                             t.file_view = None;

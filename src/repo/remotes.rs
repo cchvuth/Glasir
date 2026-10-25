@@ -201,9 +201,24 @@ fn pr_head<'a>(r: &'a crate::git::Ref, remote: &str) -> Option<&'a str> {
 /// A real branch `pr`, `pr/<n>` or `pr/<n>/…` on `remote` that pull request heads would collide
 /// with, making every fetch fail: then fetching them can't be turned on.
 pub fn pr_refs_clash<'a>(d: &'a RepoData, remote: &str) -> Option<&'a str> {
-    let numbered = |n: &str| n.split('/').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     let pr = format!("refs/remotes/{remote}/pr");
     (!pr_refs_on(d, remote)).then(|| d.refs.iter().find(|r| r.full == pr || pr_head(r, remote).is_some_and(numbered)).map(|r| r.name.as_str())).flatten()
+}
+
+fn numbered(n: &str) -> bool {
+    n.split('/').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+pub(super) const REFUSE: &str = "!refuse";
+
+pub fn pr_push_refused(d: &RepoData, remote: &str, rb: &str) -> Option<Op> {
+    let clash = rb == "pr" || rb.strip_prefix("pr/").is_some_and(numbered);
+    let why = format!("{remote} fetches pull requests as {remote}/pr/<number>, so a branch {rb} there would make every fetch fail. Rename the branch (e.g. to review/{}) and push that.", rb.trim_start_matches("pr/"));
+    (clash && pr_refs_on(d, remote)).then(|| Op::new(format!("Push {rb}"), &[REFUSE, &why]))
+}
+
+pub fn is_pr_head(d: &RepoData, r: &crate::git::Ref) -> bool {
+    d.split_remote(&r.name).is_some_and(|(remote, _)| pr_refs_on(d, remote) && pr_head(r, remote).is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit())))
 }
 
 /// Toggle fetching pull request heads; turning it off deletes the fetched `pr/<n>` refs
@@ -451,6 +466,39 @@ mod tests {
         sh(&up, &["branch", "pr"]);
         sh(&dir, &["fetch", "-q", "--prune", "origin"]);
         assert_eq!(pr_refs_clash(&load(), "origin"), Some("origin/pr"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&up);
+    }
+
+    #[test]
+    fn a_fetched_pull_request_is_no_branch_to_push_or_delete() {
+        let up = scratch("prpush-up");
+        sh(&up, &["init", "-q", "-b", "main"]);
+        identity(&up);
+        commit(&up, "a.txt", "one\n");
+        sh(&up, &["branch", "pr/feature"]);
+        sh(&up, &["update-ref", "refs/pull/7/head", "HEAD"]);
+        let dir = scratch("prpush");
+        sh(&dir, &["clone", "-q", &up.to_string_lossy(), "."]);
+        identity(&dir);
+        let load = || load_all(&dir, 100, View::default()).unwrap();
+        exec(&dir, &pr_refs_op(&load(), "origin")).unwrap();
+        let mut op = pr_checkout("origin");
+        for a in op.cmds.iter_mut().flatten() {
+            *a = a.replace(crate::repo::Prompt::VALUE, "7");
+        }
+        exec(&dir, &op).unwrap();
+        commit(&dir, "b.txt", "review fixup\n");
+        let d = load();
+        for push in [d.push_op(false).unwrap(), d.push_op(true).unwrap(), crate::repo::stack::push_op(&d, "pr/7").unwrap()] {
+            assert!(exec(&dir, &push).unwrap_err().contains("Rename the branch"));
+        }
+        assert!(git::run(&up, &["rev-parse", "-q", "--verify", "refs/heads/pr/7"]).is_err());
+        let head = |n: &str| d.refs.iter().find(|r| r.name == n).unwrap();
+        assert!(is_pr_head(&d, head("origin/pr/7")) && !is_pr_head(&d, head("origin/pr/feature")));
+        assert!(crate::repo::delete_everywhere(&d, head("pr/7")).is_none());
+        sh(&dir, &["checkout", "-q", "-b", "pr/feature"]);
+        assert!(exec(&dir, &load().push_op(false).unwrap()).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&up);
     }

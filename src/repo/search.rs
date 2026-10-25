@@ -382,11 +382,12 @@ impl Search {
 
     /// Is a hit reachable from the hovered ref, per the loaded graph? `reach`: the rows the ref reaches
     /// (`None`: its tip isn't loaded), `complete`: no unloaded parent in its ancestry, `row`: the hit's row
-    /// (`None`: older than the loaded page). `None` result: ask git.
-    pub(crate) fn judge(reach: Option<&[bool]>, complete: bool, row: Option<usize>) -> Option<bool> {
+    /// (`None`: older than the loaded page), `first_parent`: the graph lacks merged-in parents, so only
+    /// its yes counts. `None` result: ask git.
+    pub(crate) fn judge(reach: Option<&[bool]>, complete: bool, row: Option<usize>, first_parent: bool) -> Option<bool> {
         match (reach, row) {
-            (Some(v), Some(r)) => Some(v[r]),
-            (Some(_), None) if complete => Some(false),
+            (Some(v), Some(r)) if v[r] || !first_parent => Some(v[r]),
+            (Some(_), None) if complete && !first_parent => Some(false),
             _ => None,
         }
     }
@@ -596,11 +597,14 @@ mod tests {
     #[test]
     fn judges_hover_reachability() {
         let v = [false, true];
-        assert_eq!(Search::judge(Some(&v), false, Some(1)), Some(true));
-        assert_eq!(Search::judge(Some(&v), false, Some(0)), Some(false));
-        assert_eq!(Search::judge(Some(&v), true, None), Some(false), "a complete ancestry holds no older hit");
-        assert_eq!(Search::judge(Some(&v), false, None), None, "an open ancestry may");
-        assert_eq!(Search::judge(None, true, Some(1)), None, "an unloaded tip is git's to judge");
+        assert_eq!(Search::judge(Some(&v), false, Some(1), false), Some(true));
+        assert_eq!(Search::judge(Some(&v), false, Some(0), false), Some(false));
+        assert_eq!(Search::judge(Some(&v), true, None, false), Some(false), "a complete ancestry holds no older hit");
+        assert_eq!(Search::judge(Some(&v), false, None, false), None, "an open ancestry may");
+        assert_eq!(Search::judge(None, true, Some(1), false), None, "an unloaded tip is git's to judge");
+        assert_eq!(Search::judge(Some(&v), true, Some(1), true), Some(true));
+        assert_eq!(Search::judge(Some(&v), true, Some(0), true), None, "a first-parent graph misses merged-in commits");
+        assert_eq!(Search::judge(Some(&v), true, None, true), None);
     }
 
     /// Hits older than the loaded page are judged by git, off the thread asking, and cached.

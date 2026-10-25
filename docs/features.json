@@ -1593,6 +1593,7 @@
         "summary field Enter moves to description"
        ],
        "fns": [
+        "crate::repo::data::RepoData::replaying",
         "crate::repo::message::add_coauthors",
         "crate::repo::message::body",
         "crate::repo::message::is_trailer",
@@ -4514,6 +4515,7 @@
         "crate::repo::data::split_remote",
         "crate::repo::op::RepoData::push_op",
         "crate::repo::op::RepoTab::push_op",
+        "crate::repo::remotes::pr_push_refused",
         "crate::ui::palette::items",
         "crate::ui::toolbar::label",
         "crate::ui::toolbar::toolbar_remote"
@@ -4575,6 +4577,7 @@
         "src/ui/sidebar/ref_menus.rs:214 local branch menu \"Push stack (N branches)\""
        ],
        "fns": [
+        "crate::repo::remotes::pr_push_refused",
         "crate::repo::stack::push_op",
         "crate::ui::sidebar::ref_menus::local_menu"
        ],
@@ -4770,7 +4773,10 @@
        ],
        "fns": [
         "crate::repo::data::RepoData::cfg_all",
+        "crate::repo::remotes::is_pr_head",
+        "crate::repo::remotes::numbered",
         "crate::repo::remotes::pr_head",
+        "crate::repo::remotes::pr_push_refused",
         "crate::repo::remotes::pr_refs_clash",
         "crate::repo::remotes::pr_refs_on",
         "crate::repo::remotes::pr_refs_op",

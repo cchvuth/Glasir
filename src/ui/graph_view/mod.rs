@@ -186,7 +186,7 @@ pub fn show(
         let Some(t) = &tip else { return false };
         // The WIP row sits above HEAD: it belongs to the hovered ref only if that is HEAD's.
         let Some(c) = d.commit(r) else { return all.status.head.as_ref() != Some(t) };
-        let known = Search::judge(reach.as_ref().map(|v| v.as_slice()), complete, full_row(r));
+        let known = Search::judge(reach.as_ref().map(|v| v.as_slice()), complete, full_row(r), all.view.first_parent);
         !known.or_else(|| search.and_then(|s| s.is_ancestor(&ctx, &c.id, t))).unwrap_or(true)
     };
     let dims = |r: usize| search.is_some_and(|s| s.dims(r)) || hover_dims(r);

@@ -510,7 +510,7 @@ pub(super) fn drop_menu(t: &mut RepoTab, ctx: &egui::Context, acts: &mut Vec<Act
                 && local(s)
                 && let Some((remote, branch)) = d.split_remote(dst)
             {
-                let push = Op::new(format!("Push {src}"), &["push", remote, &format!("{}:refs/heads/{branch}", s.full)]);
+                let push = crate::repo::remotes::pr_push_refused(d, remote, branch).unwrap_or_else(|| Op::new(format!("Push {src}"), &["push", remote, &format!("{}:refs/heads/{branch}", s.full)]));
                 pick(ui, format!("{}  Push {src} to {dst}", icon::ARROW_LINE_UP), Action::Git(push));
             }
             // `git rebase <dst> <remote ref>` (or `refs/heads/<src>`) would rebase a detached HEAD

@@ -328,6 +328,9 @@ pub fn push_op(d: &RepoData, b: &str) -> Option<Op> {
             Some(dest) => dest,
             None => (fork.unwrap_or(first), name.as_str()),
         };
+        if let Some(o) = super::remotes::pr_push_refused(d, remote, rb) {
+            return Some(o);
+        }
         let tracking = d.refs.iter().find(|x| x.kind == RefKind::Remote && x.name == format!("{remote}/{rb}")).filter(|x| x.target != r.target);
         let reaches = |from: &str, to: &str| reaches(d, from, to);
         if tracking.is_some_and(|t| reaches(&t.target, &r.target)) {

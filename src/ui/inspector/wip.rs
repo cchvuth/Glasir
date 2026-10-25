@@ -407,14 +407,18 @@ impl RepoTab {
             });
             let n = s.staged.len();
             let named = !self.summary.trim().is_empty() && !untouched && !busy && !generating;
-            let can = (n > 0 || self.amend) && named;
+            let replaying = d.replaying();
+            let can = (n > 0 || self.amend) && named && !replaying;
             let push = self.push_after && !self.amend && d.push_op(false).is_some();
             let label = if self.amend {
                 "Amend commit".to_owned()
             } else {
                 format!("Commit{} changes to {n} file{}", if push { " and push" } else { "" }, if n == 1 { "" } else { "s" })
             };
-            let btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text(if untouched { "Edit the template's message first".to_owned() } else { keys("⌘↩ commits; ⇧⌘↩ stages everything first, then commits") });
+            let mut btn = theme::primary(ui, can, &label, ui.available_width()).on_hover_text(if untouched { "Edit the template's message first".to_owned() } else { keys("⌘↩ commits; ⇧⌘↩ stages everything first, then commits") });
+            if replaying {
+                btn = btn.on_disabled_hover_text("Use Continue above: it commits these changes with the original commit's author and message");
+            }
             // Not while a dialog is open: ⌘↩ there confirms the dialog (e.g. an annotated tag).
             // Nor from another field (graph search, terminal): only the commit box or no focus.
             let ours = ui.memory(|m| m.top_modal_layer().is_none() && m.focused().is_none_or(|f| f == sum_id || f == body_id));
@@ -432,7 +436,7 @@ impl RepoTab {
                 commit = true;
             }
             // Stage everything first; a conflicted file would be committed with its markers.
-            if enter && shift && named && s.conflicted.is_empty() && (n > 0 || self.amend || !s.unstaged.is_empty()) {
+            if enter && shift && named && !replaying && s.conflicted.is_empty() && (n > 0 || self.amend || !s.unstaged.is_empty()) {
                 stage_commit = true;
             }
         });

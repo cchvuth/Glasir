@@ -24,26 +24,26 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::inspector::wip::RepoTab::wip_panel` (src/ui/inspector/wip.rs:280) | 31 |
 | `ui::palette::items` (src/ui/palette.rs:74) | 25 |
 | `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:141) | 24 |
-| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:177) | 22 |
-| `repo::RepoTab::apply` (src/repo/mod.rs:651) | 21 |
+| `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:184) | 22 |
+| `repo::RepoTab::apply` (src/repo/mod.rs:653) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
 | `ui::graph_view::show` (src/ui/graph_view/mod.rs:129) | 17 |
-| `repo::data::RepoData::split_remote` (src/repo/data.rs:290) | 13 |
+| `repo::data::RepoData::split_remote` (src/repo/data.rs:295) | 13 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
-| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:326) | 11 |
+| `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:336) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
 | `ui::app::App::shortcuts` (src/ui/app.rs:192) | 11 |
-| `repo::op::exec_stash` (src/repo/op.rs:835) | 11 |
+| `repo::op::exec_stash` (src/repo/op.rs:836) | 11 |
 | `ui::settings::App::settings_dialog` (src/ui/settings.rs:134) | 10 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
 | `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
 | `ui::diff_view::pick_lines` (src/ui/diff_view.rs:614) | 10 |
 | `ui::diff_view::Layout::get` (src/ui/diff_view.rs:75) | 10 |
-| `ui::app::App::ui` (src/ui/app.rs:513) | 10 |
-| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:297) | 9 |
+| `ui::app::App::ui` (src/ui/app.rs:519) | 10 |
+| `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:307) | 9 |
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
 
@@ -473,6 +473,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Commit staged changes `commit.commit`
 - **Entry:** "Commit N changes to M files" primary button (wip.rs:415); ⌘↩ in the commit box; summary field Enter moves to description
 - **Platform:** `platform.offer`, `platform.op-runner`, `platform.undo-engine`
+- **Own code:** `repo::data::RepoData::replaying`
 - **Shared:** `repo::message::add_coauthors` (3), `repo::message::body` (2), `repo::message::is_trailer` (2), `repo::message::strip_comments` (4), `repo::op::RepoTab::commit_op` (6), `repo::op::RepoTab::prefill_template` (3), `repo::op::RepoTab::reset_message` (6), `theme::glass::description` (2), `theme::glass::primary` (2), `theme::glass::small` (2), `ui::inspector::wip::RepoTab::wip_panel` (31)
 
 #### Stage everything and commit `commit.stage-and-commit`
@@ -1245,7 +1246,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Push the current branch (sets upstream on first push) `remote.push`
 - **Entry:** src/ui/toolbar.rs:256 "Push" pill (opens Add remote when none); src/ui/palette.rs:86 Cmd+P "Push"; src/ui/inspector/wip.rs:404 "Push after commit" checkbox (the commit button then reads "Commit and push changes to N files", wip.rs:415); src/repo/op.rs:1377 push after a queued commit
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::data::RepoData::cfg` (3), `repo::data::RepoData::default_remote` (8), `repo::data::RepoData::push_dest` (3), `repo::data::RepoData::push_target` (4), `repo::data::RepoData::split_remote` (13), `repo::data::split_remote` (2), `repo::op::RepoData::push_op` (2), `repo::op::RepoTab::push_op` (2), `ui::palette::items` (25), `ui::toolbar::label` (3), `ui::toolbar::toolbar_remote` (5)
+- **Shared:** `repo::data::RepoData::cfg` (3), `repo::data::RepoData::default_remote` (8), `repo::data::RepoData::push_dest` (3), `repo::data::RepoData::push_target` (4), `repo::data::RepoData::split_remote` (13), `repo::data::split_remote` (2), `repo::op::RepoData::push_op` (2), `repo::op::RepoTab::push_op` (2), `repo::remotes::pr_push_refused` (3), `ui::palette::items` (25), `ui::toolbar::label` (3), `ui::toolbar::toolbar_remote` (5)
 
 #### Force push with lease `remote.force-push`
 - **Entry:** src/ui/toolbar.rs:268 push caret menu "Force push (with lease)"; src/ui/palette.rs:89 Cmd+P "Force push (with lease)"; src/repo/offer.rs:52 "Force push…" choice after a rejected push
@@ -1260,7 +1261,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Push a stack of branches `remote.push-stack`
 - **Entry:** src/ui/sidebar/ref_menus.rs:214 local branch menu "Push stack (N branches)"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::stack::push_op` (3), `ui::sidebar::ref_menus::local_menu` (22)
+- **Shared:** `repo::remotes::pr_push_refused` (3), `repo::stack::push_op` (3), `ui::sidebar::ref_menus::local_menu` (22)
 
 #### Delete a branch from the remote `remote.delete-remote-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:60 delete_items "Delete <b> from <remote>" (remote branch menu and synced graph pill, last)
@@ -1315,8 +1316,8 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Show pull requests as <remote>/pr/<n> `remote.pr-refs`
 - **Entry:** src/ui/sidebar/remotes.rs:27 remote menu checkbox "Show pull requests as …/pr/<n>"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Own code:** `repo::remotes::pr_refs_clash`, `repo::remotes::pr_refs_on`, `repo::remotes::pr_refs_op`
-- **Shared:** `repo::data::RepoData::cfg_all` (2), `repo::remotes::pr_head` (2), `repo::remotes::pr_refspec` (2), `ui::sidebar::remotes::remote_menu` (7)
+- **Own code:** `repo::remotes::is_pr_head`, `repo::remotes::numbered`, `repo::remotes::pr_refs_clash`, `repo::remotes::pr_refs_on`, `repo::remotes::pr_refs_op`
+- **Shared:** `repo::data::RepoData::cfg_all` (2), `repo::remotes::pr_head` (2), `repo::remotes::pr_push_refused` (3), `repo::remotes::pr_refspec` (2), `ui::sidebar::remotes::remote_menu` (7)
 
 #### Create a pull request (opens the compare page) `remote.create-pr`
 - **Entry:** src/ui/sidebar/ref_menus.rs:167 branch menu "Create pull request…"; src/ui/palette.rs:187 Cmd+P "Create pull request for <branch>"; src/ui/dialogs.rs:198 AI dialog "Open pull request page" (with title/body)

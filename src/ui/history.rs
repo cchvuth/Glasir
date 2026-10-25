@@ -16,7 +16,7 @@ fn heat_color(t: f32) -> Color32 {
 }
 
 /// Draws the file view; returns true when it should close.
-pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
+pub fn show(ui: &mut Ui, fv: &mut FileView, avatars: &crate::repo::avatars::Avatars, wrap: &mut bool, acts: &mut Vec<Action>) -> bool {
     fv.poll();
     let mut close = super::format::esc_pressed(ui);
     let mut nav = None;
@@ -116,7 +116,7 @@ pub fn show(ui: &mut Ui, fv: &mut FileView, wrap: &mut bool, acts: &mut Vec<Acti
                     let p = ui.painter().with_clip_rect(rect);
                     let c = pos2(rect.left() + 20.0, rect.center().y);
                     p.circle_filled(c, 12.0, theme::avatar(&e.email));
-                    match crate::repo::avatars::critter(ui.ctx(), &e.author) {
+                    match avatars.get(&e.email).or_else(|| crate::repo::avatars::critter(ui.ctx(), &e.author)) {
                         Some(t) => theme::photo(&p, c, 12.0, &t, 1.0),
                         None => drop(p.text(c, Align2::CENTER_CENTER, initials(&e.author), FontId::proportional(10.0), Color32::WHITE)),
                     }
@@ -294,11 +294,11 @@ mod tests {
         };
         (fv.data, fv.data_gen) = (blame(["1", "2"]), 1);
         let (mut wrap, mut acts) = (false, vec![]);
-        sim.open_menu("author2", |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        sim.open_menu("author2", |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         assert!(egui::Popup::is_any_open(&sim.ctx));
         (fv.data, fv.data_gen) = (blame(["1", "3"]), 2);
         for _ in 0..2 {
-            sim.frame(vec![], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+            sim.frame(vec![], |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         }
         assert!(!egui::Popup::is_any_open(&sim.ctx), "the menu doesn't turn into the other commit's");
     }
@@ -309,9 +309,9 @@ mod tests {
         let t = tab(&sim.ctx, "history-crumb", &["x"]);
         let mut fv = FileView::open(&sim.ctx, &t.dir, "d/f", Mode::Blame(Some("abc".into())));
         let (mut wrap, mut acts) = (false, vec![]);
-        sim.frame(vec![], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        sim.frame(vec![], |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         let at = sim.text(|s| s == "d/").expect("the folder is drawn");
-        sim.click(at, egui::PointerButton::Primary, |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        sim.click(at, egui::PointerButton::Primary, |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         assert!(acts.iter().any(|a| matches!(a, Action::FileView(p, Mode::History(Some(r))) if p == "d/" && r == "abc")));
     }
 
@@ -323,7 +323,7 @@ mod tests {
         let (mut wrap, mut acts) = (false, vec![]);
         for key in [egui::Key::OpenBracket, egui::Key::CloseBracket] {
             let press = egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND };
-            sim.frame(vec![press], |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+            sim.frame(vec![press], |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         }
         assert!(!acts.iter().any(|a| matches!(a, Action::CloseDiff)));
     }
@@ -343,9 +343,9 @@ mod tests {
         };
         (fv.data, fv.data_gen) = (entries(10), 1);
         let (mut wrap, mut acts) = (false, vec![]);
-        sim.open_menu("summary 4", |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        sim.open_menu("summary 4", |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         (fv.data, fv.data_gen) = (entries(11), 2);
-        sim.pick(&format!("{}  Blame at this commit", icon::USER_LIST), |ui| _ = show(ui, &mut fv, &mut wrap, &mut acts));
+        sim.pick(&format!("{}  Blame at this commit", icon::USER_LIST), |ui| _ = show(ui, &mut fv, &Default::default(), &mut wrap, &mut acts));
         let blamed: Vec<_> = acts.iter().filter_map(|a| if let Action::FileView(_, Mode::Blame(Some(id))) = a { Some(id.as_str()) } else { None }).collect();
         assert_eq!(blamed, [format!("0000004{}", "0".repeat(33))]);
     }

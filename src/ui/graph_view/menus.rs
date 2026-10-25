@@ -132,8 +132,8 @@ pub fn integrate_items(ui: &mut Ui, d: &RepoData, target: &str, rev: &str, acts:
 /// Is commit `id` on HEAD's own history? A commit older than the loaded page is asked of git.
 pub(super) fn on_branch(ui: &Ui, d: &RepoData, search: Option<&Search>, id: &str) -> bool {
     let Some(head) = d.status.head.as_deref() else { return false };
-    match d.row_of.get(head).zip(d.row_of.get(id)) {
-        Some((&h, &r)) => d.reachable(h)[r],
+    match d.row_of.get(head).and_then(|&h| Search::judge(Some(&d.reachable(h)), false, d.row_of.get(id).copied(), d.view.first_parent)) {
+        Some(known) => known,
         None => search.and_then(|s| s.is_ancestor(ui.ctx(), id, head)).unwrap_or(false),
     }
 }

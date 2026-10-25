@@ -48,7 +48,7 @@ fn agent() -> ureq::Agent {
         .tls_config(crate::ai::tls())
         .timeout_connect(Some(Duration::from_secs(20)))
         .timeout_recv_response(Some(Duration::from_secs(30)))
-        .timeout_recv_body(Some(Duration::from_secs(600)))
+        .timeout_recv_body(Some(Duration::from_secs(50 * 60)))
         .user_agent(concat!("Glasir/", env!("CARGO_PKG_VERSION")))
         .build()
         .into()

@@ -265,6 +265,11 @@ impl RepoData {
         m.entry(tip).or_insert_with(|| Arc::new(self.graph.reachable(&[tip]))).clone()
     }
 
+    pub fn replaying(&self) -> bool {
+        let has = |f: &str| self.git_dir.join(f).exists();
+        self.state == git::State::Applying || (self.state == git::State::Rebasing && has("REBASE_HEAD") && !has("rebase-merge/amend"))
+    }
+
     /// Sidebar order: 0 = the remote's default branch, 1 = other long-lived
     /// branches (main, master, develop, trunk), 2 = everything else.
     pub fn branch_rank(&self, name: &str) -> u8 {
@@ -944,6 +949,39 @@ mod tests {
         assert!(r.wip && Arc::ptr_eq(&r.layout, &d.layout));
         assert_eq!(colors(&r), main);
         assert_eq!(r.graph.nodes, dirty.graph.nodes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_a_conflicted_rebase_step_counts_as_replaying() {
+        let dir = scratch("replaying");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        commit(&dir, "f", "a\n");
+        sh(&dir, &["checkout", "-q", "-b", "x"]);
+        commit(&dir, "f", "x\n");
+        let x = sh(&dir, &["rev-parse", "HEAD"]);
+        commit(&dir, "g", "y\n");
+        let y = sh(&dir, &["rev-parse", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        commit(&dir, "f", "m\n");
+        sh(&dir, &["checkout", "-q", "x"]);
+        let load = || load_all(&dir, 100, View::default()).unwrap();
+        assert!(!load().replaying());
+        let todo = format!("sequence.editor=printf 'pick {}\\nbreak\\npick {}\\n' >", x.trim(), y.trim());
+        assert!(git::run(&dir, &["-c", &todo, "rebase", "-q", "-i", "main"]).is_err());
+        assert!(load().replaying());
+        std::fs::write(dir.join("f"), "both\n").unwrap();
+        sh(&dir, &["add", "f"]);
+        assert!(load().replaying(), "resolved, it still needs Continue to keep the author");
+        sh(&dir, &["-c", "core.editor=true", "rebase", "--continue"]);
+        let d = load();
+        assert!(d.state == git::State::Rebasing && !d.replaying(), "a break stop takes new commits");
+        sh(&dir, &["rebase", "--abort"]);
+        let edit = format!("sequence.editor=printf 'edit {}\\n' >", y.trim());
+        sh(&dir, &["-c", &edit, "rebase", "-q", "-i", "HEAD~1"]);
+        let d = load();
+        assert!(d.state == git::State::Rebasing && !d.replaying(), "an edit stop (guided split) takes new commits");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

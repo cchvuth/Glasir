@@ -55,7 +55,7 @@ fn delete_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<A
             }
         }
         RefKind::Remote => {
-            if let Some((remote, branch)) = d.split_remote(name) {
+            if let Some((remote, branch)) = d.split_remote(name).filter(|_| !crate::repo::remotes::is_pr_head(d, r)) {
                 ui.separator();
                 if ui.button(format!("Delete {branch} from {remote}")).clicked() {
                     acts.push(Action::Git(crate::repo::remotes::delete_branch(remote, branch, &r.target)));
@@ -162,6 +162,13 @@ fn web_items(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Acti
         acts.push(Action::Ai(Purpose::PullRequest { branch: d.rev(r).into(), base: d.local(&base).map_or(base.clone(), |l| d.rev(l).to_owned()) }));
     }
     let Some(web) = d.web_of(&remote) else { return };
+    let head = format!("{remote}/{branch}");
+    if d.refs.iter().any(|x| x.kind == RefKind::Remote && x.name == head && crate::repo::remotes::is_pr_head(d, x)) {
+        if ui.button("Open pull request on remote").clicked() {
+            acts.push(Action::Url(format!("{web}/pull/{}", &branch[3..])));
+        }
+        return;
+    }
     let base = pr_base(d, &r.name);
     let into = remote_branch(d, &base).1;
     if ui.button("Create pull request…").on_hover_text(format!("Opens the compare page into {into} on GitHub / GitHub Enterprise")).clicked()
@@ -196,7 +203,10 @@ fn local_menu(ui: &mut Ui, d: &RepoData, r: &crate::git::Ref, acts: &mut Vec<Act
             // `-u` only toward the upstream's own remote: it must not retarget a triangular setup.
             let spec = format!("{}:refs/heads/{rb}", r.full);
             let keep = d.split_remote(&r.upstream).is_some_and(|u| u.0 != remote);
-            acts.push(op(format!("Push {name}"), &if keep { vec!["push", remote, &spec] } else { vec!["push", "-u", remote, &spec] }));
+            acts.push(match crate::repo::remotes::pr_push_refused(d, remote, rb) {
+                Some(o) => Action::Git(o),
+                None => op(format!("Push {name}"), &if keep { vec!["push", remote, &spec] } else { vec!["push", "-u", remote, &spec] }),
+            });
         }
     }
     let members = crate::repo::stack::members(d, name);

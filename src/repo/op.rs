@@ -228,6 +228,7 @@ pub(super) fn exec(dir: &Path, op: &Op) -> Res<String> {
             [super::maintenance::MAINTAIN, cmd] => super::maintenance::run(dir, cmd),
             [super::remotes::RESET, name] => super::remotes::reset(dir, name),
             [super::remotes::PR_GUARD, b, fetched, seen] => super::remotes::pr_guard(dir, b, fetched, seen),
+            [super::remotes::REFUSE, why] => Err(why.to_string()),
             [super::file_edit::FILE_SAVE, ..] => super::file_edit::save(dir, &a, op.input.as_deref().unwrap_or_default()),
             [super::diff::DIFF_IS, ..] => super::diff::diff_is(dir, &a),
             [super::diff::APPLY_HUNK, ..] => super::diff::apply_hunk(dir, &a, op.input.as_deref().unwrap_or_default()),
@@ -683,7 +684,7 @@ pub fn delete_everywhere(d: &RepoData, r: &git::Ref) -> Option<(String, Op)> {
     let name = r.name.as_str();
     let remote = d.push_target(name, &r.upstream).and_then(|(rm, rb)| {
         let full = format!("{rm}/{rb}");
-        d.refs.iter().find(|x| x.kind == git::RefKind::Remote && x.name == full).map(|x| ((rm, rb), x.target.as_str()))
+        d.refs.iter().find(|x| x.kind == git::RefKind::Remote && x.name == full && !super::remotes::is_pr_head(d, x)).map(|x| ((rm, rb), x.target.as_str()))
     });
     let wt = r.worktree.as_ref().and_then(|p| d.worktrees.iter().skip(1).find(|w| &w.path == p && w.locked.is_none()));
     if remote.is_none() && wt.is_none() || r.worktree.is_some() && wt.is_none() {
@@ -1260,6 +1261,10 @@ impl RepoTab {
                 if res.is_err() && removes_worktree(&self.dir, &op).is_some() && self.watcher.is_none() && self.watcher_task.is_none() {
                     self.start_watching(ctx);
                 }
+                if let (Ok(_), Some(p)) = (&res, removes_worktree(&self.dir, &op)) {
+                    let real = p.parent().and_then(|d| d.canonicalize().ok()).zip(p.file_name()).map(|(d, n)| d.join(n));
+                    self.removed_worktree = Some(real.unwrap_or(p));
+                }
                 if let (Ok(_), Some(c)) = (&res, &op.reword) {
                     self.mark_saved(c);
                 }
@@ -1624,6 +1629,9 @@ impl RepoData {
     /// (pushRemote / pushDefault, not the upstream's remote).
     pub fn push_op(&self, force: bool) -> Option<Op> {
         let branch = self.status.branch.as_deref()?;
+        if let Some(o) = self.push_target(branch, self.status.upstream.as_deref().unwrap_or_default()).and_then(|(r, rb)| super::remotes::pr_push_refused(self, r, rb)) {
+            return Some(o);
+        }
         let src = format!("refs/heads/{branch}");
         let fork = self.cfg(&format!("branch.{branch}.pushremote")).or(self.cfg("remote.pushdefault"));
         let dest = self.status.upstream.as_deref().and_then(|up| self.push_dest(branch, up));

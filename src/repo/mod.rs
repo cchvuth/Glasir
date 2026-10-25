@@ -137,6 +137,7 @@ pub struct RepoTab {
     /// A repository the app should open in a new tab.
     pub open_tab: Option<PathBuf>,
     pub switch_to: Option<PathBuf>,
+    pub removed_worktree: Option<PathBuf>,
     pub(crate) watcher: Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>,
     watcher_task: Option<Task<Option<(notify::RecommendedWatcher, Receiver<watch::Change>)>>>,
     pub search: Option<Search>,
@@ -259,6 +260,7 @@ impl RepoTab {
             notes: vec![],
             open_tab: None,
             switch_to: None,
+            removed_worktree: None,
             watcher: None,
             watcher_task: None,
             changed: None,
