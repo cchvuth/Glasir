@@ -11,13 +11,12 @@
        "id": "app.startup",
        "name": "Start up and import the login shell environment",
        "entry": [
-        "src/main.rs:17 process start (also GLASIR_ASKPASS dispatch to askpass::run)",
-        "src/main.rs:30 import_login_env (unix) so GUI launches see PATH, SSH_AUTH_SOCK"
+        "src/main.rs:18 process start (also GLASIR_ASKPASS dispatch to askpass::run, Linux desktop entry: app.linux-install)",
+        "src/main.rs:44 import_login_env (unix) so GUI launches see PATH, SSH_AUTH_SOCK"
        ],
        "fns": [
         "crate::git::env::import_login_env",
         "crate::git::env::parse_env",
-        "crate::desktop_entry",
         "crate::main"
        ],
        "platform": [
@@ -28,8 +27,8 @@
        "id": "app.git-version-check",
        "name": "Warn when git is missing or too old",
        "entry": [
-        "src/ui/app.rs:93 git_check task at startup",
-        "src/ui/app.rs:535 dismissible warning banner under the tab bar (x pill)"
+        "src/ui/app.rs:91 git_check task at startup",
+        "src/ui/app.rs:557 dismissible warning banner under the tab bar (x pill)"
        ],
        "fns": [
         "crate::git::env::check_git",
@@ -42,35 +41,11 @@
        ]
       },
       {
-       "id": "app.self-update",
-       "name": "Update from GitHub releases",
-       "entry": [
-        "src/ui/update.rs update_pill (title bar); Settings → Updates; check at startup in App::new"
-       ],
-       "fns": [
-        "crate::ui::update::App::check_updates",
-        "crate::ui::update::App::restart",
-        "crate::ui::update::App::update_pill",
-        "crate::update::agent",
-        "crate::update::asset_name",
-        "crate::update::check",
-        "crate::update::install",
-        "crate::update::install_to",
-        "crate::update::newer",
-        "crate::update::parse",
-        "crate::update::relaunch",
-        "crate::update::stage",
-        "crate::update::swap",
-        "crate::update::target",
-        "crate::update::unpack"
-       ]
-      },
-      {
        "id": "app.cli-open",
        "name": "Open a repository passed on the command line",
        "entry": [
-        "src/main.rs:49 first CLI argument",
-        "src/ui/app.rs:117 App::new -> open"
+        "src/main.rs:19 first CLI argument",
+        "src/ui/app.rs:120 App::new -> open"
        ],
        "fns": [
         "crate::main",
@@ -83,8 +58,8 @@
        "id": "app.native-glass",
        "name": "Native macOS Liquid Glass backdrop / transparent window",
        "entry": [
-        "src/ui/app.rs:73 App::new (Settings -> Window glass)",
-        "src/main.rs:41 transparent viewport",
+        "src/ui/app.rs:71 App::new (Settings -> Window glass)",
+        "src/main.rs:55 transparent viewport",
         "startup only"
        ],
        "fns": [
@@ -119,7 +94,7 @@
        "name": "Zoom in/out/reset (persisted)",
        "entry": [
         "⌘+ / ⌘- / ⌘0 (egui built-in)",
-        "src/ui/app.rs:551 zoom persisted each frame; restored in App::new"
+        "src/ui/app.rs:515 zoom persisted each frame; restored in App::new"
        ],
        "fns": [
         "crate::ui::app::App::new",
@@ -132,7 +107,7 @@
        "name": "Reload the repo when the window regains focus",
        "entry": [
         "background: window focus event (when the watcher is not running)",
-        "src/ui/app.rs:563"
+        "src/ui/app.rs:523"
        ],
        "fns": [
         "crate::ui::app::App::ui"
@@ -147,7 +122,7 @@
        "name": "Drive the periodic background fetch per tab",
        "entry": [
         "background: every frame, interval from Settings -> Auto-fetch, plus on focus",
-        "src/ui/app.rs:572 t.auto_fetch (the fetch itself is repo/fetch.rs)"
+        "src/ui/app.rs:531 t.auto_fetch (the fetch itself is repo/fetch.rs)"
        ],
        "fns": [
         "crate::ui::app::App::ui"
@@ -155,6 +130,108 @@
        "platform": [
         "platform.task"
        ]
+      }
+     ]
+    },
+    {
+     "name": "Updates and install",
+     "features": [
+      {
+       "id": "app.update-check",
+       "name": "Check GitHub for a newer Glasir release (startup, window refocus)",
+       "entry": [
+        "startup: src/ui/app.rs:122 App::new -> check_updates (src/ui/update.rs:26)",
+        "window regains focus: src/ui/app.rs:521; at most one check per 10 minutes (GitHub allows 60 unauthenticated requests an hour)",
+        "Settings → Updates \"Check for a new version at startup\" (src/ui/settings.rs:199); off = no request at all",
+        "background: src/update.rs:50 check asks api.github.com for cchvuth/Glasir's latest release, compares versions numerically (newer) and picks this platform's asset; also clears a finished update's leftovers; offline / rate-limited stays silent",
+        "GLASIR_SCREENSHOT_VIEW=update shows the pill (src/ui/screenshot.rs)"
+       ],
+       "fns": [
+        "crate::ui::update::App::check_updates",
+        "crate::ui::update::App::update_pill",
+        "crate::update::check",
+        "crate::update::parse",
+        "crate::update::newer",
+        "crate::update::agent",
+        "crate::update::asset_name",
+        "crate::update::target",
+        "crate::update::stage",
+        "crate::ui::app::App::new",
+        "crate::ui::app::App::ui",
+        "crate::ui::settings::App::settings_dialog",
+        "crate::ui::settings::Settings::default"
+       ],
+       "platform": [
+        "platform.task"
+       ]
+      },
+      {
+       "id": "app.self-update",
+       "name": "Update Glasir in place from the title bar (download, swap, restart)",
+       "entry": [
+        "title bar pill \"Update to <version>\" (src/ui/titlebar.rs:35 -> src/ui/update.rs:79 update_pill), accent-filled with a pulsing glow; click downloads and installs (src/update.rs:94 install: the release asset for this OS, unpacked with ditto / tar next to the app, swapped in keeping the old copy until the swap worked)",
+        "right-click the pill: \"Release notes\" (src/ui/update.rs:91)",
+        "a copy that can't update itself (cargo target build, the .deb's /usr/bin/glasir, no asset for this platform): the pill opens the release page (src/update.rs:61 target)",
+        "installed: Glasir closes through the usual quit guards and the new version starts once this process has exited (src/ui/update.rs:37 restart -> src/update.rs:130 relaunch); \"Restart to update\" pill while a guard holds the quit (src/ui/update.rs:66)",
+        "failure: toast \"Update failed: …\" with the release page"
+       ],
+       "fns": [
+        "crate::ui::update::App::update_pill",
+        "crate::ui::update::App::restart",
+        "crate::update::install",
+        "crate::update::install_to",
+        "crate::update::unpack",
+        "crate::update::swap",
+        "crate::update::stage",
+        "crate::update::relaunch",
+        "crate::update::target",
+        "crate::update::asset_name",
+        "crate::update::agent",
+        "crate::ui::titlebar::App::tab_bar"
+       ],
+       "platform": [
+        "platform.task",
+        "platform.design-system"
+       ]
+      },
+      {
+       "id": "app.linux-install",
+       "name": "Linux launcher entry and icon (Glasir --install, refreshed on every start)",
+       "entry": [
+        "`Glasir --install` (src/main.rs:37, the README's install command): writes the entry and icon, waits for the file-manager icon, exits without opening a window",
+        "every start on Linux (src/main.rs:38 -> :70 desktop_entry): (re)writes ~/.local/share/applications/Glasir.desktop and icons/hicolor/512x512/apps/glasir.png when missing or when the binary moved, so launchers and Wayland docks show the icon; sets the binary's icon in GNOME Files via gio metadata::custom-icon",
+        "skipped for a binary under /usr (the .deb ships its own entry)"
+       ],
+       "fns": [
+        "crate::desktop_entry",
+        "crate::main"
+       ],
+       "platform": []
+      },
+      {
+       "id": "app.app-icon",
+       "name": "App icon: window icon, Windows .exe icon, app id",
+       "entry": [
+        "window / taskbar icon from assets/icon-512.png and app id \"Glasir\" (src/main.rs:50-51; Wayland matches it to the launcher entry's StartupWMClass)",
+        "Windows Explorer and pinned taskbar: assets/icon.ico embedded in Glasir.exe at build time (build.rs:7 via winresource; build.rs is outside the function inventory)"
+       ],
+       "fns": [
+        "crate::main"
+       ],
+       "platform": []
+      },
+      {
+       "id": "app.deb-package",
+       "name": "Debian / Ubuntu .deb package",
+       "entry": [
+        "scripts/linux-deb.sh [dist] -> dist/Glasir-linux-amd64.deb: /usr/bin/glasir, /usr/share/applications/Glasir.desktop, the 512 px icon, Depends: git (shell script, no Rust functions)",
+        "the installed /usr copy gets no per-user launcher entry (src/main.rs:71 desktop_entry) and does not update itself: the update pill opens the release page (src/update.rs:61 target)"
+       ],
+       "fns": [
+        "crate::desktop_entry",
+        "crate::update::target"
+       ],
+       "platform": []
       }
      ]
     },
@@ -167,7 +244,7 @@
        "entry": [
         "⌘O",
         "Title bar + button on the welcome tab (src/ui/titlebar.rs:123 'Open a repository')",
-        "Welcome 'Open repository…' (src/ui/welcome.rs:41)",
+        "Welcome 'Open repository…' (src/ui/welcome.rs:39)",
         "⌘P 'Open repository…' (Cmd::PickOpen)",
         "⌘P recent repository items (Cmd::Open)",
         "drag a folder or file onto the window",
@@ -222,7 +299,7 @@
        "name": "Close a tab",
        "entry": [
         "⌘W",
-        "x pill on the tab (titlebar.rs:52 'Close tab (⌘W)')",
+        "x pill on the tab (titlebar.rs:53 'Close tab (⌘W)')",
         "refused toast when unsaved edits / running op / terminal / external tool"
        ],
        "fns": [
@@ -242,7 +319,7 @@
        "id": "app.close-other-tabs",
        "name": "Close other tabs",
        "entry": [
-        "Tab context menu 'Close other tabs' (titlebar.rs:82)"
+        "Tab context menu 'Close other tabs' (titlebar.rs:83)"
        ],
        "fns": [
         "crate::ui::app::App::close_tab",
@@ -254,7 +331,7 @@
        "id": "app.reorder-tabs",
        "name": "Reorder tabs by dragging",
        "entry": [
-        "drag a tab in the title bar (titlebar.rs:74)"
+        "drag a tab in the title bar (titlebar.rs:75)"
        ],
        "fns": [
         "crate::ui::titlebar::App::tab_bar",
@@ -266,7 +343,7 @@
        "id": "app.rename-tab",
        "name": "Rename a tab (alias)",
        "entry": [
-        "Tab context menu 'Rename…' (titlebar.rs:78)",
+        "Tab context menu 'Rename…' (titlebar.rs:79)",
         "Modal 'Rename tab'"
        ],
        "fns": [
@@ -279,7 +356,7 @@
        "id": "app.tab-reveal",
        "name": "Reveal the tab's repo in the file manager",
        "entry": [
-        "Tab context menu 'Reveal in file manager' (titlebar.rs:86)"
+        "Tab context menu 'Reveal in file manager' (titlebar.rs:87)"
        ],
        "fns": [
         "crate::ui::titlebar::App::tab_bar"
@@ -290,7 +367,7 @@
        "id": "app.tab-label",
        "name": "Tab labels with alias, branch and change state",
        "entry": [
-        "title bar tabs (titlebar.rs:139)"
+        "title bar tabs (titlebar.rs:140)"
        ],
        "fns": [
         "crate::ui::titlebar::App::tab_bar",
@@ -406,7 +483,7 @@
        "id": "app.init-repo",
        "name": "Initialize a repository",
        "entry": [
-        "Welcome 'Init…' button (welcome.rs:52)"
+        "Welcome 'Init…' button (welcome.rs:46)"
        ],
        "fns": [
         "crate::ui::app::App::open",
@@ -435,7 +512,7 @@
        "id": "app.first-run-tips",
        "name": "First-run tips strip",
        "entry": [
-        "Welcome page tips strip, x 'Hide these tips' (welcome.rs:174)"
+        "Welcome page tips strip, x 'Hide these tips' (welcome.rs:189)"
        ],
        "fns": [
         "crate::ui::welcome::tips"
@@ -475,7 +552,7 @@
        "entry": [
         "Settings -> Theme swatches",
         "Title bar light/dark pill",
-        "⌘P 'Switch theme' (Cmd::Theme)"
+        "⌘P \"Toggle light / dark theme\" (Cmd::Theme)"
        ],
        "fns": [
         "crate::ui::app::App::command_palette",
@@ -504,7 +581,7 @@
       },
       {
        "id": "app.settings-general",
-       "name": "General settings (commits to load, default pull, auto-fetch, avatars, stacks, email rules, protected branches)",
+       "name": "General settings (commits to load, default pull, auto-fetch, avatars, update check, stacks, email rules, protected branches)",
        "entry": [
         "Settings dialog rows"
        ],
@@ -531,9 +608,9 @@
       },
       {
        "id": "app.settings-ai",
-       "name": "AI provider, token, model, custom instructions, test connection",
+       "name": "AI settings: provider, token or command, model, custom instructions, test connection",
        "entry": [
-        "Settings -> AI section: Enable AI features, Provider, Claude/OpenAI token Save/Remove, Model, Custom instructions presets, Test connection"
+        "Settings -> AI section: Enable AI features, Provider combo box (Claude Code CLI / Codex CLI / Claude API / OpenAI API), token Save / Remove (API providers only), Model, API base URL (or Command for a CLI), Custom instructions presets, Test connection"
        ],
        "fns": [
         "crate::ai::tasks::test",
@@ -544,6 +621,45 @@
        "platform": [
         "platform.ai-client",
         "platform.task"
+       ]
+      },
+      {
+       "id": "app.ai-cli-provider",
+       "name": "AI through the signed-in Claude Code or Codex CLI (default provider, no token)",
+       "entry": [
+        "Settings → AI → Provider \"Claude Code CLI\" (the default) or \"Codex CLI\" (src/ui/settings.rs:263); the token rows are hidden and \"API base URL\" becomes \"Command\" (name or full path of the CLI)",
+        "Model: \"default\" leaves it to the CLI; Claude Code also offers opus / sonnet / haiku (src/ai/cli.rs:12)",
+        "every AI feature: ai::client::complete -> src/ai/cli.rs:19 complete runs `claude -p --output-format stream-json` with no tools, no session, no MCP and project settings only, or `codex exec --sandbox read-only --json`, in an empty temp folder; streamed text (claude) or the last message file (codex); JSON-schema replies via --json-schema / --output-schema",
+        "errors: a missing CLI says how to install it or set its path (src/ai/cli.rs:30 spawn; .cmd fallback on Windows); \"not logged in\" and other CLI errors show as the AI error",
+        "Settings → AI \"Test connection\" reports \"<model> replied: …\" (ai::tasks::test)"
+       ],
+       "fns": [
+        "crate::ai::cli::endpoint",
+        "crate::ai::cli::complete",
+        "crate::ai::cli::spawn",
+        "crate::ai::cli::feed",
+        "crate::ai::cli::stderr_of",
+        "crate::ai::cli::failed",
+        "crate::ai::cli::claude",
+        "crate::ai::cli::codex",
+        "crate::ai::client::Provider::is_cli",
+        "crate::ai::client::Provider::label",
+        "crate::ai::client::Provider::models",
+        "crate::ai::client::Provider::name",
+        "crate::ai::client::Config::default",
+        "crate::ai::client::Config::current",
+        "crate::ai::client::Config::model",
+        "crate::ai::client::complete",
+        "crate::ai::client::need_token",
+        "crate::ai::client::env_token",
+        "crate::ai::name",
+        "crate::ai::sync",
+        "crate::ai::tasks::test",
+        "crate::ui::settings::App::settings_dialog",
+        "crate::ui::settings::token_source"
+       ],
+       "platform": [
+        "platform.ai-client"
        ]
       }
      ]
@@ -594,7 +710,7 @@
        "id": "app.global-shortcuts",
        "name": "Global keyboard shortcuts dispatch",
        "entry": [
-        "src/ui/app.rs:189 App::shortcuts: ⌘O ⌘, ⌘/ ⇧⌘L ⌘P/K ⌘T ⌘W ⌘1-9 ⌃Tab F5/⌘R ⌘L ⌘Z/⇧⌘Z/⌘Y ⌘F ⇧⌘S ⇧⌘M ⇧⌘U S/U ⌃`"
+        "src/ui/app.rs:192 App::shortcuts: ⌘O ⌘, ⌘/ ⇧⌘L ⌘P/K ⌘T ⌘W ⌘1-9 ⌃Tab F5/⌘R ⌘L ⌘Z/⇧⌘Z/⌘Y ⌘F ⇧⌘S ⇧⌘M ⇧⌘U S/U ⌃`"
        ],
        "fns": [
         "crate::ui::app::App::shortcuts"
@@ -632,7 +748,6 @@
         "top panel of a repo tab (toolbar.rs): Refresh F5, terminal toggle, open-in menu, web globe, overflow menu, branch/ahead-behind label, Undo/Redo, Fetch/Pull/Push menus, Branch/Stash/Pop, conflict chip, fetch-failed chip, progress/cancel; each button's action is owned by its feature"
        ],
        "fns": [
-        "crate::ui::toolbar::fit",
         "crate::ui::toolbar::history_tools",
         "crate::ui::toolbar::label",
         "crate::ui::toolbar::open_items",
@@ -644,6 +759,22 @@
        "platform": [
         "platform.design-system",
         "platform.format"
+       ]
+      },
+      {
+       "id": "app.toolbar-title",
+       "name": "Toolbar title: repository · worktree · branch, longest part cut first",
+       "entry": [
+        "left card of the repo toolbar (src/ui/toolbar.rs:47-82): the repository name (its primary worktree's folder), the worktree when the repo has several (house = primary, tree = linked, \"primary\" or the folder name; hover shows its path), then the branch with ↑ / ↓ counts",
+        "narrow window: src/ui/toolbar.rs:144 fit cuts the longest part first, down to one common width, each ending in …; short parts stay whole"
+       ],
+       "fns": [
+        "crate::ui::toolbar::fit",
+        "crate::ui::toolbar::toolbar",
+        "crate::ui::sidebar::worktrees::worktree_name"
+       ],
+       "platform": [
+        "platform.design-system"
        ]
       },
       {
@@ -735,7 +866,7 @@
        "id": "app.quit-terminal-confirm",
        "name": "Confirm quitting with running terminal commands / external tools",
        "entry": [
-        "modal 'Quit Glasir?' (app.rs:377)"
+        "modal 'Quit Glasir?' (app.rs:385)"
        ],
        "fns": [
         "crate::ui::app::App::guard_close",
@@ -829,7 +960,7 @@
        "id": "app.screenshot-harness",
        "name": "Screenshot harness",
        "entry": [
-        "GLASIR_SCREENSHOT=<bmp> GLASIR_SCREENSHOT_VIEW=… GLASIR_SCREENSHOT_WIDTH GLASIR_KEYS"
+        "GLASIR_SCREENSHOT=<bmp> GLASIR_SCREENSHOT_VIEW=… (settings, log, update = the update pill, terminal-off, diff-staged:<path>, scroll-bench, …) GLASIR_SCREENSHOT_WIDTH GLASIR_KEYS"
        ],
        "fns": [
         "crate::ui::app::App::raw_input_hook",
@@ -865,11 +996,11 @@
        "id": "commit.stage-file",
        "name": "Stage a file",
        "entry": [
-        "src/ui/inspector/wip.rs:608 hover \"+\" button on an unstaged row",
+        "src/ui/inspector/wip.rs:613 hover \"+\" button on an unstaged row",
         "double-click an unstaged row",
-        "row context menu \"Stage\" (wip.rs:638)",
-        "src/ui/diff_view.rs:309 \"Stage file\" button in an open unstaged diff",
-        "S key with files selected (app.rs:278 -> RepoTab::file_key)"
+        "row context menu \"Stage\" (wip.rs:640)",
+        "src/ui/diff_view.rs:308 \"Stage file\" button in an open unstaged diff",
+        "S key with files selected (app.rs:281 -> RepoTab::file_key)"
        ],
        "fns": [
         "crate::repo::action::DiffSrc::change",
@@ -903,10 +1034,10 @@
        "id": "commit.unstage-file",
        "name": "Unstage a file",
        "entry": [
-        "wip.rs:706 hover \"-\" button on a staged row",
+        "wip.rs:710 hover \"-\" button on a staged row",
         "double-click a staged row",
-        "row menu \"Unstage\" (wip.rs:727)",
-        "diff_view.rs:303 \"Unstage file\" in a staged diff",
+        "row menu \"Unstage\" (wip.rs:731)",
+        "diff_view.rs:305 \"Unstage file\" in a staged diff",
         "U key with staged files selected"
        ],
        "fns": [
@@ -941,8 +1072,8 @@
        "name": "Stage all changes",
        "entry": [
         "wip.rs:576 \"Stage all\" button (Unstaged files header)",
-        "⇧⌘S shortcut (app.rs:266)",
-        "⌘P \"Stage all changes\" (palette.rs:107)"
+        "⇧⌘S shortcut (app.rs:269)",
+        "⌘P \"Stage all changes\" (palette.rs:108)"
        ],
        "fns": [
         "crate::repo::op::stage_all_op",
@@ -959,9 +1090,9 @@
        "id": "commit.unstage-all",
        "name": "Unstage all changes",
        "entry": [
-        "wip.rs:676 \"Unstage all\" button (Staged files header)",
-        "⇧⌘U shortcut (app.rs:273)",
-        "⌘P \"Unstage all changes\" (palette.rs:110)"
+        "wip.rs:680 \"Unstage all\" button (Staged files header)",
+        "⇧⌘U shortcut (app.rs:276)",
+        "⌘P \"Unstage all changes\" (palette.rs:111)"
        ],
        "fns": [
         "crate::repo::op::unstage_all_op",
@@ -979,7 +1110,7 @@
         "click / ⌘-click / ⇧-click on rows in the Unstaged and Staged lists (wip.rs pick_file)",
         "\"Stage N\" / \"Discard N\" / \"Unstage N\" buttons in the list headers",
         "row context menu \"Stage N files\" / \"Discard N files\" / \"Unstage N files\"",
-        "S / U keys (app.rs:278)"
+        "S / U keys (app.rs:281)"
        ],
        "fns": [
         "crate::repo::op::discard_files_op",
@@ -1014,7 +1145,7 @@
        "id": "commit.folder-ops",
        "name": "Stage / unstage a folder in tree view",
        "entry": [
-        "hover \"+\"/\"-\" on a folder row in the WIP tree (wip.rs:589, 688)",
+        "hover \"+\"/\"-\" on a folder row in the WIP tree (wip.rs:589, 692)",
         "folder row context menu \"Stage folder\" / \"Unstage folder\" / \"Discard changes in folder\""
        ],
        "fns": [
@@ -1072,7 +1203,7 @@
        "id": "commit.discard-file",
        "name": "Discard changes to a file",
        "entry": [
-        "unstaged row context menu \"Discard changes\" (wip.rs:641)"
+        "unstaged row context menu \"Discard changes\" (wip.rs:663)"
        ],
        "fns": [
         "crate::repo::op::discard_checkout",
@@ -1091,7 +1222,7 @@
        "name": "Discard several files at once",
        "entry": [
         "\"Discard N\" in Unstaged header (wip.rs:572)",
-        "context menu \"Discard N files\" (wip.rs:631)",
+        "context menu \"Discard N files\" (wip.rs:634)",
         "folder menu \"Discard changes in folder\""
        ],
        "fns": [
@@ -1110,7 +1241,7 @@
        "id": "commit.discard-all",
        "name": "Discard all changes",
        "entry": [
-        "graph WIP row context menu \"Discard all changes\" (graph_view/menus.rs:316)",
+        "graph WIP row context menu \"Discard all changes\" (graph_view/menus.rs:338)",
         "⌘P / undo-tested Op DISCARD_ALL"
        ],
        "fns": [
@@ -1184,7 +1315,7 @@
        "id": "commit.stage-hunk",
        "name": "Stage a hunk",
        "entry": [
-        "\"Stage hunk\" button on a hunk header in an unstaged diff (diff_view.rs:537)"
+        "\"Stage hunk\" button on a hunk header in an unstaged diff (diff_view.rs:547)"
        ],
        "fns": [
         "crate::git::diff::partial_patch",
@@ -1241,7 +1372,7 @@
        "id": "commit.discard-hunk",
        "name": "Discard a hunk",
        "entry": [
-        "\"Discard hunk\" button in an unstaged diff (diff_view.rs:547)"
+        "\"Discard hunk\" button in an unstaged diff (diff_view.rs:550)"
        ],
        "fns": [
         "crate::git::diff::partial_patch",
@@ -1448,7 +1579,7 @@
        "id": "commit.commit",
        "name": "Commit staged changes",
        "entry": [
-        "\"Commit N changes to M files\" primary button (wip.rs:417)",
+        "\"Commit N changes to M files\" primary button (wip.rs:415)",
         "⌘↩ in the commit box",
         "summary field Enter moves to description"
        ],
@@ -1619,8 +1750,8 @@
        "id": "commit.drafts",
        "name": "Commit message drafts (kept per repo across tabs and restarts)",
        "entry": [
-        "automatic: when switching/closing a tab (app.rs:171,303) and on save/exit (persist_drafts) to .git/GLASIR_DRAFT",
-        "⇧⌘M focuses the summary and selects WIP (app.rs:269)"
+        "automatic: when switching worktree in a tab or closing a tab (src/ui/app.rs:174, :306) and on save/exit (persist_drafts) to .git/GLASIR_DRAFT",
+        "⇧⌘M focuses the summary and selects WIP (app.rs:272)"
        ],
        "fns": [
         "crate::repo::message::strip_comments",
@@ -1640,7 +1771,7 @@
        "name": "Write the commit message with AI",
        "entry": [
         "\"Generate\" (sparkle) button in the commit box (wip.rs:345), Cancel while writing",
-        "⌘P \"Write commit message with AI\" (palette.rs:117)"
+        "⌘P \"Write commit message with AI\" (palette.rs:119)"
        ],
        "fns": [
         "crate::ai::tasks::Job::poll",
@@ -1835,7 +1966,7 @@
        "id": "commit.reword-message",
        "name": "Edit a commit message in the inspector",
        "entry": [
-        "click the message in commit details (commit.rs:213) -> inline editor, Save / ⌘↩, Cancel / Esc"
+        "click the message in commit details (commit.rs:212) -> inline editor, Save / ⌘↩, Cancel / Esc"
        ],
        "fns": [
         "crate::repo::msgedit::MsgEdit::changed",
@@ -1858,7 +1989,7 @@
        "id": "commit.remove-coauthor",
        "name": "Remove a co-author from a commit",
        "entry": [
-        "x next to \"co-authored by\" in commit details, or right-click \"Remove co-author\" (commit.rs:260)"
+        "x next to \"co-authored by\" in commit details, or right-click \"Remove co-author\" (commit.rs:275)"
        ],
        "fns": [
         "crate::git::read::coauthor_line",
@@ -1911,8 +2042,8 @@
        "id": "refs.sidebar-lists",
        "name": "Sidebar LOCAL / REMOTE / TAGS sections",
        "entry": [
-        "src/ui/sidebar/mod.rs:207 sidebar (left panel: LOCAL, REMOTE, TAGS collapsing sections with counts)",
-        "src/ui/sidebar/mod.rs:198 section"
+        "src/ui/sidebar/mod.rs:210 sidebar (left panel: LOCAL, REMOTE, TAGS collapsing sections with counts)",
+        "src/ui/sidebar/mod.rs:201 section"
        ],
        "fns": [
         "crate::git::read::refs",
@@ -1941,7 +2072,7 @@
        "id": "refs.sidebar-filter",
        "name": "Filter branches, remotes and tags",
        "entry": [
-        "src/ui/sidebar/mod.rs:230 filter text box \"Filter\" (top of sidebar)"
+        "src/ui/sidebar/mod.rs:222 filter text box \"Filter\" (top of sidebar)"
        ],
        "fns": [
         "crate::ui::sidebar::matches",
@@ -1975,7 +2106,7 @@
        "id": "refs.pinned-branches",
        "name": "Default / long-lived branches pinned on top",
        "entry": [
-        "src/ui/sidebar/mod.rs:62 pinned_separator (thin line under main/develop etc.)"
+        "src/ui/sidebar/mod.rs:58 pinned_separator (thin line under main/develop etc.)"
        ],
        "fns": [
         "crate::repo::data::RepoData::branch_rank",
@@ -1989,7 +2120,7 @@
        "id": "refs.stacked-display",
        "name": "Stacked branches nested under their parent",
        "entry": [
-        "src/ui/sidebar/mod.rs:92 stacked (indented rows, stack / stale icons, tooltip)"
+        "src/ui/sidebar/mod.rs:88 stacked (indented rows, stack / stale icons, tooltip)"
        ],
        "fns": [
         "crate::repo::stack::children",
@@ -2005,8 +2136,8 @@
        "id": "refs.sidebar-badges",
        "name": "Ahead/behind, gone upstream and HEAD markers on branch rows",
        "entry": [
-        "src/ui/sidebar/mod.rs:117 local_row (check mark, worktree icon, up/down counts, tooltip \"Upstream branch is gone\")",
-        "detached HEAD row in sidebar (mod.rs:215)"
+        "src/ui/sidebar/mod.rs:113 local_row: check = HEAD, tree = checked out in another worktree (tooltip names it; double-click switches there), then the branch icon; stack / stale icons, \"↑ n\" / \"↓ n\" counts, tooltip \"Upstream branch is gone\"",
+        "detached HEAD row in sidebar (sidebar/mod.rs:237)"
        ],
        "fns": [
         "crate::ui::sidebar::head_row",
@@ -2021,7 +2152,7 @@
        "id": "refs.sidebar-jump",
        "name": "Click a ref to jump to its commit; double-click to check out",
        "entry": [
-        "src/ui/sidebar/mod.rs:117 local_row / remote_row / tag_row click -> Action::Jump, double-click -> branch_checkout"
+        "src/ui/sidebar/mod.rs:113 local_row / remote_row / tag_row click -> Action::Jump, double-click -> branch_checkout"
        ],
        "fns": [
         "crate::repo::op::branch_checkout",
@@ -2043,10 +2174,10 @@
        "id": "refs.checkout",
        "name": "Check out a branch, remote branch or tag",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 \"Checkout <name>\" (branch/remote/tag menus, sidebar and graph pills)",
-        "double-click sidebar row (mod.rs:117) or graph pill (graph_view/mod.rs act closure)",
-        "graph commit menu \"Checkout <ref>\" and double-click commit row (graph_view/menus.rs:93 checkout_action, :140)",
-        "palette \"Checkout <ref>\" (src/ui/palette.rs:195)"
+        "src/ui/sidebar/ref_menus.rs:181 \"Checkout <name>\" (branch/remote/tag menus, sidebar and graph pills)",
+        "double-click sidebar row (sidebar/mod.rs:113 local_row) or graph pill (graph_view/mod.rs:458 act closure)",
+        "graph commit menu \"Checkout <ref>\" and double-click commit row (graph_view/menus.rs:94 checkout_action, :141)",
+        "palette \"Checkout <ref>\" (src/ui/palette.rs:198)"
        ],
        "fns": [
         "crate::repo::data::RepoData::local",
@@ -2063,8 +2194,6 @@
         "crate::ui::graph_view::show",
         "crate::ui::palette::items",
         "crate::ui::sidebar::ref_menus::local_menu",
-        "crate::ui::sidebar::ref_menus::worktree_items",
-        "crate::ui::sidebar::ref_menus::delete_items",
         "crate::ui::sidebar::ref_menus::remote_menu",
         "crate::ui::sidebar::ref_menus::tag_menu"
        ],
@@ -2100,7 +2229,7 @@
        "id": "refs.checkout-worktree-switch",
        "name": "Checking out a branch held by another worktree opens that worktree",
        "entry": [
-        "Checkout / double-click on a branch with a worktree marker (op.rs:938 branch_checkout -> Action::Switch)"
+        "Checkout / double-click on a branch with a worktree marker (op.rs:1051 branch_checkout -> Action::Switch)"
        ],
        "fns": [
         "crate::repo::op::branch_checkout"
@@ -2113,7 +2242,7 @@
        "id": "refs.checkout-detached",
        "name": "Checkout this commit (detached)",
        "entry": [
-        "src/ui/graph_view/menus.rs:140 \"Checkout this commit (detached)\"",
+        "src/ui/graph_view/menus.rs:151 \"Checkout this commit (detached)\"",
         "tag checkout (detached) via refs.checkout"
        ],
        "fns": [
@@ -2129,7 +2258,7 @@
        "id": "refs.checkout-autostash",
        "name": "Checkout blocked by local changes: stash, switch, reapply",
        "entry": [
-        "failure dialog \"Uncommitted changes in the way\" -> \"Stash, switch and reapply\" (src/repo/offer.rs:25)"
+        "failure dialog \"Uncommitted changes in the way\" -> \"Stash, switch and reapply\" (src/repo/offer.rs:36)"
        ],
        "fns": [
         "crate::repo::offer::autostash_checkout",
@@ -2145,7 +2274,7 @@
        "id": "refs.checkout-refused-midop",
        "name": "Refuse branch switch during merge/rebase/etc.",
        "entry": [
-        "any checkout while an operation is in progress (op.rs:987 switch_refused)"
+        "any checkout while an operation is in progress (op.rs:1104 switch_refused)"
        ],
        "fns": [
         "crate::repo::op::in_progress",
@@ -2165,9 +2294,9 @@
        "id": "refs.create-branch",
        "name": "Create branch (from here, from commit, from HEAD)",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Create branch from here…\"",
-        "src/ui/graph_view/menus.rs:140 \"Create branch here…\" (commit menu)",
-        "src/ui/toolbar.rs:244 toolbar_local branch button (\"New branch from HEAD\")",
+        "src/ui/sidebar/ref_menus.rs:230 local_menu \"Create branch from here…\"",
+        "src/ui/graph_view/menus.rs:170 \"Create branch here…\" (commit menu)",
+        "src/ui/toolbar.rs:287 toolbar_local branch button (\"New branch from HEAD\")",
         "palette \"Create branch…\" (src/ui/palette.rs:93)"
        ],
        "fns": [
@@ -2192,7 +2321,7 @@
        "id": "refs.rename-branch",
        "name": "Rename branch",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Rename…\""
+        "src/ui/sidebar/ref_menus.rs:233 local_menu \"Rename…\""
        ],
        "fns": [
         "crate::repo::action::prompt",
@@ -2213,7 +2342,7 @@
        "id": "refs.set-upstream",
        "name": "Set upstream of a branch",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Set upstream…\""
+        "src/ui/sidebar/ref_menus.rs:241 local_menu \"Set upstream…\""
        ],
        "fns": [
         "crate::repo::action::prompt",
@@ -2233,7 +2362,7 @@
        "id": "refs.unset-upstream",
        "name": "Unset upstream of a branch",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Unset upstream (<up>)\""
+        "src/ui/sidebar/ref_menus.rs:244 local_menu \"Unset upstream (<up>)\""
        ],
        "fns": [
         "crate::ui::sidebar::ref_menus::local_menu"
@@ -2247,7 +2376,7 @@
        "id": "refs.delete-branch",
        "name": "Delete / force delete a local branch (undoable)",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Delete\" / \"Force delete\""
+        "src/ui/sidebar/ref_menus.rs:43 delete_items \"Delete\" / :46 \"Force delete\" (last in the branch menu behind a separator; sidebar row and graph pill)"
        ],
        "fns": [
         "crate::repo::data::RepoData::local",
@@ -2256,7 +2385,9 @@
         "crate::repo::op::branch_cmd",
         "crate::repo::op::delete_branches",
         "crate::repo::op::keep_deleted",
-        "crate::ui::sidebar::ref_menus::local_menu"
+        "crate::ui::sidebar::ref_menus::delete_items",
+        "crate::ui::sidebar::ref_menus::ref_menu",
+        "crate::ui::sidebar::ref_menus::synced_menu"
        ],
        "platform": [
         "platform.git-runner",
@@ -2268,12 +2399,13 @@
        "id": "refs.delete-remote-branch",
        "name": "Delete a branch from the remote",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:233 remote_menu \"Delete <branch> from <remote>\""
+        "src/ui/sidebar/ref_menus.rs:60 delete_items \"Delete <branch> from <remote>\" (last in the remote branch menu; on a synced graph pill after the local branch's delete)"
        ],
        "fns": [
         "crate::repo::data::RepoData::split_remote",
         "crate::repo::remotes::delete_branch",
-        "crate::ui::sidebar::ref_menus::remote_menu"
+        "crate::ui::sidebar::ref_menus::delete_items",
+        "crate::ui::sidebar::ref_menus::synced_menu"
        ],
        "platform": [
         "platform.git-runner",
@@ -2284,7 +2416,7 @@
        "id": "refs.fast-forward-branch",
        "name": "Fast-forward a non-checked-out branch to its upstream",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Fast-forward <name> to <upstream>\""
+        "src/ui/sidebar/ref_menus.rs:185 local_menu \"Fast-forward <name> to <upstream>\""
        ],
        "fns": [
         "crate::repo::op::Op::new",
@@ -2300,7 +2432,7 @@
        "id": "refs.pull-without-checkout",
        "name": "Pull a branch (fast-forward) without checking it out",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Pull <name> (fast-forward, without checkout)\""
+        "src/ui/sidebar/ref_menus.rs:188 local_menu \"Pull <name> (fast-forward, without checkout)\""
        ],
        "fns": [
         "crate::repo::data::RepoData::split_remote",
@@ -2316,7 +2448,7 @@
        "id": "refs.push-branch",
        "name": "Push a branch to its remote from the menu",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Push <name> to <remote>\""
+        "src/ui/sidebar/ref_menus.rs:195 local_menu \"Push <name> to <remote>\""
        ],
        "fns": [
         "crate::repo::data::RepoData::push_target",
@@ -2333,7 +2465,7 @@
        "id": "refs.move-unpushed-to-branch",
        "name": "Move unpushed commits to a new branch (HEAD menu)",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu on HEAD branch (git-fork item)"
+        "src/ui/sidebar/ref_menus.rs:248 local_menu on HEAD branch (git-fork item)"
        ],
        "fns": [
         "crate::repo::spinoff::move_unpushed",
@@ -2348,7 +2480,7 @@
        "id": "refs.branch-worktree",
        "name": "Open a branch in a new worktree / open its worktree",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 \"Open in a new worktree…\", \"Open its worktree\"; remote menu \"Check out in a new worktree…\""
+        "src/ui/sidebar/ref_menus.rs:271 worktree_items \"Open in a new worktree…\", :276 \"Open its worktree\"; remote menu :308 \"Check out in a new worktree…\""
        ],
        "fns": [
         "crate::repo::action::prompt",
@@ -2358,8 +2490,8 @@
         "crate::ui::dialogs::fill",
         "crate::ui::dialogs::fill_arg",
         "crate::ui::dialogs::prompt_dialog",
-        "crate::ui::sidebar::ref_menus::local_menu",
-        "crate::ui::sidebar::ref_menus::remote_menu"
+        "crate::ui::sidebar::ref_menus::remote_menu",
+        "crate::ui::sidebar::ref_menus::worktree_items"
        ],
        "platform": [
         "platform.git-runner",
@@ -2370,7 +2502,7 @@
        "id": "refs.merge-rebase-from-menu",
        "name": "Merge / rebase / interactive rebase from a ref menu",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu and :233 remote_menu via integrate_items (\"Merge X into Y\", with options, \"Rebase Y onto X\", \"Interactive rebase…\")"
+        "src/ui/sidebar/ref_menus.rs:224 local_menu and :316 remote_menu via integrate_items (\"Merge <ref> into <head>\", with options, \"Rebase <head> onto <ref>\", \"Interactive rebase…\")"
        ],
        "fns": [
         "crate::repo::merge_opts::Merge::name",
@@ -2388,7 +2520,7 @@
        "id": "refs.reset-to-ref",
        "name": "Reset current branch to a ref (soft/mixed/keep/hard)",
        "entry": [
-        "ref menus \"Reset <head> to <ref>\" (graph_view/menus.rs:283 reset_menu) in local, remote and tag menus"
+        "ref menus \"Reset <head> to <ref>\" (graph_view/menus.rs:305 reset_menu) in local, remote and tag menus"
        ],
        "fns": [
         "crate::repo::op::reset_op",
@@ -2420,9 +2552,10 @@
       },
       {
        "id": "refs.ref-menu-dispatch",
-       "name": "Right-click menu for refs (sidebar rows and graph pills)",
+       "name": "Right-click menu for refs (sidebar rows and graph pills) in one shared order",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:12 ref_menu; synced_menu for a pill with local+remote at same commit"
+        "src/ui/sidebar/ref_menus.rs:12 ref_menu; :25 synced_menu for a pill with local + remote at the same commit (the local's items, then the remote's own, then both deletes)",
+        "order in every ref menu: switch and sync (checkout, fast-forward, pull, push, stack) / into the checked-out branch (merge, rebase, reset, compare) / the branch itself (create, rename, upstream, move unpushed) / worktree items / web links / copy name / hide and solo (view_items) / destructive items last behind a separator (:38 delete_items); the commit, WIP-file, folder, stash and remote menus also end with their discard / delete / remove item"
        ],
        "fns": [
         "crate::ui::sidebar::ref_menus::local_menu",
@@ -2430,7 +2563,9 @@
         "crate::ui::sidebar::ref_menus::remote_menu",
         "crate::ui::sidebar::ref_menus::synced_menu",
         "crate::ui::sidebar::ref_menus::tag_menu",
-        "crate::ui::sidebar::ref_menus::view_items"
+        "crate::ui::sidebar::ref_menus::view_items",
+        "crate::ui::sidebar::ref_menus::delete_items",
+        "crate::ui::sidebar::ref_menus::worktree_items"
        ],
        "platform": []
       },
@@ -2438,7 +2573,7 @@
        "id": "refs.stack-menu",
        "name": "Restack / push stack from a branch menu",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:134 local_menu \"Restack\", \"Push stack (n branches)\""
+        "src/ui/sidebar/ref_menus.rs:206 local_menu \"Restack\", \"Push stack (n branches)\""
        ],
        "fns": [
         "crate::repo::stack::members",
@@ -2456,7 +2591,7 @@
        "id": "refs.delete-everywhere",
        "name": "Delete a branch with its remote branch and worktree in one step",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs local_menu \"Delete <branch> and <remote>/<branch> and its worktree\" (sidebar row and graph pill)"
+        "src/ui/sidebar/ref_menus.rs:51 delete_items \"Delete <branch> and <remote>/<branch> and its worktree\" (last in the branch menu; sidebar row and graph pill)"
        ],
        "fns": [
         "crate::repo::data::RepoData::local",
@@ -2470,8 +2605,7 @@
         "crate::repo::op::remove_worktree_and_branch",
         "crate::repo::op::worktree_remove_args",
         "crate::repo::remotes::delete_branch",
-        "crate::ui::sidebar::ref_menus::local_menu",
-        "crate::ui::sidebar::ref_menus::remote_menu"
+        "crate::ui::sidebar::ref_menus::delete_items"
        ],
        "platform": [
         "platform.git-runner",
@@ -2483,7 +2617,7 @@
        "id": "refs.remove-worktree-keep-branch",
        "name": "Remove a branch's worktree and keep the branch",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs local_menu \"Remove its worktree (keep <branch>)\" (sidebar row and graph pill)",
+        "src/ui/sidebar/ref_menus.rs:281 worktree_items \"Remove its worktree (keep <branch>)\" (branch checked out in another unlocked linked worktree; sidebar row and graph pill)",
         "src/ui/sidebar/worktrees.rs \"Remove worktree\" on the worktree row"
        ],
        "fns": [
@@ -2491,7 +2625,7 @@
         "crate::repo::op::removes_worktree",
         "crate::repo::op::worktree_remove",
         "crate::repo::op::worktree_remove_args",
-        "crate::ui::sidebar::ref_menus::local_menu"
+        "crate::ui::sidebar::ref_menus::worktree_items"
        ],
        "platform": [
         "platform.op-runner",
@@ -2507,7 +2641,7 @@
        "id": "refs.compare-from-menu",
        "name": "Compare ref with working tree / with current branch",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:58 \"Compare working tree with <ref>\" and \"Compare with <head>\" (local, remote, tag menus)"
+        "src/ui/sidebar/ref_menus.rs:102 \"Compare working tree with <ref>\" and \"Compare with <head>\" (local, remote, tag menus)"
        ],
        "fns": [
         "crate::repo::data::RepoData::local",
@@ -2524,7 +2658,7 @@
        "id": "refs.explain-branch-ai",
        "name": "Explain changes of a branch vs current (AI)",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:64 compare_items \"Explain changes vs <head>\""
+        "src/ui/sidebar/ref_menus.rs:115 compare_items \"Explain changes vs <head>\""
        ],
        "fns": [
         "crate::ui::sidebar::ref_menus::compare_items"
@@ -2537,7 +2671,7 @@
        "id": "refs.pr-from-menu",
        "name": "Create pull request / Write pull request (AI) / Open branch on remote",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:114 web_items \"Create pull request…\", \"Write pull request…\", \"Open branch on remote\"",
+        "src/ui/sidebar/ref_menus.rs:167 web_items \"Create pull request…\", \"Write pull request…\", \"Open branch on remote\"",
         "palette \"Create pull request for <branch>\" (palette.rs)"
        ],
        "fns": [
@@ -2561,7 +2695,7 @@
        "id": "refs.compare-link",
        "name": "Open compare page on the remote",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:64 compare_items (links::items \"compare\")"
+        "src/ui/sidebar/ref_menus.rs:121 compare_items (links::items \"compare\")"
        ],
        "fns": [
         "crate::git::url::Page::url",
@@ -2574,7 +2708,7 @@
        "id": "refs.release-link",
        "name": "Open release page of a tag",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu (links::items \"release page\")"
+        "src/ui/sidebar/ref_menus.rs:344 tag_menu (links::items \"release page\")"
        ],
        "fns": [
         "crate::git::url::Page::url",
@@ -2592,7 +2726,7 @@
        "id": "refs.create-tag",
        "name": "Create tag (lightweight)",
        "entry": [
-        "src/ui/graph_view/menus.rs:140 \"Create tag here…\" (commit menu)"
+        "src/ui/graph_view/menus.rs:184 \"Create tag here…\" (commit menu)"
        ],
        "fns": [
         "crate::repo::action::prompt",
@@ -2611,7 +2745,7 @@
        "id": "refs.create-annotated-tag",
        "name": "Create annotated / signed tag",
        "entry": [
-        "src/ui/graph_view/menus.rs:140 \"Create annotated tag here…\" (message box + \"Sign tag\" checkbox in prompt dialog)"
+        "src/ui/graph_view/menus.rs:187 \"Create annotated tag here…\" (message box + \"Sign tag\" checkbox in prompt dialog)"
        ],
        "fns": [
         "crate::repo::data::RepoData::cfg_bool",
@@ -2664,10 +2798,10 @@
        "id": "refs.delete-tag",
        "name": "Delete tag (local)",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu \"Delete tag\""
+        "src/ui/sidebar/ref_menus.rs:67 delete_items \"Delete tag\" (last in the tag menu)"
        ],
        "fns": [
-        "crate::ui::sidebar::ref_menus::tag_menu"
+        "crate::ui::sidebar::ref_menus::delete_items"
        ],
        "platform": [
         "platform.git-runner",
@@ -2679,11 +2813,11 @@
        "id": "refs.delete-tag-remote",
        "name": "Delete tag from remote",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu \"Delete tag from <remote>\""
+        "src/ui/sidebar/ref_menus.rs:71 delete_items \"Delete tag from <remote>\""
        ],
        "fns": [
         "crate::repo::data::RepoData::default_remote",
-        "crate::ui::sidebar::ref_menus::tag_menu"
+        "crate::ui::sidebar::ref_menus::delete_items"
        ],
        "platform": [
         "platform.git-runner",
@@ -2694,12 +2828,12 @@
        "id": "refs.delete-tag-everywhere",
        "name": "Delete tag here and from remote",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu \"Delete tag here and from <remote>\""
+        "src/ui/sidebar/ref_menus.rs:74 delete_items \"Delete tag here and from <remote>\""
        ],
        "fns": [
         "crate::repo::data::RepoData::default_remote",
         "crate::repo::tags::delete_everywhere",
-        "crate::ui::sidebar::ref_menus::tag_menu"
+        "crate::ui::sidebar::ref_menus::delete_items"
        ],
        "platform": [
         "platform.git-runner",
@@ -2711,7 +2845,7 @@
        "id": "refs.push-tag",
        "name": "Push a tag",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu \"Push tag to <remote>\""
+        "src/ui/sidebar/ref_menus.rs:331 tag_menu \"Push tag to <remote>\""
        ],
        "fns": [
         "crate::repo::data::RepoData::default_remote",
@@ -2726,9 +2860,9 @@
        "id": "refs.push-all-tags",
        "name": "Push all tags",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu \"Push all tags to <remote>\"",
-        "src/ui/toolbar.rs:136 history_tools menu \"Push all tags to <remote>\"",
-        "palette \"Push all tags to <remote>\" (palette.rs:168)"
+        "src/ui/sidebar/ref_menus.rs:334 tag_menu \"Push all tags to <remote>\"",
+        "src/ui/toolbar.rs:187 history_tools menu \"Push all tags to <remote>\"",
+        "palette \"Push all tags to <remote>\" (palette.rs:170)"
        ],
        "fns": [
         "crate::repo::tags::push_all",
@@ -2745,7 +2879,7 @@
        "id": "refs.verify-tag",
        "name": "Verify tag signature",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:265 tag_menu \"Verify signature\" (annotated tags) -> Action::VerifyTag (repo/mod.rs:716)"
+        "src/ui/sidebar/ref_menus.rs:341 tag_menu \"Verify signature\" (annotated tags) -> Action::VerifyTag (repo/mod.rs:720)"
        ],
        "fns": [
         "crate::git::read::verify_tag",
@@ -2765,8 +2899,8 @@
        "id": "refs.hide-from-graph",
        "name": "Hide / show a ref in the graph",
        "entry": [
-        "src/ui/sidebar/mod.rs:37 eye icon on hovered rows and folder/remote headers (\"Hide from graph\")",
-        "ref menus \"Hide from graph\" / \"Show in graph\" (ref_menus.rs:32 view_items)",
+        "src/ui/sidebar/mod.rs:52 eye icon on hovered rows and folder/remote headers (\"Hide from graph\")",
+        "ref menus \"Hide from graph\" / \"Show in graph\" (ref_menus.rs:89 view_items)",
         "persisted per repo in ui/repo_view.rs:137"
        ],
        "fns": [
@@ -2789,7 +2923,7 @@
        "id": "refs.solo-ref",
        "name": "Solo a ref (show only soloed refs)",
        "entry": [
-        "ref menus \"Solo (show only soloed refs)\" / \"Unsolo\" (ref_menus.rs:32 view_items); soloed rows orange in sidebar (mod.rs:25 view_style)"
+        "ref menus \"Solo (show only soloed refs)\" / \"Unsolo\" (ref_menus.rs:95 view_items); soloed rows orange in sidebar (sidebar/mod.rs:26 view_style)"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -2808,7 +2942,7 @@
        "id": "refs.hover-highlight",
        "name": "Ref hover highlight (fade commits a pill can't reach)",
        "entry": [
-        "hover a graph ref pill for 50ms (src/ui/graph_view/mod.rs:449 act closure -> hover.rs:9 hover_ref; graph_view show reads hovered_ref)"
+        "hover a graph ref pill for 50ms (src/ui/graph_view/mod.rs:459 act closure -> hover.rs:9 hover_ref; graph_view show reads hovered_ref)"
        ],
        "fns": [
         "crate::graph::layout::Graph::has_unloaded_parent",
@@ -2822,9 +2956,9 @@
       },
       {
        "id": "refs.graph-pills",
-       "name": "Ref pills in the graph (labels, +N badge, tooltip, drag source)",
+       "name": "Ref pills in the graph (icons, names cut with …, +N badge, tooltip, drag source)",
        "entry": [
-        "src/ui/graph_view/mod.rs:65 ref_pill, :53 ref_label, :100 pill_tip; click selects, double-click checks out, right-click ref menu"
+        "src/ui/graph_view/mod.rs:71 ref_pill, :53 ref_label (check = HEAD, tree = checked out in another worktree, cloud = upstream at the same commit, then the branch icon; long names cut with …), :112 pill_tip (upstream, worktree path and how to switch there, tag message); click selects, double-click checks out, right-click ref menu"
        ],
        "fns": [
         "crate::repo::op::branch_checkout",
@@ -2837,6 +2971,25 @@
         "crate::ui::sidebar::ref_menus::synced_menu"
        ],
        "platform": []
+      },
+      {
+       "id": "refs.head-pill",
+       "name": "HEAD pill: filled with its lane colour, glowing, leads with a check",
+       "entry": [
+        "graph ref column (src/ui/graph_view/mod.rs:71 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text and its connector line to the node in the same colour; HEAD's node is larger",
+        "label (src/ui/graph_view/mod.rs:53 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow",
+        "sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)"
+       ],
+       "fns": [
+        "crate::ui::graph_view::ref_pill",
+        "crate::ui::graph_view::ref_label",
+        "crate::ui::graph_view::show",
+        "crate::ui::sidebar::head_row",
+        "crate::ui::sidebar::local_row"
+       ],
+       "platform": [
+        "platform.design-system"
+       ]
       }
      ]
     },
@@ -2847,7 +3000,7 @@
        "id": "refs.drag-branch-onto-branch",
        "name": "Drag a branch onto another: merge / push / rebase menu",
        "entry": [
-        "sidebar branch/remote rows (sidebar/mod.rs branch_dnd), graph pills (graph_view/mod.rs act closure), graph commit rows (graph_view/mod.rs:316) -> Action::DropBranch -> dialogs.rs:472 drop_menu"
+        "sidebar branch/remote rows (sidebar/mod.rs branch_dnd), graph pills (graph_view/mod.rs act closure), graph commit rows (graph_view/mod.rs:329) -> Action::DropBranch -> dialogs.rs:472 drop_menu"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -2871,7 +3024,7 @@
        "id": "refs.drag-preview",
        "name": "Drag preview label following the pointer",
        "entry": [
-        "src/ui/app.rs:583 graph_view::dnd::preview"
+        "src/ui/app.rs:592 graph_view::dnd::preview"
        ],
        "fns": [
         "crate::ui::graph_view::dnd::preview"
@@ -2906,8 +3059,8 @@
        "id": "refs.cleanup-open",
        "name": "Clean up branches dialog (merged, squashed, gone, stale)",
        "entry": [
-        "src/ui/sidebar/mod.rs:207 broom button \"Clean up merged & gone branches\"",
-        "palette \"Clean up branches (merged, squashed, gone, stale)…\" (palette.rs:147)",
+        "src/ui/sidebar/mod.rs:219 broom button \"Clean up merged & gone branches\"",
+        "palette \"Clean up branches (merged, squashed, gone, stale)…\" (palette.rs:149)",
         "src/ui/dialogs.rs:242 cleanup_dialog"
        ],
        "fns": [
@@ -3030,8 +3183,8 @@
        "id": "rewrite.rebase-editor",
        "name": "Interactive rebase editor (reorder, pick/reword/squash/fixup/drop/edit)",
        "entry": [
-        "src/ui/graph_view/menus.rs:200 \"Edit history after this commit (interactive rebase)…\" -> Action::Rebase",
-        "src/ui/graph_view/menus.rs:126 \"Interactive rebase {head} onto {target}…\" (integrate_items; branch/ref context menus)",
+        "src/ui/graph_view/menus.rs:262 \"Edit history after this commit (interactive rebase)…\" -> Action::Rebase",
+        "src/ui/graph_view/menus.rs:127 \"Interactive rebase {head} onto {target}…\" (integrate_items; branch/ref context menus)",
         "src/ui/dialogs.rs:524 branch drop menu \"Interactive rebase {src} onto {dst}…\"",
         "keys in editor: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D, Esc cancel (src/ui/rebase_editor.rs:24)",
         "buttons: move up/down pills, action pills, \"Start rebase\", \"Cancel\" (src/ui/rebase_editor.rs)",
@@ -3072,7 +3225,7 @@
        "name": "Warn before rewriting pushed commits",
        "entry": [
         "any rebase / reword / squash / drop / split / amend-into op: confirm dialog (src/ui/dialogs.rs confirm_dialog) built by rebase::confirm_*",
-        "Action::RunRebase (src/repo/mod.rs:843)"
+        "Action::RunRebase (src/repo/mod.rs:847)"
        ],
        "fns": [
         "crate::repo::rebase::confirm_pushed",
@@ -3091,7 +3244,7 @@
        "entry": [
         "src/ui/graph_view/menus.rs:123 \"Rebase {head} onto {target}\" (graph + sidebar branch menus via integrate_items)",
         "src/ui/dialogs.rs:520 branch drop menu \"Rebase {src} onto {dst}\"",
-        "⌘P \"Rebase {head} onto {ref}\" (src/ui/palette.rs:203)"
+        "⌘P \"Rebase {head} onto {ref}\" (src/ui/palette.rs:206)"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -3114,7 +3267,7 @@
        "id": "rewrite.interactive-cherry-pick",
        "name": "Interactive cherry-pick (multi-selection)",
        "entry": [
-        "src/ui/graph_view/menus.rs:15 multi menu \"Cherry-pick interactively…\" -> MultiOp::CherryPickEdit",
+        "src/ui/graph_view/menus.rs:21 multi menu \"Cherry-pick interactively…\" -> MultiOp::CherryPickEdit",
         "palette-less; multi-selection via cmd/shift click"
        ],
        "fns": [
@@ -3163,9 +3316,9 @@
        "id": "rewrite.reword-inline",
        "name": "Edit a commit message (inline in details, reword)",
        "entry": [
-        "Commit details \"Edit message…\" / editor Save, ⌘Enter (src/ui/inspector/commit.rs:213, msg_editor)",
-        "Graph commit menu → Rewrite this commit → \"Edit message…\" (menus.rs:213, via __reword__ prompt)",
-        "Co-authored-by removal (commit.rs:300)"
+        "Commit details \"Edit message…\" / editor Save, ⌘Enter (src/ui/inspector/commit.rs:212, msg_editor)",
+        "Graph commit menu → Rewrite this commit → \"Edit message…\" (menus.rs:276, via __reword__ prompt)",
+        "Co-authored-by removal (commit.rs:299)"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -3222,8 +3375,8 @@
        "id": "rewrite.squash-drop-one",
        "name": "Squash into parent / Drop commit (graph menu)",
        "entry": [
-        "src/ui/graph_view/menus.rs:225 \"Squash into parent\"",
-        "src/ui/graph_view/menus.rs:229 \"Drop commit\""
+        "src/ui/graph_view/menus.rs:289 \"Squash into parent\"",
+        "src/ui/graph_view/menus.rs:293 \"Drop commit\""
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -3252,8 +3405,8 @@
        "id": "rewrite.squash-drop-multi",
        "name": "Squash / Drop several selected commits",
        "entry": [
-        "src/ui/graph_view/menus.rs:15 \"Squash {n} commits into one\"",
-        "src/ui/graph_view/menus.rs:26 \"Drop {n} commits\"",
+        "src/ui/graph_view/menus.rs:39 \"Squash {n} commits into one\"",
+        "src/ui/graph_view/menus.rs:41 \"Drop {n} commits\"",
         "multi-select panel buttons (src/ui/inspector/multi.rs:26)"
        ],
        "fns": [
@@ -3282,7 +3435,7 @@
        "id": "rewrite.amend-into",
        "name": "Amend staged changes into an older commit",
        "entry": [
-        "src/ui/graph_view/menus.rs:210 Rewrite this commit → \"Amend staged changes into this commit\""
+        "src/ui/graph_view/menus.rs:269 Rewrite this commit → \"Amend staged changes into this commit\""
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -3314,8 +3467,8 @@
        "id": "rewrite.drag-reorder",
        "name": "Drag a commit onto a commit: move / squash / fixup",
        "entry": [
-        "drag a commit row onto another commit row (src/ui/graph_view/mod.rs:331 -> Action::DropCommit); ⌥ held squashes right away",
-        "popup menu: \"Move above/below\", \"Squash into\", \"Fixup into\" (src/ui/dialogs.rs commit_drop_menu)"
+        "drag a commit row onto another commit row (src/ui/graph_view/mod.rs:344 -> Action::DropCommit); ⌥ held squashes right away",
+        "popup menu: \"Move above / below <commit>\", \"Squash into <commit>\", \"Fixup into <commit> (drop this message)\" (built in src/repo/op.rs:1478 drop_menu, shown by src/ui/dialogs.rs commit_drop_menu)"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -3370,7 +3523,7 @@
        "id": "rewrite.split",
        "name": "Split a commit (guided)",
        "entry": [
-        "src/ui/graph_view/menus.rs:220 Rewrite this commit → \"Split this commit…\"",
+        "src/ui/graph_view/menus.rs:282 Rewrite this commit → \"Split this commit…\"",
         "WIP panel banner \"Continue\" / \"Abort\" (src/ui/inspector/wip.rs:261)"
        ],
        "fns": [
@@ -3407,9 +3560,9 @@
        "id": "rewrite.absorb",
        "name": "Absorb staged hunks into the commits they belong to",
        "entry": [
-        "WIP panel \"Absorb\" button (src/ui/inspector/wip.rs:331)",
-        "⌘P \"Absorb staged changes…\" (palette.rs:112)",
-        "preview dialog \"Absorb N hunks into M commits\" / \"Cancel\" (dialogs.rs:365)"
+        "WIP panel \"Absorb\" button (src/ui/inspector/wip.rs:332)",
+        "⌘P \"Absorb staged changes…\" (palette.rs:114)",
+        "preview dialog \"Absorb N hunks into M commits\" / \"Cancel\" (dialogs.rs:396)"
        ],
        "fns": [
         "crate::repo::absorb::Plan::load",
@@ -3438,7 +3591,7 @@
        "name": "Commit Composer (AI plans commits from uncommitted changes)",
        "entry": [
         "WIP panel \"Compose commits\" (wip.rs:457)",
-        "⌘P \"Compose commits with AI…\" (palette.rs:120)",
+        "⌘P \"Compose commits with AI…\" (palette.rs:122)",
         "dialog: edit/move units, merge up, \"Create commits\" (src/ui/compose.rs)"
        ],
        "fns": [
@@ -3477,7 +3630,7 @@
        "id": "rewrite.recompose",
        "name": "Recompose existing unpushed commits with the Composer",
        "entry": [
-        "graph commit menu \"Recompose from here…\" (menus.rs:224); multi menu \"Recompose {n} commits…\" (menus.rs:28); optional \"(with uncommitted changes)\""
+        "graph commit menu \"Recompose from here…\" (menus.rs:287); multi menu \"Recompose {n} commits…\" (menus.rs:40); optional \"(with uncommitted changes)\""
        ],
        "fns": [
         "crate::ai::tasks::build",
@@ -3514,9 +3667,9 @@
        "id": "rewrite.spinoff",
        "name": "Move unpushed commits to a new branch",
        "entry": [
-        "toolbar history tools (src/ui/toolbar.rs:140)",
-        "branch context menu on HEAD (src/ui/sidebar/ref_menus.rs:153)",
-        "⌘P (src/ui/palette.rs:149)"
+        "toolbar history tools (src/ui/toolbar.rs:178)",
+        "branch context menu on HEAD (src/ui/sidebar/ref_menus.rs:248)",
+        "⌘P (src/ui/palette.rs:151)"
        ],
        "fns": [
         "crate::repo::spinoff::move_unpushed",
@@ -3538,9 +3691,9 @@
        "id": "rewrite.stack-detect",
        "name": "Stacked branch detection and sidebar tree",
        "entry": [
-        "sidebar Branches list nests stacked branches under their parent, stale badge (src/ui/sidebar/mod.rs:92-160)",
-        "Settings → \"Keep stacked branches together\" / Protected branches (set_follow mirror in src/ui/app.rs:504)",
-        "reload (data.rs:493) and after reload keep_stale (mod.rs:421)"
+        "sidebar Branches list nests stacked branches under their parent, stale badge (src/ui/sidebar/mod.rs:88 stacked, :113 local_row)",
+        "Settings → \"Keep stacked branches together\" / Protected branches (set_follow mirror in src/ui/app.rs:510)",
+        "reload (repo/data.rs:523 stack::load) and after reload keep_stale (repo/mod.rs:425)"
        ],
        "fns": [
         "crate::repo::stack::children",
@@ -3599,7 +3752,7 @@
        "id": "rewrite.stack-restack",
        "name": "Restack a stack",
        "entry": [
-        "branch context menu \"Restack\" (src/ui/sidebar/ref_menus.rs:176), shown when any member is stale"
+        "branch context menu \"Restack\" (src/ui/sidebar/ref_menus.rs:206), shown when any member is stale"
        ],
        "fns": [
         "crate::repo::stack::children",
@@ -3624,7 +3777,7 @@
        "id": "rewrite.stack-push",
        "name": "Push a whole stack",
        "entry": [
-        "branch context menu \"Push stack (N branches)\" (src/ui/sidebar/ref_menus.rs:183)"
+        "branch context menu \"Push stack (N branches)\" (src/ui/sidebar/ref_menus.rs:214)"
        ],
        "fns": [
         "crate::repo::stack::children",
@@ -3656,7 +3809,7 @@
        "entry": [
         "src/ui/graph_view/menus.rs:107 \"Merge <target> into <head>\" (commit/branch context menu, integrate_items)",
         "src/ui/palette.rs:201 \"Merge <ref> into <head>\" (palette)",
-        "src/ui/dialogs.rs:499 branch drag-and-drop drop menu \"Merge <src> into <dst>\""
+        "src/ui/dialogs.rs:498 branch drag-and-drop drop menu \"Merge <src> into <dst>\""
        ],
        "fns": [
         "crate::repo::merge_opts::Merge::name",
@@ -3677,9 +3830,9 @@
        "id": "merge.merge-options",
        "name": "Merge with options (no-ff / ff-only / squash)",
        "entry": [
-        "src/ui/graph_view/menus.rs:109 \"Merge <target> into <head> with options\" > Merge (no-ff|ff-only|squash)",
-        "src/ui/palette.rs:198 palette items with (squash)/(no-ff)/(ff-only)",
-        "src/ui/dialogs.rs:493 drop menu merge variants (squash only onto the checked-out branch)"
+        "src/ui/graph_view/menus.rs:110 \"Merge <target> into <head> with options\" > Merge (no-ff|ff-only|squash)",
+        "src/ui/palette.rs:201 palette items with (squash)/(no-ff)/(ff-only)",
+        "src/ui/dialogs.rs:496 drop menu merge variants (squash only onto the checked-out branch)"
        ],
        "fns": [
         "crate::repo::merge_opts::Merge::name",
@@ -3715,8 +3868,8 @@
        "id": "merge.cherry-pick",
        "name": "Cherry-pick a commit",
        "entry": [
-        "src/ui/graph_view/menus.rs:187 \"Cherry-pick commit\" (commit menu; -m for merge commits)",
-        "setting cherry_pick_x (-x) via src/ui/app.rs:503"
+        "src/ui/graph_view/menus.rs:203 \"Cherry-pick commit\" (commit menu; -m for merge commits)",
+        "setting cherry_pick_x (-x) via src/ui/app.rs:509"
        ],
        "fns": [
         "crate::repo::merge_opts::clean",
@@ -3737,7 +3890,7 @@
        "id": "merge.cherry-pick-no-commit",
        "name": "Cherry-pick without committing",
        "entry": [
-        "src/ui/graph_view/menus.rs:192 \"Cherry-pick without committing\""
+        "src/ui/graph_view/menus.rs:207 \"Cherry-pick without committing\""
        ],
        "fns": [
         "crate::repo::merge_opts::clean",
@@ -3755,7 +3908,7 @@
        "id": "merge.cherry-pick-multi",
        "name": "Cherry-pick several selected commits",
        "entry": [
-        "src/ui/graph_view/menus.rs:15 \"Cherry-pick N commits\" (multi-select menu)",
+        "src/ui/graph_view/menus.rs:20 \"Cherry-pick N commits\" (multi-select menu)",
         "src/ui/inspector/multi.rs multi panel Cherry-pick button"
        ],
        "fns": [
@@ -3776,7 +3929,7 @@
        "id": "merge.cherry-pick-drag",
        "name": "Cherry-pick by dragging a commit onto a branch",
        "entry": [
-        "src/repo/op.rs:1359 drop menu \"Cherry-pick onto <branch>\" (drag a commit row onto a branch pill / sidebar row)"
+        "src/repo/op.rs:1494 drop menu \"Cherry-pick onto <branch>\" (drag a commit row onto a branch pill / sidebar row)"
        ],
        "fns": [
         "crate::repo::merge_opts::clean",
@@ -3794,7 +3947,7 @@
        "id": "merge.revert-commit",
        "name": "Revert a commit",
        "entry": [
-        "src/ui/graph_view/menus.rs:241 \"Revert commit\" (merge commits ask first, parent 1)"
+        "src/ui/graph_view/menus.rs:219 \"Revert commit\" (merge commits ask first, parent 1)"
        ],
        "fns": [
         "crate::ui::graph_view::menus::commit_menu"
@@ -3808,7 +3961,7 @@
        "id": "merge.revert-multi",
        "name": "Revert several selected commits",
        "entry": [
-        "src/ui/graph_view/menus.rs:19 \"Revert N commits\"",
+        "src/ui/graph_view/menus.rs:22 \"Revert N commits\"",
         "src/ui/inspector/multi.rs:22 Revert button"
        ],
        "fns": [
@@ -3830,7 +3983,7 @@
        "id": "merge.state-banner",
        "name": "In-progress banner: Continue / Skip / Abort (merge, rebase, cherry-pick, revert, am)",
        "entry": [
-        "src/ui/inspector/wip.rs:285 WIP panel banner \"<Merge> in progress\": Continue, Skip this commit, Abort"
+        "src/ui/inspector/wip.rs:299 WIP panel banner \"<Merge> in progress\": Continue, Skip this commit, Abort"
        ],
        "fns": [
         "crate::git::read::state",
@@ -3851,7 +4004,7 @@
        "id": "merge.conflict-list",
        "name": "Conflicted files list with kind labels",
        "entry": [
-        "src/ui/inspector/wip.rs:495 WIP panel \"Conflicts\" tree (click opens merge editor)",
+        "src/ui/inspector/wip.rs:475 WIP panel \"Conflicts\" tree (click opens merge editor)",
         "background: RepoData::load_conflicts on every reload"
        ],
        "fns": [
@@ -3871,7 +4024,7 @@
        "id": "merge.take-side",
        "name": "Use current / incoming version of a file",
        "entry": [
-        "src/ui/inspector/wip.rs:524 conflict file context menu \"Use current\" / \"Use incoming\""
+        "src/ui/inspector/wip.rs:527 conflict file context menu \"Use current (<label>)\" / \"Use incoming (<label>)\""
        ],
        "fns": [
         "crate::git::read::conflict_kind",
@@ -3915,7 +4068,7 @@
        "id": "merge.restore-markers",
        "name": "Restore conflict markers",
        "entry": [
-        "src/ui/inspector/wip.rs:550 conflict file menu \"Restore conflict markers\""
+        "src/ui/inspector/wip.rs:547 conflict file menu \"Restore conflict markers\""
        ],
        "fns": [
         "crate::repo::tools::restore_markers_op",
@@ -3930,7 +4083,7 @@
        "id": "merge.predict-conflicts",
        "name": "Predicted-conflicts chip in toolbar",
        "entry": [
-        "src/ui/toolbar.rs:83 chip \"N conflicts with <branch>\"",
+        "src/ui/toolbar.rs:103 chip \"N conflicts with <branch>\"",
         "background: after each reload (RepoTab::poll -> check_conflicts)"
        ],
        "fns": [
@@ -3954,7 +4107,7 @@
        "id": "merge.editor-open",
        "name": "Open the three-pane merge editor",
        "entry": [
-        "click a conflicted file in the WIP panel (Action::MergeEditor), src/ui/inspector/wip.rs:545",
+        "click a conflicted file in the WIP panel (Action::MergeEditor), src/ui/inspector/wip.rs:552",
         "src/ui/repo_view.rs:61 center pane"
        ],
        "fns": [
@@ -3987,7 +4140,7 @@
        "id": "merge.editor-resolve",
        "name": "Take current / incoming / both / base per conflict",
        "entry": [
-        "src/ui/merge_editor.rs:154 chunk side click; footer buttons \"Take current\", \"Take incoming\", \"Both (current first|incoming first)\", \"Take base\""
+        "src/ui/merge_editor.rs:212 chunk side click; footer buttons \"Take current\", \"Take incoming\", \"Both (current first|incoming first)\", \"Take base\""
        ],
        "fns": [
         "crate::repo::merge_editor::Conflict::take",
@@ -4008,7 +4161,7 @@
        "id": "merge.editor-auto-trivial",
        "name": "Auto-resolve trivial conflicts",
        "entry": [
-        "src/ui/merge_editor.rs:210 \"Auto-resolve trivial (N)\""
+        "src/ui/merge_editor.rs:64 \"Auto-resolve trivial (N)\""
        ],
        "fns": [
         "crate::repo::merge_editor::Conflict::trivial",
@@ -4066,7 +4219,7 @@
        "id": "merge.editor-whole-file",
        "name": "Pick a whole version (delete/binary/gitlink/mode conflicts)",
        "entry": [
-        "src/ui/merge_editor.rs:80 buttons \"Use current · <label>\" / \"Use incoming · <label>\" shown when a file can't be merged by hunks"
+        "src/ui/merge_editor.rs:84 buttons \"Take current · <label>\" / \"Take incoming · <label>\" (or \"Delete file\" / \"Keep file\" when one side deleted it) shown when a file can't be merged by hunks"
        ],
        "fns": [
         "crate::git::read::conflict_kind",
@@ -4089,7 +4242,7 @@
        "entry": [
         "src/ui/merge_editor.rs:61 \"Resolve\" sparkle button",
         "src/ui/inspector/wip.rs:520 conflict file menu \"Resolve…\"",
-        "src/ui/dialogs.rs:211 AI result dialog \"Apply & mark resolved\""
+        "src/ui/dialogs.rs:215 AI result dialog \"Apply & mark resolved\""
        ],
        "fns": [
         "crate::ai::tasks::Job::poll",
@@ -4119,7 +4272,7 @@
        "id": "merge.external-tool",
        "name": "Open in external merge tool (git mergetool --gui)",
        "entry": [
-        "src/ui/inspector/wip.rs:536 conflict menu \"Open in external merge tool\"; Cancel in the banner (open_tools)"
+        "src/ui/inspector/wip.rs:537 conflict menu \"Open in external merge tool\"; Cancel in the banner (open_tools)"
        ],
        "fns": [
         "crate::repo::op::RepoTab::run",
@@ -4150,7 +4303,7 @@
        "id": "merge.bisect-start",
        "name": "Start a bisect",
        "entry": [
-        "src/ui/bisect.rs:73 commit menu \"Bisect\" > \"Start bisect: this commit is bad\" / \"is good\"",
+        "src/ui/bisect.rs:72 commit menu \"Bisect\" > \"Start bisect: this commit is bad\" / \"is good\"",
         "src/ui/bisect.rs:96 multi-select \"Start bisect between these\""
        ],
        "fns": [
@@ -4167,8 +4320,8 @@
        "id": "merge.bisect-mark",
        "name": "Mark good / bad / skip",
        "entry": [
-        "src/ui/bisect.rs:46 banner pills Skip / Bad / Good",
-        "src/ui/bisect.rs:82 commit menu \"Mark <sha> as good|bad|skip\""
+        "src/ui/bisect.rs:51 banner pills Skip / Bad / Good",
+        "src/ui/bisect.rs:84 commit menu \"Mark <sha> as good|bad|skip\""
        ],
        "fns": [
         "crate::git::bisect::Bisect::term",
@@ -4185,7 +4338,7 @@
        "id": "merge.bisect-banner",
        "name": "Bisect progress banner (steps left, first bad commit, Show, Reset)",
        "entry": [
-        "src/ui/graph_view/mod.rs:141 banner above the graph; Reset pill; Show jumps to the found commit"
+        "src/ui/graph_view/mod.rs:154 banner above the graph; Reset pill; Show jumps to the found commit"
        ],
        "fns": [
         "crate::git::bisect::Bisect::found",
@@ -4203,7 +4356,7 @@
        "id": "merge.bisect-graph-marks",
        "name": "Bisect marks on graph rows",
        "entry": [
-        "src/ui/graph_view/mod.rs:563 coloured good/bad/skip markers"
+        "src/ui/graph_view/mod.rs:573 coloured good/bad/skip markers"
        ],
        "fns": [
         "crate::git::bisect::Bisect::mark",
@@ -4248,10 +4401,10 @@
        "id": "remote.fetch",
        "name": "Fetch all remotes",
        "entry": [
-        "src/ui/toolbar.rs:201 toolbar \"Fetch\" pill",
-        "src/ui/app.rs:218 shortcut Cmd+L",
+        "src/ui/toolbar.rs:238 toolbar \"Fetch\" pill",
+        "src/ui/app.rs:221 shortcut Cmd+L",
         "src/ui/palette.rs:79 Cmd+P \"Fetch all remotes\"",
-        "src/ui/toolbar.rs:93 click the failed-fetch chip",
+        "src/ui/toolbar.rs:112 click the failed-fetch chip",
         "src/repo/offer.rs:49 \"Fetch\" choice after a rejected push"
        ],
        "fns": [
@@ -4275,8 +4428,8 @@
        "name": "Fetch or prune a single remote",
        "entry": [
         "src/ui/sidebar/remotes.rs:12 remote context menu \"Fetch <remote>\"",
-        "src/ui/sidebar/remotes.rs:15 \"Prune deleted branches\"",
-        "src/ui/sidebar/mod.rs:278 right-click a remote header"
+        "src/ui/sidebar/remotes.rs:17 \"Prune deleted branches\"",
+        "src/ui/sidebar/mod.rs:281 right-click a remote header"
        ],
        "fns": [
         "crate::repo::op::fetch_remote_op",
@@ -4294,11 +4447,11 @@
        "id": "remote.pull",
        "name": "Pull (merge, fast-forward only, rebase) with autostash",
        "entry": [
-        "src/ui/toolbar.rs:203 \"Pull\" pill (default mode from Settings)",
-        "src/ui/toolbar.rs:206 caret menu \"Pull with\" Merge/Fast-forward only/Rebase",
+        "src/ui/toolbar.rs:241 \"Pull\" pill (default mode from Settings)",
+        "src/ui/toolbar.rs:245 caret menu \"Pull with\" Merge/Fast-forward only/Rebase",
         "src/ui/palette.rs:80 Cmd+P \"Pull\" / \"Pull (fast-forward only)\" / \"Pull (rebase)\"",
-        "src/ui/settings.rs:215 Settings \"Default pull\"",
-        "src/repo/offer.rs:8 \"Pull (rebase)\"/\"Pull (merge)\" choices"
+        "src/ui/settings.rs:220 Settings \"Default pull\"",
+        "src/repo/offer.rs:12 \"Pull (rebase)\"/\"Pull (merge)\" choices"
        ],
        "fns": [
         "crate::git::network::with_autostash",
@@ -4319,8 +4472,8 @@
        "id": "remote.pull-ff-branch",
        "name": "Fast-forward a branch without checking it out",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:145 local branch menu \"Pull <b> (fast-forward, without checkout)\"",
-        "src/ui/sidebar/ref_menus.rs:140 \"Fast-forward <b> to <upstream>\" (local fetch)"
+        "src/ui/sidebar/ref_menus.rs:188 local branch menu \"Pull <b> (fast-forward, without checkout)\"",
+        "src/ui/sidebar/ref_menus.rs:185 \"Fast-forward <b> to <upstream>\" (local fetch)"
        ],
        "fns": [
         "crate::repo::data::RepoData::split_remote",
@@ -4337,10 +4490,10 @@
        "id": "remote.push",
        "name": "Push the current branch (sets upstream on first push)",
        "entry": [
-        "src/ui/toolbar.rs:222 \"Push\" pill (opens Add remote when none)",
-        "src/ui/palette.rs:85 Cmd+P \"Push\"",
-        "src/ui/inspector/wip.rs:403 \"Push after commit\" checkbox / \"Commit and push\"",
-        "src/repo/op.rs:1245 push after a queued commit"
+        "src/ui/toolbar.rs:256 \"Push\" pill (opens Add remote when none)",
+        "src/ui/palette.rs:86 Cmd+P \"Push\"",
+        "src/ui/inspector/wip.rs:404 \"Push after commit\" checkbox (the commit button then reads \"Commit and push changes to N files\", wip.rs:415)",
+        "src/repo/op.rs:1377 push after a queued commit"
        ],
        "fns": [
         "crate::repo::data::RepoData::cfg",
@@ -4364,8 +4517,8 @@
        "id": "remote.force-push",
        "name": "Force push with lease",
        "entry": [
-        "src/ui/toolbar.rs:229 push caret menu \"Force push (with lease)\"",
-        "src/ui/palette.rs:88 Cmd+P \"Force push (with lease)\"",
+        "src/ui/toolbar.rs:268 push caret menu \"Force push (with lease)\"",
+        "src/ui/palette.rs:89 Cmd+P \"Force push (with lease)\"",
         "src/repo/offer.rs:52 \"Force push…\" choice after a rejected push"
        ],
        "fns": [
@@ -4388,9 +4541,9 @@
        "id": "remote.push-branch",
        "name": "Push a specific branch or tag from the sidebar",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:181 local branch menu \"Push <b> to <remote>\"",
-        "src/ui/sidebar/ref_menus.rs:274 tag menu \"Push tag to <remote>\"",
-        "src/ui/sidebar/ref_menus.rs:210 tag menu \"Push all tags to <remote>\" (also Cmd+P)",
+        "src/ui/sidebar/ref_menus.rs:195 local branch menu \"Push <b> to <remote>\"",
+        "src/ui/sidebar/ref_menus.rs:331 tag menu \"Push tag to <remote>\"",
+        "src/ui/sidebar/ref_menus.rs:334 tag menu \"Push all tags to <remote>\" (also Cmd+P)",
         "src/ui/graph_view pills open the same ref_menu"
        ],
        "fns": [
@@ -4409,7 +4562,7 @@
        "id": "remote.push-stack",
        "name": "Push a stack of branches",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:182 local branch menu \"Push stack (N branches)\""
+        "src/ui/sidebar/ref_menus.rs:214 local branch menu \"Push stack (N branches)\""
        ],
        "fns": [
         "crate::repo::stack::push_op",
@@ -4424,12 +4577,13 @@
        "id": "remote.delete-remote-branch",
        "name": "Delete a branch from the remote",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:253 remote branch menu \"Delete <b> from <remote>\""
+        "src/ui/sidebar/ref_menus.rs:60 delete_items \"Delete <b> from <remote>\" (remote branch menu and synced graph pill, last)"
        ],
        "fns": [
         "crate::repo::data::RepoData::split_remote",
         "crate::repo::remotes::delete_branch",
-        "crate::ui::sidebar::ref_menus::remote_menu"
+        "crate::ui::sidebar::ref_menus::delete_items",
+        "crate::ui::sidebar::ref_menus::synced_menu"
        ],
        "platform": [
         "platform.git-runner",
@@ -4445,10 +4599,10 @@
        "id": "remote.auto-fetch",
        "name": "Auto-fetch in the background",
        "entry": [
-        "src/ui/app.rs:520 per-frame tick calls RepoTab::auto_fetch (timer and window refocus)",
-        "src/ui/settings.rs:204 Settings \"Auto-fetch\" minutes (0 = off)",
-        "src/ui/toolbar.rs:88 failed-fetch chip \"Sign in required\"/\"Fetch failed\" (click to fetch now)",
-        "src/ui/toolbar.rs:96 chip \"Choose SSH key\""
+        "src/ui/app.rs:531 per-frame tick calls RepoTab::auto_fetch (timer and window refocus)",
+        "src/ui/settings.rs:210 Settings \"Auto-fetch\" minutes (0 = off)",
+        "src/ui/toolbar.rs:109 failed-fetch chip \"Sign in required\"/\"Fetch failed\" (click to fetch now)",
+        "src/ui/toolbar.rs:117 chip \"Choose SSH key\""
        ],
        "fns": [
         "crate::git::network::batch_ssh",
@@ -4476,7 +4630,7 @@
        "id": "remote.one-fetch-at-a-time",
        "name": "Fetch coordination (a user fetch pre-empts a background one)",
        "entry": [
-        "background: every Op run takes a user turn (src/repo/op.rs:1038)"
+        "background: every Op run takes a user turn (src/repo/op.rs:1158)"
        ],
        "fns": [
         "crate::repo::fetch::Fetching::background",
@@ -4491,8 +4645,8 @@
        "id": "remote.autostash",
        "name": "Autostash around pull/rebase/restack",
        "entry": [
-        "src/repo/op.rs:269 Op.autostash (pull, restack)",
-        "src/repo/offer.rs:25 \"autostash checkout\" choice"
+        "src/repo/op.rs:51 Op.autostash (pull, restack)",
+        "src/repo/offer.rs:25 autostash_checkout: \"Stash, switch and reapply\" choice when a checkout is blocked"
        ],
        "fns": [
         "crate::git::network::with_autostash",
@@ -4513,10 +4667,10 @@
        "id": "remote.add-edit-remote",
        "name": "Add or edit a remote (name, fetch URL, push URL)",
        "entry": [
-        "src/ui/sidebar/mod.rs:290 sidebar \"Add remote…\"",
-        "src/ui/sidebar/remotes.rs:35 remote menu \"Edit remote…\"",
-        "src/ui/palette.rs:170 Cmd+P \"Add remote…\"",
-        "src/ui/toolbar.rs:225 Push with no remote",
+        "src/ui/sidebar/mod.rs:293 sidebar \"Add remote…\"",
+        "src/ui/sidebar/remotes.rs:37 remote menu \"Edit remote…\"",
+        "src/ui/palette.rs:172 Cmd+P \"Add remote…\"",
+        "src/ui/toolbar.rs:263 Push with no remote",
         "src/ui/graph_view/empty.rs:50 empty-repo hint",
         "src/ui/repo_view.rs:134 dialog host"
        ],
@@ -4543,7 +4697,7 @@
        "id": "remote.remove-remote",
        "name": "Remove a remote (undoable)",
        "entry": [
-        "src/ui/sidebar/remotes.rs:38 remote menu \"Remove remote…\""
+        "src/ui/sidebar/remotes.rs:51 remote menu \"Remove remote…\""
        ],
        "fns": [
         "crate::repo::remotes::remove",
@@ -4559,7 +4713,7 @@
        "id": "remote.remote-list",
        "name": "Remotes in the sidebar (list, redacted URL tooltip)",
        "entry": [
-        "src/ui/sidebar/mod.rs:278 sidebar REMOTES section"
+        "src/ui/sidebar/mod.rs:260 sidebar REMOTES section"
        ],
        "fns": [
         "crate::git::read::remotes",
@@ -4582,8 +4736,8 @@
        "id": "remote.pr-checkout",
        "name": "Check out a pull request by number",
        "entry": [
-        "src/ui/sidebar/remotes.rs:19 remote menu \"Check out pull request #…\"",
-        "src/ui/palette.rs:173 Cmd+P \"Check out PR #…\""
+        "src/ui/sidebar/remotes.rs:21 remote menu \"Check out pull request #…\"",
+        "src/ui/palette.rs:176 Cmd+P \"Check out PR #…\""
        ],
        "fns": [
         "crate::repo::remotes::pr_checkout",
@@ -4602,7 +4756,7 @@
        "id": "remote.pr-refs",
        "name": "Show pull requests as <remote>/pr/<n>",
        "entry": [
-        "src/ui/sidebar/remotes.rs:22 remote menu checkbox \"Show pull requests as …/pr/<n>\""
+        "src/ui/sidebar/remotes.rs:27 remote menu checkbox \"Show pull requests as …/pr/<n>\""
        ],
        "fns": [
         "crate::repo::data::RepoData::cfg_all",
@@ -4622,9 +4776,9 @@
        "id": "remote.create-pr",
        "name": "Create a pull request (opens the compare page)",
        "entry": [
-        "src/ui/sidebar/ref_menus.rs:125 branch menu \"Create pull request…\"",
-        "src/ui/palette.rs:183 Cmd+P \"Create pull request for <branch>\"",
-        "src/ui/dialogs.rs:197 AI dialog \"Open pull request page\" (with title/body)"
+        "src/ui/sidebar/ref_menus.rs:167 branch menu \"Create pull request…\"",
+        "src/ui/palette.rs:187 Cmd+P \"Create pull request for <branch>\"",
+        "src/ui/dialogs.rs:198 AI dialog \"Open pull request page\" (with title/body)"
        ],
        "fns": [
         "crate::git::url::host",
@@ -4651,14 +4805,14 @@
        "name": "Open on remote / Copy link (repo, branch, commit, file, blame, history, compare, release)",
        "entry": [
         "src/ui/toolbar.rs:30 globe pill",
-        "src/ui/palette.rs:181 Cmd+P \"Open repository on remote\"",
-        "src/ui/sidebar/ref_menus.rs:129 \"Open branch on remote\"",
+        "src/ui/palette.rs:183 Cmd+P \"Open repository on remote\"",
+        "src/ui/sidebar/ref_menus.rs:172 \"Open branch on remote\"",
         "src/ui/sidebar/remotes.rs:43 \"Open on <host>\"",
         "src/ui/links.rs:11 \"Open … on <host>\" / \"Copy link to …\" in commit, file, diff-line, compare, tag and multi-select menus",
-        "src/ui/graph_view/menus.rs:40,267",
+        "src/ui/graph_view/menus.rs:30 (multi-select compare), :237 (commit menu)",
         "src/ui/inspector/mod.rs:84 permalink_items",
         "src/ui/diff_view.rs:365 line permalinks",
-        "src/ui/sidebar/ref_menus.rs:296 tag \"release page\""
+        "src/ui/sidebar/ref_menus.rs:344 tag \"release page\""
        ],
        "fns": [
         "crate::git::url::Page::url",
@@ -4688,7 +4842,7 @@
        "id": "remote.url-safety",
        "name": "Only open http(s) pages on a remote's host (Action::Url guard)",
        "entry": [
-        "src/repo/mod.rs:727 Action::Url handling"
+        "src/repo/mod.rs:731 Action::Url handling"
        ],
        "fns": [
         "crate::git::url::host",
@@ -4717,8 +4871,8 @@
        "entry": [
         "src/git/log.rs:45 command log",
         "src/git/runner.rs error messages",
-        "src/ui/sidebar/mod.rs:278 remote tooltip",
-        "src/ui/palette.rs:175",
+        "src/ui/sidebar/mod.rs:281 remote tooltip",
+        "src/ui/palette.rs:177",
         "src/ui/doctor.rs:106"
        ],
        "fns": [
@@ -4742,8 +4896,8 @@
        "name": "Clone a repository",
        "entry": [
         "src/ui/welcome.rs:42 welcome \"Clone…\" button",
-        "src/ui/palette.rs Cmd+P clone (src/ui/app.rs:423 Cmd::Clone)",
-        "src/ui/app.rs:573 dialog host"
+        "src/ui/palette.rs Cmd+P clone (src/ui/app.rs:426 Cmd::Clone)",
+        "src/ui/app.rs:582 dialog host"
        ],
        "fns": [
         "crate::ui::welcome::App::clone_dialog",
@@ -4767,7 +4921,7 @@
        "name": "Credential prompt window for HTTPS and SSH",
        "entry": [
         "git/ssh spawn Glasir as GIT_ASKPASS / SSH_ASKPASS (src/git/runner.rs:68)",
-        "src/main.rs:23 askpass dispatch"
+        "src/main.rs:24 askpass dispatch"
        ],
        "fns": [
         "crate::askpass::run",
@@ -4781,8 +4935,8 @@
        "id": "remote.git-env",
        "name": "Git version check and login-shell environment import",
        "entry": [
-        "src/main.rs:33 import_login_env at start",
-        "src/ui/app.rs:90 git version check task"
+        "src/main.rs:44 import_login_env at start",
+        "src/ui/app.rs:91 git version check task"
        ],
        "fns": [
         "crate::git::env::check_git",
@@ -4798,10 +4952,10 @@
        "id": "remote.doctor",
        "name": "Connection doctor (Check connection…)",
        "entry": [
-        "src/ui/sidebar/remotes.rs:29 remote menu \"Check connection…\"",
-        "src/ui/palette.rs:175 Cmd+P \"Check connection to <remote>\"",
-        "src/ui/doctor.rs:44 \"Check again\" / \"Copy report\"",
-        "src/ui/toolbar.rs:96 \"Choose SSH key\" chip"
+        "src/ui/sidebar/remotes.rs:31 remote menu \"Check connection…\"",
+        "src/ui/palette.rs:177 Cmd+P \"Check connection to <remote>\"",
+        "src/ui/doctor.rs:56 \"Check again\" / \"Copy report\"",
+        "src/ui/toolbar.rs:117 \"Choose SSH key\" chip"
        ],
        "fns": [
         "crate::git::network::batch_ssh",
@@ -4832,10 +4986,10 @@
        "id": "remote.ssh-key",
        "name": "Choose and test the SSH key for a repository",
        "entry": [
-        "src/ui/sidebar/remotes.rs:32 remote menu \"SSH key…\"",
-        "src/ui/palette.rs:178 Cmd+P \"SSH key for this repository…\"",
+        "src/ui/sidebar/remotes.rs:34 remote menu \"SSH key…\"",
+        "src/ui/palette.rs:180 Cmd+P \"SSH key for this repository…\"",
         "src/ui/doctor.rs (ssh_key_section: key list, Browse…, Test connection)",
-        "src/repo/mod.rs:854 Action::SshKey / SshTest"
+        "src/repo/mod.rs:858 Action::SshKey / SshTest"
        ],
        "fns": [
         "crate::git::network::ls_remote_via",
@@ -4881,11 +5035,11 @@
        "id": "remote.avatars",
        "name": "GitHub avatars for commit authors",
        "entry": [
-        "src/ui/settings.rs:191 Settings \"Show GitHub avatars\"",
-        "src/ui/app.rs:502 applies the setting",
-        "src/repo/mod.rs:540 sync after load",
-        "src/ui/inspector/commit.rs:249,275 author/co-author in details",
-        "src/ui/graph_view/mod.rs:123 graph rows (circles; fallback color from theme::avatar)"
+        "src/ui/settings.rs:195 Settings \"Show GitHub avatars\"",
+        "src/ui/app.rs:508 applies the setting",
+        "src/repo/mod.rs:544 sync after load",
+        "src/ui/inspector/commit.rs:248, :274 author / co-author in details",
+        "src/ui/graph_view/mod.rs:416 graph rows (circles; fallback color from theme::avatar)"
        ],
        "fns": [
         "crate::repo::avatars::Avatars::get",
@@ -4933,14 +5087,21 @@
        "id": "remote.critters",
        "name": "DiceBear critter pictures for authors without a GitHub avatar",
        "entry": [
-        "src/ui/graph_view/mod.rs graph rows",
-        "src/ui/inspector/commit.rs commit details",
-        "src/ui/history.rs file history rows"
+        "graph rows: the author circle when there is no GitHub avatar (src/ui/graph_view/mod.rs:416), also with Settings → \"Show GitHub avatars\" off",
+        "commit details author / co-authors (src/ui/inspector/commit.rs:66 avatar)",
+        "file history rows (src/ui/history.rs:119)",
+        "background: rendered off the UI thread from the author's name, so the same in every repo (src/repo/avatars.rs:134 critter); PNG cached on disk for five years (avatars.rs:152 cached_critter); initials until it is ready"
        ],
        "fns": [
         "crate::repo::avatars::cached_critter",
         "crate::repo::avatars::critter",
-        "crate::repo::avatars::critter_image"
+        "crate::repo::avatars::critter_image",
+        "crate::ui::graph_view::show",
+        "crate::ui::inspector::commit::avatar",
+        "crate::ui::history::show"
+       ],
+       "platform": [
+        "platform.design-system"
        ]
       }
      ]
@@ -4952,10 +5113,10 @@
        "id": "remote.lfs",
        "name": "Git LFS awareness (missing-install warning, pointer diffs, track pattern)",
        "entry": [
-        "src/repo/data.rs:467 detect on load",
-        "src/ui/toolbar.rs:167 LFS tools (Pull/Fetch LFS objects) + missing-install warning",
-        "src/repo/mod.rs:435 startup warning",
-        "src/ui/inspector/mod.rs:94 \"Track *.ext with LFS\"",
+        "src/repo/data.rs:497 detect on load",
+        "src/ui/toolbar.rs:205 LFS tools (Pull/Fetch LFS objects) + missing-install warning",
+        "src/repo/mod.rs:439 startup warning",
+        "src/ui/inspector/mod.rs:93 \"Track *.ext with LFS\"",
         "src/ui/diff_view.rs:407 LFS pointer note instead of diff"
        ],
        "fns": [
@@ -4977,9 +5138,9 @@
        "id": "remote.submodules",
        "name": "Submodules: list, update/init, sync, add, remove, open",
        "entry": [
-        "src/ui/sidebar/mod.rs:317 SUBMODULES section",
+        "src/ui/sidebar/mod.rs:320 SUBMODULES section",
         "src/ui/sidebar/submodules.rs row context menu & double-click",
-        "src/ui/sidebar/submodules.rs:17 \"Update all\" / \"Sync URLs\" / \"Add submodule…\""
+        "src/ui/sidebar/submodules.rs:20 \"Update all\" / \"Sync URLs\" / \"Add submodule…\""
        ],
        "fns": [
         "crate::git::submodule::parse_status",
@@ -4997,7 +5158,7 @@
        "id": "remote.submodule-diff",
        "name": "Submodule pointer change in a diff",
        "entry": [
-        "src/ui/diff_view.rs:734 note \"Submodule moved from … to …\" with log and Open submodule in new tab",
+        "src/ui/diff_view.rs:740 note \"Submodule moved from … to …\" with log and Open submodule in new tab",
         "src/repo/merge_editor.rs gitlinks (conflicted submodule)"
        ],
        "fns": [
@@ -5025,7 +5186,8 @@
        "name": "Commit graph table (lanes, ref pills, columns)",
        "entry": [
         "Center pane of every repo tab (ui/repo_view.rs -> graph_view::show)",
-        "graph_view/mod.rs:211 column headers BRANCH / TAG, GRAPH, COMMIT MESSAGE, AUTHOR, DATE"
+        "graph_view/mod.rs:224 column headers BRANCH / TAG, GRAPH, COMMIT MESSAGE, AUTHOR, DATE",
+        "lane colours: view.lane-colors"
        ],
        "fns": [
         "crate::graph::layout::Graph::edges_in",
@@ -5033,7 +5195,6 @@
         "crate::graph::layout::Graph::layout",
         "crate::graph::layout::Graph::reachable",
         "crate::graph::layout::free_lane",
-        "crate::graph::layout::pick",
         "crate::ui::graph_view::chip",
         "crate::ui::graph_view::columns",
         "crate::ui::graph_view::corner",
@@ -5049,6 +5210,26 @@
         "platform.format",
         "platform.git-model",
         "platform.repo-load"
+       ]
+      },
+      {
+       "id": "view.lane-colors",
+       "name": "Graph lane colours: ten distinct colours, merge lines in the merged branch's colour",
+       "entry": [
+        "graph lanes (src/graph/layout.rs:61 pick): a new lane takes the colour least used by the open lanes nearby and by the last ~60 rows, starting from its tip commit's seed colour; a merged-in branch never takes the merging lane's colour, so diverging branches differ",
+        "merge lines (src/graph/layout.rs:86 Graph::layout): a merge's line takes the merged branch's colour once its parent is placed; a merge into a branch that went on joins that branch's lane instead of running beside it",
+        "palettes src/theme/mod.rs:23 LANES (dark) and :37 LANES_LIGHT (light flavours): blue, pink, yellow, green, violet, red, teal, grey, orange, brown"
+       ],
+       "fns": [
+        "crate::graph::layout::pick",
+        "crate::graph::layout::free_lane",
+        "crate::graph::layout::Graph::layout",
+        "crate::theme::lane",
+        "crate::theme::lane_of",
+        "crate::ui::graph_view::show"
+       ],
+       "platform": [
+        "platform.design-system"
        ]
       },
       {
@@ -5069,7 +5250,7 @@
        "id": "view.load-more",
        "name": "Load more history on scroll (paging)",
        "entry": [
-        "Scrolling to the end of the graph pushes Action::LoadMore (graph_view/mod.rs:627)"
+        "Scrolling to the end of the graph pushes Action::LoadMore (graph_view/mod.rs:637)"
        ],
        "fns": [
         "crate::graph::layout::Graph::has_unloaded_parent",
@@ -5083,8 +5264,8 @@
        "id": "view.first-parent",
        "name": "First-parent-only graph toggle and \"Viewing N of M refs / Show all\"",
        "entry": [
-        "graph_view/mod.rs:148 \"Show all\" link",
-        "graph_view/mod.rs:233 first-parent toggle in header"
+        "graph_view/mod.rs:167 \"Show all\" link",
+        "graph_view/mod.rs:246 first-parent toggle in header"
        ],
        "fns": [
         "crate::repo::data::View::change",
@@ -5098,7 +5279,7 @@
        "id": "view.head-chip",
        "name": "Scroll to HEAD chip",
        "entry": [
-        "graph_view/mod.rs:644-651 HEAD chip \"Scroll to HEAD\""
+        "graph_view/mod.rs:652-668 HEAD chip \"<branch> (HEAD)\" with an up / down arrow when HEAD is scrolled out of view; click scrolls to it"
        ],
        "fns": [
         "crate::ui::graph_view::chip",
@@ -5110,7 +5291,7 @@
        "id": "view.select",
        "name": "Select a commit / multi-select (click, Cmd/Shift-click)",
        "entry": [
-        "Click a graph row; Cmd/Shift-click (graph_view/mod.rs:299)"
+        "Click a graph row; Cmd/Shift-click (graph_view/mod.rs:312)"
        ],
        "fns": [
         "crate::ui::graph_view::multi_select",
@@ -5124,7 +5305,7 @@
        "id": "view.keyboard-nav",
        "name": "Keyboard navigation in the graph (Up/Down, J/K)",
        "entry": [
-        "graph_view/mod.rs:706 keyboard_nav"
+        "graph_view/mod.rs:716 keyboard_nav"
        ],
        "fns": [
         "crate::ui::graph_view::keyboard_nav"
@@ -5179,7 +5360,7 @@
        "id": "view.search",
        "name": "Commit search bar (Cmd+F): text, author:, path:, code: queries",
        "entry": [
-        "Cmd+F (ui/app.rs:262)",
+        "Cmd+F (ui/app.rs:265)",
         "graph_view/search.rs search bar; Enter/F3 next, Shift+Enter/Shift+F3 prev, Esc close, \"Recent searches\""
        ],
        "fns": [
@@ -5231,7 +5412,7 @@
        "id": "view.menu-copy-compare",
        "name": "Copy SHA / message, Compare with HEAD / working tree",
        "entry": [
-        "Commit context menu (menus.rs:255-264) \"Copy commit SHA\", \"Copy commit message\", \"Compare with HEAD\", \"Compare working tree with this commit\""
+        "Commit context menu (menus.rs:231-244) \"Compare with HEAD\", \"Compare working tree with this commit\", then \"Copy commit SHA\", \"Copy commit message\""
        ],
        "fns": [
         "crate::ui::graph_view::menus::commit_menu"
@@ -5244,7 +5425,7 @@
        "id": "view.menu-checkout",
        "name": "Checkout commit (detached) / ref, create branch / worktree / tag here",
        "entry": [
-        "menus.rs:144-176 \"Checkout this commit (detached)\", \"Create branch here…\", \"Create worktree here…\", \"Create tag here…\", \"Create annotated tag here…\""
+        "menus.rs:145-187 \"Checkout <ref>\", \"Checkout this commit (detached)\", \"Check out in another worktree\", \"Create branch here…\", \"Create worktree here (new branch)…\", \"Create tag here…\", \"Create annotated tag here…\""
        ],
        "fns": [
         "crate::ui::graph_view::menus::checkout_action",
@@ -5260,7 +5441,7 @@
        "id": "view.menu-integrate",
        "name": "Merge / rebase / interactive rebase onto a ref or commit",
        "entry": [
-        "menus.rs:101 integrate_items: \"Merge X into Y\", \"with options\", \"Rebase\", \"Interactive rebase…\"; also sidebar and DnD"
+        "menus.rs:102 integrate_items: \"Merge <ref> into <head>\", \"with options\", \"Rebase\", \"Interactive rebase…\"; also sidebar and DnD"
        ],
        "fns": [
         "crate::ui::graph_view::menus::integrate_items",
@@ -5275,7 +5456,7 @@
        "id": "view.menu-pick-revert",
        "name": "Cherry-pick / revert a commit",
        "entry": [
-        "menus.rs:187-250 \"Cherry-pick commit\", \"Cherry-pick without committing\", \"Revert commit\""
+        "menus.rs:203-229 \"Cherry-pick commit\", \"Cherry-pick without committing\", \"Revert commit\""
        ],
        "fns": [
         "crate::ui::graph_view::menus::commit_menu"
@@ -5289,7 +5470,7 @@
        "id": "view.menu-reset",
        "name": "Reset current branch to commit (soft/mixed/hard)",
        "entry": [
-        "menus.rs:283 reset_menu; also branch and tag menus"
+        "menus.rs:303 reset_menu; also branch and tag menus"
        ],
        "fns": [
         "crate::ui::graph_view::menus::reset_busy",
@@ -5305,7 +5486,7 @@
        "id": "view.menu-move-tag",
        "name": "Move tag here",
        "entry": [
-        "menus.rs:77 \"Move tag here\" submenu"
+        "menus.rs:78 \"Move tag here\" submenu"
        ],
        "fns": [
         "crate::ui::graph_view::menus::move_tag_menu"
@@ -5318,7 +5499,7 @@
        "id": "view.menu-patch",
        "name": "Copy as patch / Save as patch",
        "entry": [
-        "menus.rs:63-66"
+        "menus.rs:62 patch_items (commit menu :248, multi menu :37)"
        ],
        "fns": [
         "crate::ui::graph_view::menus::patch_items"
@@ -5331,7 +5512,7 @@
        "id": "view.menu-rewrite",
        "name": "Rewrite items in the commit menu (reword, split, squash, drop, amend, recompose, interactive rebase after)",
        "entry": [
-        "menus.rs:199-233 \"Rewrite this commit\" submenu"
+        "menus.rs:262-299 \"Edit history after this commit (interactive rebase)…\", \"Rewrite this commit\" submenu, then reset_menu"
        ],
        "fns": [
         "crate::ui::graph_view::menus::commit_menu",
@@ -5361,7 +5542,7 @@
        "id": "view.menu-wip",
        "name": "Working-changes row menu (Stash all, Discard all)",
        "entry": [
-        "menus.rs:313 wip_menu"
+        "menus.rs:333 wip_menu"
        ],
        "fns": [
         "crate::ui::graph_view::menus::discard_all_op",
@@ -5736,7 +5917,7 @@
        "id": "view.reflog",
        "name": "Reflog browser (restore lost commits)",
        "entry": [
-        "Toolbar menu (toolbar.rs:138), sidebar (sidebar/mod.rs:214), palette \"Reflog - restore lost commits\""
+        "Toolbar history tools \"Reflog — recover lost commits\" (toolbar.rs:175), sidebar lifebuoy pill (sidebar/mod.rs:216), palette \"Reflog — restore lost commits\" (palette.rs:150)"
        ],
        "fns": [
         "crate::git::reflog::parse_reflog",
@@ -5798,8 +5979,8 @@
        "id": "tools.stash-all",
        "name": "Stash all changes (with message)",
        "entry": [
-        "src/ui/toolbar.rs:256 \"Stash\" pill",
-        "src/ui/graph_view/menus.rs:314 \"Stash all changes\" (WIP menu)",
+        "src/ui/toolbar.rs:294 \"Stash\" pill",
+        "src/ui/graph_view/menus.rs:334 \"Stash all changes\" (WIP menu)",
         "src/ui/palette.rs:103 \"Stash all changes…\"",
         "prompt dialog asks for optional message"
        ],
@@ -5823,7 +6004,7 @@
        "id": "tools.stash-staged",
        "name": "Stash staged changes only",
        "entry": [
-        "src/ui/toolbar.rs:264 \"Stash staged changes only\""
+        "src/ui/toolbar.rs:302 \"Stash staged changes only\""
        ],
        "fns": [
         "crate::repo::op::exec_stash",
@@ -5860,7 +6041,7 @@
        "name": "Stashes sidebar section (list, select, multi-select, filter)",
        "entry": [
         "src/ui/sidebar/stashes.rs:14 STASHES section (click, ⌘/⇧-click multi-select, sidebar filter)",
-        "stash markers in the graph src/ui/graph_view/mod.rs:515,534"
+        "stash markers in the graph src/ui/graph_view/mod.rs:509-544"
        ],
        "fns": [
         "crate::git::read::stash_info",
@@ -5877,9 +6058,9 @@
        "id": "tools.stash-apply",
        "name": "Apply stash (keeps it; restores staged state when possible)",
        "entry": [
-        "src/ui/sidebar/stashes.rs:67 double-click a stash",
-        "src/ui/sidebar/stashes.rs:87 \"Apply stash\" menu",
-        "graph stash marker menu (graph_view/mod.rs:521,534)"
+        "src/ui/sidebar/stashes.rs:66 double-click a stash",
+        "src/ui/sidebar/stashes.rs:86 \"Apply stash\" menu",
+        "graph stash marker menu (graph_view/mod.rs:531, :544)"
        ],
        "fns": [
         "crate::git::read::stash_info",
@@ -5901,8 +6082,8 @@
        "id": "tools.stash-pop",
        "name": "Pop stash",
        "entry": [
-        "src/ui/sidebar/stashes.rs:90 \"Pop stash\"",
-        "src/ui/toolbar.rs:271 Pop stash pill/menu",
+        "src/ui/sidebar/stashes.rs:89 \"Pop stash\"",
+        "src/ui/toolbar.rs:309 Pop stash pill/menu",
         "src/ui/palette.rs:105 \"Pop stash\"",
         "graph stash marker menu"
        ],
@@ -5926,7 +6107,7 @@
        "id": "tools.stash-rename",
        "name": "Rename stash",
        "entry": [
-        "src/ui/sidebar/stashes.rs:93 \"Rename stash…\""
+        "src/ui/sidebar/stashes.rs:97 \"Rename stash…\""
        ],
        "fns": [
         "crate::repo::op::exec_stash",
@@ -5944,7 +6125,7 @@
        "id": "tools.stash-branch",
        "name": "Create branch from stash",
        "entry": [
-        "src/ui/sidebar/stashes.rs:96 \"Create branch from stash…\""
+        "src/ui/sidebar/stashes.rs:92 \"Create branch from stash…\""
        ],
        "fns": [
         "crate::repo::op::apply_stash",
@@ -5964,8 +6145,8 @@
        "id": "tools.stash-delete",
        "name": "Delete stash(es) (undoable)",
        "entry": [
-        "src/ui/sidebar/stashes.rs:99 \"Delete stash\"",
-        "stashes.rs:61 \"Delete N stashes…\" (multi-selection menu)"
+        "src/ui/sidebar/stashes.rs:100 \"Delete stash\"",
+        "stashes.rs:72 \"Delete N stashes…\" (multi-selection menu)"
        ],
        "fns": [
         "crate::git::read::stash_info",
@@ -6004,7 +6185,7 @@
        "id": "tools.stash-apply-file",
        "name": "Apply one file from a stash",
        "entry": [
-        "src/ui/inspector/commit.rs:340 \"Apply this file\" (file context menu while a stash is selected)"
+        "src/ui/inspector/commit.rs:350 \"Apply this file\" (file context menu while a stash is selected)"
        ],
        "fns": [
         "crate::repo::restore::apply_stash",
@@ -6025,9 +6206,9 @@
      "features": [
       {
        "id": "tools.worktree-list",
-       "name": "Worktrees sidebar section",
+       "name": "Worktrees sidebar section (rows read folder · branch, primary worktree marked)",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:9 WORKTREES section (current marker, change count, lock, prunable rows)"
+        "src/ui/sidebar/worktrees.rs:9 WORKTREES section; each row (worktrees.rs:44 worktree_row) reads \"<folder> · <branch>\" (:37 worktree_name: \"primary\" for the repository's own folder); check = this tab, house = primary, tree = linked; change count, lock, prunable rows struck through; tooltip with the path (\"Primary worktree (the repository's own folder)\")"
        ],
        "fns": [
         "crate::git::read::worktrees",
@@ -6044,10 +6225,10 @@
        "id": "tools.worktree-create",
        "name": "Create a worktree (new branch, from HEAD / commit / branch / remote branch)",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:19 \"New worktree…\"",
-        "src/ui/graph_view/menus.rs:165 \"Create worktree here (new branch)…\"",
-        "src/ui/sidebar/ref_menus.rs:190 \"Open in a new worktree…\"",
-        "src/ui/sidebar/ref_menus.rs:245 \"Check out in a new worktree…\""
+        "src/ui/sidebar/worktrees.rs:20 \"New worktree…\"",
+        "src/ui/graph_view/menus.rs:177 \"Create worktree here (new branch)…\"",
+        "src/ui/sidebar/ref_menus.rs:271 \"Open in a new worktree…\"",
+        "src/ui/sidebar/ref_menus.rs:308 \"Check out in a new worktree…\""
        ],
        "fns": [
         "crate::git::read::worktrees",
@@ -6056,9 +6237,9 @@
         "crate::ui::app::App::poll_tabs",
         "crate::ui::app::App::switch",
         "crate::ui::graph_view::menus::commit_menu",
-        "crate::ui::sidebar::ref_menus::local_menu",
         "crate::ui::sidebar::ref_menus::remote_menu",
-        "crate::ui::sidebar::worktrees::list"
+        "crate::ui::sidebar::worktrees::list",
+        "crate::ui::sidebar::ref_menus::worktree_items"
        ],
        "platform": [
         "platform.git-runner",
@@ -6070,8 +6251,8 @@
        "id": "tools.worktree-switch",
        "name": "Open / switch to a worktree in place",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:57 click or double-click a worktree row",
-        "src/ui/sidebar/ref_menus.rs:196 \"Open its worktree\"",
+        "src/ui/sidebar/worktrees.rs:68 click or double-click a worktree row",
+        "src/ui/sidebar/ref_menus.rs:276 \"Open its worktree\"",
         "branch checkout of a branch living in another worktree (op::branch_checkout)",
         "after a worktree is created (op.then_open)"
        ],
@@ -6088,7 +6269,8 @@
         "crate::ui::app::forget_draft",
         "crate::ui::app::replaceable",
         "crate::ui::sidebar::ref_menus::local_menu",
-        "crate::ui::sidebar::worktrees::worktree_row"
+        "crate::ui::sidebar::worktrees::worktree_row",
+        "crate::ui::sidebar::ref_menus::worktree_items"
        ],
        "platform": [
         "platform.op-runner",
@@ -6099,7 +6281,7 @@
        "id": "tools.worktree-open-tab",
        "name": "Open a worktree in a new tab",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:61 \"Open in new tab\""
+        "src/ui/sidebar/worktrees.rs:71 \"Open in new tab\""
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -6115,7 +6297,7 @@
        "id": "tools.worktree-lock",
        "name": "Lock / unlock a worktree",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:70 \"Lock…\" / \"Unlock\""
+        "src/ui/sidebar/worktrees.rs:88 \"Lock…\" / \"Unlock\""
        ],
        "fns": [
         "crate::ui::sidebar::worktrees::worktree_row"
@@ -6130,7 +6312,8 @@
        "id": "tools.worktree-remove",
        "name": "Remove a worktree (optionally delete its branch)",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:93 \"Remove worktree\" / \"Remove worktree and delete <branch>\""
+        "src/ui/sidebar/worktrees.rs:96 \"Remove worktree\" / \"Remove worktree and delete <branch>\"",
+        "Windows: a worktree folder still in use is retried for 5 s before the removal fails (src/repo/op.rs:201 worktree_remove)"
        ],
        "fns": [
         "crate::repo::op::Op::confirm",
@@ -6148,6 +6331,35 @@
         "platform.git-runner",
         "platform.op-runner",
         "platform.undo-engine"
+       ]
+      },
+      {
+       "id": "tools.worktree-remove-this",
+       "name": "Remove the worktree this tab shows (keep its branch; the tab moves to the primary worktree)",
+       "entry": [
+        "HEAD branch's menu in the sidebar or on its graph pill: \"Remove this worktree (keep <branch>)\" (src/ui/sidebar/ref_menus.rs:287 worktree_items), only in a linked, unlocked worktree; confirms first",
+        "runs git -C <primary worktree> worktree remove (src/git/runner.rs:253 runs a -C command from that folder); this tab's file watcher stops first (src/repo/op.rs:1146) and restarts if the removal fails (op.rs:1245); on success the tab switches to the primary worktree (then_open)",
+        "Windows: a folder still in use is retried for 5 s (src/repo/op.rs:201 worktree_remove)"
+       ],
+       "fns": [
+        "crate::ui::sidebar::ref_menus::worktree_items",
+        "crate::repo::op::remove_worktree_op",
+        "crate::repo::op::worktree_remove_args",
+        "crate::repo::op::removes_worktree",
+        "crate::repo::op::worktree_remove",
+        "crate::repo::op::exec",
+        "crate::repo::op::RepoTab::run",
+        "crate::repo::op::RepoTab::poll_op",
+        "crate::repo::RepoTab::start_watching",
+        "crate::git::runner::exec_both",
+        "crate::repo::op::Op::then_open",
+        "crate::ui::app::App::poll_tabs",
+        "crate::ui::app::App::switch"
+       ],
+       "platform": [
+        "platform.op-runner",
+        "platform.watcher",
+        "platform.git-runner"
        ]
       },
       {
@@ -6170,8 +6382,8 @@
        "id": "tools.worktree-misc",
        "name": "Worktree row: show in file manager, copy path",
        "entry": [
-        "src/ui/sidebar/worktrees.rs:64 \"Show in file manager\"",
-        "worktrees.rs \"Copy path\""
+        "src/ui/sidebar/worktrees.rs:74 \"Show in file manager\"",
+        "worktrees.rs:77 \"Copy path\""
        ],
        "fns": [
         "crate::repo::files::reveal",
@@ -6207,9 +6419,9 @@
        "id": "tools.undo-redo-ui",
        "name": "Undo / Redo (⌘Z, ⇧⌘Z, toolbar, palette)",
        "entry": [
-        "⌘Z / ⇧⌘Z / ⌘Y src/ui/app.rs:256-260",
-        "toolbar Undo/Redo pills src/ui/toolbar.rs:71-77 (labelled with the step)",
-        "⌘P \"Undo <label>\" / \"Redo <label>\" src/ui/palette.rs:126-130"
+        "⌘Z / ⇧⌘Z / ⌘Y src/ui/app.rs:259-264",
+        "toolbar Undo/Redo pills src/ui/toolbar.rs:91-97 (labelled with the step)",
+        "⌘P \"Undo <label>\" / \"Redo <label>\" src/ui/palette.rs:129, :132"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -6229,7 +6441,7 @@
        "id": "tools.toast-undo",
        "name": "Toast with Undo button",
        "entry": [
-        "src/ui/toasts.rs:50-73 Undo button on the toast of the newest undoable step"
+        "src/ui/toasts.rs:55 Undo button on the toast of the newest undoable step"
        ],
        "fns": [
         "crate::repo::undo::RepoTab::undo_top",
@@ -6247,7 +6459,7 @@
        "id": "tools.restore-file",
        "name": "Restore a file from a commit / as before the commit",
        "entry": [
-        "src/ui/inspector/commit.rs:79 \"Restore this file from this commit\" and \"Restore as it was before this commit\" (file context menu)"
+        "src/ui/inspector/commit.rs:82 \"Restore this file from this commit\" and \"Restore as it was before this commit\" (file context menu)"
        ],
        "fns": [
         "crate::repo::restore::restore_file",
@@ -6286,8 +6498,8 @@
        "id": "tools.patch-apply",
        "name": "Apply patch file (git am / git apply)",
        "entry": [
-        "src/ui/toolbar.rs:146 \"Apply patch…\" (History tools menu)",
-        "src/ui/palette.rs:166 \"Apply patch…\""
+        "src/ui/toolbar.rs:183 \"Apply patch…\" (History tools menu)",
+        "src/ui/palette.rs:168 \"Apply patch…\""
        ],
        "fns": [
         "crate::repo::patch::RepoTab::apply_patch",
@@ -6310,9 +6522,9 @@
        "id": "tools.terminal-panel",
        "name": "Embedded terminal panel (toggle, tabs, new, close, busy guard)",
        "entry": [
-        "⌃` src/ui/app.rs:196-200",
+        "⌃` src/ui/app.rs:199-203",
         "toolbar terminal pill src/ui/toolbar.rs:26",
-        "⌘P \"Toggle terminal panel\" src/ui/palette.rs:135",
+        "⌘P \"Toggle terminal panel\" src/ui/palette.rs:137",
         "panel src/ui/repo_view.rs:46-53 (\"New terminal\", tab buttons, \"Stop & close\", \"Keep\", hide)",
         "Settings → Built-in terminal"
        ],
@@ -6376,8 +6588,8 @@
        "id": "tools.terminal-busy-guard",
        "name": "Warn before closing a tab or quitting while a terminal command runs",
        "entry": [
-        "src/ui/app.rs:297 close_tab",
-        "src/ui/app.rs:370 guard_close / quit_dialog"
+        "src/ui/app.rs:293 close_tab",
+        "src/ui/app.rs:364 guard_close / quit_dialog"
        ],
        "fns": [
         "crate::repo::terminal::Session::busy",
@@ -6399,9 +6611,9 @@
        "id": "tools.open-editor",
        "name": "Open repo / file in external editor",
        "entry": [
-        "src/ui/toolbar.rs:125 \"Open in editor\"",
-        "file menus \"Open in editor\" src/ui/inspector/mod.rs:70",
-        "diff header code pill src/ui/diff_view.rs:260",
+        "src/ui/toolbar.rs:163 \"Open in editor\"",
+        "file menus \"Open in editor\" src/ui/inspector/mod.rs:67",
+        "diff header code pill src/ui/diff_view.rs:264",
         "⌘P Open in editor"
        ],
        "fns": [
@@ -6425,8 +6637,8 @@
        "id": "tools.open-terminal",
        "name": "Open external terminal here",
        "entry": [
-        "src/ui/toolbar.rs:126 \"Open terminal here\"",
-        "⌃` when Settings → Built-in terminal is off (src/ui/app.rs:200)"
+        "src/ui/toolbar.rs:164 \"Open terminal here\"",
+        "⌃` when Settings → Built-in terminal is off (src/ui/app.rs:203)"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -6446,9 +6658,9 @@
        "id": "tools.reveal",
        "name": "Show in file manager",
        "entry": [
-        "src/ui/toolbar.rs:127 \"Show in file manager\"",
-        "tab context menu src/ui/titlebar.rs:86 \"Reveal in file manager\"",
-        "WIP conflict menu src/ui/inspector/wip.rs:539",
+        "src/ui/toolbar.rs:165 \"Show in file manager\"",
+        "tab context menu src/ui/titlebar.rs:87 \"Reveal in file manager\"",
+        "WIP conflict menu src/ui/inspector/wip.rs:543",
         "worktree row menu"
        ],
        "fns": [
@@ -6464,9 +6676,9 @@
        "id": "tools.custom-commands",
        "name": "Custom commands (Settings → Tools; {repo} {branch} {sha} {path})",
        "entry": [
-        "Settings → Tools src/ui/settings.rs:402",
-        "⌘P custom commands src/ui/palette.rs:144",
-        "commit menu src/ui/graph_view/menus.rs:272",
+        "Settings → Tools src/ui/settings.rs:419",
+        "⌘P custom commands src/ui/palette.rs:146",
+        "commit menu src/ui/graph_view/menus.rs:256",
         "file context menus src/ui/inspector/mod.rs:75"
        ],
        "fns": [
@@ -6495,7 +6707,7 @@
        "id": "tools.merge-tool",
        "name": "External merge tool for a conflicted file",
        "entry": [
-        "src/ui/inspector/wip.rs:536 \"Open in external merge tool\"; Cancel at wip.rs:80; \"Restore conflict markers\" wip.rs:547"
+        "src/ui/inspector/wip.rs:537 \"Open in external merge tool\"; Cancel at wip.rs:80 open_tools; \"Restore conflict markers\" wip.rs:547"
        ],
        "fns": [
         "crate::repo::tools::RepoTab::close_tool",
@@ -6544,7 +6756,7 @@
        "id": "tools.tool-guard",
        "name": "Quit/close guard while external tools are open",
        "entry": [
-        "src/ui/app.rs:300,370,398"
+        "src/ui/app.rs:303 close_tab, :373 guard_close, :402 quit_dialog"
        ],
        "fns": [
         "crate::ui::app::App::close_tab",
@@ -6562,9 +6774,9 @@
        "id": "tools.maintenance-run",
        "name": "Perform repo maintenance",
        "entry": [
-        "src/ui/toolbar.rs:156 \"Perform repo maintenance\"",
+        "src/ui/toolbar.rs:194 \"Perform repo maintenance\"",
         "⌘P \"Perform repo maintenance\"",
-        "optimize hint src/ui/repo_view.rs:163 \"Optimize\""
+        "optimize hint src/ui/repo_view.rs:161 \"Optimize\""
        ],
        "fns": [
         "crate::repo::maintenance::op",
@@ -6583,8 +6795,8 @@
        "id": "tools.maintenance-schedule",
        "name": "Enable / disable background maintenance",
        "entry": [
-        "src/ui/toolbar.rs:161",
-        "⌘P \"Enable/Disable background maintenance\""
+        "src/ui/toolbar.rs:200 \"Enable background maintenance\" / \"Disable background maintenance\" (History tools menu)",
+        "⌘P \"Enable background maintenance\" / \"Disable background maintenance\""
        ],
        "fns": [
         "crate::repo::maintenance::run",
@@ -6602,7 +6814,7 @@
        "id": "tools.optimize-hint",
        "name": "Optimize repository hint strip",
        "entry": [
-        "src/ui/repo_view.rs:150 strip above graph (loose objects / no commit-graph)"
+        "src/ui/repo_view.rs:149 strip above graph (loose objects / no commit-graph)"
        ],
        "fns": [
         "crate::repo::maintenance::Health::wants_optimizing",
@@ -6618,9 +6830,9 @@
        "name": "Command log panel",
        "entry": [
         "titlebar button src/ui/titlebar.rs:25",
-        "⇧⌘L src/ui/app.rs:216",
+        "⇧⌘L src/ui/app.rs:219",
         "⌘P command log",
-        "panel src/ui/app.rs:560"
+        "panel src/ui/app.rs:570"
        ],
        "fns": [
         "crate::ui::app::App::shortcuts",
@@ -6994,9 +7206,9 @@
       },
       {
        "id": "platform.ai-client",
-       "name": "AI client: provider config, token storage, Claude/OpenAI streaming, Job plumbing",
+       "name": "AI client: provider config, token storage, Claude / OpenAI API streaming, Claude Code / Codex CLI runs, Job plumbing",
        "entry": [
-        "every AI feature; prompt building (Purpose -> build) is one match in ai::tasks::build and is not separable per feature, so it stays here"
+        "every AI feature; prompt building (Purpose -> build) is one match in ai::tasks::build and is not separable per feature, so it stays here; ai::client::complete dispatches to the Claude API, the OpenAI API or a CLI (ai/cli.rs)"
        ],
        "fns": [
         "crate::ai::client::Config::current",
