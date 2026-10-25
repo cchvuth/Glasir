@@ -1608,14 +1608,12 @@ mod shell_tests {
         let mut app = app(&ctx, &a);
         app.open(&ctx, &b);
         app.open(&ctx, &c);
-        std::fs::remove_dir_all(&a).unwrap();
         app.tabs[0].removed_worktree = Some(app.tabs[0].dir.clone());
         app.tabs[0].switch_to = Some(b.clone());
         app.poll_tabs(&ctx);
         assert_eq!(app.tabs.len(), 2, "b already has a tab: a's is closed");
         assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()) && app.active == 0);
         app.tabs[1].amend = true;
-        std::fs::remove_dir_all(&c).unwrap();
         app.tabs[1].removed_worktree = Some(app.tabs[1].dir.clone());
         app.tabs[1].switch_to = Some(b.clone());
         app.poll_tabs(&ctx);
@@ -1623,12 +1621,13 @@ mod shell_tests {
         assert!(app.tabs[0].dir.ends_with(b.file_name().unwrap()));
         let d = repo("gone-d");
         app.open(&ctx, &d);
-        std::fs::remove_dir_all(&b).unwrap();
         app.tabs[1].removed_worktree = Some(app.tabs[0].dir.clone());
         app.poll_tabs(&ctx);
         assert_eq!(app.tabs.len(), 1, "removed by another tab");
         assert!(app.tabs[0].dir.ends_with(d.file_name().unwrap()));
-        let _ = std::fs::remove_dir_all(d);
+        for r in [a, b, c, d] {
+            let _ = std::fs::remove_dir_all(r);
+        }
     }
 
     #[test]
@@ -1642,7 +1641,7 @@ mod shell_tests {
         let mut app = app(&ctx, &main);
         app.open(&ctx, &wt);
         app.open(&ctx, &other);
-        std::fs::remove_dir_all(&other).unwrap();
+        let _ = std::fs::remove_dir_all(&other);
         crate::ui::testkit::load(&mut app.tabs[0], &ctx);
         let removed = app.tabs[1].dir.to_string_lossy().into_owned();
         app.tabs[0].apply(&ctx, Action::Git(crate::repo::Op::new("Remove worktree", &["worktree", "remove", &removed])));
