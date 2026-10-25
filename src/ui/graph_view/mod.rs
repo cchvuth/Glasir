@@ -79,7 +79,7 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
         RefKind::Tag => theme::tag(ui),
     };
-    let label_col = if head_pill { theme::on_color(col) } else { Color32::WHITE }.gamma_multiply(if faded { 0.6 } else { 1.0 });
+    let label_col = Color32::WHITE.gamma_multiply(if faded { 0.6 } else { 1.0 });
     let mut job = egui::text::LayoutJob::simple_singleline(label, FontId::proportional(12.0), label_col);
     job.wrap = egui::text::TextWrapping::truncate_at_width((max_w - 14.0).max(0.0));
     let g = p.layout_job(job);

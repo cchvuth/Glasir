@@ -5241,7 +5241,6 @@
         "crate::graph::layout::free_lane",
         "crate::graph::layout::Graph::layout",
         "crate::theme::lane",
-        "crate::theme::lane_of",
         "crate::ui::graph_view::show"
        ],
        "platform": [
@@ -7212,7 +7211,6 @@
         "crate::theme::hover",
         "crate::theme::install_fonts",
         "crate::theme::lane",
-        "crate::theme::lane_of",
         "crate::theme::luminance",
         "crate::theme::on_color",
         "crate::theme::removed_bg",

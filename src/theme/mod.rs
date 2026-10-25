@@ -20,39 +20,23 @@ use std::sync::Arc;
 /// Phosphor icons, mixed into ordinary text (`format!("{}  Push", icon::ARROW_LINE_UP)`).
 pub use egui_phosphor::regular as icon;
 
+/// Lane colours, one set for every flavour: all at the same luminance, the window where a line
+/// stands out (3:1) on the lightest dark backdrop and white text stays readable (4.5:1) on the fill.
 const LANES: [Color32; crate::graph::COLORS as usize] = [
-    Color32::from_rgb(0x3d, 0x9b, 0xff), // blue
-    Color32::from_rgb(0xff, 0x6e, 0xc7), // pink
-    Color32::from_rgb(0xff, 0xd2, 0x3d), // yellow
-    Color32::from_rgb(0x4c, 0xd9, 0x64), // green
-    Color32::from_rgb(0xa8, 0x7b, 0xff), // violet
-    Color32::from_rgb(0xff, 0x4d, 0x5e), // red
-    Color32::from_rgb(0x2e, 0xe0, 0xd6), // teal
-    Color32::from_rgb(0xa6, 0xad, 0xbb), // grey
-    Color32::from_rgb(0xff, 0x8c, 0x32), // orange
-    Color32::from_rgb(0xc6, 0x94, 0x68), // brown
-];
-
-/// `LANES` deepened to stand out (3:1) on the light flavours' pale glass.
-const LANES_LIGHT: [Color32; crate::graph::COLORS as usize] = [
-    Color32::from_rgb(0x1f, 0x6a, 0xc4),
-    Color32::from_rgb(0xb8, 0x35, 0x88),
-    Color32::from_rgb(0x8f, 0x6c, 0x00),
-    Color32::from_rgb(0x23, 0x80, 0x38),
-    Color32::from_rgb(0x72, 0x4e, 0xcc),
-    Color32::from_rgb(0xc2, 0x26, 0x38),
-    Color32::from_rgb(0x12, 0x7a, 0x74),
-    Color32::from_rgb(0x60, 0x67, 0x74),
-    Color32::from_rgb(0xb0, 0x56, 0x00),
-    Color32::from_rgb(0x86, 0x58, 0x30),
+    Color32::from_rgb(0x18, 0x76, 0xda), // blue
+    Color32::from_rgb(0xe3, 0x00, 0x8c), // pink
+    Color32::from_rgb(0x93, 0x72, 0x08), // yellow
+    Color32::from_rgb(0x24, 0x88, 0x35), // green
+    Color32::from_rgb(0x8b, 0x4e, 0xff), // violet
+    Color32::from_rgb(0xee, 0x00, 0x17), // red
+    Color32::from_rgb(0x14, 0x84, 0x7e), // teal
+    Color32::from_rgb(0x6b, 0x77, 0x8d), // grey
+    Color32::from_rgb(0xc3, 0x56, 0x00), // orange
+    Color32::from_rgb(0x9f, 0x6b, 0x3c), // brown
 ];
 
 pub fn lane(i: u16) -> Color32 {
-    lane_of(flavor(), i)
-}
-
-fn lane_of(f: Flavor, i: u16) -> Color32 {
-    (if f.dark() { LANES } else { LANES_LIGHT })[i as usize % LANES.len()]
+    LANES[i as usize % LANES.len()]
 }
 
 /// Stable per-author avatar color.
@@ -593,8 +577,9 @@ mod tests {
                     check(n, 3.0, c, bg);
                 }
                 check("selection", 4.5, v.text_color(), over(sel, bg));
-                for i in 0..LANES.len() as u16 {
-                    check("lane", 3.0, lane_of(f, i), bg);
+                for c in LANES {
+                    check("lane", 3.0, c, bg);
+                    check("on lane", 4.5, Color32::WHITE, c);
                 }
             }
             let worst = lowest.iter().min_by(|a, b| (a.2 / a.1).total_cmp(&(b.2 / b.1))).unwrap();

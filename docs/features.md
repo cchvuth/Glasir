@@ -23,7 +23,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 |---|---|
 | `ui::inspector::wip::RepoTab::wip_panel` (src/ui/inspector/wip.rs:280) | 31 |
 | `ui::palette::items` (src/ui/palette.rs:74) | 25 |
-| `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:141) | 24 |
+| `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:139) | 24 |
 | `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:184) | 22 |
 | `repo::RepoTab::apply` (src/repo/mod.rs:653) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
@@ -1430,7 +1430,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** graph lanes (src/graph/layout.rs:61 pick): a new lane takes the colour least used by the open lanes nearby and by the last ~60 rows, starting from its tip commit's seed colour; a merged-in branch never takes the merging lane's colour, so diverging branches differ; merge lines (src/graph/layout.rs:86 Graph::layout): a merge's line takes the merged branch's colour once its parent is placed; a merge into a branch that went on joins that branch's lane instead of running beside it; palettes src/theme/mod.rs:23 LANES (dark) and :37 LANES_LIGHT (light flavours): blue, pink, yellow, green, violet, red, teal, grey, orange, brown
 - **Platform:** `platform.design-system`
 - **Own code:** `graph::layout::pick`
-- **Shared:** `graph::layout::free_lane` (2), `graph::layout::Graph::layout` (2), `theme::lane` (2), `theme::lane_of` (2), `ui::graph_view::show` (17)
+- **Shared:** `graph::layout::free_lane` (2), `graph::layout::Graph::layout` (2), `theme::lane` (2), `ui::graph_view::show` (17)
 
 #### Working-changes (WIP) row at the top of the graph `view.wip-row`
 - **Entry:** graph_view/mod.rs row 0 "detached HEAD"/"HEAD" WIP row; click selects Sel::Wip
@@ -1932,7 +1932,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** every screen
 - **Used by:** 41 features
 - **Own code:** `theme::Flavor::dark`, `theme::Flavor::name`, `theme::Flavor::palette`, `theme::Flavor::raw_palette`, `theme::accent`, `theme::add`, `theme::added_bg`, `theme::apply`, `theme::bg`, `theme::change_color`, `theme::change_colors`, `theme::changed`, `theme::contrast`, `theme::dark`, `theme::del`, `theme::dim`, `theme::faint`, `theme::flavor`, `theme::glass::bar`, `theme::glass::bar_h`, `theme::glass::canvas`, `theme::glass::canvas_in`, `theme::glass::card`, `theme::glass::context_menu`, `theme::glass::empty_state`, `theme::glass::glass`, `theme::glass::glass_shapes`, `theme::glass::group`, `theme::glass::inside_rounded`, `theme::glass::keyed`, `theme::glass::photo`, `theme::glass::pill`, `theme::glass::progress`, `theme::glass::radial`, `theme::glass::rest`, `theme::glass::see_through`, `theme::glass::set_transparency`, `theme::glass::slider`, `theme::glass::transparency`, `theme::hover`, `theme::install_fonts`, `theme::luminance`, `theme::on_color`, `theme::removed_bg`, `theme::selection`, `theme::system_fonts`, `theme::tag`, `theme::text`, `theme::visuals`
-- **Shared:** `theme::avatar` (2), `theme::glass::description` (2), `theme::glass::primary` (2), `theme::glass::small` (2), `theme::lane` (2), `theme::lane_of` (2)
+- **Shared:** `theme::avatar` (2), `theme::glass::description` (2), `theme::glass::primary` (2), `theme::glass::small` (2), `theme::lane` (2)
 
 #### AI client: provider config, token storage, Claude / OpenAI API streaming, Claude Code / Codex CLI runs, Job plumbing `platform.ai-client`
 - **Entry:** every AI feature; prompt building (Purpose -> build) is one match in ai::tasks::build and is not separable per feature, so it stays here; ai::client::complete dispatches to the Claude API, the OpenAI API or a CLI (ai/cli.rs)
