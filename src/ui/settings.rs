@@ -195,6 +195,9 @@ impl App {
                     ui.checkbox(&mut s.avatars, "Show GitHub avatars")
                         .on_hover_text("Authors' profile pictures from the origin remote's GitHub / GitHub Enterprise host, using git's saved credentials for it. Off: no avatar requests at all.");
                     ui.end_row();
+                    ui.label("Version");
+                    ui.label(concat!("Glasir ", env!("CARGO_PKG_VERSION")));
+                    ui.end_row();
                     ui.label("Updates");
                     ui.checkbox(&mut s.check_updates, "Check for a new version at startup")
                         .on_hover_text("Asks github.com/cchvuth/Glasir for its latest release (nothing else is sent). A newer one shows an Update pill in the title bar that installs it in place.");
