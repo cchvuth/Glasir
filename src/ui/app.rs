@@ -1644,7 +1644,8 @@ mod shell_tests {
         app.open(&ctx, &other);
         std::fs::remove_dir_all(&other).unwrap();
         crate::ui::testkit::load(&mut app.tabs[0], &ctx);
-        app.tabs[0].apply(&ctx, Action::Git(crate::repo::Op::new("Remove worktree", &["worktree", "remove", &wt.to_string_lossy()])));
+        let removed = app.tabs[1].dir.to_string_lossy().into_owned();
+        app.tabs[0].apply(&ctx, Action::Git(crate::repo::Op::new("Remove worktree", &["worktree", "remove", &removed])));
         let start = std::time::Instant::now();
         while app.tabs.len() == 3 {
             assert!(start.elapsed().as_secs() < 120, "the worktree's tab never closed");
