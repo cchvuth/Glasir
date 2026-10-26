@@ -39,7 +39,10 @@ impl App {
                 // Tabs share the width left of the global buttons (labels cut with "…", the
                 // "+" kept clear) down to a readable minimum; past that the row scrolls.
                 let room = ui.available_width() - 40.0;
-                let w = (room / self.tabs.len().max(1) as f32 - 58.0).clamp(150.0, 260.0);
+                // Per tab, what isn't its label (×, padding, separator), as measured last frame.
+                let extra_id = Id::new("tabs_extra");
+                let extra = ui.data(|d| d.get_temp::<f32>(extra_id)).unwrap_or(58.0);
+                let w = (room / self.tabs.len().max(1) as f32 - extra - 0.5).clamp(150.0, 260.0);
                 // After switching tabs, bring the active one into view, until the labels stop
                 // growing (a tab's branch appears once it has loaded) and the row is laid out.
                 let seen = Id::new("tabs_scrolled_to");
@@ -50,10 +53,17 @@ impl App {
                 ui.data_mut(|d| d.insert_temp(seen, (self.active, left.saturating_sub(1))));
                 ui.style_mut().always_scroll_the_only_direction = true;
                 let nudge_id = Id::new("tabs_nudge");
+                // Which sides had tabs out of view last frame: only those are clipped.
+                let hidden_id = Id::new("tabs_hidden");
+                let (hide_l, hide_r) = ui.data(|d| d.get_temp::<(bool, bool)>(hidden_id)).unwrap_or_default();
                 let nudge = ui.data_mut(|d| d.remove_temp::<f32>(nudge_id));
+                let (layer, painted) = (ui.layer_id(), ui.ctx().graphics(|g| g.get(ui.layer_id()).map_or(egui::layers::ShapeIdx(0), |l| l.next_idx())));
                 let row = egui::ScrollArea::horizontal().id_salt("tabs").max_width(room).scroll_source(egui::scroll_area::ScrollSource::MOUSE_WHEEL).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| ui.horizontal(|ui| {
-                // Clipped at the sides only: the active tab's capsule and glow overhang the row.
-                ui.set_clip_rect(ui.clip_rect().expand2(egui::vec2(0.0, 12.0)));
+                // Clipped only where tabs are out of view: the active tab's capsule and shadow
+                // overhang the row (as everywhere in the title bar).
+                let c = ui.clip_rect();
+                let side = |hidden: bool| if hidden { 0.0 } else { 40.0 };
+                ui.set_clip_rect(egui::Rect::from_min_max(c.min - egui::vec2(side(hide_l), 40.0), c.max + egui::vec2(side(hide_r), 40.0)));
                 if let Some(dx) = nudge {
                     ui.scroll_with_delta(egui::vec2(dx, 0.0));
                 }
@@ -137,13 +147,18 @@ impl App {
                 }));
                 // Tabs hidden on a side: that edge fades out, with an arrow that pages the row.
                 let (view, off, len) = (row.inner_rect, row.state.offset.x, row.content_size.x);
-                for (left, more) in [(true, off > 1.0), (false, off + view.width() < len - 1.0)] {
-                    if !more {
-                        continue;
-                    }
-                    let band = view.expand2(egui::vec2(0.0, 12.0));
-                    let edge = if left { band.with_max_x(band.left() + 56.0) } else { band.with_min_x(band.right() - 56.0) };
-                    theme::edge_fade(ui.painter(), edge, left, ui.ctx().content_rect(), self.glass_backdrop);
+                ui.data_mut(|d| d.insert_temp(hidden_id, (off > 1.0, off + view.width() < len - 1.0)));
+                if !rects.is_empty() {
+                    let labels: f32 = rects.iter().map(|r| r.width()).sum();
+                    ui.data_mut(|d| d.insert_temp(extra_id, (len - labels) / rects.len() as f32));
+                }
+                let sides: Vec<(bool, egui::Rect)> = [(true, off > 1.0), (false, off + view.width() < len - 1.0)]
+                    .into_iter()
+                    .filter(|&(_, more)| more)
+                    .map(|(left, _)| (left, if left { view.with_max_x(view.left() + 56.0) } else { view.with_min_x(view.right() - 56.0) }))
+                    .collect();
+                theme::fade_painted(ui.ctx(), layer, painted, &sides.iter().map(|&(left, edge)| (edge, left)).collect::<Vec<_>>());
+                for (left, edge) in sides {
                     let at = egui::Rect::from_center_size(egui::pos2(if left { edge.left() + 11.0 } else { edge.right() - 11.0 }, edge.center().y), egui::vec2(22.0, edge.height()));
                     let r = ui.interact(at, Id::new(("tabs_more", left)), Sense::click()).on_hover_text(if left { "Earlier tabs" } else { "More tabs" });
                     let col = if r.hovered() { theme::accent() } else { theme::text(ui) };

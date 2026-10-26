@@ -60,19 +60,71 @@ fn inside_rounded(b: Rect, rad: f32, p: Pos2) -> bool {
     b.expand(0.01).contains(p) && q.length() <= rad
 }
 
-/// Content scrolling out of view at `rect`'s outer edge (left or right) fades into the backdrop:
-/// the window's own canvas (`window`, `backdrop` as painted) laid over it in strips, each a little
-/// more opaque toward the edge.
-pub fn edge_fade(p: &Painter, rect: Rect, left: bool, window: Rect, backdrop: bool) {
-    let strips = (rect.width() / 2.0).ceil().max(2.0) as usize;
-    let w = rect.width() / strips as f32;
-    for k in 0..strips {
-        let x = rect.left() + k as f32 * w;
-        let mut q = p.with_clip_rect(Rect::from_x_y_ranges(x..=x + w, rect.y_range()).intersect(p.clip_rect()));
-        let t = k as f32 / (strips - 1) as f32;
-        q.set_opacity(if left { 1.0 - t } else { t });
-        canvas_in(&q, window, 0.0, backdrop, flavor());
+/// What was painted on `layer` since `from` fades to transparent across each band (`left`: the
+/// band's left edge is the outer one): 0% beyond the outer edge, linear to 100% at the inner one.
+/// The shapes there are turned into meshes, split at the band edges so the fade stays linear, and
+/// their vertices faded: whatever is behind (the backdrop, native glass) shows through.
+pub fn fade_painted(ctx: &egui::Context, layer: egui::LayerId, from: egui::layers::ShapeIdx, bands: &[(Rect, bool)]) {
+    if bands.is_empty() {
+        return;
     }
+    let alpha = |x: f32| {
+        bands.iter().fold(1.0f32, |a, &(b, left)| {
+            let t = ((x - b.left()) / b.width()).clamp(0.0, 1.0);
+            a.min(if left { t } else { 1.0 - t })
+        })
+    };
+    let (ppp, options, tex) = (ctx.pixels_per_point(), ctx.tessellation_options(|o| *o), ctx.fonts(|f| f.font_image_size()));
+    ctx.graphics_mut(|g| {
+        let list = g.entry(layer);
+        for i in from.0..list.next_idx().0 {
+            list.mutate_shape(egui::layers::ShapeIdx(i), |c| {
+                let r = c.shape.visual_bounding_rect();
+                if !bands.iter().any(|(b, left)| if *left { r.left() < b.right() } else { r.right() > b.left() }) {
+                    return;
+                }
+                let mut mesh = Mesh::default();
+                egui::epaint::Tessellator::new(ppp, options, tex, vec![]).tessellate_shape(std::mem::replace(&mut c.shape, Shape::Noop), &mut mesh);
+                for (b, _) in bands {
+                    mesh = split_at(&split_at(&mesh, b.left()), b.right());
+                }
+                for v in &mut mesh.vertices {
+                    v.color = v.color.gamma_multiply(alpha(v.pos.x));
+                }
+                c.shape = Shape::mesh(mesh);
+            });
+        }
+    });
+}
+
+/// `mesh` with every triangle that crosses the vertical line `x` cut in three along it.
+fn split_at(mesh: &Mesh, x: f32) -> Mesh {
+    let mut out = Mesh { indices: vec![], vertices: mesh.vertices.clone(), texture_id: mesh.texture_id };
+    let cut = |a: u32, b: u32, out: &mut Mesh| {
+        let (va, vb) = (mesh.vertices[a as usize], mesh.vertices[b as usize]);
+        let t = (x - va.pos.x) / (vb.pos.x - va.pos.x);
+        let mix = |p: f32, q: f32| p + (q - p) * t;
+        let c = va.color.lerp_to_gamma(vb.color, t);
+        out.vertices.push(egui::epaint::Vertex { pos: pos2(x, mix(va.pos.y, vb.pos.y)), uv: pos2(mix(va.uv.x, vb.uv.x), mix(va.uv.y, vb.uv.y)), color: c });
+        out.vertices.len() as u32 - 1
+    };
+    for t in mesh.indices.chunks_exact(3) {
+        let side = |i: u32| mesh.vertices[i as usize].pos.x < x;
+        let (a, b, c) = (t[0], t[1], t[2]);
+        // The vertex alone on its side of the line, then the other two.
+        let (lone, p, q) = match (side(a), side(b), side(c)) {
+            (x, y, z) if x == y && y == z => {
+                out.indices.extend([a, b, c]);
+                continue;
+            }
+            (x, y, _) if x == y => (c, a, b),
+            (x, _, z) if x == z => (b, c, a),
+            _ => (a, b, c),
+        };
+        let (i, j) = (cut(lone, p, &mut out), cut(lone, q, &mut out));
+        out.indices.extend([lone, i, j, i, p, q, i, q, j]);
+    }
+    out
 }
 
 /// A flavour's backdrop, with rounded corners when `radius` > 0 (the Settings swatches).
@@ -323,4 +375,28 @@ pub fn progress(ui: &mut Ui, label: &str, line: Option<String>) {
         ui.add(egui::ProgressBar::new(p).desired_width(120.0).desired_height(6.0).corner_radius(255));
     }
     ui.add(egui::Label::new(RichText::new(text).small().color(dim(ui))).truncate());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_split_mesh_keeps_its_area_and_no_triangle_crosses_the_line() {
+        let mut m = Mesh::default();
+        m.add_colored_rect(Rect::from_min_max(pos2(0.0, 0.0), pos2(10.0, 4.0)), Color32::WHITE);
+        let area = |m: &Mesh| m.indices.chunks_exact(3).map(|t| {
+            let [a, b, c] = [0, 1, 2].map(|k| m.vertices[t[k] as usize].pos);
+            ((b - a).x * (c - a).y - (c - a).x * (b - a).y).abs() / 2.0
+        }).sum::<f32>();
+        let s = split_at(&split_at(&m, 3.0), 7.5);
+        assert!((area(&s) - 40.0).abs() < 1e-3, "{}", area(&s));
+        for t in s.indices.chunks_exact(3) {
+            for x in [3.0, 7.5] {
+                let xs = [0, 1, 2].map(|k| s.vertices[t[k] as usize].pos.x);
+                assert!(xs.iter().all(|&v| v <= x + 1e-4) || xs.iter().all(|&v| v >= x - 1e-4), "{xs:?} crosses {x}");
+            }
+        }
+        assert!(s.vertices.iter().any(|v| v.pos.x == 3.0) && s.vertices.iter().any(|v| v.pos.x == 7.5));
+    }
 }

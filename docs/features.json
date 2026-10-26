@@ -391,7 +391,8 @@
        ],
        "fns": [
         "crate::ui::titlebar::App::tab_bar",
-        "crate::theme::glass::edge_fade"
+        "crate::theme::glass::fade_painted",
+        "crate::theme::glass::split_at"
        ]
       },
       {

@@ -164,7 +164,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 
 #### Many tabs scroll: a readable minimum width, faded edges with arrows, the active tab kept in view `app.tab-scroll`
 - **Entry:** src/ui/titlebar.rs App::tab_bar (the tab row's ScrollArea)
-- **Own code:** `theme::glass::edge_fade`
+- **Own code:** `theme::glass::fade_painted`, `theme::glass::split_at`
 - **Shared:** `ui::titlebar::App::tab_bar` (13)
 
 #### Drag title bar to move window, double-click to zoom `app.titlebar-window`
