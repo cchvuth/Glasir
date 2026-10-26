@@ -5,7 +5,7 @@ Every non-test function belongs to at least one feature (`featuremap.py check`).
 
 ## Contents
 
-- [App shell](#app) (58 features)
+- [App shell](#app) (59 features)
 - [Committing and staging](#commit) (43 features)
 - [Branches, tags and the sidebar](#refs) (60 features)
 - [History rewriting and stacks](#rewrite) (21 features)
@@ -29,8 +29,8 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
 | `ui::graph_view::show` (src/ui/graph_view/mod.rs:129) | 17 |
+| `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 13 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:295) | 13 |
-| `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 12 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:336) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
@@ -103,7 +103,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** title bar pill "Update to <version>" (src/ui/titlebar.rs:35 -> src/ui/update.rs:79 update_pill), accent-filled with a pulsing glow; click downloads and installs (src/update.rs:94 install: the release asset for this OS, unpacked with ditto / tar next to the app, swapped in keeping the old copy until the swap worked); right-click the pill: "Release notes" (src/ui/update.rs:91); a copy that can't update itself (cargo target build, the .deb's /usr/bin/glasir, no asset for this platform): the pill opens the release page (src/update.rs:61 target); installed: Glasir closes through the usual quit guards and the new version starts once this process has exited (src/ui/update.rs:37 restart -> src/update.rs:130 relaunch); "Restart to update" pill while a guard holds the quit (src/ui/update.rs:66); failure: toast "Update failed: …" with the release page
 - **Platform:** `platform.task`, `platform.design-system`
 - **Own code:** `ui::update::App::restart`, `update::install`, `update::install_to`, `update::unpack`, `update::swap`, `update::relaunch`
-- **Shared:** `ui::update::App::update_pill` (2), `update::stage` (2), `update::clear` (2), `update::target` (3), `update::asset_name` (2), `update::agent` (2), `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::update::App::update_pill` (2), `update::stage` (2), `update::clear` (2), `update::target` (3), `update::asset_name` (2), `update::agent` (2), `ui::titlebar::App::tab_bar` (13)
 
 #### Linux launcher entry and icon (Glasir --install, refreshed on every start) `app.linux-install`
 - **Entry:** `Glasir --install` (src/main.rs:37, the README's install command): writes the entry and icon, waits for the file-manager icon, exits without opening a window; every start on Linux (src/main.rs:38 -> :70 desktop_entry): (re)writes ~/.local/share/applications/Glasir.desktop and icons/hicolor/512x512/apps/glasir.png when missing or when the binary moved, so launchers and Wayland docks show the icon; sets the binary's icon in GNOME Files via gio metadata::custom-icon; skipped for the .deb's /usr/bin/glasir (the package ships its own entry), which instead removes a user entry whose binary is gone (src/main.rs exec_target); the Exec path is quoted and escaped per the Desktop Entry spec (src/main.rs exec_value); a relative XDG_DATA_HOME is ignored
@@ -128,48 +128,53 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 
 #### New tab (welcome page) `app.new-tab`
 - **Entry:** ⌘T; Title bar + button when a repo tab is active (src/ui/titlebar.rs:123 'New tab (⌘T)')
-- **Shared:** `ui::app::App::shortcuts` (11), `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::app::App::shortcuts` (11), `ui::titlebar::App::tab_bar` (13)
 
 #### Switch tabs `app.switch-tab`
 - **Entry:** click a tab (src/ui/titlebar.rs); ⌘1..⌘8 / ⌘9 (last tab); ⌃Tab / ⌃⇧Tab
-- **Shared:** `ui::app::App::shortcuts` (11), `ui::titlebar::App::tab_bar` (12), `ui::titlebar::tab_label` (2)
+- **Shared:** `ui::app::App::shortcuts` (11), `ui::titlebar::App::tab_bar` (13), `ui::titlebar::tab_label` (2)
 
 #### Close a tab `app.close-tab`
 - **Entry:** ⌘W; x pill on the tab (titlebar.rs:53 'Close tab (⌘W)'); refused toast when unsaved edits / running op / terminal / external tool
 - **Platform:** `platform.undo-engine`
-- **Shared:** `repo::op::RepoTab::draft_message` (5), `ui::app::App::close_tab` (5), `ui::app::App::shortcuts` (11), `ui::app::draft` (5), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `repo::op::RepoTab::draft_message` (5), `ui::app::App::close_tab` (5), `ui::app::App::shortcuts` (11), `ui::app::draft` (5), `ui::app::drop_data_off_thread` (3), `ui::app::forget_draft` (5), `ui::titlebar::App::tab_bar` (13)
 
 #### Close other tabs `app.close-other-tabs`
 - **Entry:** Tab context menu 'Close other tabs' (titlebar.rs:83)
-- **Shared:** `ui::app::App::close_tab` (5), `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::app::App::close_tab` (5), `ui::titlebar::App::tab_bar` (13)
 
 #### Reorder tabs by dragging `app.reorder-tabs`
 - **Entry:** drag a tab in the title bar (titlebar.rs:75)
 - **Own code:** `ui::titlebar::move_target`
-- **Shared:** `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::titlebar::App::tab_bar` (13)
 
 #### Rename a tab (alias) `app.rename-tab`
 - **Entry:** Tab context menu 'Rename…' (titlebar.rs:79); Modal 'Rename tab'
 - **Own code:** `ui::titlebar::App::rename_dialog`
-- **Shared:** `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::titlebar::App::tab_bar` (13)
 
 #### Reveal the tab's repo in the file manager `app.tab-reveal`
 - **Entry:** Tab context menu 'Reveal in file manager' (titlebar.rs:87)
-- **Shared:** `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::titlebar::App::tab_bar` (13)
 
 #### Tab labels with alias, branch and change state `app.tab-label`
 - **Entry:** title bar tabs (titlebar.rs:140)
 - **Platform:** `platform.format`
-- **Shared:** `ui::titlebar::App::tab_bar` (12), `ui::titlebar::tab_label` (2)
+- **Shared:** `ui::titlebar::App::tab_bar` (13), `ui::titlebar::tab_label` (2)
+
+#### Many tabs scroll: a readable minimum width, faded edges with arrows, the active tab kept in view `app.tab-scroll`
+- **Entry:** src/ui/titlebar.rs App::tab_bar (the tab row's ScrollArea)
+- **Own code:** `theme::glass::edge_fade`
+- **Shared:** `ui::titlebar::App::tab_bar` (13)
 
 #### Drag title bar to move window, double-click to zoom `app.titlebar-window`
 - **Entry:** empty title bar space (titlebar.rs:12)
-- **Shared:** `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::titlebar::App::tab_bar` (13)
 
 #### Global title bar buttons (settings, command log, palette, light/dark) `app.titlebar-buttons`
 - **Entry:** titlebar.rs:22 Settings (⌘,); titlebar.rs:25 Command log (⇧⌘L); titlebar.rs:28 Search commands ⌘P; titlebar.rs:32 Switch light / dark
 - **Platform:** `platform.design-system`
-- **Shared:** `ui::settings::App::open_settings` (4), `ui::settings::toggle_flavor` (2), `ui::titlebar::App::tab_bar` (12)
+- **Shared:** `ui::settings::App::open_settings` (4), `ui::settings::toggle_flavor` (2), `ui::titlebar::App::tab_bar` (13)
 
 #### Restore open tabs and the active tab on launch `app.restore-session`
 - **Entry:** startup: Settings.open / active (App::new); saved on quit/periodically by App::save
@@ -1835,7 +1840,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 
 #### Show in file manager `tools.reveal`
 - **Entry:** src/ui/toolbar.rs:165 "Show in file manager"; tab context menu src/ui/titlebar.rs:87 "Reveal in file manager"; WIP conflict menu src/ui/inspector/wip.rs:543; worktree row menu
-- **Shared:** `repo::RepoTab::apply` (21), `repo::files::reveal` (3), `ui::inspector::wip::RepoTab::wip_panel` (31), `ui::titlebar::App::tab_bar` (12), `ui::toolbar::open_items` (4)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::files::reveal` (3), `ui::inspector::wip::RepoTab::wip_panel` (31), `ui::titlebar::App::tab_bar` (13), `ui::toolbar::open_items` (4)
 
 #### Custom commands (Settings → Tools; {repo} {branch} {sha} {path}) `tools.custom-commands`
 - **Entry:** Settings → Tools src/ui/settings.rs:419; ⌘P custom commands src/ui/palette.rs:146; commit menu src/ui/graph_view/menus.rs:256; file context menus src/ui/inspector/mod.rs:75

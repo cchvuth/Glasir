@@ -1,6 +1,6 @@
 //! Dev/CI harness: `GLASIR_SCREENSHOT=out.bmp` saves a screenshot once the repo
 //! is loaded, then exits. `GLASIR_SCREENSHOT_VIEW` opens a view first (settings,
-//! a flavour, dialogs, diffs, search...); extend the switch when a new view needs
+//! a flavour, dialogs, diffs, search, many tabs...); extend the switch when a new view needs
 //! visual verification. `GLASIR_KEYS=pc` shows the Linux / Windows shortcut labels on macOS
 //! ("Ctrl+Shift+Z" for "⇧⌘Z", see `format::keys`).
 
@@ -83,6 +83,15 @@ impl App {
                         }
                     }
                     "log" => self.show_log = true,
+                    // Every repo next to this one in its own tab (a crowded tab bar).
+                    "tabs" => {
+                        let parent = self.tabs.get(self.active).and_then(|t| t.dir.parent().map(|p| p.to_path_buf()));
+                        let mut repos: Vec<_> = parent.and_then(|p| std::fs::read_dir(p).ok()).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.join(".git").exists()).collect();
+                        repos.sort();
+                        for r in repos {
+                            self.open(ctx, &r);
+                        }
+                    }
                     "update" => self.update.found = Some(crate::update::Release { version: "9.9.0".into(), page: String::new(), asset: None }),
                     // Settings → Built-in terminal off while shells still run.
                     "terminal-off" => {

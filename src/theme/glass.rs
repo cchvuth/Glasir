@@ -60,6 +60,21 @@ fn inside_rounded(b: Rect, rad: f32, p: Pos2) -> bool {
     b.expand(0.01).contains(p) && q.length() <= rad
 }
 
+/// Content scrolling out of view at `rect`'s outer edge (left or right) fades into the backdrop:
+/// the window's own canvas (`window`, `backdrop` as painted) laid over it in strips, each a little
+/// more opaque toward the edge.
+pub fn edge_fade(p: &Painter, rect: Rect, left: bool, window: Rect, backdrop: bool) {
+    let strips = (rect.width() / 2.0).ceil().max(2.0) as usize;
+    let w = rect.width() / strips as f32;
+    for k in 0..strips {
+        let x = rect.left() + k as f32 * w;
+        let mut q = p.with_clip_rect(Rect::from_x_y_ranges(x..=x + w, rect.y_range()).intersect(p.clip_rect()));
+        let t = k as f32 / (strips - 1) as f32;
+        q.set_opacity(if left { 1.0 - t } else { t });
+        canvas_in(&q, window, 0.0, backdrop, flavor());
+    }
+}
+
 /// A flavour's backdrop, with rounded corners when `radius` > 0 (the Settings swatches).
 pub fn canvas_in(p: &Painter, rect: Rect, radius: f32, backdrop: bool, f: Flavor) {
     let Palette { base, blobs, .. } = f.palette();

@@ -384,6 +384,17 @@
        ]
       },
       {
+       "id": "app.tab-scroll",
+       "name": "Many tabs scroll: a readable minimum width, faded edges with arrows, the active tab kept in view",
+       "entry": [
+        "src/ui/titlebar.rs App::tab_bar (the tab row's ScrollArea)"
+       ],
+       "fns": [
+        "crate::ui::titlebar::App::tab_bar",
+        "crate::theme::glass::edge_fade"
+       ]
+      },
+      {
        "id": "app.titlebar-window",
        "name": "Drag title bar to move window, double-click to zoom",
        "entry": [
