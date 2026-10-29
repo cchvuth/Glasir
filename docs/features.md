@@ -11,7 +11,7 @@ Every non-test function belongs to at least one feature (`featuremap.py check`).
 - [History rewriting and stacks](#rewrite) (21 features)
 - [Merging, cherry-picks and conflicts](#merge) (28 features)
 - [Remotes, sync and hosting](#remote) (33 features)
-- [Graph, inspector and views](#view) (43 features)
+- [Graph, inspector and views](#view) (44 features)
 - [Stashes, worktrees, undo and tools](#tools) (41 features)
 - [Platform](#platform) (12 features)
 
@@ -28,15 +28,15 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `repo::RepoTab::apply` (src/repo/mod.rs:653) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
-| `ui::graph_view::show` (src/ui/graph_view/mod.rs:129) | 17 |
+| `ui::graph_view::show` (src/ui/graph_view/mod.rs:136) | 18 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 13 |
-| `repo::data::RepoData::split_remote` (src/repo/data.rs:295) | 13 |
+| `repo::data::RepoData::split_remote` (src/repo/data.rs:296) | 13 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:336) | 11 |
+| `ui::settings::App::settings_dialog` (src/ui/settings.rs:137) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
 | `ui::app::App::shortcuts` (src/ui/app.rs:193) | 11 |
 | `repo::op::exec_stash` (src/repo/op.rs:836) | 11 |
-| `ui::settings::App::settings_dialog` (src/ui/settings.rs:134) | 10 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
 | `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
 | `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
@@ -97,7 +97,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** startup: src/ui/app.rs:122 App::new -> check_updates (src/ui/update.rs:26); window regains focus: src/ui/app.rs:521; at most one check per 10 minutes (GitHub allows 60 unauthenticated requests an hour); Settings → Updates "Check for a new version at startup" (src/ui/settings.rs:199); off = no request at all; background: src/update.rs:50 check asks api.github.com for cchvuth/Glasir's latest release, compares versions numerically (newer) and picks this platform's asset; also clears a finished update's leftovers; offline / rate-limited stays silent; GLASIR_SCREENSHOT_VIEW=update shows the pill (src/ui/screenshot.rs)
 - **Platform:** `platform.task`
 - **Own code:** `ui::update::App::check_updates`, `update::check`, `update::parse`, `update::newer`, `update::clear_stale`
-- **Shared:** `ui::update::App::update_pill` (2), `update::agent` (2), `update::asset_name` (2), `update::target` (3), `update::stage` (2), `update::clear` (2), `ui::app::App::new` (8), `ui::app::App::ui` (10), `ui::settings::App::settings_dialog` (10), `ui::settings::Settings::default` (2)
+- **Shared:** `ui::update::App::update_pill` (2), `update::agent` (2), `update::asset_name` (2), `update::target` (3), `update::stage` (2), `update::clear` (2), `ui::app::App::new` (8), `ui::app::App::ui` (10), `ui::settings::App::settings_dialog` (11), `ui::settings::Settings::default` (3)
 
 #### Update Glasir in place from the title bar (download, swap, restart) `app.self-update`
 - **Entry:** title bar pill "Update to <version>" (src/ui/titlebar.rs:35 -> src/ui/update.rs:79 update_pill), accent-filled with a pulsing glow; click downloads and installs (src/update.rs:94 install: the release asset for this OS, unpacked with ditto / tar next to the app, swapped in keeping the old copy until the swap worked); right-click the pill: "Release notes" (src/ui/update.rs:91); a copy that can't update itself (cargo target build, the .deb's /usr/bin/glasir, no asset for this platform): the pill opens the release page (src/update.rs:61 target); installed: Glasir closes through the usual quit guards and the new version starts once this process has exited (src/ui/update.rs:37 restart -> src/update.rs:130 relaunch); "Restart to update" pill while a guard holds the quit (src/ui/update.rs:66); failure: toast "Update failed: …" with the release page
@@ -217,37 +217,37 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Settings dialog `app.settings-dialog`
 - **Entry:** ⌘,; Title bar gear (titlebar.rs:22); ⌘P 'Settings'; Settings struct persisted with the app state
 - **Platform:** `platform.design-system`
-- **Shared:** `ui::app::App::new` (8), `ui::app::App::save` (3), `ui::settings::App::open_settings` (4), `ui::settings::App::settings_dialog` (10), `ui::settings::Settings::default` (2)
+- **Shared:** `ui::app::App::new` (8), `ui::app::App::save` (3), `ui::settings::App::open_settings` (4), `ui::settings::App::settings_dialog` (11), `ui::settings::Settings::default` (3)
 
 #### Theme flavours and light/dark toggle `app.theme-flavour`
 - **Entry:** Settings -> Theme swatches; Title bar light/dark pill; ⌘P "Toggle light / dark theme" (Cmd::Theme)
 - **Platform:** `platform.design-system`
 - **Own code:** `ui::settings::flavor_swatch`, `ui::settings::set_flavor`
-- **Shared:** `ui::app::App::command_palette` (4), `ui::settings::App::settings_dialog` (10), `ui::settings::toggle_flavor` (2)
+- **Shared:** `ui::app::App::command_palette` (4), `ui::settings::App::settings_dialog` (11), `ui::settings::toggle_flavor` (2)
 
 #### Glass transparency and native window glass `app.glass-transparency`
 - **Entry:** Settings -> Glass transparency slider and 'Window glass' checkbox
 - **Platform:** `platform.design-system`
-- **Shared:** `ui::app::native_glass` (2), `ui::settings::App::settings_dialog` (10)
+- **Shared:** `ui::app::native_glass` (2), `ui::settings::App::settings_dialog` (11)
 
-#### General settings (commits to load, default pull, auto-fetch, avatars, update check, stacks, email rules, protected branches) `app.settings-general`
+#### General settings (commits to load, default pull, auto-fetch, avatars, main line glimmer, update check, stacks, email rules, protected branches) `app.settings-general`
 - **Entry:** Settings dialog rows
 - **Platform:** `platform.repo-load`
-- **Shared:** `ui::app::App::ui` (10), `ui::settings::App::settings_dialog` (10)
+- **Shared:** `ui::app::App::ui` (10), `ui::settings::App::settings_dialog` (11)
 
 #### Editor, terminal and custom commands settings `app.settings-tools`
 - **Entry:** Settings -> Tools section
-- **Shared:** `ui::settings::App::open_settings` (4), `ui::settings::App::settings_dialog` (10), `ui::settings::tools_section` (2)
+- **Shared:** `ui::settings::App::open_settings` (4), `ui::settings::App::settings_dialog` (11), `ui::settings::tools_section` (2)
 
 #### AI settings: provider, token or command, model, custom instructions, test connection `app.settings-ai`
 - **Entry:** Settings -> AI section: Enable AI features, Provider combo box (Claude Code CLI / Codex CLI / Claude API / OpenAI API), token Save / Remove (API providers only), Model, API base URL (or Command for a CLI), Custom instructions presets, Test connection
 - **Platform:** `platform.ai-client`, `platform.task`
-- **Shared:** `ai::tasks::test` (2), `ui::settings::App::open_settings` (4), `ui::settings::App::settings_dialog` (10), `ui::settings::token_source` (2)
+- **Shared:** `ai::tasks::test` (2), `ui::settings::App::open_settings` (4), `ui::settings::App::settings_dialog` (11), `ui::settings::token_source` (2)
 
 #### AI through the signed-in Claude Code or Codex CLI (default provider, no token) `app.ai-cli-provider`
 - **Entry:** Settings → AI → Provider "Claude Code CLI" (the default) or "Codex CLI" (src/ui/settings.rs:263); the token rows are hidden and "API base URL" becomes "Command" (name or full path of the CLI); Model: "default" leaves it to the CLI; Claude Code also offers opus / sonnet / haiku (src/ai/cli.rs:12); every AI feature: ai::client::complete -> src/ai/cli.rs:19 complete runs `claude -p --output-format stream-json` with no tools, no session, no MCP and user settings only (system prompt via --system-prompt-file), or `codex exec --sandbox read-only -c mcp_servers={} --json`, in a fresh private (0700) temp folder removed afterwards, in its own process group (cancel and a 180 s silence timeout kill the whole tree); streamed text (claude) or the last message file (codex); JSON-schema replies via --json-schema / --output-schema; errors: a missing CLI says how to install it or set its path (src/ai/cli.rs:30 spawn; .cmd fallback on Windows); "not logged in" and other CLI errors show as the AI error; Settings → AI "Test connection" reports "<model> replied: …" (ai::tasks::test)
 - **Platform:** `platform.ai-client`
-- **Shared:** `ai::cli::endpoint` (2), `ai::cli::complete` (2), `ai::cli::spawn` (2), `ai::cli::feed` (2), `ai::cli::stderr_of` (2), `ai::cli::private_dir` (2), `ai::cli::read` (2), `ai::cli::stop` (2), `ai::cli::failed` (2), `ai::cli::claude` (2), `ai::cli::codex` (2), `ai::client::Provider::is_cli` (2), `ai::client::Provider::label` (2), `ai::client::Provider::models` (2), `ai::client::Provider::name` (2), `ai::client::Config::default` (2), `ai::client::Config::current` (2), `ai::client::Config::model` (2), `ai::client::complete` (2), `ai::client::need_token` (2), `ai::client::env_token` (2), `ai::name` (2), `ai::sync` (2), `ai::tasks::test` (2), `ui::settings::App::settings_dialog` (10), `ui::settings::token_source` (2)
+- **Shared:** `ai::cli::endpoint` (2), `ai::cli::complete` (2), `ai::cli::spawn` (2), `ai::cli::feed` (2), `ai::cli::stderr_of` (2), `ai::cli::private_dir` (2), `ai::cli::read` (2), `ai::cli::stop` (2), `ai::cli::failed` (2), `ai::cli::claude` (2), `ai::cli::codex` (2), `ai::client::Provider::is_cli` (2), `ai::client::Provider::label` (2), `ai::client::Provider::models` (2), `ai::client::Provider::name` (2), `ai::client::Config::default` (2), `ai::client::Config::current` (2), `ai::client::Config::model` (2), `ai::client::complete` (2), `ai::client::need_token` (2), `ai::client::env_token` (2), `ai::name` (2), `ai::sync` (2), `ai::tasks::test` (2), `ui::settings::App::settings_dialog` (11), `ui::settings::token_source` (2)
 
 ### Command palette & shortcuts
 
@@ -294,10 +294,10 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Repo view layout (toolbar, sidebar, graph, details, center-pane switch, terminal panel) `app.repo-layout`
 - **Entry:** every repo tab (repo_view.rs:12)
 - **Platform:** `platform.design-system`, `platform.op-runner`
-- **Shared:** `ui::repo_view::show` (6)
+- **Shared:** `ui::repo_view::show` (7)
 
 #### 'Optimize this repository' hint banner `app.optimize-hint`
-- **Entry:** banner above the graph when repo health is poor (repo_view.rs:149)
+- **Entry:** banner above the graph when repo health is poor (repo_view.rs:150)
 - **Shared:** `ui::repo_view::optimize_hint` (3)
 
 #### Drop-a-folder overlay `app.drop-hint`
@@ -352,9 +352,9 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Developer harness
 
 #### Screenshot harness `app.screenshot-harness`
-- **Entry:** GLASIR_SCREENSHOT=<bmp> GLASIR_SCREENSHOT_VIEW=… (settings, log, update = the update pill, terminal-off, diff-staged:<path>, scroll-bench, …) GLASIR_SCREENSHOT_WIDTH GLASIR_KEYS
-- **Own code:** `ui::screenshot::App::screenshot`, `ui::screenshot::shot_input`
-- **Shared:** `ui::app::App::raw_input_hook` (2)
+- **Entry:** GLASIR_SCREENSHOT=<bmp> GLASIR_SCREENSHOT_VIEW=… (settings, log, update = the update pill, terminal-off, diff-staged:<path>, scroll-bench, magic-clock:<s>, magic-off, …) GLASIR_SCREENSHOT_WIDTH GLASIR_KEYS
+- **Own code:** `ui::screenshot::shot_input`
+- **Shared:** `ui::app::App::raw_input_hook` (2), `ui::screenshot::App::screenshot` (2)
 
 #### Frame-time / slow git command reporting `app.perf-harness`
 - **Entry:** GLASIR_PERF=1 (report_perf every 2 s; git::log::record prints >30 ms commands); GLASIR_SCREENSHOT_VIEW=scroll-bench
@@ -423,7 +423,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Hunks and lines
 
 #### Open a WIP file diff (unstaged / staged) `commit.view-worktree-diff`
-- **Entry:** click a WIP row (Action::Diff); diff pane in repo_view.rs:76/100; diff options toolbar: split / wrap / ignore whitespace / context (view_controls)
+- **Entry:** click a WIP row (Action::Diff); diff pane in repo_view.rs:77/100; diff options toolbar: split / wrap / ignore whitespace / context (view_controls)
 - **Platform:** `platform.design-system`, `platform.git-runner`, `platform.highlight`, `platform.task`
 - **Own code:** `git::diff::DiffOpts::args`, `git::diff::DiffOpts::default`, `git::diff::b_path`, `git::diff::blob_size`, `git::diff::file_paths`, `git::diff::file_size`, `git::diff::large`, `git::diff::parse_diff`, `git::diff::parse_one`, `git::diff::untracked_diff`, `git::diff::worktree_diff`, `repo::diff::DiffState::loading`, `repo::diff::RepoTab::open_diff`, `repo::diff::RepoTab::poll_diff`, `repo::diff::RepoTab::refresh_diff_theme`, `repo::diff::stamp`
 - **Shared:** `git::diff::FileDiff::mode_change` (2), `repo::action::DiffSrc::change` (20), `repo::diff::RepoTab::refresh_diff` (2), `ui::diff_view::Layout::get` (10), `ui::diff_view::change_starts` (2), `ui::diff_view::changed_span` (3), `ui::diff_view::large_note` (2), `ui::diff_view::lfs_note` (3), `ui::diff_view::minimap` (2), `ui::diff_view::note_frame` (2), `ui::diff_view::paint_line` (11), `ui::diff_view::partners` (3), `ui::diff_view::row_kind` (10), `ui::diff_view::rows` (10), `ui::diff_view::show` (20), `ui::diff_view::step` (2), `ui::diff_view::submodule_note` (3), `ui::diff_view::view_controls` (3), `ui::diff_view::wrap_before` (3), `ui::diff_view::wrap_group` (3)
@@ -646,7 +646,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Check out a branch, remote branch or tag `refs.checkout`
 - **Entry:** src/ui/sidebar/ref_menus.rs:181 "Checkout <name>" (branch/remote/tag menus, sidebar and graph pills); double-click sidebar row (sidebar/mod.rs:113 local_row) or graph pill (graph_view/mod.rs:458 act closure); graph commit menu "Checkout <ref>" and double-click commit row (graph_view/menus.rs:94 checkout_action, :141); palette "Checkout <ref>" (src/ui/palette.rs:198)
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `repo::op::branch_checkout` (7), `repo::op::checkout_args` (3), `repo::op::in_progress` (4), `repo::op::switch_refused` (3), `repo::op::switches_head` (3), `ui::graph_view::menus::checkout_action` (2), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::show` (17), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (22), `ui::sidebar::ref_menus::remote_menu` (9), `ui::sidebar::ref_menus::tag_menu` (11)
+- **Shared:** `repo::data::RepoData::local` (7), `repo::data::RepoData::split_remote` (13), `repo::op::Op::new` (7), `repo::op::Op::undo` (4), `repo::op::branch_checkout` (7), `repo::op::checkout_args` (3), `repo::op::in_progress` (4), `repo::op::switch_refused` (3), `repo::op::switches_head` (3), `ui::graph_view::menus::checkout_action` (2), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::show` (18), `ui::palette::items` (25), `ui::sidebar::ref_menus::local_menu` (22), `ui::sidebar::ref_menus::remote_menu` (9), `ui::sidebar::ref_menus::tag_menu` (11)
 
 #### Checkout of a remote branch creates / fast-forwards a tracking branch `refs.checkout-remote-tracking`
 - **Entry:** same entries as refs.checkout on a remote branch row/pill: update local twin, new tracking branch, or prompt for a new name when twin tracks elsewhere
@@ -848,35 +848,35 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Graph visibility: hide, solo, hover
 
 #### Hide / show a ref in the graph `refs.hide-from-graph`
-- **Entry:** src/ui/sidebar/mod.rs:52 eye icon on hovered rows and folder/remote headers ("Hide from graph"); ref menus "Hide from graph" / "Show in graph" (ref_menus.rs:89 view_items); persisted per repo in ui/repo_view.rs:137
+- **Entry:** src/ui/sidebar/mod.rs:52 eye icon on hovered rows and folder/remote headers ("Hide from graph"); ref menus "Hide from graph" / "Show in graph" (ref_menus.rs:89 view_items); persisted per repo in ui/repo_view.rs:138
 - **Platform:** `platform.op-runner`, `platform.repo-load`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::RepoData::shows` (2), `repo::data::View::change` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (6), `ui::sidebar::eye` (2), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::RepoData::shows` (2), `repo::data::View::change` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (7), `ui::sidebar::eye` (2), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
 
 #### Solo a ref (show only soloed refs) `refs.solo-ref`
 - **Entry:** ref menus "Solo (show only soloed refs)" / "Unsolo" (ref_menus.rs:95 view_items); soloed rows orange in sidebar (sidebar/mod.rs:26 view_style)
 - **Platform:** `platform.repo-load`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::View::change` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (6), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::reload` (3), `repo::data::View::change` (3), `repo::data::View::revs` (3), `ui::repo_view::show` (7), `ui::sidebar::ref_menus::view_items` (3), `ui::sidebar::view_style` (2)
 
 #### Ref hover highlight (fade commits a pill can't reach) `refs.hover-highlight`
 - **Entry:** hover a graph ref pill for 50ms (src/ui/graph_view/mod.rs:459 act closure -> hover.rs:9 hover_ref; graph_view show reads hovered_ref)
 - **Own code:** `ui::graph_view::hover::hover_ref`, `ui::graph_view::hover::hovered_ref`
-- **Shared:** `graph::layout::Graph::has_unloaded_parent` (2), `graph::layout::Graph::reachable` (2), `repo::data::RepoData::reachable` (3), `ui::graph_view::show` (17)
+- **Shared:** `graph::layout::Graph::has_unloaded_parent` (2), `graph::layout::Graph::reachable` (2), `repo::data::RepoData::reachable` (3), `ui::graph_view::show` (18)
 
 #### Ref pills in the graph (icons, names cut with …, +N badge, tooltip, drag source) `refs.graph-pills`
 - **Entry:** src/ui/graph_view/mod.rs:71 ref_pill, :53 ref_label (check = HEAD, tree = checked out in another worktree, cloud = upstream at the same commit, then the branch icon; long names cut with …), :112 pill_tip (upstream, worktree path and how to switch there, tag message); click selects, double-click checks out, right-click ref menu
-- **Shared:** `repo::op::branch_checkout` (7), `ui::graph_view::pill_tip` (3), `ui::graph_view::ref_label` (3), `ui::graph_view::ref_pill` (4), `ui::graph_view::show` (17), `ui::graph_view::tip_now` (3), `ui::sidebar::ref_menus::ref_menu` (4), `ui::sidebar::ref_menus::synced_menu` (5)
+- **Shared:** `repo::op::branch_checkout` (7), `ui::graph_view::pill_tip` (3), `ui::graph_view::ref_label` (3), `ui::graph_view::ref_pill` (4), `ui::graph_view::show` (18), `ui::graph_view::tip_now` (3), `ui::sidebar::ref_menus::ref_menu` (4), `ui::sidebar::ref_menus::synced_menu` (5)
 
 #### HEAD pill: filled with its lane colour, glowing, leads with a check `refs.head-pill`
-- **Entry:** graph ref column (src/ui/graph_view/mod.rs:71 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text and its connector line to the node in the same colour; HEAD's node is larger; label (src/ui/graph_view/mod.rs:53 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow; sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)
+- **Entry:** graph ref column (src/ui/graph_view/mod.rs:72 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text (white, or dark ink on a light fill such as a dark flavour's accent on main: theme::on_color) and its connector line to the node in the same colour; HEAD's node is larger; label (src/ui/graph_view/mod.rs:54 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow; sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)
 - **Platform:** `platform.design-system`
-- **Shared:** `ui::graph_view::ref_pill` (4), `ui::graph_view::ref_label` (3), `ui::graph_view::show` (17), `ui::sidebar::head_row` (3), `ui::sidebar::local_row` (7)
+- **Shared:** `ui::graph_view::ref_pill` (4), `ui::graph_view::ref_label` (3), `ui::graph_view::show` (18), `ui::sidebar::head_row` (3), `ui::sidebar::local_row` (7)
 
 ### Drag and drop branches
 
 #### Drag a branch onto another: merge / push / rebase menu `refs.drag-branch-onto-branch`
 - **Entry:** sidebar branch/remote rows (sidebar/mod.rs branch_dnd), graph pills (graph_view/mod.rs act closure), graph commit rows (graph_view/mod.rs:329) -> Action::DropBranch -> dialogs.rs:472 drop_menu
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::data::RepoData::rev` (3), `repo::data::RepoData::split_remote` (13), `repo::merge_opts::Merge::name` (4), `repo::merge_opts::merge_op` (4), `repo::op::checkout_args` (3), `ui::dialogs::drop_menu` (5), `ui::graph_view::dnd::branch_dnd` (3), `ui::graph_view::show` (17), `ui::sidebar::local_row` (7), `ui::sidebar::remote_row` (6)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::data::RepoData::rev` (3), `repo::data::RepoData::split_remote` (13), `repo::merge_opts::Merge::name` (4), `repo::merge_opts::merge_op` (4), `repo::op::checkout_args` (3), `ui::dialogs::drop_menu` (5), `ui::graph_view::dnd::branch_dnd` (3), `ui::graph_view::show` (18), `ui::sidebar::local_row` (7), `ui::sidebar::remote_row` (6)
 
 #### Drag preview label following the pointer `refs.drag-preview`
 - **Entry:** src/ui/app.rs:592 graph_view::dnd::preview
@@ -929,10 +929,10 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Interactive rebase editor
 
 #### Interactive rebase editor (reorder, pick/reword/squash/fixup/drop/edit) `rewrite.rebase-editor`
-- **Entry:** src/ui/graph_view/menus.rs:262 "Edit history after this commit (interactive rebase)…" -> Action::Rebase; src/ui/graph_view/menus.rs:127 "Interactive rebase {head} onto {target}…" (integrate_items; branch/ref context menus); src/ui/dialogs.rs:524 branch drop menu "Interactive rebase {src} onto {dst}…"; keys in editor: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D, Esc cancel (src/ui/rebase_editor.rs:24); buttons: move up/down pills, action pills, "Start rebase", "Cancel" (src/ui/rebase_editor.rs); src/ui/repo_view.rs:87 center-pane switch
+- **Entry:** src/ui/graph_view/menus.rs:262 "Edit history after this commit (interactive rebase)…" -> Action::Rebase; src/ui/graph_view/menus.rs:127 "Interactive rebase {head} onto {target}…" (integrate_items; branch/ref context menus); src/ui/dialogs.rs:524 branch drop menu "Interactive rebase {src} onto {dst}…"; keys in editor: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D, Esc cancel (src/ui/rebase_editor.rs:24); buttons: move up/down pills, action pills, "Start rebase", "Cancel" (src/ui/rebase_editor.rs); src/ui/repo_view.rs:88 center-pane switch
 - **Platform:** `platform.design-system`, `platform.git-runner`, `platform.offer`, `platform.op-runner`, `platform.undo-engine`
 - **Own code:** `ui::rebase_editor::field`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::prepare` (5), `repo::RepoTab::unpark_rebase` (2), `repo::rebase::Editor::edited` (2), `repo::rebase::Editor::load` (6), `repo::rebase::Editor::op` (6), `repo::rebase::Editor::problem` (4), `repo::rebase::Editor::start` (2), `repo::rebase::head_state` (12), `repo::rebase::items` (7), `repo::rebase::no_hooks` (3), `repo::rebase::sh_quote` (6), `repo::rebase::stacked_refs` (7), `ui::dialogs::drop_menu` (5), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::menus::integrate_items` (6), `ui::graph_view::menus::on_branch` (3), `ui::rebase_editor::show` (2), `ui::repo_view::show` (6)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::RepoTab::prepare` (5), `repo::RepoTab::unpark_rebase` (2), `repo::rebase::Editor::edited` (2), `repo::rebase::Editor::load` (6), `repo::rebase::Editor::op` (6), `repo::rebase::Editor::problem` (4), `repo::rebase::Editor::start` (2), `repo::rebase::head_state` (12), `repo::rebase::items` (7), `repo::rebase::no_hooks` (3), `repo::rebase::sh_quote` (6), `repo::rebase::stacked_refs` (7), `ui::dialogs::drop_menu` (5), `ui::graph_view::menus::commit_menu` (24), `ui::graph_view::menus::integrate_items` (6), `ui::graph_view::menus::on_branch` (3), `ui::rebase_editor::show` (2), `ui::repo_view::show` (7)
 
 #### Warn before rewriting pushed commits `rewrite.rebase-confirm-pushed`
 - **Entry:** any rebase / reword / squash / drop / split / amend-into op: confirm dialog (src/ui/dialogs.rs confirm_dialog) built by rebase::confirm_*; Action::RunRebase (src/repo/mod.rs:847)
@@ -991,7 +991,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** drag a commit row onto another commit row (src/ui/graph_view/mod.rs:344 -> Action::DropCommit); ⌥ held squashes right away; popup menu: "Move above / below <commit>", "Squash into <commit>", "Fixup into <commit> (drop this message)" (built in src/repo/op.rs:1478 drop_menu, shown by src/ui/dialogs.rs commit_drop_menu)
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.op-runner`, `platform.undo-engine`
 - **Own code:** `repo::rebase::drag`, `repo::rebase::drag_editor`, `repo::rebase::on_branch`
-- **Shared:** `repo::RepoTab::apply` (21), `repo::op::RepoTab::drop_commit` (3), `repo::op::RepoTab::drop_menu` (4), `repo::rebase::Editor::load` (6), `repo::rebase::Editor::op` (6), `repo::rebase::Editor::problem` (4), `repo::rebase::head_state` (12), `repo::rebase::items` (7), `repo::rebase::sh_quote` (6), `repo::rebase::stacked_refs` (7), `ui::dialogs::commit_drop_menu` (3), `ui::graph_view::dnd::preview` (3), `ui::graph_view::show` (17)
+- **Shared:** `repo::RepoTab::apply` (21), `repo::op::RepoTab::drop_commit` (3), `repo::op::RepoTab::drop_menu` (4), `repo::rebase::Editor::load` (6), `repo::rebase::Editor::op` (6), `repo::rebase::Editor::problem` (4), `repo::rebase::head_state` (12), `repo::rebase::items` (7), `repo::rebase::sh_quote` (6), `repo::rebase::stacked_refs` (7), `ui::dialogs::commit_drop_menu` (3), `ui::graph_view::dnd::preview` (3), `ui::graph_view::show` (18)
 
 #### Drop a commit onto a branch: cherry-pick `rewrite.drop-cherrypick-onto-branch`
 - **Entry:** drag a commit onto a branch pill / sidebar row (src/ui/graph_view/dnd.rs:31 Action::DropCommit)
@@ -1144,7 +1144,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Merge editor
 
 #### Open the three-pane merge editor `merge.editor-open`
-- **Entry:** click a conflicted file in the WIP panel (Action::MergeEditor), src/ui/inspector/wip.rs:552; src/ui/repo_view.rs:61 center pane
+- **Entry:** click a conflicted file in the WIP panel (Action::MergeEditor), src/ui/inspector/wip.rs:552; src/ui/repo_view.rs:62 center pane
 - **Platform:** `platform.design-system`, `platform.git-runner`, `platform.task`
 - **Own code:** `repo::merge_editor::Editor::fill`, `repo::merge_editor::Editor::open`, `repo::merge_editor::conflicts`, `repo::merge_editor::load`, `ui::merge_editor::tint`
 - **Shared:** `repo::RepoTab::apply` (21), `repo::merge_editor::Editor::reparse` (4), `repo::merge_editor::attrs` (2), `repo::merge_editor::binary_stages` (2), `repo::merge_editor::block` (2), `repo::merge_editor::decode` (2), `repo::merge_editor::is_marker` (3), `repo::merge_editor::labels` (4), `repo::merge_editor::like` (2), `repo::merge_editor::marker_size` (3), `repo::merge_editor::parse` (2), `repo::merge_editor::parts` (2), `ui::merge_editor::show` (7)
@@ -1207,13 +1207,13 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** src/ui/graph_view/mod.rs:154 banner above the graph; Reset pill; Show jumps to the found commit
 - **Platform:** `platform.design-system`, `platform.op-runner`
 - **Own code:** `git::bisect::Bisect::found`
-- **Shared:** `git::bisect::Bisect::term` (2), `ui::bisect::banner` (2), `ui::bisect::mark_color` (3), `ui::graph_view::show` (17)
+- **Shared:** `git::bisect::Bisect::term` (2), `ui::bisect::banner` (2), `ui::bisect::mark_color` (3), `ui::graph_view::show` (18)
 
 #### Bisect marks on graph rows `merge.bisect-graph-marks`
 - **Entry:** src/ui/graph_view/mod.rs:573 coloured good/bad/skip markers
 - **Platform:** `platform.design-system`
 - **Own code:** `git::bisect::Bisect::mark`
-- **Shared:** `ui::bisect::mark_color` (3), `ui::graph_view::show` (17)
+- **Shared:** `ui::bisect::mark_color` (3), `ui::graph_view::show` (18)
 
 #### Bisect progress tracking and follow-HEAD (background) `merge.bisect-state`
 - **Entry:** background: every reload (RepoData::load_bisect); RepoTab::poll jumps the graph to the new HEAD after each step
@@ -1242,7 +1242,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** src/ui/toolbar.rs:241 "Pull" pill (default mode from Settings); src/ui/toolbar.rs:245 caret menu "Pull with" Merge/Fast-forward only/Rebase; src/ui/palette.rs:80 Cmd+P "Pull" / "Pull (fast-forward only)" / "Pull (rebase)"; src/ui/settings.rs:220 Settings "Default pull"; src/repo/offer.rs:12 "Pull (rebase)"/"Pull (merge)" choices
 - **Platform:** `platform.git-runner`, `platform.offer`, `platform.op-runner`
 - **Own code:** `repo::op::pull_op`
-- **Shared:** `git::network::with_autostash` (2), `repo::offer::pull_choices` (2), `ui::palette::items` (25), `ui::settings::App::settings_dialog` (10), `ui::toolbar::pull_hint` (2), `ui::toolbar::toolbar_remote` (5)
+- **Shared:** `git::network::with_autostash` (2), `repo::offer::pull_choices` (2), `ui::palette::items` (25), `ui::settings::App::settings_dialog` (11), `ui::toolbar::pull_hint` (2), `ui::toolbar::toolbar_remote` (5)
 
 #### Fast-forward a branch without checking it out `remote.pull-ff-branch`
 - **Entry:** src/ui/sidebar/ref_menus.rs:188 local branch menu "Pull <b> (fast-forward, without checkout)"; src/ui/sidebar/ref_menus.rs:185 "Fast-forward <b> to <upstream>" (local fetch)
@@ -1280,7 +1280,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** src/ui/app.rs:531 per-frame tick calls RepoTab::auto_fetch (timer and window refocus); src/ui/settings.rs:210 Settings "Auto-fetch" minutes (0 = off); src/ui/toolbar.rs:109 failed-fetch chip "Sign in required"/"Fetch failed" (click to fetch now); src/ui/toolbar.rs:117 chip "Choose SSH key"
 - **Platform:** `platform.git-runner`, `platform.repo-load`, `platform.task`
 - **Own code:** `git::network::fetch_failure`, `git::network::fetch_quiet`, `git::network::fetch_specs`, `repo::fetch::RepoTab::auto_fetch`
-- **Shared:** `git::network::batch_ssh` (2), `git::network::quiet` (2), `git::network::quiet_ssh` (2), `git::network::tracking` (2), `git::network::unquoted` (2), `repo::fetch::Fetching::background` (2), `repo::fetch::Fetching::drop` (2), `repo::fetch::Fetching::user` (3), `ui::settings::App::settings_dialog` (10), `ui::toolbar::toolbar` (8)
+- **Shared:** `git::network::batch_ssh` (2), `git::network::quiet` (2), `git::network::quiet_ssh` (2), `git::network::tracking` (2), `git::network::unquoted` (2), `repo::fetch::Fetching::background` (2), `repo::fetch::Fetching::drop` (2), `repo::fetch::Fetching::user` (3), `ui::settings::App::settings_dialog` (11), `ui::toolbar::toolbar` (8)
 
 #### Fetch coordination (a user fetch pre-empts a background one) `remote.one-fetch-at-a-time`
 - **Entry:** background: every Op run takes a user turn (src/repo/op.rs:1158)
@@ -1295,7 +1295,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Remotes
 
 #### Add or edit a remote (name, fetch URL, push URL) `remote.add-edit-remote`
-- **Entry:** src/ui/sidebar/mod.rs:293 sidebar "Add remote…"; src/ui/sidebar/remotes.rs:37 remote menu "Edit remote…"; src/ui/palette.rs:172 Cmd+P "Add remote…"; src/ui/toolbar.rs:263 Push with no remote; src/ui/graph_view/empty.rs:50 empty-repo hint; src/ui/repo_view.rs:134 dialog host
+- **Entry:** src/ui/sidebar/mod.rs:293 sidebar "Add remote…"; src/ui/sidebar/remotes.rs:37 remote menu "Edit remote…"; src/ui/palette.rs:172 Cmd+P "Add remote…"; src/ui/toolbar.rs:263 Push with no remote; src/ui/graph_view/empty.rs:50 empty-repo hint; src/ui/repo_view.rs:135 dialog host
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
 - **Own code:** `repo::remotes::Form::add`, `repo::remotes::Form::edit`, `repo::remotes::Form::op`, `repo::remotes::Form::op::set_push`, `repo::remotes::Form::problem`, `repo::remotes::seq`, `ui::sidebar::remotes::form_dialog`
 - **Shared:** `git::read::remotes` (3), `git::url::redact` (6), `ui::palette::items` (25), `ui::sidebar::remotes::remote_menu` (7)
@@ -1322,8 +1322,8 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Show pull requests as <remote>/pr/<n> `remote.pr-refs`
 - **Entry:** src/ui/sidebar/remotes.rs:27 remote menu checkbox "Show pull requests as …/pr/<n>"
 - **Platform:** `platform.git-runner`, `platform.op-runner`
-- **Own code:** `repo::remotes::is_pr_head`, `repo::remotes::numbered`, `repo::remotes::pr_refs_clash`, `repo::remotes::pr_refs_on`, `repo::remotes::pr_refs_op`
-- **Shared:** `repo::data::RepoData::cfg_all` (2), `repo::remotes::pr_head` (2), `repo::remotes::pr_push_refused` (3), `repo::remotes::pr_refspec` (2), `ui::sidebar::remotes::remote_menu` (7)
+- **Own code:** `repo::remotes::is_pr_head`, `repo::remotes::pr_refs_clash`, `repo::remotes::pr_refs_on`, `repo::remotes::pr_refs_op`
+- **Shared:** `repo::data::RepoData::cfg_all` (2), `repo::remotes::numbered` (2), `repo::remotes::pr_head` (2), `repo::remotes::pr_push_refused` (3), `repo::remotes::pr_refspec` (2), `ui::sidebar::remotes::remote_menu` (7)
 
 #### Create a pull request (opens the compare page) `remote.create-pr`
 - **Entry:** src/ui/sidebar/ref_menus.rs:167 branch menu "Create pull request…"; src/ui/palette.rs:187 Cmd+P "Create pull request for <branch>"; src/ui/dialogs.rs:198 AI dialog "Open pull request page" (with title/body)
@@ -1400,7 +1400,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** graph rows: the author circle when there is no GitHub avatar (src/ui/graph_view/mod.rs:416), also with Settings → "Show GitHub avatars" off; commit details author / co-authors (src/ui/inspector/commit.rs:66 avatar); file history rows (src/ui/history.rs:119); background: rendered off the UI thread from the author's name, so the same in every repo (src/repo/avatars.rs:134 critter); PNG cached on disk for five years (avatars.rs:152 cached_critter); initials until it is ready
 - **Platform:** `platform.design-system`
 - **Own code:** `repo::avatars::cached_critter`, `repo::avatars::critter`, `repo::avatars::critter_image`
-- **Shared:** `ui::graph_view::show` (17), `ui::inspector::commit::avatar` (3), `ui::history::show` (3)
+- **Shared:** `ui::graph_view::show` (18), `ui::inspector::commit::avatar` (3), `ui::history::show` (3)
 
 ### LFS and submodules
 
@@ -1430,38 +1430,43 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** Center pane of every repo tab (ui/repo_view.rs -> graph_view::show); graph_view/mod.rs:224 column headers BRANCH / TAG, GRAPH, COMMIT MESSAGE, AUTHOR, DATE; lane colours: view.lane-colors
 - **Platform:** `platform.design-system`, `platform.format`, `platform.git-model`, `platform.repo-load`
 - **Own code:** `graph::layout::Graph::edges_in`, `graph::layout::Graph::index`, `ui::graph_view::columns`, `ui::graph_view::corner`, `ui::graph_view::rounded`
-- **Shared:** `graph::layout::Graph::layout` (2), `graph::layout::Graph::reachable` (2), `graph::layout::free_lane` (2), `ui::graph_view::chip` (2), `ui::graph_view::pill_tip` (3), `ui::graph_view::ref_label` (3), `ui::graph_view::ref_pill` (4), `ui::graph_view::show` (17), `ui::graph_view::tip_now` (3)
+- **Shared:** `graph::layout::Graph::layout` (2), `graph::layout::Graph::reachable` (2), `graph::layout::free_lane` (2), `ui::graph_view::chip` (2), `ui::graph_view::pill_tip` (3), `ui::graph_view::ref_label` (3), `ui::graph_view::ref_pill` (4), `ui::graph_view::show` (18), `ui::graph_view::tip_now` (3)
 
-#### Graph lane colours: ten distinct colours, merge lines in the merged branch's colour `view.lane-colors`
-- **Entry:** graph lanes (src/graph/layout.rs:61 pick): a new lane takes the colour least used by the open lanes nearby and by the last ~60 rows, starting from its tip commit's seed colour; a merged-in branch never takes the merging lane's colour, so diverging branches differ; merge lines (src/graph/layout.rs:86 Graph::layout): a merge's line takes the merged branch's colour once its parent is placed; a merge into a branch that went on joins that branch's lane instead of running beside it; palettes src/theme/mod.rs:23 LANES (dark) and :37 LANES_LIGHT (light flavours): blue, pink, yellow, green, violet, red, teal, grey, orange, brown
+#### Graph lane colours: ten distinct colours, the default branch straight and bold in the theme's accent, stacked branches apart, merge lines in the merged branch's colour `view.lane-colors`
+- **Entry:** graph lanes (src/graph/layout.rs:69 pick): a new lane takes the colour least used by the open lanes nearby and by the last ~60 rows, starting from its tip commit's seed colour; a merged-in branch never takes the merging lane's colour, so diverging branches differ; merge lines (src/graph/layout.rs:100 Graph::layout): a merge's line takes the merged branch's colour once its parent is placed; a merge into a branch that went on joins that branch's lane instead of running beside it; a new merge lane never leaves a node along a lane that just ran into it; main lane (src/repo/data.rs:438 picks the tip: the newer of the default branch and origin's; the default branch is origin/HEAD's if fetched, else origin's main / master, else a local main / master; none in the search-filtered graph): its first-parent chain has column 0 and MAIN_COLOR to itself (Graph::layout, with_wip), drawn bolder (2.5 px against 2.0: graph_view/mod.rs:392) in the flavour's accent (theme::lane); stacked branches (Graph::layout): a branch tip under another branch's commits (a name its lane hasn't carried) starts a new colour, its upstream's when that comes down another lane (unless that is the colour it leaves); a branch and its remote-tracking ref share a name, so they keep one; a pull request head (origin/pr/<n>) down another branch's first-parent line is that branch's (pushed from it, or lagging it) and names nothing, elsewhere (alone, stacked on another pull request, merged) it names its own, as does the local pr/<n> "Check out pull request" makes (RepoData::build_reusing); palette src/theme/mod.rs:25 LANES (one set for every flavour): blue, pink, yellow, green, violet, red, teal, grey, orange, brown; main's lane (MAIN_COLOR) is drawn in the flavour's accent, and the lane colour nearest the accent in hue and chroma (OKLab a/b: theme::gives_way, kept by theme::apply) gives way to the blue, so no other branch looks like main (theme::lane_in)
 - **Platform:** `platform.design-system`
-- **Own code:** `graph::layout::pick`
-- **Shared:** `graph::layout::free_lane` (2), `graph::layout::Graph::layout` (2), `theme::lane` (2), `ui::graph_view::show` (17)
+- **Own code:** `graph::layout::pick`, `theme::lane_in`, `theme::gives_way`, `theme::ab`
+- **Shared:** `graph::layout::free_lane` (2), `graph::layout::Graph::layout` (2), `graph::layout::Graph::with_wip` (2), `repo::data::RepoData::build_reusing` (2), `repo::remotes::numbered` (2), `theme::lane` (2), `ui::graph_view::show` (18)
+
+#### Main line glimmer: a soft light that wavers in place along the default branch's line, with twinkling sparkles, in the line's own colour (on by default) `view.main-magic`
+- **Entry:** Settings → Main line "Animated glimmer and sparkles" (src/ui/settings.rs:202, Settings.magic, default on) → graph_view::show's `magic` (repo_view.rs:114); graph_view/mod.rs:390 collects main's own on-screen line (column 0, not the WIP row's dashed edge nor merges into main) and the colour it is drawn in, clipped to the view, with each span's dimming; :411 paints it between the lines and the avatars, clipped to the graph column; graph_view/magic.rs paint: one mesh, stateless (history position + clock), all in the line's own colour and nothing moving along the line: a glow in a gradient from full (100%), as strong as the line where they meet (from under its anti-aliased rim: no dark border or seam), to nothing (0%) 10 px out, falling off as (1 − u)^1.5, flat at its outer end (magic.rs XS; clear of the line's middle, and along a dimmed line past its rim (magic.rs FAINT: under a see-through line the glow would double it into a hollow line between two bright rails), so a dimmed line stays as faint as the others; where a dimmed row meets a lit one it crosses over within half a row, the avatar there hiding only the line's own step) that swells and tightens in place (its shares to the power 1 / glimmer) (a knot every 36 px of history, each swelling and fading on a cycle of its own of 1.5–4 s, blended smoothly with the next: magic.rs glimmer), and 4-point star glints and motes 4–13 px beside the line (hash of slot and cycle), each fading in and out at one spot over 1–3 s, a new spot with its next cycle; dark themes the line's colour for the glow and the sparkles lightened toward white, light themes the line's colour and the sparkles deepened toward black (magic.rs palette); history positions are taken from row 0 moved down by whole periods of the patterns, so it stays smooth deep in a long history; repaints at 20 fps (magic.rs FPS; egui takes predicted_dt off the delay: paint adds it back) only while main's line is on screen, the window is focused and there was input in the last minute (pointer, wheel, buttons, keys or coming back to the window), in any view (magic.rs note_input, called by repo_view::show); otherwise a still frame: the clock stops, so repaints for anything else don't move it, and resumes where it stopped (it advances by the frames it animates, 0.1 s at most each); screenshot harness: GLASIR_SCREENSHOT_VIEW=magic-clock:<s> runs it on a repeatable clock (screenshot.rs:473), magic-off turns it off for a plain line to compare with (:478)
+- **Platform:** `platform.design-system`
+- **Own code:** `ui::graph_view::magic::note_input`, `ui::graph_view::magic::paint`, `ui::graph_view::magic::palette`, `ui::graph_view::magic::mesh`, `ui::graph_view::magic::smooth`, `ui::graph_view::magic::glimmer`, `ui::graph_view::magic::sparkles`, `ui::graph_view::magic::hash`, `ui::graph_view::magic::unit`, `ui::graph_view::magic::glow`, `ui::graph_view::magic::star`
+- **Shared:** `ui::graph_view::show` (18), `ui::repo_view::show` (7), `ui::settings::App::settings_dialog` (11), `ui::settings::Settings::default` (3), `ui::screenshot::App::screenshot` (2)
 
 #### Working-changes (WIP) row at the top of the graph `view.wip-row`
 - **Entry:** graph_view/mod.rs row 0 "detached HEAD"/"HEAD" WIP row; click selects Sel::Wip
 - **Platform:** `platform.repo-load`
-- **Own code:** `graph::layout::Graph::with_wip`
-- **Shared:** `ui::graph_view::show` (17)
+- **Shared:** `graph::layout::Graph::with_wip` (2), `ui::graph_view::show` (18)
 
 #### Load more history on scroll (paging) `view.load-more`
 - **Entry:** Scrolling to the end of the graph pushes Action::LoadMore (graph_view/mod.rs:637)
 - **Platform:** `platform.repo-load`
-- **Shared:** `graph::layout::Graph::has_unloaded_parent` (2), `ui::graph_view::show` (17)
+- **Shared:** `graph::layout::Graph::has_unloaded_parent` (2), `ui::graph_view::show` (18)
 
 #### First-parent-only graph toggle and "Viewing N of M refs / Show all" `view.first-parent`
 - **Entry:** graph_view/mod.rs:167 "Show all" link; graph_view/mod.rs:246 first-parent toggle in header
 - **Platform:** `platform.repo-load`
-- **Shared:** `repo::data::View::change` (3), `ui::graph_view::show` (17)
+- **Shared:** `repo::data::View::change` (3), `ui::graph_view::show` (18)
 
 #### Scroll to HEAD chip `view.head-chip`
 - **Entry:** graph_view/mod.rs:652-668 HEAD chip "<branch> (HEAD)" with an up / down arrow when HEAD is scrolled out of view; click scrolls to it
-- **Shared:** `ui::graph_view::chip` (2), `ui::graph_view::show` (17)
+- **Shared:** `ui::graph_view::chip` (2), `ui::graph_view::show` (18)
 
 #### Select a commit / multi-select (click, Cmd/Shift-click) `view.select`
 - **Entry:** Click a graph row; Cmd/Shift-click (graph_view/mod.rs:312)
 - **Platform:** `platform.op-runner`
-- **Shared:** `ui::graph_view::multi_select` (3), `ui::graph_view::show` (17)
+- **Shared:** `ui::graph_view::multi_select` (3), `ui::graph_view::show` (18)
 
 #### Keyboard navigation in the graph (Up/Down, J/K) `view.keyboard-nav`
 - **Entry:** graph_view/mod.rs:716 keyboard_nav
@@ -1680,7 +1685,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### Stashes sidebar section (list, select, multi-select, filter) `tools.stash-list`
 - **Entry:** src/ui/sidebar/stashes.rs:14 STASHES section (click, ⌘/⇧-click multi-select, sidebar filter); stash markers in the graph src/ui/graph_view/mod.rs:509-544
 - **Platform:** `platform.design-system`, `platform.git-model`, `platform.repo-load`
-- **Shared:** `git::read::stash_info` (4), `ui::graph_view::show` (17), `ui::sidebar::stashes::list` (3)
+- **Shared:** `git::read::stash_info` (4), `ui::graph_view::show` (18), `ui::sidebar::stashes::list` (3)
 
 #### Apply stash (keeps it; restores staged state when possible) `tools.stash-apply`
 - **Entry:** src/ui/sidebar/stashes.rs:66 double-click a stash; src/ui/sidebar/stashes.rs:86 "Apply stash" menu; graph stash marker menu (graph_view/mod.rs:531, :544)
@@ -1806,10 +1811,10 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Terminal
 
 #### Embedded terminal panel (toggle, tabs, new, close, busy guard) `tools.terminal-panel`
-- **Entry:** ⌃` src/ui/app.rs:199-203; toolbar terminal pill src/ui/toolbar.rs:26; ⌘P "Toggle terminal panel" src/ui/palette.rs:137; panel src/ui/repo_view.rs:46-53 ("New terminal", tab buttons, "Stop & close", "Keep", hide); Settings → Built-in terminal
+- **Entry:** ⌃` src/ui/app.rs:199-203; toolbar terminal pill src/ui/toolbar.rs:26; ⌘P "Toggle terminal panel" src/ui/palette.rs:137; panel src/ui/repo_view.rs:47-53 ("New terminal", tab buttons, "Stop & close", "Keep", hide); Settings → Built-in terminal
 - **Platform:** `platform.design-system`
 - **Own code:** `repo::terminal::Listener::send_event`, `repo::terminal::Session::drop`, `repo::terminal::Session::poll`, `repo::terminal::Session::spawn`, `repo::terminal::Terminals::add`, `repo::terminal::Terminals::close`, `repo::terminal::Terminals::fix_after_removal`, `repo::terminal::Terminals::keep_busy`, `repo::terminal::Terminals::poll`, `repo::terminal::Terminals::toggle`, `repo::terminal::created`, `ui::terminal::id`, `ui::terminal::show`
-- **Shared:** `repo::terminal::Terminals::busy` (2), `repo::terminal::Terminals::running` (2), `ui::app::App::shortcuts` (11), `ui::palette::items` (25), `ui::repo_view::show` (6), `ui::toolbar::toolbar` (8)
+- **Shared:** `repo::terminal::Terminals::busy` (2), `repo::terminal::Terminals::running` (2), `ui::app::App::shortcuts` (11), `ui::palette::items` (25), `ui::repo_view::show` (7), `ui::toolbar::toolbar` (8)
 
 #### Terminal grid rendering, selection and scrolling `tools.terminal-render`
 - **Entry:** src/ui/terminal.rs:78 grid (cells, cursor, selection, wheel, IME)
@@ -1852,7 +1857,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 #### External merge tool for a conflicted file `tools.merge-tool`
 - **Entry:** src/ui/inspector/wip.rs:537 "Open in external merge tool"; Cancel at wip.rs:80 open_tools; "Restore conflict markers" wip.rs:547
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
-- **Shared:** `repo::tools::RepoTab::close_tool` (2), `repo::tools::RepoTab::merge_tool_open` (3), `repo::tools::RepoTab::open_tool` (3), `repo::tools::RepoTab::poll_tools` (3), `repo::tools::RepoTab::tool_blocks` (2), `repo::tools::kind` (3), `repo::tools::mergetool_op` (3), `repo::tools::restore_markers_op` (3), `repo::tools::tool` (3), `repo::tools::touches` (2), `ui::dialogs::ai_dialog` (4), `ui::inspector::wip::RepoTab::wip_panel` (31), `ui::inspector::wip::open_tools` (5), `ui::repo_view::show` (6)
+- **Shared:** `repo::tools::RepoTab::close_tool` (2), `repo::tools::RepoTab::merge_tool_open` (3), `repo::tools::RepoTab::open_tool` (3), `repo::tools::RepoTab::poll_tools` (3), `repo::tools::RepoTab::tool_blocks` (2), `repo::tools::kind` (3), `repo::tools::mergetool_op` (3), `repo::tools::restore_markers_op` (3), `repo::tools::tool` (3), `repo::tools::touches` (2), `ui::dialogs::ai_dialog` (4), `ui::inspector::wip::RepoTab::wip_panel` (31), `ui::inspector::wip::open_tools` (5), `ui::repo_view::show` (7)
 
 #### External diff tool for a file `tools.diff-tool`
 - **Entry:** src/ui/diff_view.rs:270 diff header pill
@@ -1867,7 +1872,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Maintenance and logs
 
 #### Perform repo maintenance `tools.maintenance-run`
-- **Entry:** src/ui/toolbar.rs:194 "Perform repo maintenance"; ⌘P "Perform repo maintenance"; optimize hint src/ui/repo_view.rs:161 "Optimize"
+- **Entry:** src/ui/toolbar.rs:194 "Perform repo maintenance"; ⌘P "Perform repo maintenance"; optimize hint src/ui/repo_view.rs:162 "Optimize"
 - **Platform:** `platform.git-runner`, `platform.op-runner`, `platform.undo-engine`
 - **Own code:** `repo::maintenance::op`
 - **Shared:** `repo::maintenance::run` (2), `ui::palette::items` (25), `ui::repo_view::optimize_hint` (3), `ui::toolbar::history_tools` (7)
@@ -1879,7 +1884,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Shared:** `repo::maintenance::run` (2), `ui::palette::items` (25), `ui::toolbar::history_tools` (7)
 
 #### Optimize repository hint strip `tools.optimize-hint`
-- **Entry:** src/ui/repo_view.rs:149 strip above graph (loose objects / no commit-graph)
+- **Entry:** src/ui/repo_view.rs:150 strip above graph (loose objects / no commit-graph)
 - **Platform:** `platform.repo-load`
 - **Own code:** `repo::maintenance::Health::wants_optimizing`, `repo::maintenance::health`
 - **Shared:** `ui::repo_view::optimize_hint` (3)
@@ -1919,8 +1924,8 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Entry:** tab open, reload (F5, focus, watcher, after ops), commit selection details; command log window reads git::log::LOG
 - **Used by:** 32 features
 - **Platform:** `platform.git-model`, `platform.git-runner`, `platform.task`
-- **Own code:** `git::log::Logged::shell`, `git::log::record`, `git::log::shell_quote`, `git::read::author`, `git::read::commit_info`, `git::read::compare_info`, `git::read::config`, `git::read::git_dir`, `git::read::log`, `git::read::numstat`, `git::read::parse_config`, `git::read::parse_ident`, `git::read::parse_log`, `git::read::parse_name_status`, `git::read::parse_numstat`, `git::read::parse_status`, `git::read::sig_code`, `git::read::stashes`, `git::read::status`, `repo::RepoTab::compare_query`, `repo::RepoTab::load_info`, `repo::RepoTab::load_info_soon`, `repo::RepoTab::loading`, `repo::RepoTab::locate`, `repo::RepoTab::new`, `repo::RepoTab::picked_lately`, `repo::RepoTab::select`, `repo::RepoTab::shown`, `repo::data::RepoData::build`, `repo::data::RepoData::build_reusing`, `repo::data::RepoData::commit`, `repo::data::RepoData::first_parent`, `repo::data::RepoData::rows`, `repo::data::View::filtered`, `repo::data::is_trunk`, `repo::data::is_trunk_name`, `repo::data::load_all`
-- **Shared:** `git::read::conflict_kind` (5), `git::read::parse_worktrees` (2), `git::read::refs` (2), `git::read::remotes` (3), `git::read::stash_info` (4), `git::read::state` (3), `git::read::worktrees` (5), `repo::RepoTab::poll` (3), `repo::RepoTab::reload` (3), `repo::data::RepoData::branch_rank` (3), `repo::data::RepoData::cfg` (3), `repo::data::RepoData::cfg_all` (2), `repo::data::RepoData::cfg_bool` (2), `repo::data::RepoData::count_worktree_changes` (2), `repo::data::RepoData::default_branch` (4), `repo::data::RepoData::default_remote` (8), `repo::data::RepoData::load_bisect` (2), `repo::data::RepoData::load_conflicts` (2), `repo::data::RepoData::local` (7), `repo::data::RepoData::on_remote` (2), `repo::data::RepoData::on_remote_in_graph` (2), `repo::data::RepoData::push_dest` (3), `repo::data::RepoData::push_target` (4), `repo::data::RepoData::reachable` (3), `repo::data::RepoData::rev` (3), `repo::data::RepoData::shows` (2), `repo::data::RepoData::split_remote` (13), `repo::data::RepoData::web` (4), `repo::data::RepoData::web_of` (4), `repo::data::RepoData::webs` (2), `repo::data::RepoData::worktree_path` (3), `repo::data::RepoData::worktree_rev` (2), `repo::data::View::revs` (3), `repo::data::split_remote` (2)
+- **Own code:** `git::log::Logged::shell`, `git::log::record`, `git::log::shell_quote`, `git::read::author`, `git::read::commit_info`, `git::read::compare_info`, `git::read::config`, `git::read::git_dir`, `git::read::log`, `git::read::numstat`, `git::read::parse_config`, `git::read::parse_ident`, `git::read::parse_log`, `git::read::parse_name_status`, `git::read::parse_numstat`, `git::read::parse_status`, `git::read::sig_code`, `git::read::stashes`, `git::read::status`, `repo::RepoTab::compare_query`, `repo::RepoTab::load_info`, `repo::RepoTab::load_info_soon`, `repo::RepoTab::loading`, `repo::RepoTab::locate`, `repo::RepoTab::new`, `repo::RepoTab::picked_lately`, `repo::RepoTab::select`, `repo::RepoTab::shown`, `repo::data::RepoData::build`, `repo::data::RepoData::commit`, `repo::data::RepoData::first_parent`, `repo::data::RepoData::rows`, `repo::data::View::filtered`, `repo::data::is_trunk`, `repo::data::is_trunk_name`, `repo::data::load_all`
+- **Shared:** `git::read::conflict_kind` (5), `git::read::parse_worktrees` (2), `git::read::refs` (2), `git::read::remotes` (3), `git::read::stash_info` (4), `git::read::state` (3), `git::read::worktrees` (5), `repo::RepoTab::poll` (3), `repo::RepoTab::reload` (3), `repo::data::RepoData::branch_rank` (3), `repo::data::RepoData::build_reusing` (2), `repo::data::RepoData::cfg` (3), `repo::data::RepoData::cfg_all` (2), `repo::data::RepoData::cfg_bool` (2), `repo::data::RepoData::count_worktree_changes` (2), `repo::data::RepoData::default_branch` (4), `repo::data::RepoData::default_remote` (8), `repo::data::RepoData::load_bisect` (2), `repo::data::RepoData::load_conflicts` (2), `repo::data::RepoData::local` (7), `repo::data::RepoData::on_remote` (2), `repo::data::RepoData::on_remote_in_graph` (2), `repo::data::RepoData::push_dest` (3), `repo::data::RepoData::push_target` (4), `repo::data::RepoData::reachable` (3), `repo::data::RepoData::rev` (3), `repo::data::RepoData::shows` (2), `repo::data::RepoData::split_remote` (13), `repo::data::RepoData::web` (4), `repo::data::RepoData::web_of` (4), `repo::data::RepoData::webs` (2), `repo::data::RepoData::worktree_path` (3), `repo::data::RepoData::worktree_rev` (2), `repo::data::View::revs` (3), `repo::data::split_remote` (2)
 
 #### File watcher (outside changes reload the repo) `platform.watcher`
 - **Entry:** background: notify events in the worktree and .git
@@ -1936,7 +1941,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 
 #### Liquid Glass design system (colors, flavours, fonts, glass widgets) `platform.design-system`
 - **Entry:** every screen
-- **Used by:** 41 features
+- **Used by:** 42 features
 - **Own code:** `theme::Flavor::dark`, `theme::Flavor::name`, `theme::Flavor::palette`, `theme::Flavor::raw_palette`, `theme::accent`, `theme::add`, `theme::added_bg`, `theme::apply`, `theme::bg`, `theme::change_color`, `theme::change_colors`, `theme::changed`, `theme::contrast`, `theme::dark`, `theme::del`, `theme::dim`, `theme::faint`, `theme::flavor`, `theme::glass::bar`, `theme::glass::bar_h`, `theme::glass::canvas`, `theme::glass::canvas_in`, `theme::glass::card`, `theme::glass::context_menu`, `theme::glass::empty_state`, `theme::glass::glass`, `theme::glass::glass_shapes`, `theme::glass::group`, `theme::glass::inside_rounded`, `theme::glass::keyed`, `theme::glass::photo`, `theme::glass::pill`, `theme::glass::progress`, `theme::glass::radial`, `theme::glass::rest`, `theme::glass::see_through`, `theme::glass::set_transparency`, `theme::glass::slider`, `theme::glass::transparency`, `theme::hover`, `theme::install_fonts`, `theme::luminance`, `theme::on_color`, `theme::removed_bg`, `theme::selection`, `theme::system_fonts`, `theme::tag`, `theme::text`, `theme::visuals`
 - **Shared:** `theme::avatar` (2), `theme::glass::description` (2), `theme::glass::primary` (2), `theme::glass::small` (2), `theme::lane` (2)
 

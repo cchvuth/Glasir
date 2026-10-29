@@ -58,6 +58,8 @@ pub struct Settings {
     pub tips: bool,
     /// Commit authors' GitHub / GitHub Enterprise profile pictures (`repo::avatars`).
     pub avatars: bool,
+    /// The default branch's line in the graph glimmers in its own colour, with sparkles (`graph_view::magic`).
+    pub magic: bool,
     /// Cherry-picks add a "(cherry picked from commit …)" line (`-x`).
     pub cherry_pick_x: bool,
     /// Recent ⌘F searches, newest first.
@@ -100,6 +102,7 @@ impl Default for Settings {
             zoom: 1.0,
             tips: true,
             avatars: true,
+            magic: true,
             cherry_pick_x: false,
             search_history: vec![],
             stacks: true,
@@ -194,6 +197,10 @@ impl App {
                     ui.label("Avatars");
                     ui.checkbox(&mut s.avatars, "Show GitHub avatars")
                         .on_hover_text("Authors' profile pictures from the origin remote's GitHub / GitHub Enterprise host, using git's saved credentials for it. Off: no avatar requests at all.");
+                    ui.end_row();
+                    ui.label("Main line");
+                    ui.checkbox(&mut s.magic, "Animated glimmer and sparkles")
+                        .on_hover_text("Only on the default branch's line in the graph, in its colour. It glimmers while the window is focused and in use, and rests after a minute without input. Off: a plain line.");
                     ui.end_row();
                     ui.label("Version");
                     ui.label(concat!("Glasir ", env!("CARGO_PKG_VERSION")));

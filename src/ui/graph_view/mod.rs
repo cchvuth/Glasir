@@ -5,6 +5,7 @@
 pub mod dnd;
 mod empty;
 pub mod hover;
+pub mod magic;
 pub mod menus;
 mod minimap;
 mod search;
@@ -79,7 +80,12 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
         RefKind::Tag => theme::tag(ui),
     };
-    let label_col = Color32::WHITE.gamma_multiply(if faded { 0.6 } else { 1.0 });
+    // On a solid fill, white or dark ink (main's, in a dark flavour's light accent); see-through ones are dark.
+    let label_col = match rf.kind {
+        RefKind::Local if !faded => theme::on_color(col),
+        _ => Color32::WHITE,
+    }
+    .gamma_multiply(if faded { 0.6 } else { 1.0 });
     let mut job = egui::text::LayoutJob::simple_singleline(label, FontId::proportional(12.0), label_col);
     job.wrap = egui::text::TextWrapping::truncate_at_width((max_w - 14.0).max(0.0));
     let g = p.layout_job(job);
@@ -125,7 +131,8 @@ fn chip(p: &egui::Painter, x: f32, y: f32, text: &str, fg: Color32, bg: Color32)
     tag.right() + 6.0
 }
 
-/// `all`: the loaded history; the graph shows the search hits instead while they filter it.
+/// `all`: the loaded history; the graph shows the search hits instead while they filter it. `magic`:
+/// Settings → Main line.
 pub fn show(
     ui: &mut Ui,
     all: &RepoData,
@@ -134,6 +141,7 @@ pub fn show(
     scroll_to: &mut Option<usize>,
     search: &mut Option<Search>,
     avatars: &crate::repo::avatars::Avatars,
+    magic: bool,
     acts: &mut Vec<Action>,
 ) {
     let filtered = search.as_ref().and_then(|s| s.filtered.clone());
@@ -353,9 +361,12 @@ pub fn show(
             }
             let _ = hovered;
 
-            let gp = ui.painter().with_clip_rect(Rect::from_x_y_ranges(x_graph..=x_msg - 2.0, ui.clip_rect().y_range()));
+            let clip = ui.clip_rect();
+            let gp = ui.painter().with_clip_rect(Rect::from_x_y_ranges(x_graph..=x_msg - 2.0, clip.y_range()));
             let r = LANE.min(ROW) * 0.5;
             let bottom = y(n) + ROW;
+            // Main's line on screen (top, bottom, alpha) and its colour, for the magic.
+            let (mut main_line, mut main_col) = (vec![], Color32::TRANSPARENT);
             for e in d.graph.edges_in(range.clone()) {
                 let (x1, xl, x2) = (x(e.from_col), x(e.lane), x(e.to_col));
                 let (y1, y2) = (y(e.from as usize), if e.to == NONE { bottom } else { y(e.to as usize) });
@@ -374,11 +385,18 @@ pub fn show(
                     pts.push(pos2(xl, y2));
                 }
                 let col = theme::lane(e.color);
-                let stroke = Stroke::new(2.0, if dims(e.from as usize) { col.gamma_multiply(0.3) } else { col });
-                if d.wip && e.from == 0 {
+                let wip = d.wip && e.from == 0;
+                // The default branch's own line (column 0) is drawn bolder.
+                let main = d.graph.main && e.lane == 0 && e.from_col == 0 && !wip;
+                let fade = if dims(e.from as usize) { 0.3 } else { 1.0 };
+                let stroke = Stroke::new(if main { 2.5 } else { 2.0 }, col.gamma_multiply(fade));
+                if magic && main && y1 < clip.bottom() + ROW && y2 > clip.top() - ROW {
+                    main_line.push((y1.max(clip.top() - ROW), y2.min(clip.bottom() + ROW), fade));
+                    main_col = col;
+                }
+                if wip {
                     // The edge can span the whole history: dash only what is on screen (y is monotone).
                     // The top is snapped to the dash period so the pattern doesn't crawl when scrolling.
-                    let clip = ui.clip_rect();
                     let y0 = pts[0].y;
                     let top = y0 + ((clip.top() - ROW - y0) / 7.0).floor().max(0.0) * 7.0;
                     for p in &mut pts {
@@ -389,6 +407,8 @@ pub fn show(
                     gp.add(Shape::line(pts, stroke));
                 }
             }
+            // Between the lines and the avatars.
+            magic::paint(ui, &gp, &magic::Line { x: x(0), top, spans: main_line, color: main_col });
 
             let painter = ui.painter();
             let body = FontId::proportional(13.0);
@@ -565,7 +585,7 @@ pub fn show(
                         // A detached HEAD has no branch pill to carry the HEAD mark: a chip before the message does.
                         if Some(r) == head_row && detached {
                             let t = if d.state == crate::git::State::Clean { "detached HEAD" } else { "HEAD" };
-                            x_text = chip(&mp, x_text, ty, t, Color32::WHITE.gamma_multiply(if faded { 0.5 } else { 1.0 }), hc);
+                            x_text = chip(&mp, x_text, ty, t, if faded { Color32::WHITE.gamma_multiply(0.5) } else { theme::on_color(hc) }, hc);
                         }
                         // Bisect: good / bad / skip marks, and the commit being tested.
                         if let Some(b) = &d.bisect
@@ -654,7 +674,7 @@ pub fn show(
         let up = h < visible.start;
         let name = d.status.branch.as_deref().map_or("HEAD (detached)".to_owned(), |b| format!("{b} (HEAD)"));
         let text = format!("{}  {name}", if up { icon::ARROW_UP } else { icon::ARROW_DOWN });
-        let fg = Color32::WHITE;
+        let fg = theme::on_color(hc);
         let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.5), fg);
         let row = if up { ((body.top() - row0) / ROW).ceil() } else { ((body.bottom() - row0) / ROW).floor() - 1.0 };
         let w = g.size().x + 28.0;
@@ -662,7 +682,8 @@ pub fn show(
         let resp = ui.interact(chip, egui::Id::new(("head_chip", &d.git_dir)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Scroll to HEAD");
         let p = ui.painter();
         p.add(egui::epaint::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(if ui.visuals().dark_mode { 90 } else { 40 }) }.as_shape(chip, 11.0));
-        p.rect_filled(chip, 11.0, if resp.hovered() { hc.lerp_to_gamma(Color32::WHITE, 0.2) } else { hc });
+        // Hovered: away from the text's colour, so it keeps its contrast (white text on a lightened accent fell below 4.5:1).
+        p.rect_filled(chip, 11.0, if resp.hovered() { hc.lerp_to_gamma(if fg == Color32::WHITE { Color32::BLACK } else { Color32::WHITE }, 0.2) } else { hc });
         p.rect_stroke(chip, 11.0, Stroke::new(1.0, Color32::from_white_alpha(110)), egui::StrokeKind::Inside);
         p.galley(chip.center() - g.size() / 2.0, g, fg);
         if resp.clicked() {
@@ -752,9 +773,109 @@ mod tests {
         let after = t.data.take().unwrap();
         assert!(after.wip && !before.wip);
         let (avatars, mut acts) = (crate::repo::avatars::Avatars::default(), vec![]);
-        sim.menu_survives("c2", "Checkout this commit", |ui, reloaded| show(ui, if reloaded { &after } else { &before }, &None, &[], &mut None, &mut None, &avatars, &mut acts));
+        sim.menu_survives("c2", "Checkout this commit", |ui, reloaded| show(ui, if reloaded { &after } else { &before }, &None, &[], &mut None, &mut None, &avatars, true, &mut acts));
         let ops: Vec<_> = acts.iter().filter_map(|a| if let Action::Git(op) = a { op.cmds.first().and_then(|c| c.last()) } else { None }).collect();
         assert_eq!(ops, [&before.log[1].id]);
+    }
+
+    #[test]
+    fn the_main_line_effect_follows_the_setting() {
+        // Settings → Main line off: the plain line, asking for no frames. On: it animates, glimmering in
+        // the line's colour from main's tip down (not on the WIP row's dashed edge), anchored to the
+        // history, and dimmed where the line is.
+        let sim = Sim::new(1000.0, 600.0);
+        let mut t = tab(&sim.ctx, "graph-magic", &["c1", "c2", "c3"]);
+        crate::git::run(&t.dir, &["branch", "-M", "main"]).unwrap();
+        std::fs::write(t.dir.join("f"), "dirty").unwrap();
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let d = t.data.as_ref().unwrap();
+        assert!(d.graph.main && d.wip && d.graph.nodes[1].col == 0);
+        let (avatars, mut acts, mut time) = (crate::repo::avatars::Avatars::default(), vec![], 10.0);
+        // A few frames with the graph `shift` px down, `hover` a row's pill: the delay asked for, the
+        // meshes painted and where c3 (main's tip) and c2 are.
+        let mut frames = |magic: bool, shift: f32, hover: Option<&str>| {
+            let mut last = (std::time::Duration::ZERO, vec![], [0.0; 2]);
+            for _ in 0..4 {
+                time += 0.001;
+                let frame = sim.ctx.cumulative_frame_nr();
+                sim.ctx.data_mut(|m| match hover {
+                    Some(id) => _ = m.insert_temp(egui::Id::new("ref_hover"), (id.to_owned(), 0.0, frame)),
+                    None => m.remove::<(String, f64, u64)>(egui::Id::new("ref_hover")),
+                });
+                let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0))), time: Some(time), ..Default::default() };
+                let mut out = sim.ctx.run_ui(raw, |ui| {
+                    magic::note_input(ui);
+                    let at = Rect::from_min_size(pos2(0.0, shift), vec2(1000.0, 600.0 - shift));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| show(ui, d, &None, &[], &mut None, &mut None, &avatars, magic, &mut acts));
+                });
+                out.textures_delta.clear();
+                let y = |s: &str| out.shapes.iter().find_map(|c| if let Shape::Text(t) = &c.shape { (t.galley.text() == s).then(|| t.galley.rect.translate(t.pos.to_vec2()).center().y) } else { None });
+                let rows = [y("c3").unwrap(), y("c2").unwrap()];
+                let meshes = out.shapes.iter().filter_map(|c| if let Shape::Mesh(m) = &c.shape { Some(m.vertices.clone()) } else { None }).collect::<Vec<_>>();
+                last = (out.viewport_output[&egui::ViewportId::ROOT].repaint_delay, meshes, rows);
+            }
+            last
+        };
+        let (delay, meshes, _) = frames(false, 0.0, None);
+        assert!(delay > std::time::Duration::from_secs(1) && meshes.is_empty(), "off: a plain line, no frames asked for");
+        let (delay, meshes, [tip, c2]) = frames(true, 0.0, None);
+        assert!(delay < std::time::Duration::from_millis(100) && meshes.len() == 1, "on: it animates");
+        // The colour main's line is drawn in, lightened toward white (Midnight is dark), nothing else.
+        let line = theme::lane(d.graph.nodes[1].color);
+        for v in meshes[0].iter().filter(|v| v.color.a() >= 64) {
+            let k = |c: u8, l: u8| (c as f32 * 255.0 / v.color.a() as f32 - l as f32) / (255.0 - l as f32);
+            assert!((k(v.color.r(), line.r()) - k(v.color.g(), line.g())).abs() < 0.06, "{:?} is not {line:?} lightened", v.color);
+        }
+        assert!(meshes[0].iter().all(|v| v.pos.y > tip - ROW / 2.0), "on the WIP row's edge");
+        // Clock stopped: the graph 37 px lower has the same effect 37 px lower.
+        sim.ctx.data_mut(|m| m.insert_temp(egui::Id::new("magic_clock"), 2.0f64));
+        let (base, lower) = (frames(true, 0.0, None).1.remove(0), frames(true, 37.0, None).1.remove(0));
+        assert!(base.len() == lower.len() && base.iter().zip(&lower).all(|(v, w)| (w.pos - v.pos - vec2(0.0, 37.0)).length() < 0.01 && v.color == w.color), "not anchored to the history");
+        // Hovering c2's pill dims main's tip, and its stretch of the effect.
+        let dimmed = frames(true, 0.0, Some(&d.log[1].id)).1.remove(0);
+        let sum = |m: &[egui::epaint::Vertex]| m.iter().filter(|v| v.pos.y > tip && v.pos.y < c2).map(|v| v.color.a() as f32).sum::<f32>();
+        assert!(sum(&dimmed) < 0.8 * sum(&base), "{} of {}", sum(&dimmed), sum(&base));
+    }
+
+    #[test]
+    fn merge_lines_into_and_out_of_main_are_not_bold() {
+        // Main merges a branch that had merged main in. The merge line leaving main's commit, and the one joining main's
+        // lane from the branch, bend through column 0 but aren't main's own line (`e.lane == 0 && e.from_col == 0`): they
+        // stay thin, and main's glimmer doesn't run along them.
+        let sim = Sim::new(1000.0, 600.0);
+        let mut t = tab(&sim.ctx, "graph-magic-merge", &["c1", "c2"]);
+        let steps: [&[&str]; 6] = [&["branch", "-M", "main"], &["checkout", "-q", "-b", "side", "HEAD~1"], &["commit", "-q", "--allow-empty", "-m", "s1"], &["merge", "-q", "--no-ff", "-m", "sync", "main"], &["checkout", "-q", "main"], &["merge", "-q", "--no-ff", "-m", "merge side", "side"]];
+        for args in steps {
+            crate::git::run(&t.dir, args).unwrap();
+        }
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let d = t.data.as_ref().unwrap();
+        assert!(d.graph.main);
+        let (avatars, mut acts) = (crate::repo::avatars::Avatars::default(), vec![]);
+        let raw = || egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 600.0))), time: Some(1.0), ..Default::default() };
+        let mut out = sim.ctx.run_ui(raw(), |ui| show(ui, d, &None, &[], &mut None, &mut None, &avatars, true, &mut acts));
+        out.textures_delta.clear();
+        let lines = |width: f32| out.shapes.iter().filter_map(|c| if let Shape::Path(p) = &c.shape { (p.stroke.width == width).then(|| p.points.clone()) } else { None }).collect::<Vec<_>>();
+        let straight = |pts: &[Pos2]| pts.iter().all(|p| (p.x - pts[0].x).abs() < 0.01);
+        let (bold, thin) = (lines(2.5), lines(2.0));
+        assert!(!bold.is_empty() && bold.iter().all(|p| straight(p)), "main's own line is bold and never leaves column 0: {bold:?}");
+        assert!(thin.iter().filter(|p| !straight(p)).count() >= 2, "the merge lines bend, thin: {thin:?}");
+        // Nor does main's glimmer run along them: one row of glow per height down main's line, top to bottom (a merge line
+        // counted as main's would lay a second, brighter strip over the first).
+        let meshes = |out: &egui::FullOutput| out.shapes.iter().filter_map(|c| if let Shape::Mesh(m) = &c.shape { Some(m.vertices.clone()) } else { None }).collect::<Vec<_>>();
+        let rows: Vec<f32> = meshes(&out).concat().iter().filter(|v| v.pos.x == bold[0][0].x).map(|v| v.pos.y).collect();
+        assert!(rows.len() > 8 && rows.windows(2).all(|w| w[0] < w[1]), "a row of glow per height, once: {rows:?}");
+        // The same history without a default branch has no main chain: column 0 is just a branch's, plain and still.
+        crate::git::run(&t.dir, &["branch", "-m", "main", "trunk"]).unwrap();
+        t.reload(&sim.ctx, true);
+        load(&mut t, &sim.ctx);
+        let d = t.data.as_ref().unwrap();
+        assert!(!d.graph.main);
+        let mut plain = sim.ctx.run_ui(raw(), |ui| show(ui, d, &None, &[], &mut None, &mut None, &avatars, true, &mut acts));
+        plain.textures_delta.clear();
+        assert!(meshes(&plain).is_empty() && plain.shapes.iter().all(|c| !matches!(&c.shape, Shape::Path(p) if p.stroke.width == 2.5)), "no main chain: no bold line, no glimmer");
     }
 
     #[test]

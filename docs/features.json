@@ -601,7 +601,7 @@
       },
       {
        "id": "app.settings-general",
-       "name": "General settings (commits to load, default pull, auto-fetch, avatars, update check, stacks, email rules, protected branches)",
+       "name": "General settings (commits to load, default pull, auto-fetch, avatars, main line glimmer, update check, stacks, email rules, protected branches)",
        "entry": [
         "Settings dialog rows"
        ],
@@ -831,7 +831,7 @@
        "id": "app.optimize-hint",
        "name": "'Optimize this repository' hint banner",
        "entry": [
-        "banner above the graph when repo health is poor (repo_view.rs:149)"
+        "banner above the graph when repo health is poor (repo_view.rs:150)"
        ],
        "fns": [
         "crate::ui::repo_view::optimize_hint"
@@ -983,7 +983,7 @@
        "id": "app.screenshot-harness",
        "name": "Screenshot harness",
        "entry": [
-        "GLASIR_SCREENSHOT=<bmp> GLASIR_SCREENSHOT_VIEW=… (settings, log, update = the update pill, terminal-off, diff-staged:<path>, scroll-bench, …) GLASIR_SCREENSHOT_WIDTH GLASIR_KEYS"
+        "GLASIR_SCREENSHOT=<bmp> GLASIR_SCREENSHOT_VIEW=… (settings, log, update = the update pill, terminal-off, diff-staged:<path>, scroll-bench, magic-clock:<s>, magic-off, …) GLASIR_SCREENSHOT_WIDTH GLASIR_KEYS"
        ],
        "fns": [
         "crate::ui::app::App::raw_input_hook",
@@ -1286,7 +1286,7 @@
        "name": "Open a WIP file diff (unstaged / staged)",
        "entry": [
         "click a WIP row (Action::Diff)",
-        "diff pane in repo_view.rs:76/100",
+        "diff pane in repo_view.rs:77/100",
         "diff options toolbar: split / wrap / ignore whitespace / context (view_controls)"
        ],
        "fns": [
@@ -2926,7 +2926,7 @@
        "entry": [
         "src/ui/sidebar/mod.rs:52 eye icon on hovered rows and folder/remote headers (\"Hide from graph\")",
         "ref menus \"Hide from graph\" / \"Show in graph\" (ref_menus.rs:89 view_items)",
-        "persisted per repo in ui/repo_view.rs:137"
+        "persisted per repo in ui/repo_view.rs:138"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -3001,8 +3001,8 @@
        "id": "refs.head-pill",
        "name": "HEAD pill: filled with its lane colour, glowing, leads with a check",
        "entry": [
-        "graph ref column (src/ui/graph_view/mod.rs:71 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text and its connector line to the node in the same colour; HEAD's node is larger",
-        "label (src/ui/graph_view/mod.rs:53 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow",
+        "graph ref column (src/ui/graph_view/mod.rs:72 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text (white, or dark ink on a light fill such as a dark flavour's accent on main: theme::on_color) and its connector line to the node in the same colour; HEAD's node is larger",
+        "label (src/ui/graph_view/mod.rs:54 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow",
         "sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)"
        ],
        "fns": [
@@ -3213,7 +3213,7 @@
         "src/ui/dialogs.rs:524 branch drop menu \"Interactive rebase {src} onto {dst}…\"",
         "keys in editor: ↑/↓ select, ⌥↑/⌥↓ move, P R S F D, Esc cancel (src/ui/rebase_editor.rs:24)",
         "buttons: move up/down pills, action pills, \"Start rebase\", \"Cancel\" (src/ui/rebase_editor.rs)",
-        "src/ui/repo_view.rs:87 center-pane switch"
+        "src/ui/repo_view.rs:88 center-pane switch"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -4133,7 +4133,7 @@
        "name": "Open the three-pane merge editor",
        "entry": [
         "click a conflicted file in the WIP panel (Action::MergeEditor), src/ui/inspector/wip.rs:552",
-        "src/ui/repo_view.rs:61 center pane"
+        "src/ui/repo_view.rs:62 center pane"
        ],
        "fns": [
         "crate::repo::RepoTab::apply",
@@ -4699,7 +4699,7 @@
         "src/ui/palette.rs:172 Cmd+P \"Add remote…\"",
         "src/ui/toolbar.rs:263 Push with no remote",
         "src/ui/graph_view/empty.rs:50 empty-repo hint",
-        "src/ui/repo_view.rs:134 dialog host"
+        "src/ui/repo_view.rs:135 dialog host"
        ],
        "fns": [
         "crate::git::read::remotes",
@@ -5244,18 +5244,58 @@
       },
       {
        "id": "view.lane-colors",
-       "name": "Graph lane colours: ten distinct colours, merge lines in the merged branch's colour",
+       "name": "Graph lane colours: ten distinct colours, the default branch straight and bold in the theme's accent, stacked branches apart, merge lines in the merged branch's colour",
        "entry": [
-        "graph lanes (src/graph/layout.rs:61 pick): a new lane takes the colour least used by the open lanes nearby and by the last ~60 rows, starting from its tip commit's seed colour; a merged-in branch never takes the merging lane's colour, so diverging branches differ",
-        "merge lines (src/graph/layout.rs:86 Graph::layout): a merge's line takes the merged branch's colour once its parent is placed; a merge into a branch that went on joins that branch's lane instead of running beside it",
-        "palettes src/theme/mod.rs:23 LANES (dark) and :37 LANES_LIGHT (light flavours): blue, pink, yellow, green, violet, red, teal, grey, orange, brown"
+        "graph lanes (src/graph/layout.rs:69 pick): a new lane takes the colour least used by the open lanes nearby and by the last ~60 rows, starting from its tip commit's seed colour; a merged-in branch never takes the merging lane's colour, so diverging branches differ",
+        "merge lines (src/graph/layout.rs:100 Graph::layout): a merge's line takes the merged branch's colour once its parent is placed; a merge into a branch that went on joins that branch's lane instead of running beside it; a new merge lane never leaves a node along a lane that just ran into it",
+        "main lane (src/repo/data.rs:438 picks the tip: the newer of the default branch and origin's; the default branch is origin/HEAD's if fetched, else origin's main / master, else a local main / master; none in the search-filtered graph): its first-parent chain has column 0 and MAIN_COLOR to itself (Graph::layout, with_wip), drawn bolder (2.5 px against 2.0: graph_view/mod.rs:392) in the flavour's accent (theme::lane)",
+        "stacked branches (Graph::layout): a branch tip under another branch's commits (a name its lane hasn't carried) starts a new colour, its upstream's when that comes down another lane (unless that is the colour it leaves); a branch and its remote-tracking ref share a name, so they keep one; a pull request head (origin/pr/<n>) down another branch's first-parent line is that branch's (pushed from it, or lagging it) and names nothing, elsewhere (alone, stacked on another pull request, merged) it names its own, as does the local pr/<n> \"Check out pull request\" makes (RepoData::build_reusing)",
+        "palette src/theme/mod.rs:25 LANES (one set for every flavour): blue, pink, yellow, green, violet, red, teal, grey, orange, brown; main's lane (MAIN_COLOR) is drawn in the flavour's accent, and the lane colour nearest the accent in hue and chroma (OKLab a/b: theme::gives_way, kept by theme::apply) gives way to the blue, so no other branch looks like main (theme::lane_in)"
        ],
        "fns": [
         "crate::graph::layout::pick",
         "crate::graph::layout::free_lane",
         "crate::graph::layout::Graph::layout",
+        "crate::graph::layout::Graph::with_wip",
+        "crate::repo::data::RepoData::build_reusing",
+        "crate::repo::remotes::numbered",
         "crate::theme::lane",
+        "crate::theme::lane_in",
+        "crate::theme::gives_way",
+        "crate::theme::ab",
         "crate::ui::graph_view::show"
+       ],
+       "platform": [
+        "platform.design-system"
+       ]
+      },
+      {
+       "id": "view.main-magic",
+       "name": "Main line glimmer: a soft light that wavers in place along the default branch's line, with twinkling sparkles, in the line's own colour (on by default)",
+       "entry": [
+        "Settings → Main line \"Animated glimmer and sparkles\" (src/ui/settings.rs:202, Settings.magic, default on) → graph_view::show's `magic` (repo_view.rs:114)",
+        "graph_view/mod.rs:390 collects main's own on-screen line (column 0, not the WIP row's dashed edge nor merges into main) and the colour it is drawn in, clipped to the view, with each span's dimming; :411 paints it between the lines and the avatars, clipped to the graph column",
+        "graph_view/magic.rs paint: one mesh, stateless (history position + clock), all in the line's own colour and nothing moving along the line: a glow in a gradient from full (100%), as strong as the line where they meet (from under its anti-aliased rim: no dark border or seam), to nothing (0%) 10 px out, falling off as (1 − u)^1.5, flat at its outer end (magic.rs XS; clear of the line's middle, and along a dimmed line past its rim (magic.rs FAINT: under a see-through line the glow would double it into a hollow line between two bright rails), so a dimmed line stays as faint as the others; where a dimmed row meets a lit one it crosses over within half a row, the avatar there hiding only the line's own step) that swells and tightens in place (its shares to the power 1 / glimmer) (a knot every 36 px of history, each swelling and fading on a cycle of its own of 1.5–4 s, blended smoothly with the next: magic.rs glimmer), and 4-point star glints and motes 4–13 px beside the line (hash of slot and cycle), each fading in and out at one spot over 1–3 s, a new spot with its next cycle; dark themes the line's colour for the glow and the sparkles lightened toward white, light themes the line's colour and the sparkles deepened toward black (magic.rs palette); history positions are taken from row 0 moved down by whole periods of the patterns, so it stays smooth deep in a long history",
+        "repaints at 20 fps (magic.rs FPS; egui takes predicted_dt off the delay: paint adds it back) only while main's line is on screen, the window is focused and there was input in the last minute (pointer, wheel, buttons, keys or coming back to the window), in any view (magic.rs note_input, called by repo_view::show); otherwise a still frame: the clock stops, so repaints for anything else don't move it, and resumes where it stopped (it advances by the frames it animates, 0.1 s at most each)",
+        "screenshot harness: GLASIR_SCREENSHOT_VIEW=magic-clock:<s> runs it on a repeatable clock (screenshot.rs:473), magic-off turns it off for a plain line to compare with (:478)"
+       ],
+       "fns": [
+        "crate::ui::graph_view::magic::note_input",
+        "crate::ui::graph_view::magic::paint",
+        "crate::ui::graph_view::magic::palette",
+        "crate::ui::graph_view::magic::mesh",
+        "crate::ui::graph_view::magic::smooth",
+        "crate::ui::graph_view::magic::glimmer",
+        "crate::ui::graph_view::magic::sparkles",
+        "crate::ui::graph_view::magic::hash",
+        "crate::ui::graph_view::magic::unit",
+        "crate::ui::graph_view::magic::glow",
+        "crate::ui::graph_view::magic::star",
+        "crate::ui::graph_view::show",
+        "crate::ui::repo_view::show",
+        "crate::ui::settings::App::settings_dialog",
+        "crate::ui::settings::Settings::default",
+        "crate::ui::screenshot::App::screenshot"
        ],
        "platform": [
         "platform.design-system"
@@ -6556,7 +6596,7 @@
         "⌃` src/ui/app.rs:199-203",
         "toolbar terminal pill src/ui/toolbar.rs:26",
         "⌘P \"Toggle terminal panel\" src/ui/palette.rs:137",
-        "panel src/ui/repo_view.rs:46-53 (\"New terminal\", tab buttons, \"Stop & close\", \"Keep\", hide)",
+        "panel src/ui/repo_view.rs:47-53 (\"New terminal\", tab buttons, \"Stop & close\", \"Keep\", hide)",
         "Settings → Built-in terminal"
        ],
        "fns": [
@@ -6807,7 +6847,7 @@
        "entry": [
         "src/ui/toolbar.rs:194 \"Perform repo maintenance\"",
         "⌘P \"Perform repo maintenance\"",
-        "optimize hint src/ui/repo_view.rs:161 \"Optimize\""
+        "optimize hint src/ui/repo_view.rs:162 \"Optimize\""
        ],
        "fns": [
         "crate::repo::maintenance::op",
@@ -6845,7 +6885,7 @@
        "id": "tools.optimize-hint",
        "name": "Optimize repository hint strip",
        "entry": [
-        "src/ui/repo_view.rs:149 strip above graph (loose objects / no commit-graph)"
+        "src/ui/repo_view.rs:150 strip above graph (loose objects / no commit-graph)"
        ],
        "fns": [
         "crate::repo::maintenance::Health::wants_optimizing",

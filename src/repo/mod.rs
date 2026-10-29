@@ -376,7 +376,7 @@ impl RepoTab {
         });
         self.load = Some(Task::spawn(ctx, move || match cached {
             Some((log, refs, st, rm, gd, oh, prev, (wt, sm, lfs, cfg, au, tr, stk, hl, bis))) => {
-                let mut d = RepoData::build_reusing(log, refs, st, rm, gd, oh, git::status(&dir)?, view, Some(prev));
+                let mut d = RepoData::build_reusing(log, refs, st, rm, gd, oh, git::status(&dir)?, view, Some(prev), false);
                 (d.worktrees, d.submodules, d.lfs, d.config, d.author, d.truncated, d.stack, d.health) = (wt, sm, lfs, cfg, au, tr, stk, hl);
                 d.count_worktree_changes(&dir);
                 d.load_bisect(&dir, bis.as_ref());

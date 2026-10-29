@@ -35,14 +35,41 @@ const LANES: [Color32; crate::graph::COLORS as usize] = [
     Color32::from_rgb(0x9f, 0x6b, 0x3c), // brown
 ];
 
+/// Lane `i`'s colour: main's own (`MAIN_COLOR`) is the flavour's accent, and the lane colour nearest
+/// the accent gives way to the blue main had before, so no other branch looks like main.
 pub fn lane(i: u16) -> Color32 {
-    LANES[i as usize % LANES.len()]
+    lane_in(i, accent(), GIVES_WAY.load(std::sync::atomic::Ordering::Relaxed))
 }
 
-/// Stable per-author avatar color.
+/// `lane` with `accent` for main and lane colour `way` swapped for main's old blue.
+fn lane_in(i: u16, accent: Color32, way: u8) -> Color32 {
+    use crate::graph::MAIN_COLOR;
+    match i % crate::graph::COLORS {
+        MAIN_COLOR => accent,
+        i if i == way as u16 => LANES[MAIN_COLOR as usize],
+        i => LANES[i as usize],
+    }
+}
+
+/// The lane colour nearest `accent` in hue and chroma: OKLab's a and b, as an accent is lighter or
+/// deeper than the lanes by design.
+fn gives_way(accent: Color32) -> u8 {
+    let a = ab(accent);
+    (0..LANES.len()).min_by(|&i, &j| (ab(LANES[i]) - a).length().total_cmp(&(ab(LANES[j]) - a).length())).unwrap_or(0) as u8
+}
+
+/// A colour's a (green–red) and b (blue–yellow) in OKLab.
+fn ab(c: Color32) -> egui::Vec2 {
+    let c = egui::Rgba::from(c);
+    let [l, m, s] = [[0.4122215, 0.5363325, 0.05144599], [0.2119035, 0.6806995, 0.107397], [0.08830246, 0.2817188, 0.6299787]]
+        .map(|[x, y, z]: [f32; 3]| (x * c.r() + y * c.g() + z * c.b()).cbrt());
+    vec2(1.977998 * l - 2.428592 * m + 0.4505937 * s, 0.02590404 * l + 0.7827718 * m - 0.8086758 * s)
+}
+
+/// Stable per-author avatar color, the same in every flavour.
 pub fn avatar(email: &str) -> Color32 {
     let h = email.bytes().fold(5381u32, |h, b| h.wrapping_mul(33) ^ b as u32);
-    let c = lane((h % 10) as u16);
+    let c = LANES[h as usize % LANES.len()];
     Color32::from_rgb(c.r() / 2 + 24, c.g() / 2 + 24, c.b() / 2 + 24)
 }
 
@@ -297,6 +324,9 @@ impl Flavor {
 }
 
 static FLAVOR: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// The current flavour's lane colour that gives way to main's old one (`gives_way`); none (0) in the
+/// default Midnight, whose accent is blue.
+static GIVES_WAY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn flavor() -> Flavor {
     Flavor::DARK.iter().chain(&Flavor::LIGHT).nth(FLAVOR.load(std::sync::atomic::Ordering::Relaxed) as usize).copied().unwrap_or(Flavor::Midnight)
@@ -498,6 +528,7 @@ fn visuals(f: Flavor) -> Visuals {
 
 pub fn apply(ctx: &egui::Context, f: Flavor) {
     FLAVOR.store([Flavor::DARK, Flavor::LIGHT].concat().iter().position(|x| *x == f).unwrap_or(0) as u8, std::sync::atomic::Ordering::Relaxed);
+    GIVES_WAY.store(gives_way(f.palette().accent), std::sync::atomic::Ordering::Relaxed);
     let theme = if f.dark() { egui::Theme::Dark } else { egui::Theme::Light };
     ctx.set_theme(theme);
     ctx.set_visuals_of(theme, visuals(f));
@@ -590,9 +621,44 @@ mod tests {
     }
 
     #[test]
+    fn main_takes_the_accent_and_no_other_branch_its_hue() {
+        use crate::graph::{COLORS, MAIN_COLOR};
+        // Lanes are drawn as in the default flavour until one is applied.
+        assert_eq!(gives_way(Flavor::default().palette().accent), 0);
+        for f in [Flavor::DARK, Flavor::LIGHT].concat() {
+            let accent = f.palette().accent;
+            let lanes: Vec<_> = (0..COLORS).map(|i| lane_in(i, accent, gives_way(accent))).collect();
+            assert_eq!(lanes[MAIN_COLOR as usize], accent, "{}", f.name());
+            // The other branches: nine of the ten lane colours, none of them near the accent.
+            let others: Vec<_> = lanes.iter().enumerate().filter(|&(i, _)| i != MAIN_COLOR as usize).map(|(_, &c)| c).collect();
+            assert!(others.iter().all(|c| LANES.contains(c) && others.iter().filter(|&d| d == c).count() == 1), "{}: {others:?}", f.name());
+            let near = others.iter().map(|&c| (ab(c) - ab(accent)).length()).fold(f32::MAX, f32::min);
+            assert!(near > 0.04, "{}: a branch colour {near:.3} from the accent", f.name());
+        }
+    }
+
+    #[test]
     fn the_accent_is_never_toned() {
         for f in [Flavor::DARK, Flavor::LIGHT].concat() {
             assert_eq!(f.raw_palette().accent, f.palette().accent, "{}", f.name());
         }
+    }
+
+    #[test]
+    fn oklab_matches_its_reference_values() {
+        // (a, b) of white, the sRGB primaries and two mid-tones (where a missing linearisation shows: the
+        // primaries are its fixed points). The swap measures with `ab`, so nothing else would notice it wrong.
+        for (c, a, b) in [(Color32::WHITE, 0.0, 0.0), (Color32::RED, 0.22486, 0.12585), (Color32::GREEN, -0.23389, 0.17950), (Color32::BLUE, -0.03246, -0.31153), (Color32::from_rgb(0x40, 0x9c, 0xff), -0.04968, -0.16242), (Color32::from_rgb(0xff, 0x6a, 0x3d), 0.15271, 0.11561)] {
+            let v = ab(c);
+            assert!((v.x - a).abs() < 1e-3 && (v.y - b).abs() < 1e-3, "{c:?}: {v:?}, want ({a}, {b})");
+        }
+    }
+
+    #[test]
+    fn author_colours_stay_the_lane_set_whatever_the_flavour() {
+        // Avatars take LANES as they are: the accent and the swapped blue are the graph's business.
+        let rings: Vec<_> = LANES.iter().map(|c| Color32::from_rgb(c.r() / 2 + 24, c.g() / 2 + 24, c.b() / 2 + 24)).collect();
+        let seen: std::collections::HashSet<_> = (0..200).map(|i| avatar(&format!("author{i}@example.com"))).collect();
+        assert!(seen.len() == rings.len() && seen.iter().all(|c| rings.contains(c)), "{seen:?}");
     }
 }

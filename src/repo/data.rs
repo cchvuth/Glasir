@@ -24,7 +24,8 @@ pub struct RepoData {
     pub git_dir: PathBuf,
     /// `origin/HEAD`'s branch name, if set.
     pub origin_head: String,
-    /// `origin/HEAD`'s branch, else origin's main / master, else "main" (found once in `build`).
+    /// `origin/HEAD`'s branch (if fetched), else origin's main / master, else a local main / master,
+    /// else "main" (found once in `build`).
     default_branch: String,
     /// History was cut at the commit limit (more can be loaded).
     pub truncated: bool,
@@ -340,11 +341,12 @@ impl RepoData {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn build(log: Arc<Vec<Commit>>, refs: Arc<Vec<Ref>>, stashes: Arc<Vec<git::Stash>>, remotes: Arc<Vec<(String, String)>>, git_dir: PathBuf, origin_head: String, status: Status, view: View) -> Self {
-        Self::build_reusing(log, refs, stashes, remotes, git_dir, origin_head, status, view, None)
+        Self::build_reusing(log, refs, stashes, remotes, git_dir, origin_head, status, view, None, false)
     }
 
     /// `build`, keeping `prev`'s lane layout (a status-only refresh over the same log, refs and
-    /// view): laying out a huge log takes a long while.
+    /// view): laying out a huge log takes a long while. `hits`: `log` is search hits linked to
+    /// the hits among their parents (the filtered graph).
     #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub(super) fn build_reusing(
         log: Arc<Vec<Commit>>,
@@ -356,6 +358,7 @@ impl RepoData {
         status: Status,
         view: View,
         prev: Option<(Arc<Graph>, Arc<Graph>, (bool, Option<usize>))>,
+        hits: bool,
     ) -> Self {
         let state = git::state(&git_dir);
         // An operation stopped with a clean tree (conflicts resolved to HEAD, a rebase `edit`
@@ -367,21 +370,72 @@ impl RepoData {
         let keep = if view.first_parent { 1 } else { usize::MAX };
         let parents: Vec<Vec<u32>> =
             log.iter().map(|c| c.parents.iter().take(keep).map(|p| row_of.get(p).map_or(NONE, |&r| (r - off) as u32)).collect()).collect();
+        let has = |kind, name: &str| refs.iter().any(|r| r.kind == kind && r.name == name);
+        let default_branch = [origin_head.as_str(), "main", "master"]
+            .into_iter()
+            .find(|b| !b.is_empty() && has(RefKind::Remote, &format!("origin/{b}")))
+            .or_else(|| ["main", "master"].into_iter().find(|b| has(RefKind::Local, b)))
+            .unwrap_or("main")
+            .to_owned();
+        let origin_default = format!("origin/{default_branch}");
         let mut prio = vec![6u32; log.len()];
+        // Per row, the branches whose tip it is (a remote's by their name there: `feature` for
+        // origin/feature too): the graph gives a branch stacked on another's tip its own color.
+        let (mut names, mut ids) = (vec![vec![]; log.len()], HashMap::new());
         let mut refs_at: HashMap<String, Vec<usize>> = HashMap::new();
+        // Rows down a branch's first-parent line below its tip (pull request heads, and the `pr/42`
+        // "Check out pull request" makes, aren't branches here).
+        let pr = |b: &str| b.strip_prefix("pr/").is_some_and(super::remotes::numbered);
+        let (mut on, mut under) = (vec![false; log.len()], vec![false; log.len()]);
+        for r in refs.iter().filter(|r| match r.kind {
+            RefKind::Local => !pr(&r.name),
+            RefKind::Remote => !split_remote(&remotes, &r.name).is_some_and(|(_, b)| pr(b)),
+            RefKind::Tag => false,
+        }) {
+            if let Some(&row) = row_of.get(&r.target) {
+                on[row - off] = true;
+            }
+        }
+        for i in 0..log.len() {
+            if on[i]
+                && let Some(&p) = parents[i].first().filter(|&&p| p != NONE)
+            {
+                (on[p as usize], under[p as usize]) = (true, true);
+            }
+        }
         for (i, r) in refs.iter().enumerate() {
+            let branch = match r.kind {
+                RefKind::Local => Some(r.name.as_str()),
+                // A pull request head (`origin/pr/42`) down another branch's line is the branch it was pushed
+                // from (or lags it after a push), not one of its own; elsewhere (alone, or under another pull
+                // request) it may be all that names a fork's pull request.
+                RefKind::Remote => split_remote(&remotes, &r.name)
+                    .map(|(_, b)| b)
+                    .filter(|&b| b != "HEAD" && !(pr(b) && row_of.get(&r.target).is_some_and(|&row| under[row - off]))),
+                RefKind::Tag => None,
+            };
             let p = match r.kind {
+                RefKind::Local if r.name == default_branch => 0,
+                RefKind::Remote if r.name == origin_default => 0,
                 RefKind::Local if is_trunk(&r.name) => 1,
                 RefKind::Local => 2,
-                RefKind::Remote if split_remote(&remotes, &r.name).is_some_and(|(_, b)| is_trunk(b)) => 3,
+                RefKind::Remote if branch.is_some_and(is_trunk) => 3,
                 RefKind::Remote => 4,
                 RefKind::Tag => 5,
             };
             if let Some(&row) = row_of.get(&r.target) {
                 prio[row - off] = prio[row - off].min(p);
+                if let Some(b) = branch {
+                    let next = ids.len() as u32;
+                    names[row - off].push(*ids.entry(b).or_insert(next));
+                }
             }
             refs_at.entry(r.target.clone()).or_default().push(i);
         }
+        // Main runs straight down column 0 from the default branch's newer tip, the local one's or
+        // origin's (an ancestor sits below). Not among hits: their first parents aren't the real ones.
+        let tip = |kind, name: &str| refs.iter().find(|r| r.kind == kind && r.name == name).and_then(|r| row_of.get(&r.target)).map(|&row| (row - off) as u32);
+        let main = [tip(RefKind::Local, &default_branch), tip(RefKind::Remote, &origin_default)].into_iter().flatten().min().filter(|_| !hits);
         for v in refs_at.values_mut() {
             v.sort_by_key(|&i| (!refs[i].head, refs[i].kind as u8, refs[i].name.clone()));
         }
@@ -397,7 +451,7 @@ impl RepoData {
             Some((l, g, key)) if key == layout_key => (l, g),
             prev => {
                 let seed = |c: &Commit| c.id.get(..8).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0);
-                let l = prev.map_or_else(|| Arc::new(Graph::layout(&parents, &prio, &log.iter().map(seed).collect::<Vec<_>>())), |p| p.0);
+                let l = prev.map_or_else(|| Arc::new(Graph::layout(&parents, &prio, &log.iter().map(seed).collect::<Vec<_>>(), &names, main)), |p| p.0);
                 let g = if wip { Arc::new(l.with_wip(head_row.map(|r| r - 1), status.head.is_none())) } else { l.clone() };
                 (l, g)
             }
@@ -406,13 +460,6 @@ impl RepoData {
         for (i, s) in stashes.iter().enumerate() {
             stash_at.entry(s.base.clone()).or_default().push(i);
         }
-        let default_branch = Some(origin_head.clone())
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                let has = |n: &str| refs.iter().any(|r| r.kind == RefKind::Remote && r.name == n);
-                ["origin/main", "origin/master"].into_iter().find(|n| has(n)).map(|n| n[7..].to_owned())
-            })
-            .unwrap_or_else(|| "main".into());
         let local_at = refs.iter().enumerate().filter(|(_, r)| r.kind == RefKind::Local).map(|(i, r)| (r.name.clone(), i)).collect();
         let hidden = view.hidden.iter().cloned().collect();
         let mut d = Self {
@@ -945,10 +992,140 @@ mod tests {
         assert_eq!(dirty.graph.nodes[0].color, head.color);
         // A status-only refresh reuses the layout and still adds or drops the WIP row.
         let (l, g) = (d.layout.clone(), d.graph.clone());
-        let r = RepoData::build_reusing(d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), dirty.status.clone(), d.view.clone(), Some((l, g, d.layout_key)));
+        let r = RepoData::build_reusing(d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), dirty.status.clone(), d.view.clone(), Some((l, g, d.layout_key)), false);
         assert!(r.wip && Arc::ptr_eq(&r.layout, &d.layout));
         assert_eq!(colors(&r), main);
         assert_eq!(r.graph.nodes, dirty.graph.nodes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Main runs down column 0 in one color from its newest tip: origin's while local main is
+    /// behind it. A branch stacked on another's tip gets a color of its own; its upstream doesn't.
+    #[test]
+    fn main_lane_and_stacked_branch_colors() {
+        let dir = scratch("main-lane");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        commit(&dir, "m", "1\n");
+        commit(&dir, "m", "2\n");
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["reset", "-q", "--hard", "HEAD~1"]);
+        sh(&dir, &["checkout", "-q", "-b", "a"]);
+        commit(&dir, "a", "1\n");
+        sh(&dir, &["update-ref", "refs/remotes/origin/a", "HEAD"]);
+        commit(&dir, "a", "2\n");
+        sh(&dir, &["checkout", "-q", "-b", "b"]);
+        commit(&dir, "b", "1\n");
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let node = |rev: &str| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", rev]).trim()]];
+        let main = node("origin/main");
+        assert!(d.graph.main && ["origin/main", "main"].iter().all(|r| node(r).col == 0 && node(r).color == main.color));
+        assert!(["a", "origin/a", "b"].iter().all(|r| node(r).col != 0 && node(r).color != main.color));
+        assert_eq!(node("origin/a").color, node("a").color);
+        assert_ne!(node("b").color, node("a").color);
+        // Local main ahead: main starts at its tip.
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["merge", "-q", "--ff-only", "origin/main"]);
+        commit(&dir, "m", "3\n");
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert!(["main", "origin/main"].iter().all(|r| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", r]).trim()]].col == 0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With no origin to ask, a local main / master is the default branch, and origin's main is
+    /// when origin/HEAD names a branch origin no longer has. Main starts at the newer of its tips,
+    /// also when local main went its own way.
+    #[test]
+    fn main_lane_finds_the_default_branch_and_its_newer_tip() {
+        let dir = scratch("main-tip");
+        sh(&dir, &["init", "-q", "-b", "master"]);
+        identity(&dir);
+        let at = |when: u32, msg: &str| {
+            let date = format!("{} +0000", 1_700_000_000 + when);
+            assert!(git::cmd(&dir).args(["commit", "-q", "--allow-empty", "-m", msg]).env("GIT_COMMITTER_DATE", date).status().unwrap().success());
+        };
+        let col = |d: &RepoData, rev: &str| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", rev]).trim()]].col;
+        at(1, "base");
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        at(2, "f");
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!(d.default_branch(), "master");
+        assert!(d.graph.main && col(&d, "master") == 0 && col(&d, "feature") != 0);
+        // master renamed to main on origin, origin/HEAD left behind; local main has one commit of
+        // its own, older than origin's two.
+        sh(&dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        sh(&dir, &["checkout", "-q", "-b", "main", "master"]);
+        at(3, "local");
+        sh(&dir, &["checkout", "-q", "--detach", "master"]);
+        at(4, "o1");
+        at(5, "o2");
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master"]);
+        sh(&dir, &["checkout", "-q", "main"]);
+        sh(&dir, &["branch", "-q", "-D", "master"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        assert_eq!((d.origin_head.as_str(), d.default_branch()), ("master", "main"));
+        assert!(d.graph.main && [col(&d, "origin/main"), col(&d, "origin/main~2")] == [0, 0] && col(&d, "main") != 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A pull request head (`origin/pr/42`, fetched by "Fetch pull requests") is the branch it was
+    /// pushed from, not one of its own: local commits on top don't change the color.
+    #[test]
+    fn a_pull_request_head_is_no_branch_of_its_own() {
+        let dir = scratch("pr-head-color");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "-b", "feature"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "pushed"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/pr/42", "HEAD"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "local"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let color = |rev: &str| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", rev]).trim()]].color;
+        assert_eq!(color("feature"), color("origin/feature"));
+        // Pushed again: until the next fetch the pull request head lags behind on the same branch.
+        sh(&dir, &["update-ref", "refs/remotes/origin/feature", "HEAD"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let color = |rev: &str| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", rev]).trim()]].color;
+        assert_eq!(color("origin/pr/42"), color("feature"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A fork's pull request (only `origin/pr/7` names its head) stacked on feature-a's tip has a
+    /// color of its own, and so has one stacked on it, also once the first is merged.
+    #[test]
+    fn a_fork_pull_request_on_a_branch_has_its_own_color() {
+        let dir = scratch("fork-pr-color");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["remote", "add", "origin", "git@github.com:o/r.git"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "-b", "feature-a"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "a"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/feature-a", "HEAD"]);
+        sh(&dir, &["checkout", "-q", "--detach"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "fork"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/pr/7", "HEAD"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "fork 2"]);
+        sh(&dir, &["update-ref", "refs/remotes/origin/pr/8", "HEAD"]);
+        // As "Check out pull request" leaves it: a local pr/8, a pull request head too.
+        sh(&dir, &["branch", "pr/8"]);
+        sh(&dir, &["checkout", "-q", "feature-a"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let color = |rev: &str| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", rev]).trim()]].color;
+        assert_ne!(color("origin/pr/7"), color("feature-a"));
+        assert_ne!(color("origin/pr/8"), color("origin/pr/7"));
+        // Merged with a merge commit, pull request 7's head is on no branch's own line: still its own.
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "merge 7", "origin/pr/7"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let color = |rev: &str| d.graph.nodes[d.row_of[sh(&dir, &["rev-parse", rev]).trim()]].color;
+        assert_ne!(color("origin/pr/8"), color("origin/pr/7"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

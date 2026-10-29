@@ -205,7 +205,8 @@ pub fn pr_refs_clash<'a>(d: &'a RepoData, remote: &str) -> Option<&'a str> {
     (!pr_refs_on(d, remote)).then(|| d.refs.iter().find(|r| r.full == pr || pr_head(r, remote).is_some_and(numbered)).map(|r| r.name.as_str())).flatten()
 }
 
-fn numbered(n: &str) -> bool {
+/// A name led by a number (`42`, `42/x`), as pull request heads' are after `pr/`.
+pub(super) fn numbered(n: &str) -> bool {
     n.split('/').next().is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 

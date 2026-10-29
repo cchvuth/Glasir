@@ -11,6 +11,7 @@ use egui::{Frame, Margin, Ui, UiBuilder};
 
 pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
     let ctx = ui.ctx().clone();
+    graph_view::magic::note_input(ui);
     let mut acts = vec![];
     let busy = t.busy().is_some();
     t.ai_cfg.clone_from(&s.ai);
@@ -110,7 +111,7 @@ pub(super) fn show(t: &mut RepoTab, ui: &mut Ui, s: &mut Settings) {
                                 se.history.clone_from(&s.search_history);
                                 se.poll(&ctx, d);
                             }
-                            graph_view::show(ui, d, &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, &mut acts);
+                            graph_view::show(ui, d, &t.sel, &t.multi, &mut t.scroll_to, &mut t.search, &t.avatars, s.magic, &mut acts);
                             if let Some(se) = &t.search
                                 && se.history != s.search_history
                             {

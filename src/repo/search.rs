@@ -346,7 +346,7 @@ impl Search {
             let ids: std::collections::HashSet<&str> = found.iter().map(|c| c.id.as_str()).collect();
             let log = found.iter().map(|c| Commit { parents: c.parents.iter().filter(|p| ids.contains(p.as_str())).cloned().collect(), ..c.clone() }).collect();
             let (refs, stashes, remotes, git_dir, origin_head, status, view) = parts;
-            let mut f = RepoData::build(Arc::new(log), refs, stashes, remotes, git_dir, origin_head, status, view);
+            let mut f = RepoData::build_reusing(Arc::new(log), refs, stashes, remotes, git_dir, origin_head, status, view, None, true);
             (f.worktrees, f.submodules, f.lfs, f.config, f.author, f.bisect) = more;
             f.log = Arc::new(found);
             f
@@ -515,6 +515,25 @@ mod tests {
         let d2 = RepoData::build(d.log.clone(), d.refs.clone(), d.stashes.clone(), d.remotes.clone(), d.git_dir.clone(), d.origin_head.clone(), git::status(&dir).unwrap(), d.view.clone());
         settle(&mut s, &d2);
         assert_eq!(s.filtered.as_ref().unwrap().status.staged.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A hit's first shown parent can be one it merged in, so the filtered graph runs no main lane.
+    #[test]
+    fn filtered_graph_has_no_main_lane() {
+        let dir = scratch("search-main");
+        sh(&dir, &["init", "-q", "-b", "main"]);
+        identity(&dir);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        sh(&dir, &["switch", "-q", "-c", "side"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "fix one"]);
+        sh(&dir, &["switch", "-q", "main"]);
+        sh(&dir, &["commit", "-q", "--allow-empty", "-m", "main work"]);
+        sh(&dir, &["merge", "-q", "--no-ff", "-m", "fix merged", "side"]);
+        let d = load_all(&dir, 100, View::default()).unwrap();
+        let f = finished(&dir, &d, "fix", true).filtered.clone().unwrap();
+        assert_eq!(f.log.len(), 2);
+        assert!(d.graph.main && !f.graph.main);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

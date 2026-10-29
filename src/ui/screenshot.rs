@@ -44,6 +44,10 @@ impl App {
         let ready = self.tabs.get(self.active).is_none_or(|t| t.data.is_some() && !t.loading());
         let Some((_, frames)) = &mut self.shot else { return };
         ctx.request_repaint();
+        let clock = Id::new("magic_clock");
+        if let Some(t) = ctx.data(|m| m.get_temp::<f64>(clock)) {
+            ctx.data_mut(|m| m.insert_temp(clock, t + 1.0 / 30.0));
+        }
         if let (Some(b), Some(t)) = (&mut self.bench, self.tabs.get_mut(self.active))
             && let Some(rows) = t.data.as_ref().map(|d| d.rows()).filter(|&n| n > 0)
         {
@@ -465,6 +469,13 @@ impl App {
                     "drop-hint" => self.drop_hint_shot = true,
                     // Keeps scrolling the graph (with GLASIR_PERF=1 and many GLASIR_SCREENSHOT_FRAMES).
                     "scroll-bench" => self.bench = Some(0),
+                    // `magic-clock:<s>`: the main line's magic runs from <s> seconds, 1/30 s a frame (repeatable shots).
+                    q if q.starts_with("magic-clock:") => {
+                        let t: f64 = q[12..].parse().unwrap_or(0.0);
+                        ctx.data_mut(|m| m.insert_temp(Id::new("magic_clock"), t));
+                    }
+                    // Settings → Main line off: the plain line, to compare with.
+                    "magic-off" => self.s.magic = false,
                     // `graph-x:<px>`: the graph column scrolled sideways.
                     q if q.starts_with("graph-x:") => {
                         if let Some(d) = self.tabs.get(self.active).and_then(|t| t.data.as_ref()) {

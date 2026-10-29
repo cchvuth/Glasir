@@ -81,7 +81,7 @@ pub(super) fn head_row(ui: &Ui, text: RichText, styled: bool) -> egui::Button<'s
     if styled {
         return egui::Button::new(text).fill(theme::selection(ui));
     }
-    egui::Button::new(text.color(egui::Color32::WHITE)).fill(a).stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)))
+    egui::Button::new(text.color(theme::on_color(a))).fill(a).stroke(egui::Stroke::new(1.0, egui::Color32::from_white_alpha(90)))
 }
 
 /// Stacked branches right under their parent, with their depth (`repo::stack`).
