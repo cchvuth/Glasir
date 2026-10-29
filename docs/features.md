@@ -34,7 +34,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:336) | 11 |
 | `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
-| `ui::app::App::shortcuts` (src/ui/app.rs:192) | 11 |
+| `ui::app::App::shortcuts` (src/ui/app.rs:193) | 11 |
 | `repo::op::exec_stash` (src/repo/op.rs:836) | 11 |
 | `ui::settings::App::settings_dialog` (src/ui/settings.rs:134) | 10 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
@@ -42,7 +42,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
 | `ui::diff_view::pick_lines` (src/ui/diff_view.rs:614) | 10 |
 | `ui::diff_view::Layout::get` (src/ui/diff_view.rs:75) | 10 |
-| `ui::app::App::ui` (src/ui/app.rs:519) | 10 |
+| `ui::app::App::ui` (src/ui/app.rs:527) | 10 |
 | `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:307) | 9 |
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
 | `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
@@ -177,8 +177,9 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Shared:** `ui::settings::App::open_settings` (4), `ui::settings::toggle_flavor` (2), `ui::titlebar::App::tab_bar` (13)
 
 #### Restore open tabs and the active tab on launch `app.restore-session`
-- **Entry:** startup: Settings.open / active (App::new); saved on quit/periodically by App::save
+- **Entry:** startup: Settings.open / active (App::new); saved on quit/periodically by App::save; App::new drops the scroll-area state eframe restores with egui's memory (forget_saved_scrolling): a scroll animation saved in flight is timed by the old session's clock and would repaint every frame until the new one caught up
 - **Platform:** `platform.git-runner`, `platform.repo-load`
+- **Own code:** `ui::app::forget_saved_scrolling`
 - **Shared:** `ui::app::App::add_tab` (3), `ui::app::App::new` (8), `ui::app::App::new_tab` (3), `ui::app::App::save` (3)
 
 #### Open a worktree in the current tab (or a new one) `app.switch-worktree-in-tab`

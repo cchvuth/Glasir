@@ -66,6 +66,7 @@ impl App {
         }
         theme::apply(&cc.egui_ctx, s.flavor);
         cc.egui_ctx.set_zoom_factor(s.zoom.clamp(0.5, 3.0));
+        forget_saved_scrolling(&cc.egui_ctx);
         let shot = std::env::var("GLASIR_SCREENSHOT").ok().map(|p| (p, 0));
         #[cfg(target_os = "macos")]
         let glass_backdrop = s.native_glass && native_glass(cc);
@@ -444,6 +445,13 @@ impl App {
             Some(palette::Cmd::Theme) => toggle_flavor(&mut self.s, ctx),
         }
     }
+}
+
+/// eframe restores egui's memory with any scroll animation that was in flight when it was saved, timed
+/// by that session's clock: this one starts again at 0, so egui would repaint every frame until it
+/// caught up (for as long as the last session ran). The saved scroll offsets go with it.
+fn forget_saved_scrolling(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove_by_type::<egui::containers::scroll_area::State>());
 }
 
 fn drop_hint(ctx: &egui::Context, force: bool) {
@@ -1910,5 +1918,39 @@ mod shell_tests {
         step(&ctx, &mut app, Modifiers::COMMAND, &[Key::F]);
         assert!(app.tabs[0].search.is_some());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_scroll_saved_mid_animation_does_not_spin_the_next_launch() {
+        // A scroll animation in flight when the memory was saved, an hour into that session; the next
+        // launch's clock starts again at 0.
+        let frame = |ctx: &egui::Context, time: f64, to: Option<f32>| {
+            let raw = RawInput { time: Some(time), screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(300.0, 300.0))), ..Default::default() };
+            let mut out = ctx.run_ui(raw, |ui| {
+                egui::ScrollArea::vertical().id_salt("saved").show(ui, |ui| {
+                    ui.allocate_space(egui::vec2(100.0, 5000.0));
+                    if let Some(y) = to {
+                        ui.scroll_to_rect(egui::Rect::from_min_size(egui::pos2(0.0, y), egui::vec2(1.0, 1.0)), None);
+                    }
+                });
+            });
+            out.textures_delta.clear();
+            out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        let old = egui::Context::default();
+        frame(&old, 3600.0, None);
+        frame(&old, 3600.05, Some(4000.0));
+        let saved = old.memory(|m| m.clone());
+        let launch = |app: bool| {
+            let ctx = egui::Context::default();
+            ctx.memory_mut(|m| *m = saved.clone());
+            // As eframe starts: the saved memory first, then the app.
+            let _app = app.then(|| App::new(&eframe::CreationContext::_new_kittest(ctx.clone()), None));
+            // A fresh egui repaints for its first few frames anyway, and the app's git check asks for one more when it is
+            // done: the longest delay asked for in any frame, not the last.
+            (0..10).map(|i| frame(&ctx, 1.0 + i as f64 * 0.1, None)).max().unwrap()
+        };
+        assert_eq!(launch(false), std::time::Duration::ZERO, "egui keeps repainting");
+        assert!(launch(true) > std::time::Duration::from_secs(1), "App::new forgets the saved scroll animation");
     }
 }
