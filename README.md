@@ -255,7 +255,8 @@ The name fits a Git client:
   its config, branch upstreams and push remotes, and remote-tracking branches).
 - **Per-repository SSH key**: in the connection check, pick one of your `~/.ssh` keys
   (with its fingerprint), browse for another or go back to the default; stored as the
-  repo-local `core.sshCommand` (⌘Z restores it, a custom command asks first), with a
+  repo-local `core.sshCommand` (⌘Z restores it, a custom command asks first; a key without a
+  passphrase is the only one offered, even when the agent holds another key for that host), with a
   non-prompting **Test connection** (through git, so it uses the same ssh and agent as a fetch). Open it from a remote's right-click menu (**SSH key…**),
   ⌘P, or the toolbar when a fetch is refused.
 - Push goes to the branch's upstream even under another name; a branch started

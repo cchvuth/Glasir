@@ -1378,9 +1378,9 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Shared:** `git::network::batch_ssh` (2), `git::network::quiet` (2), `git::network::quiet_ssh` (2), `git::network::unquoted` (2), `git::url::redact` (6), `repo::doctor::Doctor::poll` (2), `repo::doctor::redact_proxy` (2), `ui::palette::items` (25), `ui::sidebar::remotes::remote_menu` (7)
 
 #### Choose and test the SSH key for a repository `remote.ssh-key`
-- **Entry:** src/ui/sidebar/remotes.rs:34 remote menu "SSH key…"; src/ui/palette.rs:180 Cmd+P "SSH key for this repository…"; src/ui/doctor.rs (ssh_key_section: key list, Browse…, Test connection); src/repo/mod.rs:858 Action::SshKey / SshTest
+- **Entry:** src/ui/sidebar/remotes.rs:34 remote menu "SSH key…"; src/ui/palette.rs:180 Cmd+P "SSH key for this repository…"; src/ui/doctor.rs (ssh_key_section: key list, Browse…, Test connection); src/repo/mod.rs:858 Action::SshKey / SshTest; sshkey::build: ssh -i <key> -o IdentitiesOnly=yes, plus -o IdentityAgent=none for a key without a passphrase (sshkey::locked): through the agent ssh offers keys in the agent's order, so a key ~/.ssh/config lists for the host could log in first as another account that can fetch but not push
 - **Platform:** `platform.op-runner`, `platform.task`, `platform.undo-engine`
-- **Own code:** `git::network::ls_remote_via`, `repo::doctor::Doctor::test`, `repo::sshkey::build`, `repo::sshkey::home`, `repo::sshkey::is_ssh`, `repo::sshkey::list`, `repo::sshkey::parse`, `repo::sshkey::quiet`, `repo::sshkey::set_op`, `repo::sshkey::slashed`, `repo::sshkey::test`, `ui::doctor::ssh_key_section`
+- **Own code:** `git::network::ls_remote_via`, `repo::doctor::Doctor::test`, `repo::sshkey::locked`, `repo::sshkey::build`, `repo::sshkey::home`, `repo::sshkey::is_ssh`, `repo::sshkey::list`, `repo::sshkey::parse`, `repo::sshkey::quiet`, `repo::sshkey::set_op`, `repo::sshkey::slashed`, `repo::sshkey::test`, `ui::doctor::ssh_key_section`
 - **Shared:** `git::url::redact_command` (3), `repo::doctor::Doctor::poll` (2)
 
 #### Saved HTTPS token lookup via git's credential helper (for avatars) `remote.token-lookup`

@@ -17,19 +17,28 @@ pub enum Active {
 
 const SUFFIX: &str = "' -o IdentitiesOnly=yes";
 const PREFIX: &str = "ssh -i '";
+/// Added for a key without a passphrase. Through the agent ssh offers keys in the agent's order, so a
+/// key that ~/.ssh/config lists for the host (a work account, say) can log in first: it may fetch but
+/// not push. A key with a passphrase keeps the agent, which unlocks it.
+const NO_AGENT: &str = " -o IdentityAgent=none";
 
 fn slashed(path: &str) -> String {
     if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() }
 }
 
 pub fn build(path: &str) -> String {
-    format!("{PREFIX}{}{SUFFIX}", slashed(path).replace('\'', "'\\''"))
+    format!("{PREFIX}{}{SUFFIX}{}", slashed(path).replace('\'', "'\\''"), if locked(path) { "" } else { NO_AGENT })
+}
+
+/// The key needs a passphrase (or can't be read without one).
+fn locked(path: &str) -> bool {
+    !quiet("ssh-keygen").args(["-y", "-P", "", "-f", path]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
 pub fn parse(cmd: Option<&str>) -> Active {
     match cmd.map(str::trim).filter(|c| !c.is_empty()) {
         None | Some("ssh") => Active::Default,
-        Some(c) => match c.strip_prefix(PREFIX).and_then(|r| r.strip_suffix(SUFFIX)) {
+        Some(c) => match c.strip_prefix(PREFIX).and_then(|r| r.strip_suffix(NO_AGENT).unwrap_or(r).strip_suffix(SUFFIX)) {
             Some(q) if q.replace("'\\''", "").find('\'').is_none() => Active::Ours(q.replace("'\\''", "'")),
             _ => Active::Custom(c.to_owned()),
         },
@@ -121,6 +130,21 @@ mod tests {
         for c in ["ssh -i ~/.ssh/k", "ssh -i '/a' -o IdentitiesOnly=yes -o Foo=1", "ssh -i '/a'b' -o IdentitiesOnly=yes", "plink -i k"] {
             assert_eq!(parse(Some(c)), Active::Custom(c.into()), "{c}");
         }
+    }
+
+    #[test]
+    fn a_key_without_a_passphrase_skips_the_agent() {
+        let dir = std::env::temp_dir().join(format!("glasir-sshkey-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, pass) in [("open", ""), ("locked", "hunter22")] {
+            let key = dir.join(name);
+            assert!(Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", pass, "-f"]).arg(&key).status().unwrap().success());
+            let (key, cmd) = (key.to_string_lossy().into_owned(), build(&key.to_string_lossy()));
+            assert_eq!(cmd.ends_with(NO_AGENT), pass.is_empty(), "{cmd}");
+            assert_eq!(parse(Some(&cmd)), Active::Ours(slashed(&key)), "{cmd}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
