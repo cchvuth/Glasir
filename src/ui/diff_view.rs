@@ -60,9 +60,16 @@ fn rows(f: &FileDiff, split: bool) -> Vec<Row> {
     rows
 }
 
+/// Lines on one side only (a new or a deleted file): split, half the view would stay empty.
+fn one_sided(f: &FileDiff) -> bool {
+    [b'-', b'+'].into_iter().any(|k| !f.hunks.iter().flat_map(|h| &h.lines).any(|l| l.kind == k || l.kind == b' '))
+}
+
 /// What a diff's rows need every frame, built once per loaded file and layout.
 struct Layout {
     key: (u64, bool),
+    /// Split as asked, unless the file is `one_sided`.
+    split: bool,
     rows: Vec<Row>,
     kinds: Vec<u8>,
     starts: Vec<usize>,
@@ -77,12 +84,13 @@ impl Layout {
         if let Some(c) = ui.data(|m| m.get_temp::<std::sync::Arc<Self>>(id)).filter(|c| c.key == key) {
             return c;
         }
+        let split = split && f.is_some_and(|f| !one_sided(f));
         let rows = f.map_or(vec![], |f| rows(f, split));
         let kinds: Vec<u8> = f.map_or(vec![], |f| rows.iter().map(|r| row_kind(f, r)).collect());
         let starts = change_starts(&kinds);
         let pairs = f.map_or(vec![], |f| f.hunks.iter().map(partners).collect());
         let max_chars = f.map_or(0, |f| f.hunks.iter().flat_map(|h| &h.lines).map(|l| crate::highlight::display_len(&l.text)).max().unwrap_or(0));
-        let c = std::sync::Arc::new(Self { key, rows, kinds, starts, pairs, max_chars });
+        let c = std::sync::Arc::new(Self { key, split, rows, kinds, starts, pairs, max_chars });
         ui.data_mut(|m| m.insert_temp(id, c.clone()));
         c
     }
@@ -231,6 +239,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let file = ds.file.as_ref().and_then(|f| f.as_ref().ok());
     let lay = Layout::get(ui, ds.stamp, file, *split);
     let Layout { rows, kinds, starts, pairs, max_chars, .. } = &*lay;
+    let (one_sided, split_shown) = (*split && !lay.split, lay.split);
     // Scroll offset and viewport height of the last frame.
     let mem = ui.id().with("diff_pos");
     let (first, view_h) = ui.data(|m| m.get_temp::<(usize, f32)>(mem)).unwrap_or_default();
@@ -381,7 +390,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.y = 30.0; // the glass groups draw beyond their row height
-            view_controls(ui, ds, split, wrap, worktree && change.code != '?', starts, anchor, &mut nav, acts)
+            view_controls(ui, ds, split, one_sided, wrap, worktree && change.code != '?', starts, anchor, &mut nav, acts)
         });
     }
     ui.add_space(6.0);
@@ -451,7 +460,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
     let (cols_u, cols_s) = (cols(body.width() - 14.0 - NUM_W * 2.0 - 16.0), cols(body.width() / 2.0 - 7.0 - NUM_W - 16.0));
     let n_lines = |hi: usize, li: usize, cols| wrapped(|| crate::highlight::display_len(&f.hunks[hi].lines[li].text), cols);
     let tops_id = ui.id().with("diff_tops");
-    let tops_key = (ds.stamp, *split, cols_u, cols_s);
+    let tops_key = (ds.stamp, split_shown, cols_u, cols_s);
     let tops = match ui.data(|m| m.get_temp::<std::sync::Arc<((u64, bool, usize, usize), Vec<f32>)>>(tops_id)).filter(|t| t.0 == tops_key) {
         Some(t) => t,
         None => {
@@ -508,7 +517,7 @@ pub fn show(ui: &mut Ui, ds: &mut DiffState, d: Option<&crate::repo::RepoData>, 
         area.show_viewport(ui, |ui, view| {
             let range = visible(tops, view.min.y, view.max.y);
             let (view_w, pin) = (view.width(), view.min.x);
-            let text_w = if *split { view_w / 2.0 - NUM_W - 16.0 } else { view_w - NUM_W * 2.0 - 20.0 };
+            let text_w = if split_shown { view_w / 2.0 - NUM_W - 16.0 } else { view_w - NUM_W * 2.0 - 20.0 };
             let overflow = if *wrap { 0.0 } else { (*max_chars as f32 * cw - text_w).max(0.0) };
             ui.set_min_size(vec2(view_w + overflow, tops[last + 1]));
             let left = ui.max_rect().left() + pin;
@@ -632,13 +641,15 @@ fn pick_lines(ui: &Ui, mem: egui::Id, picked: &mut std::collections::BTreeSet<(u
     }
 }
 
-/// The second header row: layout, whitespace, context, change navigation.
+/// The second header row: layout (Unified while a split view of a `one_sided` file shows as one),
+/// whitespace, context, change navigation.
 #[allow(clippy::too_many_arguments)]
-fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, wrap: &mut bool, stageable: bool, starts: &[usize], anchor: usize, nav: &mut Option<bool>, acts: &mut Vec<Action>) {
+fn view_controls(ui: &mut Ui, ds: &DiffState, split: &mut bool, one_sided: bool, wrap: &mut bool, stageable: bool, starts: &[usize], anchor: usize, nav: &mut Option<bool>, acts: &mut Vec<Action>) {
     let o = ds.pending;
     wrap_group(ui, "layout", |ui| {
         for (v, text) in [(false, "Unified"), (true, "Split")] {
-            if ui.add(egui::Button::selectable(*split == v, text)).clicked() {
+            let b = ui.add_enabled(!(v && one_sided), egui::Button::selectable((*split && !one_sided) == v, text));
+            if b.on_disabled_hover_text("A new or deleted file has one side only").clicked() {
                 *split = v;
             }
         }
@@ -914,6 +925,18 @@ mod tests {
         assert_eq!(starts, [2, 6]);
         assert_eq!((step(&starts, 0, true), step(&starts, 2, true), step(&starts, 6, true)), (Some(2), Some(6), None));
         assert_eq!((step(&starts, 6, false), step(&starts, 2, false)), (Some(2), None));
+    }
+
+    #[test]
+    fn new_and_deleted_files_are_one_sided() {
+        let added = "diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,2 @@\n+a\n+b\n";
+        let deleted = "diff --git a/f b/f\ndeleted file mode 100644\n--- a/f\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n";
+        // Only lines added (or removed) next to context still have both sides.
+        let appended = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1,2 @@\n a\n+b\n";
+        let rewritten = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n";
+        for (d, want) in [(added, true), (deleted, true), (appended, false), (rewritten, false)] {
+            assert_eq!(one_sided(&parse_diff(d)[0]), want, "{d}");
+        }
     }
 
     /// "No newline at end of file" is shown (under its side) instead of dropped.

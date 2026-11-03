@@ -136,7 +136,7 @@ The name fits a Git client:
   Discard: one confirmation, one git run per kind, backed up like any discard; Stash,
   Mark resolved, Add to .gitignore, Folder history, Show in file manager); the tree is
   cached and only the rows in view are drawn, so 10k-file trees stay smooth.
-- Unified or split diffs with **syntax highlighting** and **word-level** change marks.
+- Unified or split diffs (a new or deleted file always unified) with **syntax highlighting** and **word-level** change marks.
 - Diff controls: **ignore whitespace** (`-w`; line staging pauses while it is on),
   **context** of 3 / 10 lines or the whole file, **previous / next change**
   (↑ ↓ or F7 / ⇧F7) and a clickable change minimap.

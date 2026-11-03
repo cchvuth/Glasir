@@ -26,7 +26,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `ui::graph_view::menus::commit_menu` (src/ui/graph_view/menus.rs:139) | 24 |
 | `ui::sidebar::ref_menus::local_menu` (src/ui/sidebar/ref_menus.rs:184) | 22 |
 | `repo::RepoTab::apply` (src/repo/mod.rs:653) | 21 |
-| `ui::diff_view::show` (src/ui/diff_view.rs:217) | 20 |
+| `ui::diff_view::show` (src/ui/diff_view.rs:225) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
 | `ui::graph_view::show` (src/ui/graph_view/mod.rs:136) | 18 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 13 |
@@ -34,18 +34,18 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
 | `ui::sidebar::ref_menus::tag_menu` (src/ui/sidebar/ref_menus.rs:336) | 11 |
 | `ui::settings::App::settings_dialog` (src/ui/settings.rs:137) | 11 |
-| `ui::diff_view::paint_line` (src/ui/diff_view.rs:819) | 11 |
+| `ui::diff_view::paint_line` (src/ui/diff_view.rs:830) | 11 |
 | `ui::app::App::shortcuts` (src/ui/app.rs:193) | 11 |
 | `repo::op::exec_stash` (src/repo/op.rs:836) | 11 |
 | `ui::diff_view::rows` (src/ui/diff_view.rs:29) | 10 |
-| `ui::diff_view::row_kind` (src/ui/diff_view.rs:92) | 10 |
-| `ui::diff_view::row_changes` (src/ui/diff_view.rs:602) | 10 |
-| `ui::diff_view::pick_lines` (src/ui/diff_view.rs:614) | 10 |
-| `ui::diff_view::Layout::get` (src/ui/diff_view.rs:75) | 10 |
+| `ui::diff_view::row_kind` (src/ui/diff_view.rs:100) | 10 |
+| `ui::diff_view::row_changes` (src/ui/diff_view.rs:611) | 10 |
+| `ui::diff_view::pick_lines` (src/ui/diff_view.rs:623) | 10 |
+| `ui::diff_view::Layout::get` (src/ui/diff_view.rs:82) | 10 |
 | `ui::app::App::ui` (src/ui/app.rs:527) | 10 |
 | `ui::sidebar::ref_menus::remote_menu` (src/ui/sidebar/ref_menus.rs:307) | 9 |
 | `ui::inspector::tree::visible` (src/ui/inspector/tree.rs:106) | 9 |
-| `ui::diff_view::apply_op` (src/ui/diff_view.rs:155) | 9 |
+| `ui::diff_view::apply_op` (src/ui/diff_view.rs:163) | 9 |
 
 <a id="app"></a>
 ## App shell
@@ -1601,8 +1601,9 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 ### Diff view
 
 #### Diff display: unified / split, scroll rail, change navigation (F7) `view.diff-display`
-- **Entry:** Click a file; diff_view.rs view_controls "Unified"/"Split"; F7 / Shift+F7; click change rail
+- **Entry:** Click a file; diff_view.rs view_controls "Unified"/"Split"; F7 / Shift+F7; click change rail; a new or deleted file (lines on one side only: diff_view.rs one_sided) shows unified whatever the setting, Split disabled
 - **Platform:** `platform.design-system`, `platform.highlight`
+- **Own code:** `ui::diff_view::one_sided`
 - **Shared:** `repo::action::DiffSrc::change` (20), `ui::diff_view::Layout::get` (10), `ui::diff_view::change_starts` (2), `ui::diff_view::changed_span` (3), `ui::diff_view::minimap` (2), `ui::diff_view::paint_line` (11), `ui::diff_view::partners` (3), `ui::diff_view::row_changes` (10), `ui::diff_view::row_kind` (10), `ui::diff_view::rows` (10), `ui::diff_view::show` (20), `ui::diff_view::step` (2), `ui::diff_view::view_controls` (3), `ui::diff_view::wrap_before` (3), `ui::diff_view::wrap_group` (3)
 
 #### Diff options: wrap, ignore whitespace, context size (3/10/File) `view.diff-options`

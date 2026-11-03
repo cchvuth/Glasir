@@ -183,9 +183,10 @@ impl App {
                             if mode == "diff-ws" {
                                 t.diff_opts = git::DiffOpts { ignore_ws: true, context: git::DiffOpts::FILE, ..Default::default() };
                             }
-                            let code = t.data.as_ref().and_then(|d| d.status.unstaged.iter().find(|c| c.path == path)).map_or('M', |c| c.code);
+                            let staged = mode == "diff-staged";
+                            let code = t.data.as_ref().and_then(|d| if staged { &d.status.staged } else { &d.status.unstaged }.iter().find(|c| c.path == path)).map_or('M', |c| c.code);
                             let change = git::Change { path: path.into(), old_path: None, code };
-                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged: mode == "diff-staged" }));
+                            t.apply(&ctx.clone(), crate::repo::Action::Diff(crate::repo::DiffSrc::Worktree { change, staged }));
                             if mode == "diff-all" {
                                 t.apply(&ctx.clone(), crate::repo::Action::DiffOpts(git::DiffOpts { all: true, ..t.diff_opts }));
                             }

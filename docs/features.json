@@ -5780,7 +5780,8 @@
        "id": "view.diff-display",
        "name": "Diff display: unified / split, scroll rail, change navigation (F7)",
        "entry": [
-        "Click a file; diff_view.rs view_controls \"Unified\"/\"Split\"; F7 / Shift+F7; click change rail"
+        "Click a file; diff_view.rs view_controls \"Unified\"/\"Split\"; F7 / Shift+F7; click change rail",
+        "a new or deleted file (lines on one side only: diff_view.rs one_sided) shows unified whatever the setting, Split disabled"
        ],
        "fns": [
         "crate::repo::action::DiffSrc::change",
@@ -5792,6 +5793,7 @@
         "crate::ui::diff_view::partners",
         "crate::ui::diff_view::row_changes",
         "crate::ui::diff_view::row_kind",
+        "crate::ui::diff_view::one_sided",
         "crate::ui::diff_view::rows",
         "crate::ui::diff_view::show",
         "crate::ui::diff_view::step",
