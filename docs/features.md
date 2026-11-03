@@ -28,7 +28,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 | `repo::RepoTab::apply` (src/repo/mod.rs:653) | 21 |
 | `ui::diff_view::show` (src/ui/diff_view.rs:225) | 20 |
 | `repo::action::DiffSrc::change` (src/repo/action.rs:34) | 20 |
-| `ui::graph_view::show` (src/ui/graph_view/mod.rs:136) | 18 |
+| `ui::graph_view::show` (src/ui/graph_view/mod.rs:131) | 18 |
 | `ui::titlebar::App::tab_bar` (src/ui/titlebar.rs:11) | 13 |
 | `repo::data::RepoData::split_remote` (src/repo/data.rs:296) | 13 |
 | `repo::rebase::head_state` (src/repo/rebase.rs:584) | 12 |
@@ -867,7 +867,7 @@ Changing one of these means re-reviewing every feature listed for it in `feature
 - **Shared:** `repo::op::branch_checkout` (7), `ui::graph_view::pill_tip` (3), `ui::graph_view::ref_label` (3), `ui::graph_view::ref_pill` (4), `ui::graph_view::show` (18), `ui::graph_view::tip_now` (3), `ui::sidebar::ref_menus::ref_menu` (4), `ui::sidebar::ref_menus::synced_menu` (5)
 
 #### HEAD pill: filled with its lane colour, glowing, leads with a check `refs.head-pill`
-- **Entry:** graph ref column (src/ui/graph_view/mod.rs:72 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text (white, or dark ink on a light fill such as a dark flavour's accent on main: theme::on_color) and its connector line to the node in the same colour; HEAD's node is larger; label (src/ui/graph_view/mod.rs:54 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow; sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)
+- **Entry:** graph ref column (src/ui/graph_view/mod.rs:72 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold white text and its connector line to the node in the same colour; HEAD's node is larger; label (src/ui/graph_view/mod.rs:54 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow; sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)
 - **Platform:** `platform.design-system`
 - **Shared:** `ui::graph_view::ref_pill` (4), `ui::graph_view::ref_label` (3), `ui::graph_view::show` (18), `ui::sidebar::head_row` (3), `ui::sidebar::local_row` (7)
 

@@ -3001,7 +3001,7 @@
        "id": "refs.head-pill",
        "name": "HEAD pill: filled with its lane colour, glowing, leads with a check",
        "entry": [
-        "graph ref column (src/ui/graph_view/mod.rs:72 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold text (white, or dark ink on a light fill such as a dark flavour's accent on main: theme::on_color) and its connector line to the node in the same colour; HEAD's node is larger",
+        "graph ref column (src/ui/graph_view/mod.rs:72 ref_pill): the checked-out branch's pill is filled with its lane colour behind a soft glow, with bold white text and its connector line to the node in the same colour; HEAD's node is larger",
         "label (src/ui/graph_view/mod.rs:54 ref_label): check, then a cloud when its upstream is at the same commit, then the branch icon and name; cut with … when the column is narrow",
         "sidebar: HEAD's row is a solid capsule (src/ui/sidebar/mod.rs:79 head_row)"
        ],

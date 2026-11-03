@@ -80,12 +80,7 @@ fn ref_pill(ui: &Ui, min: Pos2, max_w: f32, rf: &Ref, synced: bool, col: Color32
         RefKind::Tag if faded => theme::tag(ui).gamma_multiply(0.4),
         RefKind::Tag => theme::tag(ui),
     };
-    // On a solid fill, white or dark ink (main's, in a dark flavour's light accent); see-through ones are dark.
-    let label_col = match rf.kind {
-        RefKind::Local if !faded => theme::on_color(col),
-        _ => Color32::WHITE,
-    }
-    .gamma_multiply(if faded { 0.6 } else { 1.0 });
+    let label_col = Color32::WHITE.gamma_multiply(if faded { 0.6 } else { 1.0 });
     let mut job = egui::text::LayoutJob::simple_singleline(label, FontId::proportional(12.0), label_col);
     job.wrap = egui::text::TextWrapping::truncate_at_width((max_w - 14.0).max(0.0));
     let g = p.layout_job(job);
@@ -585,7 +580,7 @@ pub fn show(
                         // A detached HEAD has no branch pill to carry the HEAD mark: a chip before the message does.
                         if Some(r) == head_row && detached {
                             let t = if d.state == crate::git::State::Clean { "detached HEAD" } else { "HEAD" };
-                            x_text = chip(&mp, x_text, ty, t, if faded { Color32::WHITE.gamma_multiply(0.5) } else { theme::on_color(hc) }, hc);
+                            x_text = chip(&mp, x_text, ty, t, Color32::WHITE.gamma_multiply(if faded { 0.5 } else { 1.0 }), hc);
                         }
                         // Bisect: good / bad / skip marks, and the commit being tested.
                         if let Some(b) = &d.bisect
@@ -674,7 +669,7 @@ pub fn show(
         let up = h < visible.start;
         let name = d.status.branch.as_deref().map_or("HEAD (detached)".to_owned(), |b| format!("{b} (HEAD)"));
         let text = format!("{}  {name}", if up { icon::ARROW_UP } else { icon::ARROW_DOWN });
-        let fg = theme::on_color(hc);
+        let fg = Color32::WHITE;
         let g = ui.painter().layout_no_wrap(text, FontId::proportional(12.5), fg);
         let row = if up { ((body.top() - row0) / ROW).ceil() } else { ((body.bottom() - row0) / ROW).floor() - 1.0 };
         let w = g.size().x + 28.0;
@@ -682,8 +677,8 @@ pub fn show(
         let resp = ui.interact(chip, egui::Id::new(("head_chip", &d.git_dir)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Scroll to HEAD");
         let p = ui.painter();
         p.add(egui::epaint::Shadow { offset: [0, 2], blur: 8, spread: 0, color: Color32::from_black_alpha(if ui.visuals().dark_mode { 90 } else { 40 }) }.as_shape(chip, 11.0));
-        // Hovered: away from the text's colour, so it keeps its contrast (white text on a lightened accent fell below 4.5:1).
-        p.rect_filled(chip, 11.0, if resp.hovered() { hc.lerp_to_gamma(if fg == Color32::WHITE { Color32::BLACK } else { Color32::WHITE }, 0.2) } else { hc });
+        // Hovered: darker, so the white text keeps its contrast (on a lightened accent it fell below 4.5:1).
+        p.rect_filled(chip, 11.0, if resp.hovered() { hc.lerp_to_gamma(Color32::BLACK, 0.2) } else { hc });
         p.rect_stroke(chip, 11.0, Stroke::new(1.0, Color32::from_white_alpha(110)), egui::StrokeKind::Inside);
         p.galley(chip.center() - g.size() / 2.0, g, fg);
         if resp.clicked() {
